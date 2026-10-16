@@ -68,6 +68,22 @@ struct PlannedSandboxMount
 	SandboxPathOrigin[] origins;
 }
 
+/// A host symlink recreated in the sandbox so that logical spellings resolve
+/// to mounts planned at physical paths.
+struct PlannedSandboxSymlink
+{
+	/// The symlink's own physical path.
+	string location;
+	/// The symlink's contents, verbatim.
+	string target;
+}
+
+struct SandboxMountPlan
+{
+	PlannedSandboxMount[] mounts;
+	PlannedSandboxSymlink[] symlinks;
+}
+
 /// Owns the normalized logical sandbox path namespace.
 ///
 /// The postblit gives this value type ownership of its associative array. D

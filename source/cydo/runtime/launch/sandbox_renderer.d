@@ -17,8 +17,8 @@ import cydo.runtime.launch.sandbox_materialization : createGitConfigTempFile, cr
 	createPasswdTempFile, cleanup, emptyDirPath, emptyFilePath;
 import cydo.runtime.launch.environment : effectiveChildEnvValue,
 	isolatedChildHomeBaseline, resolveNativeHistoryProfile;
-import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
-	SandboxPathOriginKind;
+import cydo.runtime.launch.sandbox_paths : PathAccess, PlannedSandboxSymlink,
+	SandboxPathOrigin, SandboxPathOriginKind;
 import cydo.runtime.launch.sandbox_resolver : planMounts;
 import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule,
 	NativeProfileSupportRequirement, ProcessLaunch, ResolvedSandbox;
@@ -142,9 +142,11 @@ private string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir,
 	{
 		// Restricted mode: selective bind mounts
 
-		// Host-content binds emitted below are symlink-visibility providers for
-		// the configured logical mount plan.
-		string[] builtinMounts;
+		// Host content and symlinks the renderer always provides; planned
+		// together with the registry so that every mount lands at its
+		// physical path.
+		PathMode[string] builtinMounts;
+		PlannedSandboxSymlink[] builtinSymlinks;
 
 		// Pseudo-filesystems
 		args ~= ["--dev", "/dev"];
@@ -154,32 +156,12 @@ private string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir,
 		else
 			args ~= ["--tmpfs", "/tmp"];
 
-		auto nixView = sandbox.paths.exact("/nix");
-		bool nixPathRegistered = !nixView.isNull;
-		bool nixStoreInPlan;
-		if (!nixView.isNull)
-		{
-			final switch (nixView.get.effectiveMode)
-			{
-				case PathMode.ro:
-				case PathMode.rw:
-				case PathMode.always_rw:
-					nixStoreInPlan = true;
-					break;
-				case PathMode.tmpfs:
-				case PathMode.empty_dir:
-				case PathMode.empty_file:
-					break;
-			}
-		}
-		if (nixStoreInPlan)
-			builtinMounts ~= "/nix";
-
 		if (currentSystem.length > 0)
 		{
 			// NixOS: mount nix store, system binaries, and minimal /etc + /run
 			// entries needed for DNS, TLS, and bwrap-wrapped binaries.
 			static immutable nixPaths = [
+				"/nix",
 				"/bin",
 				"/lib64",
 				"/usr/bin",
@@ -188,26 +170,14 @@ private string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir,
 				"/etc/resolv.conf",
 				"/etc/ssl",
 				"/etc/static/ssl",
+				"/run/wrappers",
 			];
-			if (!nixPathRegistered && exists("/nix"))
-			{
-				args ~= ["--ro-bind", "/nix", "/nix"];
-				builtinMounts ~= "/nix";
-			}
 			foreach (p; nixPaths)
 				if (exists(p))
-				{
-					args ~= ["--ro-bind", p, p];
-					builtinMounts ~= p;
-				}
+					builtinMounts[p] = PathMode.ro;
 
 			args ~= ["--tmpfs", "/run"];
-			args ~= ["--symlink", currentSystem, "/run/current-system"];
-			if (exists("/run/wrappers"))
-			{
-				args ~= ["--ro-bind", "/run/wrappers", "/run/wrappers"];
-				builtinMounts ~= "/run/wrappers";
-			}
+			builtinSymlinks ~= PlannedSandboxSymlink("/run/current-system", currentSystem);
 		}
 		else
 		{
@@ -216,40 +186,28 @@ private string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir,
 			// DNS resolver (systemd-resolved socket in /run), and CA certificates
 			foreach (p; ["/run", "/etc", "/usr"])
 				if (exists(p))
-				{
-					args ~= ["--ro-bind", p, p];
-					builtinMounts ~= p;
-				}
+					builtinMounts[p] = PathMode.ro;
 			if (exists("/lib64") && isSymlink("/lib64"))
-				args ~= ["--symlink", readLink("/lib64"), "/lib64"];
+				builtinSymlinks ~= PlannedSandboxSymlink("/lib64", readLink("/lib64"));
 			else if (exists("/lib64"))
-			{
-				args ~= ["--ro-bind", "/lib64", "/lib64"];
-				builtinMounts ~= "/lib64";
-			}
+				builtinMounts["/lib64"] = PathMode.ro;
 			if (exists("/lib") && isSymlink("/lib"))
-				args ~= ["--symlink", readLink("/lib"), "/lib"];
+				builtinSymlinks ~= PlannedSandboxSymlink("/lib", readLink("/lib"));
 			else if (exists("/lib") && !exists("/lib64"))
-			{
-				args ~= ["--ro-bind", "/lib", "/lib"];
-				builtinMounts ~= "/lib";
-			}
+				builtinMounts["/lib"] = PathMode.ro;
 		}
 
 		// Cgroup filesystem
 		if (exists("/sys/fs/cgroup"))
-		{
-			args ~= ["--bind", "/sys/fs/cgroup", "/sys/fs/cgroup"];
-			builtinMounts ~= "/sys/fs/cgroup";
-		}
+			builtinMounts["/sys/fs/cgroup"] = PathMode.rw;
 
-		auto plannedMounts = planMounts(sandbox.paths, builtinMounts);
+		auto plan = planMounts(sandbox.paths, builtinMounts, builtinSymlinks);
 
 		// A tmpfs directory parent supports later child binds. The current
 		// read-only empty_dir lowering cannot create missing child mountpoints,
 		// and empty_file is a leaf. This is a representation limitation, not
 		// registry policy.
-		foreach (entry; plannedMounts)
+		foreach (entry; plan.mounts)
 		{
 			final switch (entry.mode)
 			{
@@ -271,6 +229,11 @@ private string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir,
 					break;
 			}
 		}
+
+		// Planned mount destinations are physical paths, which never traverse
+		// these symlinks, so creating them after all mounts is order-safe.
+		foreach (symlink; plan.symlinks)
+			args ~= ["--symlink", symlink.target, symlink.location];
 
 		// /etc/passwd injection
 		auto passwdTmp = createPasswdTempFile();
@@ -532,6 +495,16 @@ version (unittest) private NativeHistoryProfile rendererTestNativeHistoryProfile
 		sandbox.env["HOME"] = "/tmp";
 	sandbox.env[rule.profileEnvName] = root;
 	return resolveNativeHistoryProfile(sandbox, rule);
+}
+
+version (unittest) private size_t rendererSequenceIndex(const string[] args,
+	const string[] sequence)
+{
+	foreach (i; 0 .. args.length)
+		if (i + sequence.length <= args.length
+			&& args[i .. i + sequence.length] == sequence)
+			return i;
+	assert(false, "argument sequence not found");
 }
 
 version (unittest) private size_t rendererSequenceCount(const string[] args,
@@ -1085,7 +1058,6 @@ unittest
 	}
 	assert(separator < first.cmdPrefix.length);
 	assert(firstMountStart < secondMountStart);
-	assert(secondMountStart == firstMountStart + 3);
 	auto divergentFirstPrefix = first.cmdPrefix[0 .. separator].dup;
 	divergentFirstPrefix ~= ["--bind", logicalHostMount, logicalHostMount];
 	divergentFirstPrefix ~= first.cmdPrefix[separator .. $];
@@ -1094,10 +1066,11 @@ unittest
 	auto missingFirstPrefix = first.cmdPrefix[0 .. firstMountStart].dup;
 	missingFirstPrefix ~= first.cmdPrefix[firstMountStart + 3 .. $];
 	assert(plannedMountSubsequence(missingFirstPrefix, configuredPaths) != sourceMounts);
-	auto swappedFirstPrefix = first.cmdPrefix[0 .. firstMountStart].dup;
-	swappedFirstPrefix ~= first.cmdPrefix[secondMountStart .. secondMountStart + 3];
-	swappedFirstPrefix ~= first.cmdPrefix[firstMountStart .. firstMountStart + 3];
-	swappedFirstPrefix ~= first.cmdPrefix[secondMountStart + 3 .. $];
+	auto swappedFirstPrefix = first.cmdPrefix.dup;
+	swappedFirstPrefix[firstMountStart .. firstMountStart + 3]
+		= first.cmdPrefix[secondMountStart .. secondMountStart + 3];
+	swappedFirstPrefix[secondMountStart .. secondMountStart + 3]
+		= first.cmdPrefix[firstMountStart .. firstMountStart + 3];
 	assert(plannedMountSubsequence(swappedFirstPrefix, configuredPaths) != sourceMounts);
 
 	auto repeatedSourcePrefix = buildCommandPrefix(source.sandbox, source.workDir);
@@ -1143,9 +1116,9 @@ unittest
 
 	import ae.sys.file : realPath;
 
-	// Regression: paths are added to the sandbox after resolveSandbox (task
-	// dir, worktree, git dirs) — spelling rewriting must still apply to
-	// them, so it happens at render time.
+	// Paths are added to the sandbox after resolveSandbox (task dir,
+	// worktree, git dirs); they must still be mounted at their physical paths
+	// with the traversed symlinks recreated, so planning happens at render time.
 	auto root = buildPath(realPath("/tmp"), "cydo-renderer-symlink");
 	if (exists(root))
 		rmdirRecurse(root);
@@ -1164,15 +1137,15 @@ unittest
 		environment["PATH"] = oldPath;
 
 	auto wsRoot = buildPath(root, "ws");
-	auto wsLink = buildPath(root, "ws-link");
 	auto projectDir = buildPath(wsRoot, "project");
+	auto hop = buildPath(root, "hop"); // hop → moved
 	auto taskDir = buildPath(root, "moved", "tasks", "1");
-	auto tasksLink = buildPath(wsRoot, ".cydo", "tasks");
+	auto tasksLink = buildPath(wsRoot, ".cydo", "tasks"); // → hop/tasks
 	mkdirRecurse(taskDir);
 	mkdirRecurse(projectDir);
 	mkdirRecurse(buildPath(wsRoot, ".cydo"));
-	symlink(wsRoot, wsLink);
-	symlink(buildPath(root, "moved", "tasks"), tasksLink);
+	symlink("moved", hop);
+	symlink(buildPath(hop, "tasks"), tasksLink);
 
 	ResolvedSandbox sandbox;
 	sandbox.isolate_filesystem = true;
@@ -1181,14 +1154,9 @@ unittest
 	sandbox.paths.set(wsRoot, PathMode.ro,
 		SandboxPathOrigin(SandboxPathOriginKind.builtinDefault, "renderer test",
 			"workspace root"));
-	// The default task mounts are canonical, but configured paths retain their
-	// spelling. Both must survive renderer rewriting.
 	sandbox.paths.set(projectDir, PathMode.rw,
 		SandboxPathOrigin(SandboxPathOriginKind.builtinDefault, "renderer test",
 			"project"));
-	sandbox.paths.set(wsLink, PathMode.tmpfs,
-		SandboxPathOrigin(SandboxPathOriginKind.workspaceConfig, "renderer test",
-			"workspace mask"));
 	sandbox.paths.set(buildPath(tasksLink, "1"), PathMode.rw,
 		SandboxPathOrigin(SandboxPathOriginKind.launchRequirement, "renderer test",
 			"task directory"));
@@ -1199,9 +1167,13 @@ unittest
 			remove(tempFile);
 	assert(args.canFind(["--ro-bind", wsRoot, wsRoot]));
 	assert(args.canFind(["--bind", projectDir, projectDir]));
-	assert(args.canFind(["--tmpfs", wsLink]));
 	assert(args.canFind(["--bind", taskDir, taskDir]));
 	assert(!args.canFind(buildPath(tasksLink, "1")));
+	// The workspace mount exposes tasksLink itself; only hop is recreated, and
+	// only after every mount.
+	assert(!args.canFind(["--symlink", buildPath(hop, "tasks"), tasksLink]));
+	auto hopIndex = rendererSequenceIndex(args, ["--symlink", "moved", hop]);
+	assert(rendererSequenceIndex(args, ["--bind", taskDir, taskDir]) < hopIndex);
 }
 
 unittest

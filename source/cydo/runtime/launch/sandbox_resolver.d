@@ -1,6 +1,6 @@
 module cydo.runtime.launch.sandbox_resolver;
 
-import std.algorithm : any, canFind, sort, startsWith;
+import std.algorithm : canFind, sort, startsWith;
 import std.array : join;
 import std.exception : enforce;
 import std.file : exists, isSymlink, readLink;
@@ -16,7 +16,8 @@ import configy.attributes : SetInfo;
 
 import cydo.runtime.config : GitIdentityConfig, PathMode, SandboxConfig;
 import cydo.runtime.launch.sandbox_paths : PathAccess, PlannedSandboxMount,
-	SandboxPathOrigin, SandboxPathOriginKind, SandboxPaths, SandboxPathView;
+	PlannedSandboxSymlink, SandboxMountPlan, SandboxPathOrigin, SandboxPathOriginKind,
+	SandboxPaths, SandboxPathView;
 import cydo.runtime.launch.types : AgentSandboxConfig, ResolvedSandbox;
 
 /// Resolve declarations in built-in, global, configured-agent, and workspace
@@ -125,25 +126,42 @@ void grantGitMetadata(ref SandboxPaths paths, string checkoutPath, PathAccess ac
 
 private:
 
-/// Produce configured mounts from a detached logical snapshot without changing
-/// the registry. Renderer-owned host providers affect symlink visibility but
-/// are not configured mounts in the returned plan.
-public PlannedSandboxMount[] planMounts(
+/// Produce mounts from a detached logical snapshot without changing the
+/// registry, together with the renderer's built-in mounts and symlinks.
+///
+/// Every mount is placed at the physical (fully symlink-resolved) host path
+/// of its logical spelling, and each host symlink a spelling traverses is
+/// recreated unless a host-content mount already exposes it. The sandbox
+/// therefore resolves both the logical spelling and the physical path the
+/// way the host does, which is what host tools recording canonical paths
+/// (e.g. Git worktree backlinks) rely on.
+///
+/// Built-in mounts are lowered after the registry: a registry path planned
+/// at the same destination replaces the built-in mount there.
+public SandboxMountPlan planMounts(
 	const ref SandboxPaths paths,
-	const string[] rendererHostProviders)
+	const PathMode[string] builtinHostMounts,
+	const PlannedSandboxSymlink[] builtinSymlinks)
 {
-	auto views = paths.snapshot;
-	string[] providers;
-	foreach (provider; rendererHostProviders)
-		providers ~= provider;
-	foreach (view; views)
-		if (isHostContent(view.effectiveMode) && exists(view.path))
-			providers ~= view.path;
+	string[string] symlinkTargets;
+	void recordSymlink(PlannedSandboxSymlink symlink)
+	{
+		if (auto target = symlink.location in symlinkTargets)
+		{
+			enforce(*target == symlink.target,
+				format("sandbox symlink %s planned with conflicting targets %s and %s",
+					symlink.location, *target, symlink.target));
+			return;
+		}
+		symlinkTargets[symlink.location] = symlink.target;
+	}
+	foreach (symlink; builtinSymlinks)
+		recordSymlink(symlink);
 
-	PlannedSandboxMount[] plan;
+	SandboxMountPlan plan;
 	string[] firstLogicalPaths;
 	size_t[string] destinationIndexes;
-	foreach (view; views)
+	foreach (view; paths.snapshot)
 	{
 		if (!exists(view.path))
 		{
@@ -151,13 +169,12 @@ public PlannedSandboxMount[] planMounts(
 			continue;
 		}
 
-		auto destination = view.path == "/"
-			? "/" : rewriteSandboxPath(view.path, providers);
+		auto destination = resolvePhysicalPath(view.path, &recordSymlink);
 		auto source = isHostContent(view.effectiveMode) ? destination : "";
 		auto origins = viewOrigins(view);
 		if (auto index = destination in destinationIndexes)
 		{
-			ref existing = plan[*index];
+			ref existing = plan.mounts[*index];
 			enforce(existing.source == source && existing.mode == view.effectiveMode,
 				format("sandbox mount planning ambiguity at destination %s: "
 					~ "logical paths %s (%s; origins %s) and %s (%s; origins %s) "
@@ -169,30 +186,46 @@ public PlannedSandboxMount[] planMounts(
 			continue;
 		}
 
-		destinationIndexes[destination] = plan.length;
+		destinationIndexes[destination] = plan.mounts.length;
 		firstLogicalPaths ~= view.path;
-		plan ~= PlannedSandboxMount(source, destination, view.effectiveMode,
+		plan.mounts ~= PlannedSandboxMount(source, destination, view.effectiveMode,
 			origins);
 	}
 
-	foreach (ref mount; plan)
+	foreach (hostPath, mode; builtinHostMounts)
+	{
+		assert(isHostContent(mode), "built-in sandbox mounts carry host content");
+		auto destination = resolvePhysicalPath(hostPath, &recordSymlink);
+		if (destination in destinationIndexes)
+			continue;
+		destinationIndexes[destination] = plan.mounts.length;
+		firstLogicalPaths ~= hostPath;
+		plan.mounts ~= PlannedSandboxMount(destination, destination, mode,
+			[SandboxPathOrigin(SandboxPathOriginKind.builtinDefault, "renderer",
+				hostPath)]);
+	}
+
+	foreach (ref mount; plan.mounts)
 		sortAndDeduplicateOrigins(mount.origins);
-	plan.sort!((left, right) => left.destination.length != right.destination.length
+	plan.mounts.sort!((left, right) => left.destination.length != right.destination.length
 		? left.destination.length < right.destination.length
 		: left.destination < right.destination);
+
+	foreach (location, target; symlinkTargets)
+		if (!isExposedByHostMount(plan.mounts, location))
+			plan.symlinks ~= PlannedSandboxSymlink(location, target);
+	plan.symlinks.sort!((left, right) => left.location < right.location);
 	return plan;
 }
 
-/// Walk `logical` the way the sandbox resolves it: a symlink component is
-/// followed (spelling rewritten to its target) only when it is strictly
-/// inside a host-content mount and therefore present in the sandbox;
-/// otherwise the component is kept literally, to materialize as a plain
-/// directory or dereferenced bind.
-string rewriteSandboxPath(string logical, const(string)[] providers)
+/// Resolve `logical` the way the host kernel does, reporting each symlink
+/// traversed at its physical location. The result contains no symlinks.
+string resolvePhysicalPath(string logical,
+	scope void delegate(PlannedSandboxSymlink) onSymlink)
 {
 	// Terminates: mirrors the host resolution of `logical`, whose full
-	// resolvability was already proven by exists() above.
-	string current; // spelling-so-far; "" is the root
+	// resolvability the caller proved with exists().
+	string current; // physical path so far; "" is the root
 	auto remaining = pathComponents(logical);
 	while (remaining.length)
 	{
@@ -207,10 +240,10 @@ string rewriteSandboxPath(string logical, const(string)[] providers)
 			continue;
 		}
 		auto candidate = current ~ "/" ~ component;
-		if (isSymlink(candidate)
-			&& providers.any!(p => isStrictlyInsideProvider(candidate, p)))
+		if (isSymlink(candidate))
 		{
 			auto target = readLink(candidate);
+			onSymlink(PlannedSandboxSymlink(candidate, target));
 			remaining = pathComponents(target) ~ remaining;
 			if (target.startsWith("/"))
 				current = "";
@@ -218,7 +251,35 @@ string rewriteSandboxPath(string logical, const(string)[] providers)
 		else
 			current = candidate;
 	}
-	return current;
+	return current.length > 0 ? current : "/";
+}
+
+/// Whether the topmost mount containing `location` already shows the host
+/// symlink there. `mounts` is sorted parents-first, and every mount
+/// containing `location` is one of its ancestors, so the last match is the
+/// topmost.
+private bool isExposedByHostMount(const PlannedSandboxMount[] mounts, string location)
+{
+	const(PlannedSandboxMount)* topmost;
+	foreach (ref mount; mounts)
+		if (isStrictlyInside(location, mount.destination))
+			topmost = &mount;
+	if (topmost is null)
+		return false;
+	final switch (topmost.mode)
+	{
+		case PathMode.ro:
+		case PathMode.rw:
+		case PathMode.always_rw:
+			return true;
+		case PathMode.tmpfs:
+			return false;
+		case PathMode.empty_dir:
+		case PathMode.empty_file:
+			throw new Exception(format("sandbox symlink %s cannot be recreated "
+				~ "inside %s mount %s (origins %s)", location, topmost.mode,
+				topmost.destination, describeOrigins(topmost.origins)));
+	}
 }
 
 private bool isHostContent(PathMode mode)
@@ -227,11 +288,11 @@ private bool isHostContent(PathMode mode)
 		|| mode == PathMode.always_rw;
 }
 
-private bool isStrictlyInsideProvider(string candidate, string provider)
+private bool isStrictlyInside(string path, string ancestor)
 {
-	return provider == "/"
-		? candidate != "/" && candidate.startsWith("/")
-		: candidate.startsWith(provider ~ "/");
+	return ancestor == "/"
+		? path != "/" && path.startsWith("/")
+		: path.startsWith(ancestor ~ "/");
 }
 
 private SandboxPathOrigin[] viewOrigins(const ref SandboxPathView view)
@@ -703,50 +764,84 @@ unittest
 	symlink("moved", hop);
 	symlink(buildPath(hop, "tasks"), tasksLink);
 	auto logicalTaskDir = buildPath(tasksLink, "1");
-	auto baselineDestination = buildPath(hop, "tasks", "1");
+	auto hopSymlink = PlannedSandboxSymlink(hop, "moved");
+	auto tasksSymlink = PlannedSandboxSymlink(tasksLink, buildPath(hop, "tasks"));
 
-	// planMounts retains the logical registry while using configured and
-	// renderer-owned host mounts as the same symlink-visibility providers.
 	auto providerOrigin = planTestOrigin(SandboxPathOriginKind.builtinDefault,
 		"symlink-provider", wsRoot);
 	auto taskOrigin = planTestOrigin(SandboxPathOriginKind.launchRequirement,
 		"symlink-task", logicalTaskDir);
+
+	// Mounts land at the physical path. Symlinks a host-content mount already
+	// exposes are not recreated; the others are, so the logical spelling
+	// resolves inside the sandbox as it does on the host.
 	SandboxPaths providerVisible;
 	providerVisible.set(wsRoot, PathMode.ro, providerOrigin);
 	providerVisible.set(logicalTaskDir, PathMode.rw, taskOrigin);
-	auto providerVisiblePlan = planMounts(providerVisible, null);
-	assert(providerVisiblePlan.length == 2);
-	auto rewrittenMount = providerVisiblePlan[planMountIndex(providerVisiblePlan,
-		baselineDestination)];
-	assert(rewrittenMount.source == baselineDestination);
-	assert(rewrittenMount.destination == baselineDestination);
-	assert(rewrittenMount.mode == PathMode.rw);
+	auto providerVisiblePlan = planMounts(providerVisible, null, null);
+	assert(providerVisiblePlan.mounts.length == 2);
+	auto taskMount = providerVisiblePlan.mounts[planMountIndex(
+		providerVisiblePlan.mounts, taskDir)];
+	assert(taskMount.source == taskDir);
+	assert(taskMount.mode == PathMode.rw);
+	assert(providerVisiblePlan.symlinks == [hopSymlink]);
 
 	SandboxPaths uncoveredPaths;
 	uncoveredPaths.set(logicalTaskDir, PathMode.rw, taskOrigin);
-	auto uncoveredPlan = planMounts(uncoveredPaths, null);
-	assert(uncoveredPlan.length == 1);
-	assert(uncoveredPlan[0].source == logicalTaskDir);
-	assert(uncoveredPlan[0].destination == logicalTaskDir);
-	assert(uncoveredPlan[0].mode == PathMode.rw);
+	auto uncoveredPlan = planMounts(uncoveredPaths, null, null);
+	assert(uncoveredPlan.mounts.length == 1);
+	assert(uncoveredPlan.mounts[0].source == taskDir);
+	assert(uncoveredPlan.mounts[0].destination == taskDir);
+	assert(uncoveredPlan.symlinks == [hopSymlink, tasksSymlink]);
 
-	SandboxPaths rendererVisible;
-	rendererVisible.set(logicalTaskDir, PathMode.rw, taskOrigin);
-	auto rendererVisiblePlan = planMounts(rendererVisible, [wsRoot]);
-	assert(rendererVisiblePlan.length == 1);
-	assert(rendererVisiblePlan[0].source == baselineDestination);
-	assert(rendererVisiblePlan[0].destination == baselineDestination);
-	assert(rendererVisiblePlan[0].mode == PathMode.rw);
+	// Built-in host mounts expose symlinks like registry mounts do.
+	SandboxPaths builtinVisible;
+	builtinVisible.set(logicalTaskDir, PathMode.rw, taskOrigin);
+	auto builtinVisiblePlan = planMounts(builtinVisible, [wsRoot: PathMode.ro], null);
+	assert(builtinVisiblePlan.mounts.length == 2);
+	assert(builtinVisiblePlan.mounts[planMountIndex(builtinVisiblePlan.mounts,
+		wsRoot)].origins[0].kind == SandboxPathOriginKind.builtinDefault);
+	assert(builtinVisiblePlan.symlinks == [hopSymlink]);
 
-	// The root provider strictly contains every non-root descendant, so it
-	// exposes both symlink hops in the logical task path.
-	SandboxPaths rootProviderVisible;
-	rootProviderVisible.set(logicalTaskDir, PathMode.rw, taskOrigin);
-	auto rootProviderPlan = planMounts(rootProviderVisible, ["/"]);
-	assert(rootProviderPlan.length == 1);
-	assert(rootProviderPlan[0].destination == taskDir);
+	// A registry path at a built-in's destination replaces the built-in.
+	auto builtinReplacedPlan = planMounts(providerVisible,
+		[wsRoot: PathMode.rw], null);
+	auto replacedMount = builtinReplacedPlan.mounts[planMountIndex(
+		builtinReplacedPlan.mounts, wsRoot)];
+	assert(replacedMount.mode == PathMode.ro);
+	assertPlanOriginsEqual(replacedMount.origins, [providerOrigin]);
 
-	// Two spellings rewriting to the same path with conflicting modes fail at
+	// The root mount strictly contains every symlink.
+	SandboxPaths rootVisible;
+	rootVisible.set("/", PathMode.ro, providerOrigin);
+	rootVisible.set(logicalTaskDir, PathMode.rw, taskOrigin);
+	auto rootVisiblePlan = planMounts(rootVisible, null, null);
+	assert(rootVisiblePlan.mounts.length == 2);
+	assert(rootVisiblePlan.symlinks.length == 0);
+
+	// A tmpfs mask applies to the physical path, and the symlinks under the
+	// tmpfs are recreated inside it.
+	SandboxPaths masked;
+	masked.set(wsRoot, PathMode.tmpfs, providerOrigin);
+	masked.set(logicalTaskDir, PathMode.ro, taskOrigin);
+	auto maskedPlan = planMounts(masked, null, null);
+	assert(maskedPlan.mounts[planMountIndex(maskedPlan.mounts, wsRoot)].mode
+		== PathMode.tmpfs);
+	assert(maskedPlan.symlinks == [hopSymlink, tasksSymlink]);
+
+	// A symlink under an empty_dir mask cannot be recreated.
+	SandboxPaths emptied;
+	emptied.set(wsRoot, PathMode.empty_dir, providerOrigin);
+	emptied.set(logicalTaskDir, PathMode.ro, taskOrigin);
+	assertThrown(planMounts(emptied, null, null));
+
+	// Built-in symlinks merge with traversed ones and must agree on targets.
+	auto builtinSymlinkPlan = planMounts(uncoveredPaths, null, [hopSymlink]);
+	assert(builtinSymlinkPlan.symlinks == [hopSymlink, tasksSymlink]);
+	assertThrown(planMounts(uncoveredPaths, null,
+		[PlannedSandboxSymlink(hop, "elsewhere")]));
+
+	// Two spellings resolving to the same path with conflicting modes fail at
 	// the pure planning boundary without changing their logical registrations.
 	auto tasksLink2 = buildPath(wsRoot, ".cydo", "tasks2"); // → hop/tasks too
 	symlink(buildPath(hop, "tasks"), tasksLink2);
@@ -756,7 +851,7 @@ unittest
 	conflicting.set(buildPath(tasksLink2, "1"), PathMode.ro,
 		planTestOrigin(SandboxPathOriginKind.launchRequirement, "symlink-conflict",
 			buildPath(tasksLink2, "1")));
-	assertThrown(planMounts(conflicting, null));
+	assertThrown(planMounts(conflicting, null, null));
 }
 
 unittest
@@ -916,8 +1011,8 @@ unittest
 	reverse.set(parent, PathMode.ro, origin);
 	reverse.set("/", PathMode.tmpfs, origin);
 
-	auto forwardPlan = planMounts(forward, null);
-	auto reversePlan = planMounts(reverse, null);
+	auto forwardPlan = planMounts(forward, null, null).mounts;
+	auto reversePlan = planMounts(reverse, null, null).mounts;
 	assertPlannedMountsEqual(forwardPlan, reversePlan);
 	assert(forwardPlan.length == 5);
 	assert(forwardPlan[0].destination == "/");
@@ -981,7 +1076,7 @@ unittest
 		assert(!view.finalReadOnlyBy.isNull);
 	}
 
-	auto plan = planMounts(paths, null);
+	auto plan = planMounts(paths, null, null).mounts;
 	assert(plan.length == 2);
 	auto targetMount = plan[planMountIndex(plan, target)];
 	assert(targetMount.source == target);
@@ -1030,7 +1125,7 @@ unittest
 
 	bool thrown;
 	try
-		planMounts(paths, null);
+		planMounts(paths, null, null);
 	catch (Exception e)
 	{
 		thrown = true;
@@ -1071,7 +1166,7 @@ unittest
 
 	// A missing logical entry is warned about and skipped, but remains in the
 	// registry's detached logical snapshot.
-	auto plan = planMounts(paths, null);
+	auto plan = planMounts(paths, null, null).mounts;
 	assert(plan.length == 1);
 	assert(plan[0].destination == present);
 	assert(warningLogger.messages.length == 1);
@@ -1100,8 +1195,8 @@ unittest
 	SandboxPaths paths;
 	paths.set(mounted, PathMode.ro, origin);
 	auto snapshotBeforePlanning = paths.snapshot;
-	auto firstPlan = planMounts(paths, null);
-	auto separatelyReturnedPlan = planMounts(paths, null);
+	auto firstPlan = planMounts(paths, null, null).mounts;
+	auto separatelyReturnedPlan = planMounts(paths, null, null).mounts;
 	assertPlannedMountsEqual(firstPlan, separatelyReturnedPlan);
 	assertPlanViewsEqual(snapshotBeforePlanning, paths.snapshot);
 
@@ -1115,7 +1210,7 @@ unittest
 	assert(separatelyReturnedPlan[0].mode == PathMode.ro);
 	assertPlanOriginEqual(separatelyReturnedPlan[0].origins[0], origin);
 
-	auto repeatedPlan = planMounts(paths, null);
+	auto repeatedPlan = planMounts(paths, null, null).mounts;
 	assertPlannedMountsEqual(separatelyReturnedPlan, repeatedPlan);
 	assertPlanViewsEqual(snapshotBeforePlanning, paths.snapshot);
 }
@@ -1153,8 +1248,8 @@ unittest
 	childrenFirst.set(alpha, PathMode.ro, origin);
 	childrenFirst.set(parent, PathMode.tmpfs, origin);
 
-	auto parentFirstPlan = planMounts(parentFirst, null);
-	auto childrenFirstPlan = planMounts(childrenFirst, null);
+	auto parentFirstPlan = planMounts(parentFirst, null, null).mounts;
+	auto childrenFirstPlan = planMounts(childrenFirst, null, null).mounts;
 	assertPlannedMountsEqual(parentFirstPlan, childrenFirstPlan);
 	assert(parentFirstPlan.length == 4);
 	assert(parentFirstPlan[0].destination == parent);
