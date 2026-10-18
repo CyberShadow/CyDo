@@ -974,6 +974,25 @@ class CodexAgent : Agent
 		return parseRolloutLineProbe(rawLine).isAssistantMessage;
 	}
 
+	AbsTime conversationRecordTime(const(char)[] rawLine)
+	{
+		import std.algorithm : canFind;
+		import cydo.protocol : parseIso8601Timestamp;
+		// every response_item is the conversation: messages, reasoning, tool
+		// calls and their output; session_meta, turn_context and event_msg
+		// are not. The substring test rules out most lines before parsing
+		if (!rawLine.canFind(`"response_item"`))
+			return AbsTime.init;
+		auto line = rawLine.idup;
+		if (!parseRolloutLineProbe(line).isResponseItem)
+			return AbsTime.init;
+		@JSONPartial static struct TimestampProbe { @JSONOptional string timestamp; }
+		try
+			return parseIso8601Timestamp(jsonParse!TimestampProbe(line).timestamp);
+		catch (Exception)
+			return AbsTime.init;
+	}
+
 	string rewriteSessionId(string line, string oldId, string newId)
 	{
 		import std.array : replace;
@@ -5780,4 +5799,23 @@ unittest
 			&& structured.summary == "structured-success",
 		"expected structuredContent to populate tool_result while preserving text content",
 	);
+}
+
+// every response_item is the conversation; session_meta, turn_context and
+// event_msg records are not
+unittest
+{
+	import std.datetime.systime : SysTime;
+
+	auto agent = new CodexAgent;
+	assert(agent.conversationRecordTime(`{"timestamp":"2026-07-21T21:51:07.249Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}`).stdTime
+		== SysTime.fromISOExtString("2026-07-21T21:51:07.249Z").stdTime);
+	assert(agent.conversationRecordTime(`{"timestamp":"2026-07-21T21:52:00.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}","call_id":"c1"}}`).stdTime
+		== SysTime.fromISOExtString("2026-07-21T21:52:00.000Z").stdTime);
+	assert(agent.conversationRecordTime(`{"timestamp":"2026-07-27T23:50:00.000Z","type":"session_meta","payload":{"id":"x"}}`)
+		== AbsTime.init);
+	assert(agent.conversationRecordTime(`{"timestamp":"2026-07-27T23:50:01.000Z","type":"turn_context","payload":{"cwd":"/tmp/project"}}`)
+		== AbsTime.init);
+	assert(agent.conversationRecordTime(`{"timestamp":"2026-07-27T23:50:02.000Z","type":"event_msg","payload":{"type":"warning","message":"response_item"}}`)
+		== AbsTime.init);
 }

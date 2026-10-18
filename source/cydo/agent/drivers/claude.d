@@ -658,6 +658,25 @@ class ClaudeCodeAgent : Agent
 		return rawLine.canFind(`"type":"assistant"`);
 	}
 
+	AbsTime conversationRecordTime(const(char)[] rawLine)
+	{
+		import std.algorithm : canFind;
+		// the substring test rules out most lines before any parsing; the
+		// parse then checks the record's own type, since the same text can
+		// sit inside a tool's input or output
+		if (!rawLine.canFind(`"type":"user"`) && !rawLine.canFind(`"type":"assistant"`))
+			return AbsTime.init;
+		@JSONPartial static struct RecordProbe { string type; @JSONOptional string timestamp; }
+		RecordProbe probe;
+		try
+			probe = jsonParse!RecordProbe(rawLine);
+		catch (Exception)
+			return AbsTime.init;
+		if (probe.type != "user" && probe.type != "assistant")
+			return AbsTime.init;
+		return parseIso8601Timestamp(probe.timestamp);
+	}
+
 	string rewriteSessionId(string line, string oldId, string newId)
 	{
 		import std.array : replace;
@@ -3575,4 +3594,26 @@ private int findMatchingBrace(string s, size_t pos)
 		}
 	}
 	return -1;
+}
+
+// conversation records are user and assistant lines, told apart from the
+// bookkeeping around sessions by the record's own type
+unittest
+{
+	import std.datetime.systime : SysTime;
+
+	auto agent = new ClaudeCodeAgent;
+	assert(agent.conversationRecordTime(`{"parentUuid":null,"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2026-07-20T10:00:00.000Z"}`).stdTime
+		== SysTime.fromISOExtString("2026-07-20T10:00:00.000Z").stdTime);
+	// newer records put the message ahead of the timestamp, and a tool's
+	// input can carry a nested timestamp key of its own
+	assert(agent.conversationRecordTime(`{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"timestamp":"2020-01-01T00:00:00Z"}}]},"timestamp":"2026-07-25T18:52:09.643Z"}`).stdTime
+		== SysTime.fromISOExtString("2026-07-25T18:52:09.643Z").stdTime);
+	assert(agent.conversationRecordTime(`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-07-27T22:50:01.000Z"}`)
+		== AbsTime.init);
+	assert(agent.conversationRecordTime(`{"type":"last-prompt","lastPrompt":"hi"}`) == AbsTime.init);
+	// a record that only mentions a user message is not one
+	assert(agent.conversationRecordTime(`{"type":"attachment","attachment":{"type":"user"},"timestamp":"2026-07-27T22:50:02.000Z"}`)
+		== AbsTime.init);
+	assert(agent.conversationRecordTime(`not json "type":"user"`) == AbsTime.init);
 }

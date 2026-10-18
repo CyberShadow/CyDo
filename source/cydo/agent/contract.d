@@ -1,6 +1,7 @@
 module cydo.agent.contract;
 
 import ae.utils.promise : Promise;
+import ae.utils.time.types : AbsTime;
 
 import cydo.protocol : TranslatedEvent;
 import cydo.agent.session : AgentSession;
@@ -207,6 +208,14 @@ interface Agent
 
 	/// Whether a raw JSONL line is an assistant message (for compaction detection).
 	bool isAssistantMessageLine(string rawLine);
+
+	/// When a raw JSONL line was recorded, if it belongs to the conversation
+	/// itself (a message, or the agent's work within a turn) rather than to
+	/// the bookkeeping the agent writes around sessions; AbsTime.init
+	/// otherwise. This tells when a session last saw work, which the file's
+	/// mtime cannot: starting or stopping a session appends records without
+	/// any work happening. Pure, so safe to call from any thread.
+	AbsTime conversationRecordTime(const(char)[] rawLine);
 
 	/// Whether this agent requires the Bash MCP tool.
 	/// When false, the Bash tool is excluded from the MCP tools/list.

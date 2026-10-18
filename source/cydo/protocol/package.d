@@ -379,16 +379,38 @@ struct CydoTaskSpawnedEvent
 /// Returns AbsTime.init (stdTime == 0) on failure or empty input.
 AbsTime parseIso8601Timestamp(string s) nothrow
 {
+	import std.meta : AliasSeq;
 	import ae.utils.time.parse : parseAbsTime;
 	if (s.length == 0)
 		return AbsTime.init;
-	try
-		return parseAbsTime!(`Y-m-d\TH:i:s.vP`)(s);
-	catch (Exception) {}
-	try
-		return parseAbsTime!(`Y-m-d\TH:i:sP`)(s);
-	catch (Exception) {}
+	// O takes the Z that agents write (or +hhmm), P takes +hh:mm
+	static foreach (format; AliasSeq!(`Y-m-d\TH:i:s.vO`, `Y-m-d\TH:i:sO`,
+		`Y-m-d\TH:i:s.vP`, `Y-m-d\TH:i:sP`))
+	{
+		try
+			return parseAbsTime!format(s);
+		catch (Exception) {}
+	}
 	return AbsTime.init;
+}
+
+unittest
+{
+	import ae.utils.time.types : AbsTime;
+	import std.datetime.systime : SysTime;
+
+	long expected(string iso) { return SysTime.fromISOExtString(iso).stdTime; }
+
+	// the form agents write
+	assert(parseIso8601Timestamp("2026-03-30T14:29:14.993Z").stdTime
+		== expected("2026-03-30T14:29:14.993Z"));
+	assert(parseIso8601Timestamp("2026-03-30T14:29:14Z").stdTime
+		== expected("2026-03-30T14:29:14Z"));
+	// an explicit offset is still accepted as before (ae's parseAbsTime keeps
+	// the wall-clock time and does not apply it)
+	assert(parseIso8601Timestamp("2026-03-30T16:29:14.993+02:00") != AbsTime.init);
+	assert(parseIso8601Timestamp("") == AbsTime.init);
+	assert(parseIso8601Timestamp("garbage") == AbsTime.init);
 }
 
 /// A translated event paired with its raw agent source.

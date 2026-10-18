@@ -76,6 +76,7 @@ function AppContent() {
     serverError,
     dismissServerError,
     devMode,
+    ui,
     navigateHome,
     navigateToProject,
     getProjectHref,
@@ -329,7 +330,7 @@ function AppContent() {
         return;
       }
       if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
-      const order = flatTaskOrder(sidebarTasks);
+      const order = flatTaskOrder(sidebarTasks, ui.sidebar);
       if (e.shiftKey) {
         // Jump to next/prev task with attention, wrapping around
         if (order.length === 0) return;
@@ -351,8 +352,12 @@ function AppContent() {
           .querySelector(`.sidebar-item[data-tid="${next}"]`)
           ?.scrollIntoView({ block: "nearest" });
       } else {
-        // Visual order: tasks in flatTaskOrder, then New Task at bottom
-        const visual: (string | null)[] = [...order, null];
+        // Visual order: tasks in flatTaskOrder, with New Task beside the
+        // newest end, the bottom or (newest first) the top
+        const visual: (string | null)[] =
+          ui.sidebar?.order === "newest_first"
+            ? [null, ...order]
+            : [...order, null];
         const idx = visual.indexOf(activeTaskId);
         const dir = e.key === "ArrowUp" ? -1 : 1;
         const nextIdx = (idx + dir + visual.length) % visual.length;
@@ -377,6 +382,7 @@ function AppContent() {
     };
   }, [
     sidebarTasks,
+    ui.sidebar,
     activeTaskId,
     setActiveTaskId,
     attention,
@@ -435,6 +441,7 @@ function AppContent() {
           )}
           <Sidebar
             tasks={sidebarTasks}
+            config={ui.sidebar}
             tasksLoading={tasksLoading}
             activeTaskId={activeTaskId}
             attention={attention}
@@ -541,6 +548,7 @@ function AppContent() {
                     onEditRawEvent={editRawEvent}
                     defaultAgent={effectiveDefaultAgent}
                     agentUsage={agentUsage}
+                    ui={ui}
                     getTaskHref={getTaskHref}
                   />
                 </div>

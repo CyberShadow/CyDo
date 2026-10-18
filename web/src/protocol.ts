@@ -376,11 +376,25 @@ export interface DraftUpdatedMessage {
   old_draft: string;
   new_draft: string;
 }
+/** the config's `ui` section, as server_status delivers it */
+export interface UsageUiConfig {
+  coloring?: "pace" | "percent";
+  remaining?: boolean;
+}
+export interface SidebarUiConfig {
+  sort?: "creation" | "activity";
+  order?: "oldest_first" | "newest_first";
+}
+export interface UiConfig {
+  usage?: UsageUiConfig;
+  sidebar?: SidebarUiConfig;
+}
 export interface ServerStatusMessage {
   type: "server_status";
   auth_enabled: boolean;
   dev_mode?: boolean;
   build_id?: string;
+  ui?: UiConfig;
 }
 export interface TaskDeletedMessage {
   type: "task_deleted";

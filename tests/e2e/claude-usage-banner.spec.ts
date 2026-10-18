@@ -100,3 +100,38 @@ workspaces:
     .first();
   await expect(weekRow.locator(".banner-usage-value")).toHaveText("71%");
 });
+
+test("the ui config switches the usage banner to remaining shares, live", { tag: "@claude-only" }, async ({
+  page,
+  agentType,
+}) => {
+  const configPath = "/tmp/playwright-home/.config/cydo/config.yaml";
+  const config = `workspaces:
+  local:
+    root: /tmp/cydo-test-workspace
+`;
+
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+  await sendMessage(page, "usage headers fixture 5h");
+  await expect(assistantText(page, "usage-headers-5h")).toHaveCount(1, {
+    timeout,
+  });
+
+  const fiveHourValue = page
+    .locator(".banner-usage .banner-usage-row")
+    .filter({ hasText: "5h" })
+    .first()
+    .locator(".banner-usage-value");
+  await expect(fiveHourValue).toHaveText("42%", { timeout });
+
+  // a config reload re-sends server_status, so the open page follows it
+  writeTestConfig(
+    configPath,
+    config + "ui:\n  usage:\n    coloring: percent\n    remaining: true\n",
+  );
+  await expect(fiveHourValue).toHaveText("58%", { timeout });
+
+  writeTestConfig(configPath, config);
+  await expect(fiveHourValue).toHaveText("42%", { timeout });
+});

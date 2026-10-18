@@ -600,6 +600,24 @@ class CopilotAgent : Agent
 		catch (Exception) { return false; }
 	}
 
+	AbsTime conversationRecordTime(const(char)[] rawLine)
+	{
+		import std.algorithm : canFind;
+		import cydo.protocol : parseIso8601Timestamp;
+		if (!rawLine.canFind(`"type":"user.message"`)
+			&& !rawLine.canFind(`"type":"assistant.message"`))
+			return AbsTime.init;
+		@JSONPartial static struct RecordProbe { string type; @JSONOptional string timestamp; }
+		RecordProbe probe;
+		try
+			probe = jsonParse!RecordProbe(rawLine);
+		catch (Exception)
+			return AbsTime.init;
+		if (probe.type != "user.message" && probe.type != "assistant.message")
+			return AbsTime.init;
+		return parseIso8601Timestamp(probe.timestamp);
+	}
+
 	string rewriteSessionId(string line, string oldId, string newId)
 	{
 		// events.jsonl session ID is the directory name, not embedded per-line.
@@ -3286,4 +3304,20 @@ string extractResultText(JSONFragment frag)
 	}
 	catch (Exception) {}
 	return "";
+}
+
+// conversation records are user and assistant messages
+unittest
+{
+	import std.datetime.systime : SysTime;
+
+	auto agent = new CopilotAgent;
+	assert(agent.conversationRecordTime(`{"type":"user.message","id":"u1","timestamp":"2026-07-22T08:00:00.000Z","data":{"content":"hi"}}`).stdTime
+		== SysTime.fromISOExtString("2026-07-22T08:00:00.000Z").stdTime);
+	assert(agent.conversationRecordTime(`{"type":"assistant.message","id":"a1","timestamp":"2026-07-22T08:00:05.000Z","data":{"content":"hello"}}`).stdTime
+		== SysTime.fromISOExtString("2026-07-22T08:00:05.000Z").stdTime);
+	assert(agent.conversationRecordTime(`{"type":"session.start","id":"s1","timestamp":"2026-07-27T23:50:00.000Z","data":{}}`)
+		== AbsTime.init);
+	assert(agent.conversationRecordTime(`{"type":"session.info","id":"i1","timestamp":"2026-07-27T23:50:01.000Z","data":{"note":{"type":"user.message"}}}`)
+		== AbsTime.init);
 }

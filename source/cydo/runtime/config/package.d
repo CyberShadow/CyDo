@@ -104,6 +104,47 @@ struct WorkspaceConfig
 	@Optional ProjectDiscoveryConfig project_discovery;
 }
 
+/// How the banner's usage bars pick their color. `pace` compares the used
+/// share with how much of the window has passed; `percent` ramps from green
+/// through yellow to red on the used share alone.
+enum UsageColoring { pace, percent }
+
+struct UsageUiConfig
+{
+	@Optional UsageColoring coloring = UsageColoring.pace;
+	/// show what is left instead of what is used: each bar starts full and
+	/// drains as usage accrues, and the number shows the remaining share
+	@Optional bool remaining;
+}
+
+/// What the sidebar orders tasks by. `creation` is the tid order the list has
+/// always had; `activity` orders by when each task last saw work, a parent
+/// counting as active as its most recently active descendant. Either way,
+/// siblings only re-sort among themselves.
+enum SidebarSort { creation, activity }
+
+/// Which end of the sidebar the newest tasks go. `oldest_first` is the
+/// bottom-up list the sidebar has always had: the oldest at the top, the
+/// newest and New Task at the bottom, where the list rests. `newest_first`
+/// reads top-down instead, New Task and the newest tasks at the top, where it
+/// then rests; Archive and Import, and the folded run of finished subtasks,
+/// move to the far end of their level.
+enum SidebarOrder { oldest_first, newest_first }
+
+struct SidebarUiConfig
+{
+	@Optional SidebarSort sort = SidebarSort.creation;
+	@Optional SidebarOrder order = SidebarOrder.oldest_first;
+}
+
+/// Preferences for the web UI. The whole section reaches every page in
+/// server_status, on connect and again on each config reload.
+struct UiConfig
+{
+	@Optional UsageUiConfig usage;
+	@Optional SidebarUiConfig sidebar;
+}
+
 struct CydoConfig
 {
 	@Key("name") WorkspaceConfig[] workspaces;
@@ -119,6 +160,7 @@ struct CydoConfig
 	@Optional bool dev_mode;
 	@Optional string log_level = "info";
 	@Optional string system_keyword = "SYSTEM";
+	@Optional UiConfig ui;
 
 	/// Called by configy during parsing (configy/read.d:650), so a semantic
 	/// error surfaces on the same path as a YAML syntax error.
@@ -406,5 +448,52 @@ version (unittest)
 		auto yaml = workspacesYAML ~ "agents:\n  custom:\n"
 			~ "    model_aliases:\n      large:\n        effort: high\n";
 		parseConfigString!CydoConfig(yaml, "/dev/null");
+	}
+
+	// 14. The ui section is optional, its usage keys parse, and an unknown
+	// coloring is an error.
+	unittest
+	{
+		auto defaults = parseConfigString!CydoConfig(workspacesYAML, "/dev/null");
+		assert(defaults.ui.usage.coloring == UsageColoring.pace);
+		assert(!defaults.ui.usage.remaining);
+
+		auto yaml = workspacesYAML ~ "ui:\n  usage:\n    coloring: percent\n    remaining: true\n";
+		auto config = parseConfigString!CydoConfig(yaml, "/dev/null");
+		assert(config.ui.usage.coloring == UsageColoring.percent);
+		assert(config.ui.usage.remaining);
+
+		assertThrown(parseConfigString!CydoConfig(
+			workspacesYAML ~ "ui:\n  usage:\n    coloring: rainbow\n", "/dev/null"));
+	}
+
+	// 15. The sidebar sort defaults to creation, takes activity, and an
+	// unknown value is an error.
+	unittest
+	{
+		auto defaults = parseConfigString!CydoConfig(workspacesYAML, "/dev/null");
+		assert(defaults.ui.sidebar.sort == SidebarSort.creation);
+
+		auto config = parseConfigString!CydoConfig(
+			workspacesYAML ~ "ui:\n  sidebar:\n    sort: activity\n", "/dev/null");
+		assert(config.ui.sidebar.sort == SidebarSort.activity);
+
+		assertThrown(parseConfigString!CydoConfig(
+			workspacesYAML ~ "ui:\n  sidebar:\n    sort: alphabetical\n", "/dev/null"));
+	}
+
+	// 16. The sidebar order defaults to oldest_first, takes newest_first, and
+	// an unknown value is an error.
+	unittest
+	{
+		auto defaults = parseConfigString!CydoConfig(workspacesYAML, "/dev/null");
+		assert(defaults.ui.sidebar.order == SidebarOrder.oldest_first);
+
+		auto config = parseConfigString!CydoConfig(
+			workspacesYAML ~ "ui:\n  sidebar:\n    order: newest_first\n", "/dev/null");
+		assert(config.ui.sidebar.order == SidebarOrder.newest_first);
+
+		assertThrown(parseConfigString!CydoConfig(
+			workspacesYAML ~ "ui:\n  sidebar:\n    order: sideways\n", "/dev/null"));
 	}
 }

@@ -940,32 +940,7 @@ class App
 
 		resumeInFlightTasks();
 
-		// Recover last_active from .jsonl mtime for tasks that were alive
-		// when the backend crashed (last_active was cleared on session start).
-		foreach (ref td; tasks)
-		{
-			if (td.lastActive == 0 && td.agentSessionId.length > 0)
-			{
-				try
-				{
-					auto resolution = resolveTaskHistory(td.tid);
-					if (resolution.kind == TaskHistoryResolutionKind.access)
-					{
-						auto jp = resolution.requireAccess().path;
-						import std.file : exists, timeLastModified;
-						if (exists(jp))
-						{
-							td.lastActive = timeLastModified(jp).stdTime;
-							persistence.setLastActive(td.tid, td.lastActive);
-						}
-					}
-				}
-				catch (Exception) {} // best-effort
-			}
-			// Final fallback: if still no lastActive but has createdAt, use that
-			if (td.lastActive == 0 && td.createdAt != 0)
-				td.lastActive = td.createdAt;
-		}
+		recoverLastActive();
 
 		discoveryService.enumerateSessions();
 
@@ -1139,6 +1114,7 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.ui,
 		).representation));
 		ws.send(Data(buildNoticesList(activeNotices).representation));
 		if (discoveryService.scanInProgress)
@@ -3164,6 +3140,66 @@ class App
 		return "Missing declared outputs: " ~ missing.join(", ");
 	}
 
+	/// Recover last_active for tasks that were alive when the backend stopped,
+	/// which had it cleared when their session started: the time of the
+	/// transcript's newest conversation record, as its agent recognizes them.
+	/// Not the transcript's mtime, which moves whenever a session starts or
+	/// stops without any work happening. Each read is cached, so the next
+	/// startup reads only what was appended to the transcript since.
+	private void recoverLastActive()
+	{
+		import std.conv : to;
+		import std.file : exists;
+		import ae.utils.time.types : AbsTime;
+		import cydo.domain.storage.persistence : Persistence;
+		import cydo.workflow.history.last_turn : LastTurnMemo, lastConversationTime;
+
+		alias Row = Persistence.LastTurnCacheRow;
+		static struct Key { string driverName, profileRoot, sessionId; }
+		persistence.pruneLastTurnCache();
+		Row[Key] cache;
+		foreach (row; persistence.loadLastTurnCache())
+			cache[Key(row.driverName, row.profileRoot, row.sessionId)] = row;
+
+		foreach (ref td; tasks)
+		{
+			if (td.lastActive == 0 && td.agentSessionId.length > 0)
+			{
+				try
+				{
+					auto resolution = resolveTaskHistory(td.tid);
+					if (resolution.kind == TaskHistoryResolutionKind.access)
+					{
+						auto access = resolution.requireAccess();
+						if (exists(access.path))
+						{
+							auto key = Key(access.profile.driver.to!string,
+								access.profile.root, access.sessionId);
+							LastTurnMemo memo;
+							if (auto row = key in cache)
+								memo = LastTurnMemo(row.scannedEnd, row.endTail,
+									AbsTime(row.lastTurn));
+							auto lastTurn = lastConversationTime(access.agent, access.path, memo);
+							persistence.upsertLastTurnCache(Row(key.driverName, key.profileRoot,
+								key.sessionId, memo.scannedEnd, memo.endTail,
+								memo.lastTurn.stdTime));
+							if (lastTurn != AbsTime.init)
+							{
+								td.lastActive = lastTurn.stdTime;
+								persistence.setLastActive(td.tid, td.lastActive);
+							}
+						}
+					}
+				}
+				catch (Exception e)
+					warningf("Could not recover last_active for task %d: %s", td.tid, e.msg);
+			}
+			// a task that never had a turn counts from its creation
+			if (td.lastActive == 0 && td.createdAt != 0)
+				td.lastActive = td.createdAt;
+		}
+	}
+
 	private void resumeInFlightTasks()
 	{
 		taskSessionRunner.resumeInFlightTasks();
@@ -3444,6 +3480,7 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.ui,
 		));
 		infof("Config reloaded successfully");
 		discoveryService.endScan();

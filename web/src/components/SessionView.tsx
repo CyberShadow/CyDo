@@ -15,7 +15,7 @@ import type {
   AgentInfo,
   DraftView,
 } from "../useSessionManager";
-import type { AgentUsageMessage, Notice } from "../protocol";
+import type { AgentUsageMessage, Notice, UiConfig } from "../protocol";
 import type { OrdinaryDraftStore } from "../ordinaryDraftStore";
 import { NoticeBar } from "./NoticeBar";
 import { SystemBanner, normalizeSessionStatus } from "./SystemBanner";
@@ -66,6 +66,7 @@ interface Props {
   exportMode?: boolean;
   getTaskHref?: (id: string) => string;
   agentUsage?: Record<string, AgentUsageMessage>;
+  ui?: UiConfig;
 }
 
 function SessionViewInner({
@@ -99,6 +100,7 @@ function SessionViewInner({
   exportMode,
   getTaskHref,
   agentUsage,
+  ui,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -380,6 +382,7 @@ function SessionViewInner({
         }}
         exportMode={exportMode}
         claudeUsage={claudeUsage}
+        usageDisplay={ui?.usage}
       />
       {fileViewerState && (
         <FileViewer

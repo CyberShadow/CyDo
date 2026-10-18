@@ -109,6 +109,7 @@ vi.mock("./useSessionManager", () => ({
       serverError: state.serverError,
       dismissServerError: state.dismissServerError,
       devMode: false,
+      ui: {},
       navigateHome: vi.fn(),
       navigateToProject: vi.fn(),
       getProjectHref: vi.fn(),
