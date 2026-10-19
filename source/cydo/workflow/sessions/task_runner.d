@@ -1309,7 +1309,18 @@ public:
 			}
 			else if (status == "alive")
 			{
-				resumeTask(tid).ignoreResult();
+				if (td.turnOpen)
+				{
+					// killed mid-turn: the status snapshot can miss this (a
+					// turn started by the agent itself, e.g. a background-task
+					// notification, never passes through a send that marks the
+					// task active), but the persisted turn witness cannot
+					infof("resumeInFlightTasks: tid=%d transcript ends mid-turn, resuming with restart nudge",
+						tid);
+					resumeActiveTask(tid);
+				}
+				else
+					resumeTask(tid).ignoreResult();
 			}
 		}
 	}
