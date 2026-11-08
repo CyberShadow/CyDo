@@ -245,7 +245,8 @@ private:
 	int[int] taskDeps_;
 	bool[int] liveDeliveredSubTasks_;
 	Promise!(McpResult)[int] pendingAskUserQuestions_;
-	Promise!(McpResult)[int] pendingPermissionPrompts_;
+	/// Fulfilled with the decision payload sent back to the agent.
+	Promise!string[int] pendingPermissionPrompts_;
 	string[int] pendingPermissionInputs_;
 	BatchRegistry batchRegistry_;
 	QuestionRouter questionRouter_;
@@ -826,35 +827,36 @@ public:
 		return questionRouter_.handleAnswer(callerTidStr, qid, message);
 	}
 
-	Promise!McpResult handlePermissionPrompt(string callerTidStr,
-		string toolUseId, string toolName, JSONFragment input)
+	/// Decide whether the agent of `tid` may run a tool call: by the
+	/// workspace permission policy, or by asking the user. Fulfils with the
+	/// decision payload (`{"behavior":"allow",…}` / `{"behavior":"deny",…}`).
+	Promise!string decideToolPermission(int tid, string toolUseId,
+		string toolName, JSONFragment input)
 	{
-		import std.conv : to;
-
-		int callerTidInt;
-		try
-			callerTidInt = to!int(callerTidStr);
-		catch (Exception)
-			return resolve(McpResult("Invalid calling task ID", true));
-
-		auto callerTd = host_.getTask(callerTidInt);
-		if (callerTd is null)
-			return resolve(McpResult("Task not found", true));
-
-		string policy = host_.workspacePermissionPolicy(callerTd.workspace);
+		auto td = requireTask(tid, "Tool permission request for a missing task");
+		string policy = host_.workspacePermissionPolicy(td.workspace);
 		string resolved = evaluatePermissionPolicy(policy, toolName, input.json);
 
 		if (resolved == "deny")
-		{
-			return resolve(McpResult(
-				makePermissionDenyJson("Permission denied by policy"),
-				false));
-		}
+			return resolve(makePermissionDenyJson("Permission denied by policy"));
 		if (resolved == "allow")
-			return resolve(McpResult(makePermissionAllowJson(input.json), false));
+			return resolve(makePermissionAllowJson(input.json));
 
-		return promptUserForPermission(callerTidInt, toolUseId, toolName,
-			input);
+		return promptUserForPermission(tid, toolUseId, toolName, input);
+	}
+
+	/// The agent no longer awaits the decision for `toolUseId` (e.g. its turn
+	/// was interrupted): take the prompt down.
+	void withdrawToolPermissionPrompt(int tid, string toolUseId)
+	{
+		auto td = requireTask(tid, "Withdrawn tool permission request for a missing task");
+		// A concurrent request refused with "Another permission prompt is
+		// already pending" never had a prompt of its own.
+		if ((tid in pendingPermissionPrompts_) is null
+			|| td.pendingPermissionToolUseId != toolUseId)
+			return;
+		settlePermissionPrompt(tid,
+			makePermissionDenyJson("Permission request withdrawn by the agent"));
 	}
 
 	void onToolCallDelivered(string callerTidStr)
@@ -974,18 +976,8 @@ public:
 		if (tid < 0 || td is null)
 			return;
 
-		auto pending = tid in pendingPermissionPrompts_;
-		if (pending is null)
+		if ((tid in pendingPermissionPrompts_) is null)
 			return;
-
-		td.pendingPermissionToolUseId = null;
-		td.pendingPermissionToolName = null;
-		td.pendingPermissionInput = JSONFragment.init;
-		td.needsAttention = false;
-		host_.persistNeedsAttention(tid, false);
-		td.hasPendingQuestion = false;
-		td.notificationBody = "";
-		td.isProcessing = true;
 
 		string rawContent = json.content.json !is null
 			? jsonParse!string(json.content.json)
@@ -1016,9 +1008,27 @@ public:
 		catch (Exception)
 			resultText = makePermissionDenyJson("Invalid response");
 
-		pending.fulfill(McpResult(resultText, false));
+		settlePermissionPrompt(tid, resultText);
+	}
+
+	/// Answer the pending permission prompt of `tid` and take it down.
+	private void settlePermissionPrompt(int tid, string decision)
+	{
+		auto td = requireTask(tid, "Settled permission prompt for a missing task");
+		auto pending = pendingPermissionPrompts_[tid];
 		pendingPermissionPrompts_.remove(tid);
 		pendingPermissionInputs_.remove(tid);
+
+		td.pendingPermissionToolUseId = null;
+		td.pendingPermissionToolName = null;
+		td.pendingPermissionInput = JSONFragment.init;
+		td.needsAttention = false;
+		host_.persistNeedsAttention(tid, false);
+		td.hasPendingQuestion = false;
+		td.notificationBody = "";
+		td.isProcessing = true;
+
+		pending.fulfill(decision);
 		host_.clearPermissionPrompt(tid);
 		host_.broadcastTaskUpdate(tid);
 	}
@@ -1162,8 +1172,7 @@ public:
 			return;
 		if (auto permPending = tid in pendingPermissionPrompts_)
 		{
-			permPending.fulfill(McpResult(makePermissionDenyJson(
-				"Task exited"), false));
+			permPending.fulfill(makePermissionDenyJson("Task exited"));
 			pendingPermissionPrompts_.remove(tid);
 			pendingPermissionInputs_.remove(tid);
 			td.pendingPermissionToolUseId = null;
@@ -1374,17 +1383,14 @@ private:
 		return resolve(McpResult.structured(wrappedJson, anyError));
 	}
 
-	Promise!McpResult promptUserForPermission(int tid, string toolUseId,
+	Promise!string promptUserForPermission(int tid, string toolUseId,
 		string toolName, JSONFragment input)
 	{
 		if (tid in pendingPermissionPrompts_)
-		{
-			return resolve(McpResult(makePermissionDenyJson(
-				"Another permission prompt is already pending"),
-				false));
-		}
+			return resolve(makePermissionDenyJson(
+				"Another permission prompt is already pending"));
 
-		auto promise = new Promise!McpResult;
+		auto promise = new Promise!string;
 		pendingPermissionPrompts_[tid] = promise;
 		pendingPermissionInputs_[tid] = input.json;
 

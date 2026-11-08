@@ -655,6 +655,8 @@ class App
 			deliverBatchResults: &workflowTools.deliverBatchResults,
 			failPendingAskUserQuestionOnExit: &workflowTools.failPendingAskUserQuestionOnExit,
 			failPendingPermissionPromptOnExit: &workflowTools.failPendingPermissionPromptOnExit,
+			decideToolPermission: &workflowTools.decideToolPermission,
+			withdrawToolPermissionPrompt: &workflowTools.withdrawToolPermissionPrompt,
 			failPendingAskRouteOnExit: &workflowTools.failPendingAskRouteOnExit,
 			cancelExitBackgroundWork: &cancelExitBackgroundWork,
 			resetHistoryWatermarkOnly: &resetHistoryWatermarkOnly,
@@ -5142,6 +5144,9 @@ unittest
 		deliverWaitingParentResultsIfReady: (int tid) => resolve(),
 		failPendingAskUserQuestionOnExit: (int tid) {},
 		failPendingPermissionPromptOnExit: (int tid) {},
+		decideToolPermission: delegate Promise!string(int tid, string toolUseId, string toolName,
+			JSONFragment input) { assert(0, "unexpected call"); },
+		withdrawToolPermissionPrompt: (int tid, string toolUseId) {},
 		failPendingAskRouteOnExit: (int tid) {},
 		cancelExitBackgroundWork: (int tid) {},
 		resetHistoryWatermarkAfterExit: (int tid) => false,
@@ -6052,14 +6057,13 @@ unittest
 	auto agent = new TestClaudePromptAgent();
 	auto typeDef = catalog.getTaskTypesForProject(projectPath).byName("parent");
 	auto launch = runner.prepareTaskSessionLaunch(7, agent, typeDef);
-	assert(launch.sessionConfig.includeTools.canFind("PermissionPrompt"));
+	assert(launch.sessionConfig.permissionPolicy == "allow all");
 	assert(reportedViolations.length == 1);
 	assert(reportedProjects == [projectPath]);
 	assert(reportedTaskTypes == ["parent"]);
 
 	RenderedCydoToolsOptions options;
 	options.includeBash = agent.needsBash();
-	options.includePermissionPrompt = true;
 	auto expectedViolations = checkRenderedCydoToolDescriptionViolations(
 		catalog.getTaskTypesForProject(projectPath),
 		catalog.getEntryPointsForProject(projectPath),
@@ -6093,7 +6097,7 @@ unittest
 			mcpToolDescriptionMaxChars),
 		ToolDescriptionViolation("review", "Handoff", 2055,
 			mcpToolDescriptionMaxChars),
-		ToolDescriptionViolation("review", "PermissionPrompt", 2001,
+		ToolDescriptionViolation("review", "AskUserQuestion", 2001,
 			mcpToolDescriptionMaxChars),
 	];
 
@@ -6105,7 +6109,7 @@ unittest
 	assert(stored.description.canFind("2000-character limit"));
 	assert(stored.impact
 		== "Largest violations: review/Task 2205 > 2000; review/SwitchMode 2104 > 2000; review/Handoff 2055 > 2000");
-	assert(!stored.impact.canFind("PermissionPrompt"));
+	assert(!stored.impact.canFind("AskUserQuestion"));
 	assert(stored.action
 		== "Shorten user/project task-type guidance or move verbose guidance into system prompts.");
 	assert(stored.action_kind == "");

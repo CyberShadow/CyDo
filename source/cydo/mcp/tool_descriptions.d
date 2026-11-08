@@ -21,7 +21,6 @@ struct RenderedCydoToolsOptions
 	bool includeBash = true;
 	bool includeAsk = true;
 	bool includeAnswer = true;
-	bool includePermissionPrompt;
 }
 
 struct ToolDescriptionViolation
@@ -58,8 +57,6 @@ ToolsList buildRenderedCydoToolsList(
 		includeTools ~= "Ask";
 	if (options.includeAnswer)
 		includeTools ~= "Answer";
-	if (options.includePermissionPrompt)
-		includeTools ~= "PermissionPrompt";
 
 	return jsonParse!ToolsList(buildToolsListJson!CydoTools([
 		"creatable_task_types": creatableTaskTypes,

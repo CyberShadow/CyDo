@@ -222,7 +222,6 @@ static:
 		}
 
 		RenderedCydoToolsOptions options;
-		options.includePermissionPrompt = true;
 
 		bool hasViolations;
 		foreach (ref typeDef; config.types)

@@ -9,7 +9,7 @@ import std.stdio : File;
 import std.logger : infof, tracef, warningf;
 import std.typecons : Nullable;
 
-import ae.utils.json : JSONOptional, JSONPartial, jsonParse, toJson;
+import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise, reject, resolve;
 
 import cydo.agent.contract : Agent, SessionConfig;
@@ -29,6 +29,7 @@ import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 	LiveHistoryWatchResolutionKind, LiveHistoryWatchTarget,
 	ResolvedNativeHistoryContext, TaskHistoryResolution, TaskHistoryResolutionKind, UnavailableHistory,
 	UnavailableHistoryKind, resolveNativeHistoryContext;
+import cydo.agent.drivers.claude : ClaudeCodeSession, ToolPermissionRequest;
 import cydo.agent.drivers.codex : CodexAgent, CodexForkSourceOwner, CodexSession;
 import cydo.domain.tasks.model : PendingContinuation, ProcessState, TaskData, TaskStatus,
 	WaitingTaskDependencyState;
@@ -193,6 +194,12 @@ struct TaskSessionRunnerHost
 	Promise!void delegate(int parentTid) deliverBatchResults;
 	void delegate(int tid) failPendingAskUserQuestionOnExit;
 	void delegate(int tid) failPendingPermissionPromptOnExit;
+	/// Decide a Claude `can_use_tool` request (policy or user prompt);
+	/// resolves to the decision JSON sent back to the CLI.
+	Promise!string delegate(int tid, string toolUseId, string toolName,
+		JSONFragment input) decideToolPermission;
+	/// The CLI cancelled a `can_use_tool` request it is no longer waiting on.
+	void delegate(int tid, string toolUseId) withdrawToolPermissionPrompt;
 	void delegate(int tid) failPendingAskRouteOnExit;
 	void delegate(int tid) cancelExitBackgroundWork;
 	/// Returns true when the reset already emitted a task reload (unavailable
@@ -747,13 +754,9 @@ public:
 			sessionConfig.allowNativeSubagents = true;
 
 		sessionConfig.permissionPolicy = host_.findWorkspacePermissionPolicy(td.workspace);
-		if (sessionConfig.permissionPolicy.length > 0)
-			sessionConfig.includeTools ~= "PermissionPrompt";
 
 		RenderedCydoToolsOptions renderedToolOptions;
 		renderedToolOptions.includeBash = taskAgent.needsBash();
-		renderedToolOptions.includePermissionPrompt =
-			sessionConfig.permissionPolicy.length > 0;
 		host_.reportMcpToolDescriptionLimit(td.projectPath, td.taskType,
 			checkRenderedCydoToolDescriptionViolations(taskTypes, entryPoints,
 				td.taskType, options: renderedToolOptions));
@@ -952,6 +955,14 @@ public:
 		};
 
 		string lastStderr;
+
+		if (auto claude = cast(ClaudeCodeSession) session)
+		{
+			claude.onToolPermissionRequest = (ToolPermissionRequest req) =>
+				host_.decideToolPermission(tid, req.toolUseId, req.toolName, req.input);
+			claude.onToolPermissionRequestWithdrawn = (string toolUseId) =>
+				host_.withdrawToolPermissionPrompt(tid, toolUseId);
+		}
 
 		session.onStderr = (string line) {
 			auto stored = tid in sessions_;
@@ -1979,6 +1990,9 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 					stopJsonlWatch: (int tid) {},
 				failPendingAskUserQuestionOnExit: (int tid) {},
 				failPendingPermissionPromptOnExit: (int tid) {},
+				decideToolPermission: delegate Promise!string(int tid, string toolUseId, string toolName,
+					JSONFragment input) { assert(0, "unexpected call"); },
+				withdrawToolPermissionPrompt: (int tid, string toolUseId) {},
 				failPendingAskRouteOnExit: (int tid) {},
 				drainIdleCallbacksOnExit: (int tid) {},
 				cancelExitBackgroundWork: (int tid) {},

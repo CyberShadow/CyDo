@@ -105,8 +105,7 @@ class ClaudeCodeAgent : Agent
 	{
 		lastMcpConfigPath_ = generateMcpConfig(tid, launch.nativeHistoryProfile,
 			config.creatableTaskTypes,
-			config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath,
-			config.permissionPolicy);
+			config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath);
 		auto claudeBin = launch.executablePath.length > 0
 			? launch.executablePath
 			: executableName(launch.sandbox.env);
@@ -1407,6 +1406,14 @@ unittest
 	assert(ancestorPaths.exact(cydoDir).isNull);
 }
 
+/// A tool call the CLI asks the host to allow or deny (`can_use_tool`).
+struct ToolPermissionRequest
+{
+	string toolUseId;
+	string toolName;
+	JSONFragment input;
+}
+
 /// Claude Code session using stream-json protocol.
 class ClaudeCodeSession : AgentSession
 {
@@ -1417,6 +1424,10 @@ class ClaudeCodeSession : AgentSession
 	private void delegate(TranslatedEvent) outputHandler;
 	private void delegate(string line) stderrHandler;
 	private void delegate(int status) exitHandler;
+	private Promise!string delegate(ToolPermissionRequest) permissionRequestHandler_;
+	private void delegate(string toolUseId) permissionRequestWithdrawnHandler_;
+	/// can_use_tool requests the CLI still awaits an answer to: request_id → tool_use_id.
+	private string[string] pendingPermissionRequests_;
 
 	// Stateful translation: track active content blocks per index.
 	private string[] activeItemIds_;   // index → item_id for current turn
@@ -1445,8 +1456,10 @@ class ClaudeCodeSession : AgentSession
 		// Mutually exclusive: Claude Code ≥2.1.2xx gives
 		// --dangerously-skip-permissions precedence over the prompt tool,
 		// which would bypass the configured permission policy entirely.
+		// `stdio` makes the CLI ask over the control channel (can_use_tool
+		// control requests), answered by onToolPermissionRequest.
 		if (config.permissionPolicy.length > 0)
-			claudeArgs ~= ["--permission-prompt-tool", "mcp__cydo__PermissionPrompt"];
+			claudeArgs ~= ["--permission-prompt-tool", "stdio"];
 		else
 			claudeArgs ~= ["--dangerously-skip-permissions"];
 
@@ -1533,6 +1546,7 @@ class ClaudeCodeSession : AgentSession
 		};
 
 		process.onExit = (int status) {
+			pendingPermissionRequests_ = null;
 			if (exitHandler)
 				exitHandler(status);
 		};
@@ -1667,9 +1681,87 @@ class ClaudeCodeSession : AgentSession
 		exitHandler = dg;
 	}
 
+	/// Callback: the CLI asks whether a tool call may run. Fulfil with the
+	/// decision payload: `{"behavior":"allow","updatedInput":{…}}` or
+	/// `{"behavior":"deny","message":"…"}`. Only consulted when the session
+	/// was launched with a permission policy.
+	@property void onToolPermissionRequest(Promise!string delegate(ToolPermissionRequest) dg)
+	{
+		permissionRequestHandler_ = dg;
+	}
+
+	/// Callback: the CLI no longer awaits the decision for this tool call
+	/// (e.g. the turn was interrupted while the prompt was pending).
+	@property void onToolPermissionRequestWithdrawn(void delegate(string toolUseId) dg)
+	{
+		permissionRequestWithdrawnHandler_ = dg;
+	}
+
 	@property bool alive()
 	{
 		return !process.dead;
+	}
+
+	/// A `control_request` the CLI sent to us. CyDo registers for nothing but
+	/// permission prompts, so any other subtype is refused.
+	private void handleCliControlRequest(string rawLine)
+	{
+		@JSONPartial static struct Request
+		{
+			string subtype;
+			@JSONOptional string tool_name;
+			@JSONOptional string tool_use_id;
+			@JSONOptional JSONFragment input;
+		}
+		@JSONPartial static struct Envelope { string request_id; Request request; }
+		auto envelope = jsonParse!Envelope(rawLine);
+		enforce(envelope.request_id.length > 0,
+			"Claude control request carries no request_id");
+
+		if (envelope.request.subtype != "can_use_tool")
+		{
+			import cydo.protocol : makeUnrecognizedEvent;
+			emitEvent(TranslatedEvent(makeUnrecognizedEvent(
+				"control_request subtype: " ~ envelope.request.subtype), rawLine));
+			sendControlResponse(ClaudeControlResponse.error(envelope.request_id,
+				"Unsupported control request subtype: " ~ envelope.request.subtype));
+			return;
+		}
+
+		enforce(envelope.request.tool_use_id.length > 0,
+			"Claude can_use_tool request carries no tool_use_id");
+		assert(permissionRequestHandler_ !is null,
+			"Claude asked for a tool permission, but no permission handler is attached");
+		auto requestId = envelope.request_id;
+		assert(requestId !in pendingPermissionRequests_,
+			"Claude repeated a pending can_use_tool request_id");
+		pendingPermissionRequests_[requestId] = envelope.request.tool_use_id;
+		permissionRequestHandler_(ToolPermissionRequest(envelope.request.tool_use_id,
+			envelope.request.tool_name, envelope.request.input)).then((string decision) {
+			// Withdrawn or process exited while the decision was pending.
+			if (pendingPermissionRequests_.remove(requestId))
+				sendControlResponse(ClaudeControlResponse.success(requestId,
+					JSONFragment(decision)));
+		}).ignoreResult();
+	}
+
+	/// The CLI withdrew a `control_request` it sent earlier.
+	private void handleCliControlCancel(string rawLine)
+	{
+		@JSONPartial static struct Cancel { string request_id; }
+		auto requestId = jsonParse!Cancel(rawLine).request_id;
+		auto toolUseId = requestId in pendingPermissionRequests_;
+		// Already answered: the cancellation crossed our response.
+		if (toolUseId is null)
+			return;
+		auto withdrawn = *toolUseId;
+		pendingPermissionRequests_.remove(requestId);
+		permissionRequestWithdrawnHandler_(withdrawn);
+	}
+
+	private void sendControlResponse(ClaudeControlResponse response)
+	{
+		process.sendMessage(toJson(response));
 	}
 
 	// ── Stateful per-line translation ──────────────────────────────────────
@@ -1740,6 +1832,12 @@ class ClaudeCodeSession : AgentSession
 				return;
 			case "user":
 				normalizeUserLive(rawLine);
+				return;
+			case "control_request":
+				handleCliControlRequest(rawLine);
+				return;
+			case "control_cancel_request":
+				handleCliControlCancel(rawLine);
 				return;
 			default:
 				// Stateless translation for system, result, summary, control, etc.
@@ -2246,6 +2344,36 @@ unittest
 	assert(delivered == "claude-late-id");
 }
 
+// can_use_tool requests reach the permission handler; a cancel for a pending
+// request withdraws it, and a cancel for an unknown request is ignored.
+unittest
+{
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	ToolPermissionRequest[] requests;
+	string[] withdrawn;
+	session.onToolPermissionRequest = (ToolPermissionRequest req) {
+		requests ~= req;
+		return new Promise!string;
+	};
+	session.onToolPermissionRequestWithdrawn = (string toolUseId) { withdrawn ~= toolUseId; };
+
+	session.translateLiveLine(`{"type":"control_request","request_id":"req-1","request":`
+		~ `{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"toolu_1",`
+		~ `"input":{"command":"touch x"},"permission_suggestions":[]}}`);
+	assert(requests.length == 1);
+	assert(requests[0].toolUseId == "toolu_1");
+	assert(requests[0].toolName == "Bash");
+	assert(requests[0].input.json == `{"command":"touch x"}`);
+
+	session.translateLiveLine(`{"type":"control_cancel_request","request_id":"req-other"}`);
+	assert(withdrawn.length == 0);
+	session.translateLiveLine(`{"type":"control_cancel_request","request_id":"req-1"}`);
+	assert(withdrawn == ["toolu_1"]);
+	session.translateLiveLine(`{"type":"control_cancel_request","request_id":"req-1"}`);
+	assert(withdrawn == ["toolu_1"]);
+}
+
 // The history path registrar receives the init event's session ID and cwd
 // before the native-ID callback fires, so the live binding created in that
 // callback can already resolve the session's history path.
@@ -2418,6 +2546,34 @@ struct ClaudeControlRequest
 	Req request;
 }
 
+/// Our answer to a `control_request` the CLI sent.
+struct ClaudeControlResponse
+{
+	string type = "control_response";
+	static struct Body
+	{
+		string subtype;
+		string request_id;
+		@JSONOptional JSONFragment response;
+		@JSONOptional string error;
+	}
+	Body response;
+
+	static ClaudeControlResponse success(string requestId, JSONFragment payload)
+	{
+		ClaudeControlResponse r;
+		r.response = Body("success", requestId, payload, null);
+		return r;
+	}
+
+	static ClaudeControlResponse error(string requestId, string message)
+	{
+		ClaudeControlResponse r;
+		r.response = Body("error", requestId, JSONFragment.init, message);
+		return r;
+	}
+}
+
 struct ClaudeTextBlock { string type = "text"; string text; }
 struct ClaudeImageSource { string type = "base64"; string data; string media_type; }
 struct ClaudeImageBlock { string type = "image"; ClaudeImageSource source; }
@@ -2456,7 +2612,6 @@ private struct McpConfigEnv
 	string CYDO_SWITCHMODES;
 	string CYDO_HANDOFFS;
 	string CYDO_INCLUDE_TOOLS;
-	string CYDO_PERMISSION_POLICY;
 }
 
 private struct McpConfigServer
@@ -2483,7 +2638,7 @@ private struct McpConfig { McpConfigServers mcpServers; }
 string generateMcpConfig(int tid, const ref NativeHistoryProfile profile,
 	string creatableTaskTypes = "",
 	string switchModes = "", string handoffs = "", string[] includeTools = null,
-	string mcpSocketPath = "", string permissionPolicy = "")
+	string mcpSocketPath = "")
 {
 	import std.array : join;
 	import std.exception : enforce;
@@ -2514,7 +2669,6 @@ string generateMcpConfig(int tid, const ref NativeHistoryProfile profile,
 			switchModes.nonNull,
 			handoffs.nonNull,
 			includeTools is null ? "" : includeTools.join(","),
-			permissionPolicy.nonNull,
 		),
 	)));
 	write(configPath, toJson(cfg));

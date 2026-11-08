@@ -177,17 +177,6 @@ interface CydoTools
 	    @Description("Your answer")
 	    string message
 	);
-
-	@Description("Handle permission prompts for tool execution. Called automatically by the permission system.")
-	@McpName("PermissionPrompt")
-	McpResult permissionPrompt(
-	    @Description("The unique tool use request ID")
-	    string tool_use_id,
-	    @Description("The name of the tool requesting permission")
-	    string tool_name,
-	    @Description("The input for the tool")
-	    JSONFragment input
-	);
 }
 
 import ae.utils.promise : Promise;
@@ -222,7 +211,6 @@ interface ToolsBackend
 	Promise!McpResult registerBatchAndAwait(string callerTid, LaunchedTask[] launchedTasks);
 	Promise!McpResult handleAsk(string callerTid, string message, int targetTid);
 	Promise!McpResult handleAnswer(string callerTid, int qid, string message);
-	Promise!McpResult handlePermissionPrompt(string callerTid, string toolUseId, string toolName, JSONFragment input);
 }
 
 /// Tool implementation — constructed per MCP call with the calling App and task ID.
@@ -353,12 +341,6 @@ class CydoToolsImpl : CydoTools
 		import ae.utils.promise.await : await;
 		return app.handleAnswer(callerTid, qid, message).await();
 	}
-
-	McpResult permissionPrompt(string tool_use_id, string tool_name, JSONFragment input)
-	{
-		import ae.utils.promise.await : await;
-		return app.handlePermissionPrompt(callerTid, tool_use_id, tool_name, input).await();
-	}
 }
 
 unittest
@@ -416,12 +398,6 @@ unittest
 		}
 
 		Promise!McpResult handleAnswer(string callerTid, int qid, string message)
-		{
-			assert(0, "unexpected call");
-		}
-
-		Promise!McpResult handlePermissionPrompt(string callerTid, string toolUseId,
-			string toolName, JSONFragment input)
 		{
 			assert(0, "unexpected call");
 		}

@@ -8,13 +8,14 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("permission_policy allow auto-approves tool calls via PermissionPrompt", { tag: "@claude-only" }, async ({
+test("permission_policy allow auto-approves tool calls via can_use_tool", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
 
   // Configure the workspace with permission_policy: allow so the backend passes
-  // --permission-prompt-tool to Claude and our PermissionPrompt MCP tool handles it.
+  // --permission-prompt-tool stdio to Claude and answers its can_use_tool
+  // control requests.
   writeTestConfig(
     "/tmp/playwright-home/.config/cydo/config.yaml",
     `default_agent: claude
