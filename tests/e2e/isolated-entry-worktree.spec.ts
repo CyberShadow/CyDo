@@ -89,7 +89,9 @@ test("isolated Copilot Bash runs inside its task worktree", { tag: "@copilot-onl
     ) {
       await bashResultHeader.click();
     }
-    await expect(bashResult).toContainText(worktreeDir);
+    // Sample only: a waiting assertion would keep toPass from re-clicking
+    // when the result collapses after this check saw it expanded.
+    expect((await bashResult.allTextContents()).join("")).toContain(worktreeDir);
   }).toPass({ timeout });
 
   expect(

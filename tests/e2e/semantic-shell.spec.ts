@@ -23,6 +23,10 @@ async function lastShellToolCall(
   return toolCall;
 }
 
+// Semantic classification is asynchronous and collapses read/diff results
+// once it lands, possibly after a check saw them expanded. The predicates
+// below therefore only sample the DOM: a waiting assertion inherits the
+// suite's whole expect budget, so toPass would never get to re-click.
 async function expectExpandedResultContent(
   toolCall: Locator,
   selector: string,
@@ -38,8 +42,8 @@ async function expectExpandedResultContent(
     ) {
       await resultHeader.click();
     }
-    await expect(resultContainer).toBeVisible();
-    await expect(semanticContent).toBeVisible();
+    expect(await resultContainer.isVisible()).toBe(true);
+    expect(await semanticContent.isVisible()).toBe(true);
   }).toPass({ timeout });
 }
 
@@ -58,8 +62,8 @@ async function expectExpandedRawResultText(
     ) {
       await resultHeader.click();
     }
-    await expect(resultContainer).toBeVisible();
-    await expect(rawResult).toContainText(expected);
+    expect(await resultContainer.isVisible()).toBe(true);
+    expect((await rawResult.allTextContents()).join("")).toMatch(expected);
   }).toPass({ timeout });
 }
 
@@ -255,26 +259,14 @@ test("semantic shell: git diff renders through patch view", async ({
 
   await sendMessage(page, "semantic shell diff");
 
-  // Wait for the tool call to appear
-  const toolName = agentType === "codex" ? "commandExecution" : "Bash";
-  const toolCall = page
-    .locator(".tool-call")
-    .filter({ has: page.locator(".tool-name", { hasText: toolName }) })
-    .last();
-  await expect(toolCall).toBeVisible({ timeout });
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
 
   // Result is collapsed by default for diffs (local source, re-derivable).
-  // Use toPass so that if semantic parsing completes and collapses the result
-  // after our initial visibility check, we click again and retry.
-  const resultHeader = toolCall.locator(".tool-result-header");
-  const resultContainer = toolCall.locator(".tool-result-container");
-  const semanticDiff = toolCall.locator('[data-testid="semantic-shell-diff"]');
-  await expect(async () => {
-    if (await resultHeader.isVisible() && !await resultContainer.isVisible()) {
-      await resultHeader.click();
-    }
-    await expect(semanticDiff).toBeVisible();
-  }).toPass({ timeout });
+  await expectExpandedResultContent(
+    toolCall,
+    '[data-testid="semantic-shell-diff"]',
+    timeout,
+  );
 });
 
 test("semantic shell: wrapped python heredoc preserves wrapper syntax and content", async ({

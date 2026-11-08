@@ -22,7 +22,9 @@ test("diff result: toggle reveals raw git log output and headers", { tag: "@no-c
 
   // Result is collapsed by default for diffs (local source, re-derivable).
   // Use toPass so that if semantic parsing completes and collapses the result
-  // after our initial visibility check, we click again and retry.
+  // after our initial visibility check, we click again and retry. The checks
+  // only sample the DOM: a waiting assertion would inherit the whole expect
+  // budget and keep toPass from ever re-clicking.
   const resultHeader = toolCall.locator(".tool-result-header");
   const resultContainer = toolCall.locator(".tool-result-container");
   const diff = toolCall.locator('[data-testid="semantic-shell-diff"]');
@@ -34,9 +36,9 @@ test("diff result: toggle reveals raw git log output and headers", { tag: "@no-c
     ) {
       await resultHeader.click();
     }
-    await expect(resultContainer).toBeVisible();
-    await expect(diff).toBeVisible();
-    await expect(diffView).toBeVisible();
+    expect(await resultContainer.isVisible()).toBe(true);
+    expect(await diff.isVisible()).toBe(true);
+    expect(await diffView.isVisible()).toBe(true);
   }).toPass({ timeout });
 
   const toggle = diff.locator(".markdown-toggle-btn");

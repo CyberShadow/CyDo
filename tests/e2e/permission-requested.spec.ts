@@ -48,7 +48,9 @@ test("copilot built-in tool with permission auto-approval", { tag: "@copilot-onl
     ) {
       await viewResultHeader.click();
     }
-    await expect(viewResult).toBeVisible();
+    // Sample only: a waiting assertion would keep toPass from re-clicking
+    // when the result collapses after this check saw it expanded.
+    expect(await viewResult.isVisible()).toBe(true);
   }).toPass({ timeout: responseTimeout(agentType) });
 
   // Verify the session completes (assistant responds after tool result).
