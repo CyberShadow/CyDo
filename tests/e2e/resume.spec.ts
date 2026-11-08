@@ -426,19 +426,21 @@ test("active task receives nudge and continues after restart", { tag: "@claude-o
   page,
   restartableBackend,
 }, testInfo) => {
-  // Create a task and start a long-running command (will be mid-turn when we kill)
+  // Create a task and start a long-running command (will be mid-turn when we kill).
+  // Commands in this file sleep at most 20s: Claude ≥2.1.3xx refuses a
+  // foreground `sleep N` with N ≥ 25 before running it.
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
   const input = page.locator(".input-textarea:visible").first();
   await expect(input).toBeEnabled();
-  await input.fill("run command sleep 60");
+  await input.fill("run command sleep 20");
   const sendBtn = page.locator(".btn-send:visible").first();
   await expect(sendBtn).toBeEnabled();
   await sendBtn.click();
 
   // Wait until the tool call is visible (task is mid-turn / "active")
   await expect(
-    page.locator(".tool-call", { hasText: "sleep 60" }),
+    page.locator(".tool-call", { hasText: "sleep 20" }),
   ).toBeVisible();
 
   // Kill and restart the backend while task is "active"
@@ -506,7 +508,7 @@ test("waiting parent receives batch results after restart", { tag: "@claude-only
   await page.locator('button[title="New task"]').first().click();
   const input = page.locator(".input-textarea:visible").first();
   await expect(input).toBeEnabled();
-  await input.fill("call 2 tasks research run command sleep 30");
+  await input.fill("call 2 tasks research run command sleep 20");
   const sendBtn = page.locator(".btn-send:visible").first();
   await expect(sendBtn).toBeEnabled();
   await sendBtn.click();
@@ -516,8 +518,8 @@ test("waiting parent receives batch results after restart", { tag: "@claude-only
   await expect(allTaskItems).toHaveCount(3);
 
   // Navigate to each child and verify both are running.
-  await openRunningChildTask(page, "Test task 1", "sleep 30");
-  await openRunningChildTask(page, "Test task 2", "sleep 30");
+  await openRunningChildTask(page, "Test task 1", "sleep 20");
+  await openRunningChildTask(page, "Test task 2", "sleep 20");
 
   // Restart while both sub-tasks are still running.
   await restartableBackend.restart();
@@ -757,7 +759,7 @@ test("resumed waiting parent can create a sub-task after batch delivery", { tag:
   const input = page.locator(".input-textarea:visible").first();
   await expect(input).toBeEnabled();
   await input.fill(
-    "RESPAWN-AFTER-RESUME call 2 tasks research run command sleep 30",
+    "RESPAWN-AFTER-RESUME call 2 tasks research run command sleep 20",
   );
   const sendBtn = page.locator(".btn-send:visible").first();
   await expect(sendBtn).toBeEnabled();
@@ -766,8 +768,8 @@ test("resumed waiting parent can create a sub-task after batch delivery", { tag:
   // Parent + 2 children in the sidebar, both running the slow command.
   const allTaskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
   await expect(allTaskItems).toHaveCount(3);
-  await openRunningChildTask(page, "Test task 1", "sleep 30");
-  await openRunningChildTask(page, "Test task 2", "sleep 30");
+  await openRunningChildTask(page, "Test task 1", "sleep 20");
+  await openRunningChildTask(page, "Test task 2", "sleep 20");
 
   // Restart while both sub-tasks are in-flight → the waiting parent receives
   // batch results on resume and (with the fix) spawns the follow-up sub-task.

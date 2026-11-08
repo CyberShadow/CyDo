@@ -21,15 +21,15 @@
           # official installer deploys.
           claude-code =
             let
-              version = "2.1.272";
+              version = "2.1.319";
               claudeSrc = {
                 x86_64-linux = {
                   platform = "linux-x64";
-                  hash = "sha256-xC3cEBRRa+F1WvrkUa+/1KqtnpL+W9vv7T2smiQiSDk=";
+                  hash = "sha256-kor8yt+BuhXQBkqEaaO9j2fkF4N1lkvW6O1FTPwy83w=";
                 };
                 aarch64-linux = {
                   platform = "linux-arm64";
-                  hash = "sha256-huaaWuav5F1cGrnVkgU4nNlytx33Zbjo/jw2FBWmOJA=";
+                  hash = "sha256-pTX93DqIxvZronPpVm3H6JhtJGy9xP1NI26BRYt4l1U=";
                 };
               }.${system} or (throw "Claude Code: unsupported system ${system}");
             in final.stdenv.mkDerivation {

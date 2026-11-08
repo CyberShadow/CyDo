@@ -1698,6 +1698,9 @@ const knownResultFields: Record<string, Set<string>> = {
     // commit state from the repository itself, so this is informational.
     "gitOperation",
     "bashEditDiff",
+    // Claude 2.1.3xx: the timeout after which a foreground command was moved
+    // to the background (alongside backgroundTaskId).
+    "timedOutAfterMs",
   ]),
   "codex/commandExecution": new Set([
     "exitCode",
@@ -1785,6 +1788,10 @@ const knownResultFields: Record<string, Set<string>> = {
     "harnessNoteCount",
     "harnessTailCount",
     "harnessSectionHash",
+    // Claude 2.1.3xx: names of the tools the subagent called, and whether
+    // SendMessage can resume it. Informational for CyDo.
+    "toolsUsed",
+    "canContinueAgent",
   ]),
   "claude/Agent": new Set([
     "status",
@@ -1818,6 +1825,10 @@ const knownResultFields: Record<string, Set<string>> = {
     "harnessNoteCount",
     "harnessTailCount",
     "harnessSectionHash",
+    // Claude 2.1.3xx: names of the tools the subagent called, and whether
+    // SendMessage can resume it. Informational for CyDo.
+    "toolsUsed",
+    "canContinueAgent",
   ]),
   "claude/TaskCreate": new Set(["task"]),
   "claude/TaskGet": new Set(["task"]),

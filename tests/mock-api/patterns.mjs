@@ -772,7 +772,7 @@ export function matchPattern(userText) {
       },
     };
 
-  // "run orphan then switchmode" — timed bash (sleep 999) followed by switchmode
+  // "run orphan then switchmode" — timed bash (tail -f /dev/null) followed by switchmode
   if (/run orphan then switchmode/i.test(userText))
     return { type: "orphan_then_switchmode" };
 

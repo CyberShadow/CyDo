@@ -18,11 +18,11 @@ test("SwitchMode with orphaned process completes continuation", { tag: "@claude-
 
   // Create a sub-task of type blank. The sub-task's prompt triggers a two-step
   // sequence in the mock API:
-  //   1. Bash tool: `sleep 999` with 2s timeout → Claude backgrounds the sleep
+  //   1. Bash tool: `tail -f /dev/null` with 2s timeout → Claude backgrounds it
   //   2. SwitchMode tool call → backend should process continuation
   //
   // With the bug (commit a60667b), the claude process hangs after SwitchMode
-  // because the orphaned `sleep 999` holds stdout open and killAfterTimeout
+  // because the orphaned `tail -f /dev/null` holds stdout open and killAfterTimeout
   // is not called for continuation exits.
   await sendMessage(page, "call task blank run orphan then switchmode");
 

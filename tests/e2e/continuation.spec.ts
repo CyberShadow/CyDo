@@ -328,10 +328,10 @@ test("unsent steer is either recovered into input box or shown in history after 
 }) => {
   await enterSession(page);
 
-  await sendMessage(page, "run command sleep 60");
+  await sendMessage(page, "run command sleep 20");
 
   await expect(
-    page.locator(".tool-call", { hasText: "sleep 60" }),
+    page.locator(".tool-call", { hasText: "sleep 20" }),
   ).toBeVisible();
 
   await sendMessage(page, "this should be recovered");

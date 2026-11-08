@@ -1355,12 +1355,14 @@ function handleMessages(req, res) {
         model,
       );
     } else if (intent.type === "orphan_then_switchmode") {
-      // Step 1: run sleep 999 with a short timeout — the timeout causes Claude
-      // to background the sleep, then the tool_result triggers step 2 (SwitchMode).
+      // Step 1: run a never-exiting command with a short timeout — the timeout
+      // causes Claude to background it, then the tool_result triggers step 2
+      // (SwitchMode). Not `sleep`: Claude ≥2.1.3xx refuses a foreground
+      // `sleep N` with N ≥ 25 before running it.
       streamToolUseResponse(
         res,
         "Bash",
-        { command: "sleep 999", timeout: 2000, description: "Running command" },
+        { command: "tail -f /dev/null", timeout: 2000, description: "Running command" },
         model,
       );
     } else if (intent.type === "timed_shell") {
