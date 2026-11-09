@@ -124,8 +124,9 @@ test("completed messages are not recreated when new messages arrive", { tag: "@c
       expect(policies).not.toHaveLength(0);
       expect(policies.at(-1)?.history_operations).toEqual({
         fork: { user: "jsonl", agent_turn: "jsonl" },
+        // The idle live session is rewound in-process.
         undo: {
-          user: "jsonl",
+          user: "claude_native",
           provisional_user: "jsonl",
           agent_turn: "jsonl",
         },

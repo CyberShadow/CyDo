@@ -7,6 +7,7 @@ import {
   responseTimeout,
   type Page,
   assistantText,
+  currentTaskTid,
 } from "./fixtures";
 
 const userEventText = (event: any): string =>
@@ -133,6 +134,13 @@ test(
       await revertFilesCheckbox.first().uncheck();
     }
 
+    // The idle live session is offered the in-process rewind.
+    expect(
+      frames.findLast((frame) => frame?.type === "history_operations")
+        ?.history_operations?.undo?.user,
+    ).toBe("claude_native");
+    const tid = currentTaskTid(page);
+    const framesBeforeUndo = frames.length;
     await page.locator(".btn-undo").click();
 
     const input = page.locator(".input-textarea:visible").first();
@@ -141,6 +149,17 @@ test(
       await assertTurnPresence(page, ["alert-one"], true);
       await assertTurnPresence(page, ["alert-two"], false);
     }).toPass();
+    // Rewound in-process: the Claude process was never stopped.
+    expect(
+      frames
+        .slice(framesBeforeUndo)
+        .filter(
+          (frame) =>
+            frame?.type === "task_updated" &&
+            frame.task?.tid === tid &&
+            !frame.task.alive,
+        ),
+    ).toHaveLength(0);
 
     await expect(
       page.locator(".command-error-dialog", {

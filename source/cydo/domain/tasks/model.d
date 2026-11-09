@@ -505,7 +505,7 @@ struct VisibleTurnAnchor
 
 enum ProcessState : bool { Dead = false, Alive = true }
 enum ArchiveState : bool { Unarchived = false, Archived = true }
-enum CodexNativeUndoState { idle, inFlight, unverified }
+enum NativeUndoState { idle, inFlight, unverified }
 
 /// Pending SwitchMode or Handoff continuation, set by the tool handler and
 /// consumed by onExit. Null when no continuation is pending.
@@ -624,7 +624,7 @@ struct TaskData
 	bool undoStopInProgress; // true while undo fallback owns post-stop reload/finalization
 	/// Runtime-only native rollback serialization. This is intentionally not
 	/// persisted: uncertainty blocks this server process only.
-	CodexNativeUndoState codexNativeUndoState = CodexNativeUndoState.idle;
+	NativeUndoState nativeUndoState = NativeUndoState.idle;
 	bool stdinClosed = false;      // set after closeStdin, cleared on session restart/exit
 	bool outputEnforcementAttempted; // true after first enforcement retry for missing outputs
 	bool needsAttention = false;
@@ -759,37 +759,37 @@ struct TaskData
 		appServerAcceptedNonceGeneration.remove(nonce);
 	}
 
-	@property bool codexNativeUndoBlocksDelivery() const
+	@property bool nativeUndoBlocksDelivery() const
 	{
-		return codexNativeUndoState != CodexNativeUndoState.idle;
+		return nativeUndoState != NativeUndoState.idle;
 	}
 
 	void beginConfirmedNativeUndo()
 	{
-		assert(codexNativeUndoState == CodexNativeUndoState.idle,
+		assert(nativeUndoState == NativeUndoState.idle,
 			"Confirmed Codex native undo must begin from idle");
-		codexNativeUndoState = CodexNativeUndoState.inFlight;
+		nativeUndoState = NativeUndoState.inFlight;
 	}
 
 	void clearNativeUndoRefusalBeforeDispatch()
 	{
-		assert(codexNativeUndoState == CodexNativeUndoState.inFlight,
+		assert(nativeUndoState == NativeUndoState.inFlight,
 			"Codex native undo refusal must clear an in-flight operation");
-		codexNativeUndoState = CodexNativeUndoState.idle;
+		nativeUndoState = NativeUndoState.idle;
 	}
 
 	void completeVerifiedNativeUndoCleanup()
 	{
-		assert(codexNativeUndoState == CodexNativeUndoState.inFlight,
+		assert(nativeUndoState == NativeUndoState.inFlight,
 			"Verified Codex native undo cleanup must complete an in-flight operation");
-		codexNativeUndoState = CodexNativeUndoState.idle;
+		nativeUndoState = NativeUndoState.idle;
 	}
 
-	void markCodexNativeUndoUnverified()
+	void markNativeUndoUnverified()
 	{
-		assert(codexNativeUndoState == CodexNativeUndoState.inFlight,
+		assert(nativeUndoState == NativeUndoState.inFlight,
 			"Codex native undo uncertainty must follow an in-flight operation");
-		codexNativeUndoState = CodexNativeUndoState.unverified;
+		nativeUndoState = NativeUndoState.unverified;
 	}
 
 	void setLastSessionStatus(string translatedStatus, long ts)
@@ -948,33 +948,33 @@ unittest
 	task.reserveNativeSubmission("u-three", "", 4, "three");
 	task.cancelUnobservedNativeSubmission("u-three", 4);
 	assert(task.nativeSubmissionCount == 0);
-	assert(task.codexNativeUndoState == CodexNativeUndoState.idle
-		&& !task.codexNativeUndoBlocksDelivery);
+	assert(task.nativeUndoState == NativeUndoState.idle
+		&& !task.nativeUndoBlocksDelivery);
 	assertThrown!AssertError(task.clearNativeUndoRefusalBeforeDispatch());
 	assertThrown!AssertError(task.completeVerifiedNativeUndoCleanup());
-	assertThrown!AssertError(task.markCodexNativeUndoUnverified());
+	assertThrown!AssertError(task.markNativeUndoUnverified());
 
 	task.beginConfirmedNativeUndo();
-	assert(task.codexNativeUndoState == CodexNativeUndoState.inFlight
-		&& task.codexNativeUndoBlocksDelivery);
+	assert(task.nativeUndoState == NativeUndoState.inFlight
+		&& task.nativeUndoBlocksDelivery);
 	assertThrown!AssertError(task.beginConfirmedNativeUndo());
 	task.clearNativeUndoRefusalBeforeDispatch();
-	assert(task.codexNativeUndoState == CodexNativeUndoState.idle
-		&& !task.codexNativeUndoBlocksDelivery);
+	assert(task.nativeUndoState == NativeUndoState.idle
+		&& !task.nativeUndoBlocksDelivery);
 
 	task.beginConfirmedNativeUndo();
 	task.completeVerifiedNativeUndoCleanup();
-	assert(task.codexNativeUndoState == CodexNativeUndoState.idle
-		&& !task.codexNativeUndoBlocksDelivery);
+	assert(task.nativeUndoState == NativeUndoState.idle
+		&& !task.nativeUndoBlocksDelivery);
 
 	task.beginConfirmedNativeUndo();
-	task.markCodexNativeUndoUnverified();
-	assert(task.codexNativeUndoState == CodexNativeUndoState.unverified
-		&& task.codexNativeUndoBlocksDelivery);
+	task.markNativeUndoUnverified();
+	assert(task.nativeUndoState == NativeUndoState.unverified
+		&& task.nativeUndoBlocksDelivery);
 	assertThrown!AssertError(task.beginConfirmedNativeUndo());
 	assertThrown!AssertError(task.clearNativeUndoRefusalBeforeDispatch());
 	assertThrown!AssertError(task.completeVerifiedNativeUndoCleanup());
-	assertThrown!AssertError(task.markCodexNativeUndoUnverified());
+	assertThrown!AssertError(task.markNativeUndoUnverified());
 
 	assert(toJson(UndoPreviewMessage("undo_preview", 7, 3, "codex_turns"))
 		== `{"type":"undo_preview","tid":7,"messages_removed":3,"count_unit":"codex_turns"}`);

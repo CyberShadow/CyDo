@@ -53,7 +53,7 @@ import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 	TaskHistoryResolution, TaskHistoryResolutionKind, UnavailableHistory,
 	UnavailableHistoryKind, resolveNativeHistoryContext;
 import cydo.workflow.history.abbrev : extractMessageText;
-import cydo.workflow.history.operations : CodexForkSourceState,
+import cydo.workflow.history.operations : NativeSessionState,
 	selectHistoryOperations;
 import cydo.runtime.logging : installRobustLogger;
 import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
@@ -754,7 +754,7 @@ class App
 				const ref HistoryAccess access) {
 				return taskSessionRunner.openCodexForkSourceOperation(tid, access);
 			},
-			codexForkSourceState: &codexForkSourceState,
+			nativeSessionState: &nativeSessionState,
 			resolveFreshPersistedBoundary: (int tid, const ref HistoryAccess access,
 				string requestedAnchor, out HistoryBoundary boundary) {
 				return historyPipeline.resolveFreshPersistedBoundary(tid, access,
@@ -1606,22 +1606,22 @@ class App
 		return plan;
 	}
 
-	/// Refusal text for a task whose Codex native undo forbids delivery, or
+	/// Refusal text for a task whose native undo forbids delivery, or
 	/// null when delivery is allowed. Callers report it in their own idiom:
 	/// the entry guard sends it to task subscribers, while the delivery funnel
 	/// rejects the submission promise.
 	private string nativeUndoDeliveryRefusal(TaskData* td)
 	{
-		if (!td.codexNativeUndoBlocksDelivery)
+		if (!td.nativeUndoBlocksDelivery)
 			return null;
-		final switch (td.codexNativeUndoState)
+		final switch (td.nativeUndoState)
 		{
-			case CodexNativeUndoState.idle:
+			case NativeUndoState.idle:
 				assert(false, "idle native undo state cannot block delivery");
-			case CodexNativeUndoState.inFlight:
-				return "Native Codex undo is in progress and this message was not sent";
-			case CodexNativeUndoState.unverified:
-				return "Codex may already have changed or lost history; sends are blocked only in this running CyDo process and this message was not sent";
+			case NativeUndoState.inFlight:
+				return "Native undo is in progress and this message was not sent";
+			case NativeUndoState.unverified:
+				return "The agent may already have changed or lost history; sends are blocked only in this running CyDo process and this message was not sent";
 		}
 	}
 
@@ -3504,22 +3504,27 @@ class App
 		return taskSessionRunner.sessionForTask(tid);
 	}
 
-	private CodexForkSourceState codexForkSourceState(int tid)
+	private NativeSessionState nativeSessionState(int tid)
 	{
 		auto codex = cast(CodexSession) sessionForTask(tid);
 		if (codex !is null)
 			return codex.canRollbackThread
-				? CodexForkSourceState.liveReady
-				: CodexForkSourceState.liveBusy;
+				? NativeSessionState.liveReady
+				: NativeSessionState.liveBusy;
+		auto claude = cast(ClaudeCodeSession) sessionForTask(tid);
+		if (claude !is null)
+			return claude.canRewindConversation
+				? NativeSessionState.liveReady
+				: NativeSessionState.liveBusy;
 		if (taskSessionRunner.forkSourceOperationInProgress(tid))
-			return CodexForkSourceState.liveBusy;
-		return CodexForkSourceState.dead;
+			return NativeSessionState.liveBusy;
+		return NativeSessionState.dead;
 	}
 
 	private auto historyOperationsForTask(int tid)
 	{
 		return selectHistoryOperations(agentForTask(tid).driver,
-			codexForkSourceState(tid));
+			nativeSessionState(tid));
 	}
 
 	private bool taskAlive(int tid)
@@ -3866,7 +3871,7 @@ unittest
 		"Refused funnel delivery must reject the submission promise");
 	assert(ws.sent.length == 2, "Funnel refusal must not emit a socket error");
 
-	app.tasks[tid].markCodexNativeUndoUnverified();
+	app.tasks[tid].markNativeUndoUnverified();
 	app.handleUserMessage(WsMessage(type: "message", tid: tid));
 	assert(ws.sent.length == 3
 		&& ws.sent[$ - 1].canFind("may already have changed or lost history")

@@ -19,7 +19,9 @@ function isHistoryOperationsMessage(raw: Record<string, unknown>): boolean {
           (kind === "user" ||
             kind === "provisional_user" ||
             kind === "agent_turn") &&
-          (mechanism === "jsonl" || mechanism === "codex_native"),
+          (mechanism === "jsonl" ||
+            mechanism === "codex_native" ||
+            mechanism === "claude_native"),
       )
     );
   });

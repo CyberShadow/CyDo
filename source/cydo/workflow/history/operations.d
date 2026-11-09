@@ -5,8 +5,11 @@ import cydo.protocol : HistoryBoundary, HistoryBoundaryKind;
 import cydo.runtime.config : AgentDriver;
 
 enum HistoryOperation { fork, undo }
-enum HistoryOperationMechanism { none, jsonl, codex_native }
-enum CodexForkSourceState { dead, liveReady, liveBusy }
+enum HistoryOperationMechanism { none, jsonl, codex_native, claude_native }
+/// Whether the task's agent session is live and, if so, ready for an
+/// in-process history operation (no turn running or queued, and the agent
+/// supports the operation).
+enum NativeSessionState { dead, liveReady, liveBusy }
 
 struct HistoryOperationKinds
 {
@@ -22,7 +25,7 @@ struct HistoryOperations
 }
 
 HistoryOperations selectHistoryOperations(AgentDriver driver,
-	CodexForkSourceState codexForkSource)
+	NativeSessionState session)
 {
 	HistoryOperations result;
 	if (driver != AgentDriver.codex)
@@ -32,24 +35,31 @@ HistoryOperations selectHistoryOperations(AgentDriver driver,
 		result.undo.user = HistoryOperationMechanism.jsonl;
 		result.undo.agent_turn = HistoryOperationMechanism.jsonl;
 		if (driver == AgentDriver.claude)
+		{
 			result.undo.provisional_user = HistoryOperationMechanism.jsonl;
+			// rewind_conversation accepts an assistant target only mid-turn,
+			// after a tool result, so undoing a response while keeping its
+			// prompt stays on the JSONL mechanism.
+			if (session == NativeSessionState.liveReady)
+				result.undo.user = HistoryOperationMechanism.claude_native;
+		}
 		return result;
 	}
 
-	final switch (codexForkSource)
+	final switch (session)
 	{
-	case CodexForkSourceState.dead:
+	case NativeSessionState.dead:
 		// The pinned Codex 0.144.1 thread/fork accepts completed turns only; it has no
 		// user/response cut parameter, so user-boundary forks are unsupported.
 		result.fork.agent_turn = HistoryOperationMechanism.codex_native;
 		result.undo.user = HistoryOperationMechanism.jsonl;
 		result.undo.agent_turn = HistoryOperationMechanism.jsonl;
 		break;
-	case CodexForkSourceState.liveReady:
+	case NativeSessionState.liveReady:
 		result.fork.agent_turn = HistoryOperationMechanism.codex_native;
 		result.undo.user = HistoryOperationMechanism.codex_native;
 		break;
-	case CodexForkSourceState.liveBusy:
+	case NativeSessionState.liveBusy:
 		result.undo.user = HistoryOperationMechanism.jsonl;
 		result.undo.agent_turn = HistoryOperationMechanism.jsonl;
 		break;
@@ -85,27 +95,37 @@ unittest
 {
 	import cydo.protocol : HistoryBoundary;
 	auto offline = selectHistoryOperations(AgentDriver.codex,
-		CodexForkSourceState.dead);
+		NativeSessionState.dead);
 	assert(offline.fork.user == HistoryOperationMechanism.none);
 	assert(offline.fork.agent_turn == HistoryOperationMechanism.codex_native);
 	assert(offline.undo.user == HistoryOperationMechanism.jsonl);
 	assert(offline.undo.agent_turn == HistoryOperationMechanism.jsonl);
 	auto native = selectHistoryOperations(AgentDriver.codex,
-		CodexForkSourceState.liveReady);
+		NativeSessionState.liveReady);
 	assert(native.fork.user == HistoryOperationMechanism.none);
 	assert(native.fork.agent_turn == HistoryOperationMechanism.codex_native);
 	assert(native.undo.user == HistoryOperationMechanism.codex_native);
 	assert(native.undo.agent_turn == HistoryOperationMechanism.none);
 	auto busy = selectHistoryOperations(AgentDriver.codex,
-		CodexForkSourceState.liveBusy);
+		NativeSessionState.liveBusy);
 	assert(busy.fork.user == HistoryOperationMechanism.none);
 	assert(busy.fork.agent_turn == HistoryOperationMechanism.none);
 	assert(busy.undo.user == HistoryOperationMechanism.jsonl);
 	assert(busy.undo.agent_turn == HistoryOperationMechanism.jsonl);
 	auto claude = selectHistoryOperations(AgentDriver.claude,
-		CodexForkSourceState.dead);
+		NativeSessionState.dead);
 	assert(claude.fork.user == HistoryOperationMechanism.jsonl);
+	assert(claude.undo.user == HistoryOperationMechanism.jsonl);
 	assert(claude.undo.agent_turn == HistoryOperationMechanism.jsonl);
+	auto claudeBusy = selectHistoryOperations(AgentDriver.claude,
+		NativeSessionState.liveBusy);
+	assert(claudeBusy.undo.user == HistoryOperationMechanism.jsonl);
+	auto claudeReady = selectHistoryOperations(AgentDriver.claude,
+		NativeSessionState.liveReady);
+	assert(claudeReady.fork.user == HistoryOperationMechanism.jsonl);
+	assert(claudeReady.undo.user == HistoryOperationMechanism.claude_native);
+	assert(claudeReady.undo.agent_turn == HistoryOperationMechanism.jsonl);
+	assert(claudeReady.undo.provisional_user == HistoryOperationMechanism.jsonl);
 	auto provisional = HistoryBoundary("enqueue-4",
 		HistoryBoundaryKind.provisional_user, "");
 	assert(!allowsOperation(provisional, claude, HistoryOperation.fork),

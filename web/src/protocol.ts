@@ -308,7 +308,10 @@ export interface AgentsListMessage {
   }[];
   default_agent?: string;
 }
-export type HistoryOperationMechanism = "jsonl" | "codex_native";
+export type HistoryOperationMechanism =
+  | "jsonl"
+  | "codex_native"
+  | "claude_native";
 export interface HistoryOperationKinds {
   user?: HistoryOperationMechanism;
   provisional_user?: HistoryOperationMechanism;

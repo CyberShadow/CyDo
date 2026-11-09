@@ -962,6 +962,11 @@ public:
 				host_.decideToolPermission(tid, req.toolUseId, req.toolName, req.input);
 			claude.onToolPermissionRequestWithdrawn = (string toolUseId) =>
 				host_.withdrawToolPermissionPrompt(tid, toolUseId);
+			claude.onRewindAvailabilityChanged = () {
+				auto stored = tid in sessions_;
+				if (stored !is null && *stored is session)
+					host_.broadcastHistoryOperations(tid);
+			};
 		}
 
 		session.onStderr = (string line) {

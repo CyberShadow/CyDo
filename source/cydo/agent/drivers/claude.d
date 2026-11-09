@@ -1433,8 +1433,18 @@ class ClaudeCodeSession : AgentSession
 	/// A message replayed while another is in progress was absorbed into
 	/// that turn as steering.
 	private bool[string] startedCommands_;
+	/// User messages the CLI has queued and not yet started or withdrawn.
+	private bool[string] queuedCommands_;
 	/// Control requests we sent and await the CLI's answer to, by request_id.
 	private Promise!JSONFragment[string] pendingControlRequests_;
+	/// Whether this CLI version supports in-process `rewind_conversation`.
+	/// Unknown until the version is known and, for an unseen version, the
+	/// capability probe answered.
+	private Nullable!bool rewindSupported_;
+	private Promise!bool rewindProbe_;
+	private void delegate() rewindAvailabilityChangedHandler_;
+	/// Probe outcomes by CLI version, shared by all sessions of this process.
+	private static bool[string] rewindSupportByVersion_;
 
 	// Stateful translation: track active content blocks per index.
 	private string[] activeItemIds_;   // index → item_id for current turn
@@ -1555,6 +1565,7 @@ class ClaudeCodeSession : AgentSession
 		process.onExit = (int status) {
 			pendingPermissionRequests_ = null;
 			startedCommands_ = null;
+			queuedCommands_ = null;
 			auto unanswered = pendingControlRequests_;
 			pendingControlRequests_ = null;
 			foreach (_, promise; unanswered)
@@ -1782,6 +1793,98 @@ class ClaudeCodeSession : AgentSession
 			.then((JSONFragment response) => jsonParse!Response(response.json).cancelled);
 	}
 
+	/// Callback: `canRewindConversation` changed (the capability probe
+	/// answered, or the CLI started or settled a command).
+	@property void onRewindAvailabilityChanged(void delegate() dg)
+	{
+		rewindAvailabilityChangedHandler_ = dg;
+	}
+
+	/// Whether an in-process `rewind_conversation` can be issued now: the
+	/// CLI supports it and has no turn running or queued. The CLI re-checks
+	/// the latter itself and refuses a rewind racing a submission.
+	@property bool canRewindConversation()
+	{
+		return alive && !rewindSupported_.isNull && rewindSupported_.get
+			&& startedCommands_.length == 0 && queuedCommands_.length == 0;
+	}
+
+	/// Restore the files changed since the user message `userMessageId` was
+	/// sent, in-process (`rewind_files`). Resolves to a description of the
+	/// outcome.
+	Promise!string rewindFiles(string userMessageId)
+	{
+		static struct Request { string subtype; string user_message_id; }
+		return sendControlRequest(Request("rewind_files", userMessageId))
+			.then((JSONFragment) => "Files rewound to state at message " ~ userMessageId);
+	}
+
+	/// Drop the user message `targetUuid` and everything after it from the
+	/// CLI's in-memory conversation (`rewind_conversation`). The CLI leaves
+	/// the abandoned rows in the session file; the next turn chains onto the
+	/// row preceding the target. `lastSeenUuid` names the latest user message
+	/// the caller knows of; the CLI refuses to rewind over later turns the
+	/// caller has not seen. Resolves to the UUID of the message the CLI
+	/// rewound to (it resolves targets by UUID prefix); rejects when the CLI
+	/// refused and left the conversation unchanged.
+	Promise!string rewindConversation(string targetUuid, string lastSeenUuid)
+	{
+		static struct Request
+		{
+			string subtype;
+			string target_message_uuid;
+			string last_seen_user_message_uuid;
+		}
+		@JSONPartial static struct Response
+		{
+			bool rewound;
+			@JSONOptional string targetMessageUuid;
+			@JSONOptional string reason;
+		}
+		return sendControlRequest(Request("rewind_conversation", targetUuid, lastSeenUuid))
+			.then((JSONFragment fragment) {
+				auto response = jsonParse!Response(fragment.json);
+				if (!response.rewound)
+					throw new Exception("Claude refused to rewind: " ~ response.reason);
+				return response.targetMessageUuid;
+			});
+	}
+
+	/// Learn whether this CLI version supports `rewind_conversation`. An
+	/// unseen version is probed once per CyDo process with a target that
+	/// matches no message: a supporting CLI answers with a refusal, an older
+	/// one rejects the subtype.
+	private void resolveRewindSupport(string version_)
+	{
+		import std.algorithm : canFind;
+		import std.uuid : randomUUID;
+
+		enforce(version_.length > 0, "Claude init event carries no claude_code_version");
+		if (!rewindSupported_.isNull || rewindProbe_ !is null)
+			return;
+		if (auto known = version_ in rewindSupportByVersion_)
+		{
+			rewindSupported_ = *known;
+			return;
+		}
+		static struct Request { string subtype; string target_message_uuid; }
+		rewindProbe_ = sendControlRequest(Request("rewind_conversation", randomUUID().toString()))
+			.then((JSONFragment) => true, (Exception e) {
+				enum unsupported = "Unsupported control request subtype";
+				if (!e.msg.canFind(unsupported))
+					throw e;
+				return false;
+			});
+		rewindProbe_.then((bool supported) {
+				rewindSupportByVersion_[version_] = supported;
+				rewindSupported_ = supported;
+				if (rewindAvailabilityChangedHandler_)
+					rewindAvailabilityChangedHandler_();
+			}, (Exception e) {
+				errorf("Claude rewind capability probe failed: %s", e.msg);
+			}).ignoreResult();
+	}
+
 	private Promise!JSONFragment sendControlRequest(Request)(Request request)
 	{
 		import std.uuid : randomUUID;
@@ -1831,15 +1934,22 @@ class ClaudeCodeSession : AgentSession
 	{
 		@JSONPartial static struct Lifecycle { string command_uuid; string state; }
 		auto lifecycle = jsonParse!Lifecycle(rawLine);
+		auto couldRewind = canRewindConversation;
+		scope(success)
+			if (canRewindConversation != couldRewind && rewindAvailabilityChangedHandler_)
+				rewindAvailabilityChangedHandler_();
 		switch (lifecycle.state)
 		{
 			case "queued":
+				queuedCommands_[lifecycle.command_uuid] = true;
 				break;
 			case "started":
+				queuedCommands_.remove(lifecycle.command_uuid);
 				startedCommands_[lifecycle.command_uuid] = true;
 				break;
 			case "completed":
 			case "cancelled":
+				queuedCommands_.remove(lifecycle.command_uuid);
 				startedCommands_.remove(lifecycle.command_uuid);
 				break;
 			default:
@@ -1910,6 +2020,7 @@ class ClaudeCodeSession : AgentSession
 			{
 				@JSONOptional string session_id;
 				@JSONOptional string cwd;
+				@JSONOptional string claude_code_version;
 			}
 			InitProbe init;
 			try
@@ -1925,6 +2036,7 @@ class ClaudeCodeSession : AgentSession
 			if (historyPathRegistrar_)
 				historyPathRegistrar_(init.session_id, init.cwd);
 			notifyNativeSessionStarted(init.session_id);
+			resolveRewindSupport(init.claude_code_version);
 		}
 
 		switch (probe.type)
@@ -2433,6 +2545,7 @@ class ClaudeCodeSession : AgentSession
 
 unittest
 {
+	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
 	auto session = new ClaudeCodeSession("true");
 	scope(exit) session.stop();
 	string[] order;
@@ -2441,7 +2554,7 @@ unittest
 	};
 	session.onOutput = (TranslatedEvent event) { order ~= "output"; };
 	session.translateLiveLine(
-		`{"type":"system","subtype":"init","session_id":"claude-native-id"}`);
+		`{"type":"system","subtype":"init","session_id":"claude-native-id","claude_code_version":"fixture"}`);
 	assert(order.length >= 2
 		&& order[0] == "native:claude-native-id"
 		&& order[1] == "output",
@@ -2450,7 +2563,7 @@ unittest
 	auto lateSession = new ClaudeCodeSession("true");
 	scope(exit) lateSession.stop();
 	lateSession.translateLiveLine(
-		`{"type":"system","subtype":"init","session_id":"claude-late-id"}`);
+		`{"type":"system","subtype":"init","session_id":"claude-late-id","claude_code_version":"fixture"}`);
 	string delivered;
 	lateSession.onNativeSessionStarted = (string sessionId) { delivered = sessionId; };
 	assert(delivered == "claude-late-id");
@@ -2484,6 +2597,67 @@ unittest
 	assert(withdrawn == ["toolu_1"]);
 	session.translateLiveLine(`{"type":"control_cancel_request","request_id":"req-1"}`);
 	assert(withdrawn == ["toolu_1"]);
+}
+
+// The rewind capability is probed once per CLI version: a supporting CLI
+// answers the probe (with a refusal), an older one rejects the subtype.
+unittest
+{
+	import ae.net.asockets : socketManager;
+
+	void drainNextTicks()
+	{
+		for (;;)
+		{
+			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
+			if (handlers.length == 0)
+				return;
+			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
+			foreach (handler; handlers)
+				handler();
+		}
+	}
+	string answerProbe(ClaudeCodeSession session, string body)
+	{
+		assert(session.pendingControlRequests_.length == 1);
+		auto requestId = session.pendingControlRequests_.keys[0];
+		session.translateLiveLine(`{"type":"control_response","response":{"request_id":"`
+			~ requestId ~ `",` ~ body ~ `}}`);
+		drainNextTicks();
+		return requestId;
+	}
+	void init(ClaudeCodeSession session, string version_)
+	{
+		session.translateLiveLine(`{"type":"system","subtype":"init","session_id":"s",`
+			~ `"claude_code_version":"` ~ version_ ~ `"}`);
+	}
+
+	auto supporting = new ClaudeCodeSession("true");
+	scope(exit) supporting.stop();
+	size_t changes;
+	supporting.onRewindAvailabilityChanged = () { changes++; };
+	init(supporting, "probe-supported");
+	init(supporting, "probe-supported");
+	answerProbe(supporting, `"subtype":"success","response":{"rewound":false,`
+		~ `"error":"target not found","reason":"target_not_found"}`);
+	assert(changes == 1);
+	assert(supporting.rewindSupported_.get);
+	init(supporting, "probe-supported");
+	assert(supporting.pendingControlRequests_.length == 0);
+
+	auto cached = new ClaudeCodeSession("true");
+	scope(exit) cached.stop();
+	init(cached, "probe-supported");
+	assert(cached.pendingControlRequests_.length == 0);
+	assert(cached.rewindSupported_.get);
+
+	auto older = new ClaudeCodeSession("true");
+	scope(exit) older.stop();
+	init(older, "probe-unsupported");
+	answerProbe(older, `"subtype":"error",`
+		~ `"error":"Unsupported control request subtype: rewind_conversation"}`);
+	assert(!older.rewindSupported_.get);
+	assert(!ClaudeCodeSession.rewindSupportByVersion_["probe-unsupported"]);
 }
 
 // A message replayed while another message's turn is running was absorbed
@@ -2534,6 +2708,7 @@ unittest
 // callback can already resolve the session's history path.
 unittest
 {
+	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
 	string[] order;
 	auto session = new ClaudeCodeSession("true", null, null, null, SessionConfig.init,
 		(string sessionId, string cwd) { order ~= "register:" ~ sessionId ~ ":" ~ cwd; });
@@ -2542,7 +2717,7 @@ unittest
 		order ~= "native:" ~ sessionId;
 	};
 	session.translateLiveLine(
-		`{"type":"system","subtype":"init","session_id":"reg-id","cwd":"/mnt/scratch/proj"}`);
+		`{"type":"system","subtype":"init","session_id":"reg-id","cwd":"/mnt/scratch/proj","claude_code_version":"fixture"}`);
 	assert(order.length >= 2
 		&& order[0] == "register:reg-id:/mnt/scratch/proj"
 		&& order[1] == "native:reg-id",
