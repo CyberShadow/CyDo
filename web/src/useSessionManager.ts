@@ -36,6 +36,7 @@ import {
   replaceHistoryBoundary,
 } from "./sessionReducer";
 import { outbox } from "./outbox";
+import { canonicalUserTextFromDisplayMessage } from "./userText";
 import {
   beginTaskHistoryReplay,
   excludeReloadDraftUuid,
@@ -217,6 +218,7 @@ export interface TaskManager {
     revertFiles: boolean,
   ) => void;
   undoPreview: (tid: number, anchor: string) => void;
+  unsendMessage: (tid: number, nonce: string) => void;
   undoConfirm: (
     tid: number,
     revertConversation: boolean,
@@ -730,6 +732,9 @@ export function useTaskManager(
   );
 
   const connRef = useRef<Connection | null>(null);
+  // Texts of the messages this client asked to un-send, by nonce: restored
+  // to the composer once the agent confirms the withdrawal.
+  const unsendRequestsRef = useRef(new Map<string, string>());
   // Track which tasks have had history requested (avoid duplicate requests), keyed by uuid
   const requestedHistoryRef = useRef(new Set<string>());
   const outboxReplayedEpochRef = useRef<number | null>(null);
@@ -1377,6 +1382,16 @@ export function useTaskManager(
       let updated = reduceMessage(prev, msg, seq, ts);
       if (hasHistoryBoundary(msg) && seq !== undefined)
         updated = replaceHistoryBoundary(updated, msg, seq);
+      if (
+        msg.type === "user_message/consumed" &&
+        msg.consumed_as === "cancelled" &&
+        msg.correlation_id &&
+        unsendRequestsRef.current.has(msg.correlation_id)
+      ) {
+        const text = unsendRequestsRef.current.get(msg.correlation_id)!;
+        unsendRequestsRef.current.delete(msg.correlation_id);
+        updated = { ...updated, inputDraft: text };
+      }
       if (!updated.historyLoaded && updated.historyTotal !== undefined) {
         updated = {
           ...updated,
@@ -3043,6 +3058,18 @@ export function useTaskManager(
     connRef.current?.dismissAttention(tid);
   }, []);
 
+  const unsendMessage = useCallback((tid: number, nonce: string) => {
+    const message = findByTid(tid)?.messages.find(
+      (m) => m.type === "user" && m.nonce === nonce,
+    );
+    if (!message) return;
+    unsendRequestsRef.current.set(
+      nonce,
+      canonicalUserTextFromDisplayMessage(message),
+    );
+    connRef.current?.unsendMessage(tid, nonce);
+  }, []);
+
   const clearInputDraft = useCallback((tid: number) => {
     const t = findByTid(tid);
     if (!t?.inputDraft) return;
@@ -3401,6 +3428,7 @@ export function useTaskManager(
     fork,
     undo,
     undoPreview,
+    unsendMessage,
     undoConfirm,
     undoDismiss,
     dismissAttention,

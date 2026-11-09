@@ -44,6 +44,7 @@ interface Props {
   onPromote?: (tid: number) => void;
   onFork: (tid: number, anchor: string) => void;
   onUndo: (tid: number, anchor: string) => void;
+  onUnsend?: (tid: number, nonce: string) => void;
   onUndoConfirm: (
     tid: number,
     revertConversation: boolean,
@@ -81,6 +82,7 @@ function SessionViewInner({
   onPromote,
   onFork,
   onUndo,
+  onUnsend,
   onUndoConfirm,
   onUndoDismiss,
   onClearInputDraft,
@@ -435,6 +437,9 @@ function SessionViewInner({
           )}
           onFork={onFork}
           onUndo={onUndo}
+          onUnsend={
+            task.alive && task.driver === "claude" ? onUnsend : undefined
+          }
           onEditMessage={!task.alive ? onEditMessage : undefined}
           onEditRawEvent={!task.alive ? onEditRawEvent : undefined}
           onViewFile={openFileViewer}

@@ -37,6 +37,8 @@ interface Props {
   bandStatus: string;
   onFork?: (sid: number, anchor: string) => void;
   onUndo?: (tid: number, anchor: string) => void;
+  /** Withdraw a queued, not yet consumed message (by its send nonce). */
+  onUnsend?: (tid: number, nonce: string) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
   onEditRawEvent?: (tid: number, seq: number, content: string) => void;
   onViewFile?: (filePath: string) => void;
@@ -511,6 +513,7 @@ const MessageView = memo(
     onViewFile,
     onFork,
     onUndo,
+    onUnsend,
     onEdit,
     onEditRaw,
     actionUuid,
@@ -526,6 +529,7 @@ const MessageView = memo(
     onViewFile?: (filePath: string) => void;
     onFork?: (anchor: string) => void;
     onUndo?: (anchor: string) => void;
+    onUnsend?: (nonce: string) => void;
     onEdit?: (uuid: string, content: string) => void;
     onEditRaw?: (seq: number, content: string) => void;
     actionUuid?: string;
@@ -578,6 +582,9 @@ const MessageView = memo(
         ? "Undo this response and later history, retaining its prompt"
         : "Undo this message and later history, restoring its prompt to the composer"
     }${actionBoundary?.checkpointUuid ? " (file checkpoint available)" : ""}`;
+
+    const unsendLabel =
+      "Un-send this queued message, restoring it to the composer";
 
     if (msg.subtype === "metadata" && !devMode) return null;
 
@@ -741,6 +748,21 @@ const MessageView = memo(
               />
             </button>
           )}
+          {onUnsend && msg.nonce && (
+            <button
+              class="msg-action-btn unsend-btn"
+              onClick={() => {
+                onUnsend(msg.nonce!);
+              }}
+              aria-label={unsendLabel}
+              title={unsendLabel}
+            >
+              <span
+                class="action-icon"
+                dangerouslySetInnerHTML={{ __html: undoIcon }}
+              />
+            </button>
+          )}
           {uuid && onUndo && (
             <button
               class="msg-action-btn undo-btn"
@@ -829,6 +851,7 @@ const MessageView = memo(
     prev.onViewFile === next.onViewFile &&
     prev.onFork === next.onFork &&
     prev.onUndo === next.onUndo &&
+    prev.onUnsend === next.onUnsend &&
     prev.onEdit === next.onEdit &&
     prev.actionBoundary?.kind === next.actionBoundary?.kind &&
     prev.actionBoundary?.checkpointUuid ===
@@ -837,6 +860,17 @@ const MessageView = memo(
     prev.spawnedTidsByItemId === next.spawnedTidsByItemId &&
     prev.getTaskHref === next.getTaskHref,
 );
+
+/** A message the backend accepted that the agent has not yet consumed: its
+ * local placeholder, not yet displaced by the agent's replay. */
+function isUnsendable(msg: DisplayMessage): boolean {
+  return (
+    msg.type === "user" &&
+    msg.isProvisional === true &&
+    msg.nonce !== undefined &&
+    msg.ackState === 3
+  );
+}
 
 function makeOutboxPlaceholder(entry: OutboxEntry): DisplayMessage {
   const content = Array.isArray(entry.content)
@@ -860,6 +894,7 @@ export function MessageList({
   bandStatus,
   onFork,
   onUndo,
+  onUnsend,
   onEditMessage,
   onEditRawEvent,
   onViewFile,
@@ -906,6 +941,15 @@ export function MessageList({
           }
         : undefined,
     [onUndo, taskTid],
+  );
+  const handleUnsend = useMemo(
+    () =>
+      onUnsend
+        ? (nonce: string) => {
+            onUnsend(taskTid, nonce);
+          }
+        : undefined,
+    [onUnsend, taskTid],
   );
   const handleEditMessage = useMemo(
     () =>
@@ -1095,6 +1139,7 @@ export function MessageList({
                 onViewFile={onViewFile}
                 onFork={isForkable ? handleFork : undefined}
                 onUndo={isUndoable ? handleUndo : undefined}
+                onUnsend={isUnsendable(msg) ? handleUnsend : undefined}
                 onEdit={msg.type === "user" ? handleEditMessage : undefined}
                 onEditRaw={handleEditRawEvent}
                 actionUuid={actionUuid}

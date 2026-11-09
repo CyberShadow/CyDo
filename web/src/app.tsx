@@ -50,6 +50,7 @@ function AppContent() {
     fork,
     undo,
     undoPreview,
+    unsendMessage,
     undoConfirm,
     undoDismiss,
     dismissAttention,
@@ -525,6 +526,7 @@ function AppContent() {
                     onPromote={promote}
                     onFork={fork}
                     onUndo={undoPreview}
+                    onUnsend={unsendMessage}
                     onUndoConfirm={undoConfirm}
                     onUndoDismiss={undoDismiss}
                     onClearInputDraft={clearInputDraft}

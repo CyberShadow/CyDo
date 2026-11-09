@@ -76,6 +76,7 @@ import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, UserMessageConsumedEvent, extractContentText;
 import cydo.agent.session : AgentSession, AgentSubmissionReceipt;
+import cydo.agent.drivers.claude : ClaudeCodeSession;
 import cydo.agent.drivers.codex : CodexSession;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
 import cydo.domain.storage.persistence : LoadedHistory, Persistence, openDatabase;
@@ -1309,6 +1310,7 @@ class App
 			case "message":           handleUserMessage(json); break;
 			case "resume":            handleResumeMsg(json); break;
 			case "interrupt":         handleInterruptMsg(json); break;
+			case "unsend_message":    handleUnsendMessage(ws, json); break;
 			case "sigint":            handleSigintMsg(json); break;
 			case "close_stdin":       handleCloseStdinMsg(json); break;
 			case "stop":              handleStopMsg(json); break;
@@ -1553,9 +1555,9 @@ class App
 		if (shouldSendCompactionReminder)
 			maybeSendCompactionReminderSteering(tid);
 
-		// Queue-operation records reach us via the JSONL tail
-		// (onTailedJsonlLine), not the agent's stdout; any that appear in a
-		// translated event stream (pre-2.1.2xx CLIs) are simply consumed.
+		// Queue-operation records live in the session file, not the agent's
+		// stdout; any that appear in a translated event stream (pre-2.1.2xx
+		// CLIs) are simply consumed.
 		if (isQueueOperation(plan.currentEvent.translated))
 		{
 			plan.consumeCurrent = true;
@@ -1819,6 +1821,49 @@ class App
 		taskSessionRunner.interruptTask(tid);
 	}
 
+	/// Withdraw a user message the agent has queued but not yet consumed.
+	/// On success every client drops the message (a "cancelled" queue
+	/// confirmation); the requesting client returns its text to the composer.
+	private void handleUnsendMessage(WebSocketAdapter ws, WsMessage json)
+	{
+		auto tid = json.tid;
+		auto td = tid in tasks;
+		if (td is null)
+			return;
+		void refuse(string message)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", message, tid)).representation));
+		}
+		auto claude = cast(ClaudeCodeSession) sessionForTask(tid);
+		if (claude is null)
+			return refuse("Only messages queued in a running Claude session can be un-sent");
+		auto nonce = json.correlation_id;
+		auto uuid = td.unconsumedNativeSubmission(nonce);
+		if (uuid is null)
+			return refuse("The message was already delivered");
+		auto generation = td.history.generation;
+		claude.withdrawQueuedMessage(uuid).then((bool withdrawn) {
+			import std.datetime : Clock;
+
+			auto current = tid in tasks;
+			if (current is null)
+				return;
+			if (!withdrawn)
+				return refuse("The message was already delivered");
+			// A history reload meanwhile forgets submissions; the CLI still
+			// withdrew the message, so the confirmation goes out regardless.
+			if (current.nativeSubmission(uuid).found)
+				current.withdrawNativeSubmission(uuid, generation);
+			auto translated = toJson(UserMessageConsumedEvent(uuid: uuid,
+				consumed_as: "cancelled", correlation_id: nonce));
+			current.history.appendLive(Data(toJson(TaskEventEnvelope(tid,
+				Clock.currStdTime, JSONFragment(translated))).representation), null);
+			broadcastAppendedTaskEvent(tid, translated);
+		}, (Exception e) {
+			refuse("Un-send failed: " ~ e.msg);
+		}).ignoreResult();
+	}
+
 	private void handleSigintMsg(WsMessage json)
 	{
 		auto tid = json.tid;
@@ -1997,7 +2042,8 @@ class App
 			? randomUUID().toString() : null;
 		if (nativeSubmissionUuid.length > 0)
 			td.reserveNativeSubmission(nativeSubmissionUuid,
-				nonce is null ? "" : nonce, submissionGeneration);
+				nonce is null ? "" : nonce, submissionGeneration,
+				extractContentText(broadcastContent !is null ? broadcastContent : content));
 		Promise!AgentSubmissionReceipt submission;
 		try
 			submission = session.sendMessage(toSend, nonce, isContextBootstrap,
@@ -2669,14 +2715,13 @@ class App
 		clientHub.sendToSubscribed(tid, Data(toJson(ackEnv).representation));
 	}
 
-	/// Consume a complete JSONL line delivered by the live tail. Claude
-	/// ≥2.1.2xx records queue operations only in the session file, so this is
-	/// where the live queue lifecycle of user messages is observed: an enqueue
-	/// links the record to the oldest unmatched send nonce, a dequeue moves the
-	/// entry to the awaiting-echo stage, and the echo user line yields the
-	/// user_message/consumed confirmation carrying the CLI's own steering
-	/// classification. A remove yields the "removed" confirmation — the
-	/// message was withdrawn without ever being consumed.
+	/// Consume a complete JSONL line delivered by the live tail. The tail
+	/// links the persisted records of the user messages CyDo sent to their
+	/// live display: the echoed user line is a turn opener's canonical
+	/// record, and a queued_command attachment records one absorbed
+	/// mid-turn. The live queue lifecycle itself (queued, consumed,
+	/// withdrawn) is observed on the CLI's stdout, which reports it per
+	/// message, as it happens; Claude writes its session file once per turn.
 	private void onTailedJsonlLine(int tid, string line, int lineNum)
 	{
 		import std.algorithm : startsWith;
@@ -2687,35 +2732,11 @@ class App
 
 		if (isQueueOperation(line))
 		{
-			QueueOperationProbe op;
-			try
-				op = jsonParse!QueueOperationProbe(line);
-			catch (Exception e)
-			{
-				tracef("tail: queue op parse error: %s", e.msg);
-				return;
-			}
-			if (op.operation == "enqueue")
-			{
-				if (op.content.startsWith(systemMessagePrefix(
-					config.system_keyword,
-					KnownSystemMessageKind.postCompactionTaskModeReminder)))
-					td.compactionReminderInFlight = true;
-				td.queueTail.enqueue(format!"enqueue-%d"(lineNum));
-			}
-			else if (op.operation == "dequeue")
-			{
-				td.queueTail.dequeueToAwaiting();
-			}
-			else if (op.operation == "remove")
-			{
-				auto entry = td.queueTail.removeQueued();
-				if (entry.syntheticUuid.length > 0)
-				{
-					emitUserMessageConsumed(tid, entry.syntheticUuid,
-						"removed", null);
-				}
-			}
+			auto op = jsonParse!QueueOperationProbe(line);
+			if (op.operation == "enqueue" && op.content.startsWith(systemMessagePrefix(
+				config.system_keyword,
+				KnownSystemMessageKind.postCompactionTaskModeReminder)))
+				td.compactionReminderInFlight = true;
 			return;
 		}
 
@@ -2742,62 +2763,21 @@ class App
 			return;
 		}
 
-		if (!td.queueTail.hasAwaiting)
-			return;
 		auto ta = tryAgentForTask(tid);
-		if (ta is null)
+		if (ta is null || !ta.isUserMessageLine(line))
 			return;
-
-		if (ta.isUserMessageLine(line))
-		{
-			auto ts = ta.translateHistoryLine(line, lineNum);
-			if (ts.length == 0)
-				return;
-			@JSONPartial static struct TypeProbe { string type; }
-			if (jsonParse!TypeProbe(ts[0].translated).type != "item/started")
-				return; // tool_result etc. — keep awaiting the echo
-				auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
-				auto enqueueUuid = td.queueTail.consumeAwaiting().syntheticUuid;
-				auto local = td.observeNativeTail(ev.uuid,
-					SubmissionTailState.canonical, td.history.generation);
-				jsonlTracker.noteQueueCanonicalIdentity(tid, ev.uuid,
-					td.history.generation);
-				emitUserMessageConsumed(tid, enqueueUuid,
-				ev.is_steering ? "steering" : "turn_start",
-					local.found ? local.browserNonce : null, ev.uuid);
-		}
-		else if (ta.isAssistantMessageLine(line))
-		{
-			// No echo before assistant output: the output proves consumption;
-			// turn openers always echo first, so classify as steering.
-			emitUserMessageConsumed(tid, td.queueTail.consumeAwaiting().syntheticUuid,
-				"steering", null);
-		}
-		else
+		auto ts = ta.translateHistoryLine(line, lineNum);
+		if (ts.length == 0)
 			return;
-	}
-
-	/// Append a user_message/consumed confirmation to task history and
-	/// broadcast it to subscribed clients.
-	private void emitUserMessageConsumed(int tid, string uuid, string consumedAs,
-		string nonce, string nativeUuid = null)
-	{
-		import std.datetime : Clock;
-
-		auto td = tid in tasks;
-		if (td is null)
+		@JSONPartial static struct TypeProbe { string type; }
+		if (jsonParse!TypeProbe(ts[0].translated).type != "item/started")
+			return; // tool_result etc.
+		auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
+		// The echo carries the UUID CyDo submitted the message under.
+		if (!td.nativeSubmission(ev.uuid).found)
 			return;
-		auto ev = UserMessageConsumedEvent(uuid: uuid, consumed_as: consumedAs);
-		if (nonce.length > 0)
-			ev.correlation_id = nonce;
-		if (nativeUuid.length > 0)
-			ev.native_uuid = nativeUuid;
-		auto translated = toJson(ev);
-		tracef("queue-tail: consumed tid=%d uuid=%s as=%s nonce=%s", tid, uuid,
-			consumedAs, nonce);
-		td.history.appendLive(Data(toJson(TaskEventEnvelope(tid, Clock.currStdTime,
-			JSONFragment(translated))).representation), null);
-		broadcastAppendedTaskEvent(tid, translated);
+		td.observeNativeTail(ev.uuid, SubmissionTailState.canonical, td.history.generation);
+		jsonlTracker.noteQueueCanonicalIdentity(tid, ev.uuid, td.history.generation);
 	}
 
 	private void broadcastAppendedTaskEvent(int tid, string translated)
@@ -4936,7 +4916,6 @@ unittest
 	assert(launchSawAssignedWorktree && fixture.session.sendCalls == 1);
 	assert(rejected.status == TaskStatus.active && rejected.history.length == 0
 		&& rejected.nativeSubmissionCount == 1
-		&& rejected.queueTail.queuedCount == 0 && rejected.queueTail.awaitingCount == 0
 		&& rejected.pendingSteeringTexts.length == 0 && rejected.recentNonces.length == 0
 		&& !rejected.isProcessing && rejected.lastSuggestions.length == 0
 		&& fixture.titlePromptReads == 0 && fixture.socket.sent.length == 0
@@ -4981,7 +4960,6 @@ unittest
 	assert(fixture.session.sendCalls == 2 && accepted.status == TaskStatus.active);
 	assert(accepted.history.length == 0 && accepted.nativeSubmissionCount == 1
 		&& accepted.recentNonces.length == 0
-		&& accepted.queueTail.queuedCount == 0 && accepted.queueTail.awaitingCount == 0
 		&& accepted.pendingSteeringTexts.length == 0 && !accepted.isProcessing
 		&& accepted.lastSuggestions.length == 0 && fixture.titlePromptReads == 0
 		&& fixture.socket.sent.length == 0 && fixture.submissionMessages.length == 0
@@ -5236,16 +5214,6 @@ unittest
 		"accepted queue message queue-three-nonce",
 	]);
 
-	fixture.app.onTailedJsonlLine(fixture.tid,
-		`{"type":"queue-operation","operation":"enqueue","content":"queue one"}`, 101);
-	fixture.app.onTailedJsonlLine(fixture.tid,
-		`{"type":"queue-operation","operation":"enqueue","content":"queue two"}`, 102);
-	fixture.app.onTailedJsonlLine(fixture.tid,
-		`{"type":"queue-operation","operation":"dequeue"}`, 103);
-	assert(td.queueTail.queuedCount == 1 && td.queueTail.awaitingCount == 1);
-
-	auto queuedCount = td.queueTail.queuedCount;
-	auto awaitingCount = td.queueTail.awaitingCount;
 	auto pendingSteeringTexts = td.pendingSteeringTexts.dup;
 	auto nativeSubmissionCount = td.nativeSubmissionCount;
 	auto historyGeneration = td.history.generation;
@@ -5264,8 +5232,6 @@ unittest
 
 	fixture.session.reject(3, "newer submission rejected");
 	drainSubmissionNextTicks();
-	assert(td.queueTail.queuedCount == queuedCount
-		&& td.queueTail.awaitingCount == awaitingCount);
 	assert(td.pendingSteeringTexts == pendingSteeringTexts);
 	assert(td.nativeSubmissionCount == nativeSubmissionCount + 1);
 	assert(td.history.generation == historyGeneration
@@ -5412,8 +5378,8 @@ unittest
 	auto fixture = new GatedSubmissionFixture(dbPath);
 	auto td = &fixture.app.tasks[fixture.tid];
 	td.agentName = "claude";
-	td.reserveNativeSubmission("local-one", "one", td.history.generation);
-	td.reserveNativeSubmission("local-two", "two", td.history.generation);
+	td.reserveNativeSubmission("local-one", "one", td.history.generation, "one");
+	td.reserveNativeSubmission("local-two", "two", td.history.generation, "two");
 
 	// Attachments carry the only native identity for absorption. Their order is
 	// independent from queue presentation, so each retires only its exact UUID.
@@ -5439,13 +5405,6 @@ unittest
 	fixture.app.onTailedJsonlLine(fixture.tid,
 		`{"type":"attachment","attachment":{"type":"queued_command"}}`, 4);
 	assert(td.nativeSubmissionCount == 0);
-
-	td.queueTail.enqueue("enqueue-5");
-	fixture.app.onTailedJsonlLine(fixture.tid,
-		`{"type":"queue-operation","operation":"remove"}`, 5);
-	auto consumed = td.history.lastEventContents();
-	assert(consumed.canFind(`"uuid":"enqueue-5"`)
-		&& !consumed.canFind(`"native_uuid"`) && !consumed.canFind(`"nonce"`));
 }
 
 unittest
@@ -5465,12 +5424,12 @@ unittest
 	fixture.app.tasks[splitTid].status = TaskStatus.active;
 	fixture.app.tasks[splitTid].history.reset(Watermark.none());
 
-	string[] run(int tid, bool split)
+	size_t run(int tid, bool split)
 	{
 		auto td = &fixture.app.tasks[tid];
 		td.agentName = "claude";
-		td.reserveNativeSubmission("native-one", "one", td.history.generation);
-		td.reserveNativeSubmission("native-two", "two", td.history.generation);
+		td.reserveNativeSubmission("native-one", "one", td.history.generation, "one");
+		td.reserveNativeSubmission("native-two", "two", td.history.generation, "two");
 		auto path = buildPath(tempDir(), split
 			? "cydo-app-attachment-split.jsonl"
 			: "cydo-app-attachment-complete.jsonl");
@@ -5487,7 +5446,7 @@ unittest
 		};
 		fixture.app.jsonlTracker.startJsonlWatch(tid);
 		scope(exit) fixture.app.jsonlTracker.stopJsonlWatch(tid);
-		td.reserveNativeSubmission("native-user", "turn opener", td.history.generation);
+		td.reserveNativeSubmission("native-user", "turn opener", td.history.generation, "turn opener");
 		auto publicationStart = fixture.submissionMessages.length;
 		fixture.app.historyPipeline.broadcastTask(tid,
 			fixture.session.nativeUserEcho("turn opener", null, "native-user"));
@@ -5509,23 +5468,19 @@ unittest
 			auto canonicalCut = canonical.length / 2;
 			write(path, canonical[0 .. canonicalCut]);
 			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
-			assert(td.queueTail.awaitingCount == 1);
 			auto f = File(path, "a");
 			f.write(canonical[canonicalCut .. $] ~ enqueues);
 			f.close();
 			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
-			assert(td.queueTail.queuedCount == 2);
 			auto cut = attachments.length / 2;
 			f = File(path, "a");
 			f.write(attachments[0 .. cut]);
 			f.close();
 			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
-			assert(td.queueTail.queuedCount == 2);
 			f = File(path, "a");
 			f.write(attachments[cut .. $]);
 			f.close();
 			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
-			assert(td.queueTail.queuedCount == 2 && td.queueTail.awaitingCount == 0);
 			f = File(path, "a");
 			f.write(removes);
 			f.close();
@@ -5538,8 +5493,6 @@ unittest
 		}
 		assert(td.nativeSubmission("native-one").tailState == SubmissionTailState.absorbed
 			&& td.nativeSubmission("native-two").tailState == SubmissionTailState.absorbed);
-		assert(td.queueTail.queuedCount == 0 && td.queueTail.awaitingCount == 0);
-		assert(td.history.lastEventContents().canFind(`"consumed_as":"removed"`));
 		size_t canonicalBoundaries;
 		foreach (index; 0 .. td.history.length)
 		{
@@ -5568,33 +5521,14 @@ unittest
 			++canonicalReplacements;
 		}
 		assert(canonicalReplacements == 1);
-		string[] removed;
+		// The live queue lifecycle is read from stdout; the tail reports none.
 		foreach (index; 0 .. td.history.length)
-		{
-			auto event = cast(string) td.history.opIndex(index).unsafeContents;
-			if (event.canFind(`"type":"user_message/consumed"`))
-			{
-				if (event.canFind(`"consumed_as":"turn_start"`))
-					assert(event.canFind(`"uuid":"enqueue-`)
-						&& event.canFind(`"native_uuid":"native-user"`));
-				else
-				{
-					assert(event.canFind(`"consumed_as":"removed"`)
-						&& !event.canFind(`"native_uuid"`)
-						&& !event.canFind(`"correlation_id"`));
-					removed ~= event;
-				}
-			}
-		}
-		assert(removed.length == 2);
-		return removed;
+			assert(!(cast(string) td.history.opIndex(index).unsafeContents)
+				.canFind(`"type":"user_message/consumed"`));
+		return canonicalBoundaries;
 	}
 
-	auto complete = run(fixture.tid, false);
-	auto split = run(splitTid, true);
-	assert(complete.length == split.length);
-	foreach (event; complete ~ split)
-		assert(event.canFind(`"uuid":"enqueue-`), event);
+	assert(run(fixture.tid, false) == run(splitTid, true));
 }
 
 unittest

@@ -312,6 +312,12 @@ export class Connection {
     );
   }
 
+  unsendMessage(tid: number, nonce: string) {
+    this.send(
+      JSON.stringify({ type: "unsend_message", tid, correlation_id: nonce }),
+    );
+  }
+
   sendInterrupt(tid: number) {
     this.send(JSON.stringify({ type: "interrupt", tid }));
   }

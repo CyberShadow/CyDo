@@ -293,27 +293,15 @@ test(
     expect(remove.uuid).toBeFalsy();
     expect(remove.native_uuid).toBeFalsy();
     expect(remove.correlation_id).toBeFalsy();
-    await expect(() => {
-      const consumed = frames.filter(
+    // The absorbed message is steering, not a removed one: the live queue
+    // lifecycle comes from stdout, and the tail confirms nothing.
+    expect(
+      frames.some(
         (frame) =>
           frame?.event?.type === "user_message/consumed" &&
-          typeof frame?.event?.uuid === "string" &&
-          frame.event.uuid.startsWith("enqueue-") &&
           frame.event.consumed_as === "removed",
-      );
-      expect(consumed).toHaveLength(1);
-      expect(consumed[0].event.consumed_as).toBe("removed");
-      expect(consumed[0].event.native_uuid).toBeFalsy();
-      expect(consumed[0].event.correlation_id).toBeFalsy();
-      expect(consumed[0].event.nonce).toBeFalsy();
-      expect(
-        frames.some(
-          (frame) =>
-            frame?.event?.type === "user_message/consumed" &&
-            frame?.event?.uuid === queuedInput.uuid,
-        ),
-      ).toBe(false);
-    }).toPass({ timeout: responseTimeout(agentType) });
+      ),
+    ).toBe(false);
     await expect
       .poll(() =>
         frames
@@ -334,6 +322,7 @@ test(
 
     const live = queuedUser(page, marker);
     await expect(live).toBeVisible({ timeout: responseTimeout(agentType) });
+    await expect(live.locator(".steering-message")).toBeVisible();
     await live.hover();
     await expect(live.locator(".fork-btn, .undo-btn")).toHaveCount(0);
     await expect(page.locator(".command-error-dialog")).toHaveCount(0);
@@ -342,6 +331,9 @@ test(
     await page.reload();
     const offline = queuedUser(page, marker);
     await expect(offline).toBeVisible({ timeout: responseTimeout(agentType) });
+    // Reloaded from the session file, the absorbed message is still steering.
+    await expect(offline.locator(".steering-message")).toBeVisible();
+    await expect(offline.locator(".removed-message")).toHaveCount(0);
     await offline.hover();
     await expect(offline.locator(".undo-btn")).toBeVisible();
     await expect(offline.locator(".undo-btn")).not.toHaveAttribute(

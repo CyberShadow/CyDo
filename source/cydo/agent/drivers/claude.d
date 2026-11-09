@@ -1428,6 +1428,13 @@ class ClaudeCodeSession : AgentSession
 	private void delegate(string toolUseId) permissionRequestWithdrawnHandler_;
 	/// can_use_tool requests the CLI still awaits an answer to: request_id → tool_use_id.
 	private string[string] pendingPermissionRequests_;
+	/// User messages (by the UUID we sent them with) the CLI has started
+	/// processing and not yet finished, per its `command_lifecycle` reports.
+	/// A message replayed while another is in progress was absorbed into
+	/// that turn as steering.
+	private bool[string] startedCommands_;
+	/// Control requests we sent and await the CLI's answer to, by request_id.
+	private Promise!JSONFragment[string] pendingControlRequests_;
 
 	// Stateful translation: track active content blocks per index.
 	private string[] activeItemIds_;   // index → item_id for current turn
@@ -1547,6 +1554,11 @@ class ClaudeCodeSession : AgentSession
 
 		process.onExit = (int status) {
 			pendingPermissionRequests_ = null;
+			startedCommands_ = null;
+			auto unanswered = pendingControlRequests_;
+			pendingControlRequests_ = null;
+			foreach (_, promise; unanswered)
+				promise.reject(new Exception("Claude exited before answering"));
 			if (exitHandler)
 				exitHandler(status);
 		};
@@ -1759,6 +1771,99 @@ class ClaudeCodeSession : AgentSession
 		permissionRequestWithdrawnHandler_(withdrawn);
 	}
 
+	/// Withdraw a user message the CLI has queued but not yet consumed
+	/// (`cancel_async_message`). Resolves to whether it was withdrawn; false
+	/// when the CLI had already consumed it.
+	Promise!bool withdrawQueuedMessage(string uuid)
+	{
+		static struct Request { string subtype; string message_uuid; }
+		@JSONPartial static struct Response { bool cancelled; }
+		return sendControlRequest(Request("cancel_async_message", uuid))
+			.then((JSONFragment response) => jsonParse!Response(response.json).cancelled);
+	}
+
+	private Promise!JSONFragment sendControlRequest(Request)(Request request)
+	{
+		import std.uuid : randomUUID;
+
+		static struct Envelope { string type; string request_id; Request request; }
+		auto requestId = randomUUID().toString();
+		auto promise = new Promise!JSONFragment;
+		pendingControlRequests_[requestId] = promise;
+		try
+			process.sendMessage(toJson(Envelope("control_request", requestId, request)));
+		catch (Exception e)
+		{
+			pendingControlRequests_.remove(requestId);
+			return reject!JSONFragment(e);
+		}
+		return promise;
+	}
+
+	/// Settle the request a `control_response` answers, if it is one of ours
+	/// awaiting an answer. Returns false for responses nobody awaits (e.g.
+	/// to fire-and-forget interrupts), which are translated as events.
+	private bool settleControlResponse(string rawLine)
+	{
+		@JSONPartial static struct Body
+		{
+			string subtype;
+			string request_id;
+			@JSONOptional JSONFragment response;
+			@JSONOptional string error;
+		}
+		@JSONPartial static struct Envelope { Body response; }
+		auto answer = jsonParse!Envelope(rawLine).response;
+		auto promise = answer.request_id in pendingControlRequests_;
+		if (promise is null)
+			return false;
+		auto awaiting = *promise;
+		pendingControlRequests_.remove(answer.request_id);
+		if (answer.subtype == "success")
+			awaiting.fulfill(answer.response);
+		else
+			awaiting.reject(new Exception("Claude refused the control request: "
+				~ answer.error));
+		return true;
+	}
+
+	private void observeCommandLifecycle(string rawLine)
+	{
+		@JSONPartial static struct Lifecycle { string command_uuid; string state; }
+		auto lifecycle = jsonParse!Lifecycle(rawLine);
+		switch (lifecycle.state)
+		{
+			case "queued":
+				break;
+			case "started":
+				startedCommands_[lifecycle.command_uuid] = true;
+				break;
+			case "completed":
+			case "cancelled":
+				startedCommands_.remove(lifecycle.command_uuid);
+				break;
+			default:
+				import cydo.protocol : makeUnrecognizedEvent;
+				emitEvent(TranslatedEvent(makeUnrecognizedEvent(
+					"command_lifecycle state: " ~ lifecycle.state), rawLine));
+		}
+	}
+
+	/// Whether the CLI replayed this user message into a turn already in
+	/// progress (mid-turn absorption) rather than opening a turn with it.
+	/// Claude Code no longer flags steering on the replay itself: an absorbed
+	/// message is replayed before its own `started` report, while another
+	/// message's turn is still running.
+	private bool isAbsorbedReplay(bool isReplay, string uuid)
+	{
+		if (!isReplay)
+			return false;
+		foreach (started, _; startedCommands_)
+			if (started != uuid)
+				return true;
+		return false;
+	}
+
 	private void sendControlResponse(ClaudeControlResponse response)
 	{
 		process.sendMessage(toJson(response));
@@ -1839,6 +1944,13 @@ class ClaudeCodeSession : AgentSession
 			case "control_cancel_request":
 				handleCliControlCancel(rawLine);
 				return;
+			case "command_lifecycle":
+				observeCommandLifecycle(rawLine);
+				return;
+			case "control_response":
+				if (settleControlResponse(rawLine))
+					return;
+				goto default;
 			default:
 				// Stateless translation for system, result, summary, control, etc.
 				auto t = translateClaudeEvent(rawLine, agentName_);
@@ -2230,7 +2342,7 @@ class ClaudeCodeSession : AgentSession
 			ev.is_replay   = raw.isReplay;
 			ev.is_synthetic = raw.isSynthetic;
 			ev.is_meta     = raw.isMeta;
-			ev.is_steering        = raw.isSteering;
+			ev.is_steering        = raw.isSteering || isAbsorbedReplay(raw.isReplay, raw.uuid);
 			ev.pending            = raw.pending;
 			ev.uuid               = raw.uuid;
 			ev.parent_tool_use_id = raw.parent_tool_use_id;
@@ -2308,7 +2420,7 @@ class ClaudeCodeSession : AgentSession
 				ev.is_replay   = raw.isReplay;
 				ev.is_synthetic = raw.isSynthetic;
 				ev.is_meta     = raw.isMeta;
-				ev.is_steering        = raw.isSteering;
+				ev.is_steering        = raw.isSteering || isAbsorbedReplay(raw.isReplay, raw.uuid);
 				ev.pending            = raw.pending;
 				ev.uuid               = raw.uuid;
 				ev.parent_tool_use_id = raw.parent_tool_use_id;
@@ -2372,6 +2484,49 @@ unittest
 	assert(withdrawn == ["toolu_1"]);
 	session.translateLiveLine(`{"type":"control_cancel_request","request_id":"req-1"}`);
 	assert(withdrawn == ["toolu_1"]);
+}
+
+// A message replayed while another message's turn is running was absorbed
+// as steering; a turn opener is replayed after its own `started` report.
+unittest
+{
+	@JSONPartial static struct Probe { string type; @JSONOptional bool is_steering; }
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	bool[] steering;
+	session.onOutput = (TranslatedEvent event) {
+		auto probe = jsonParse!Probe(event.translated);
+		if (probe.type == "item/started")
+			steering ~= probe.is_steering;
+	};
+	void lifecycle(string uuid, string state)
+	{
+		session.translateLiveLine(`{"type":"command_lifecycle","command_uuid":"` ~ uuid
+			~ `","state":"` ~ state ~ `"}`);
+	}
+	void replay(string uuid)
+	{
+		session.translateLiveLine(`{"type":"user","uuid":"` ~ uuid
+			~ `","isReplay":true,"message":{"role":"user","content":"m"}}`);
+	}
+
+	lifecycle("u1", "queued");
+	lifecycle("u1", "started");
+	replay("u1");
+	lifecycle("u2", "queued");
+	replay("u2");
+	lifecycle("u2", "started");
+	lifecycle("u2", "completed");
+	lifecycle("u1", "completed");
+	// Interrupted turn: the running message is cancelled, and a message
+	// queued behind it opens the next turn.
+	lifecycle("u3", "started");
+	replay("u3");
+	lifecycle("u4", "queued");
+	lifecycle("u3", "cancelled");
+	lifecycle("u4", "started");
+	replay("u4");
+	assert(steering == [false, true, false, false]);
 }
 
 // The history path registrar receives the init event's session ID and cwd

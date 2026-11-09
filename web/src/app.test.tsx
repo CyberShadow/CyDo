@@ -83,6 +83,7 @@ vi.mock("./useSessionManager", () => ({
       fork: vi.fn(),
       undo: vi.fn(),
       undoPreview: vi.fn(),
+      unsendMessage: vi.fn(),
       undoConfirm: vi.fn(),
       undoDismiss: vi.fn(),
       dismissAttention: vi.fn(),

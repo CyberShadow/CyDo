@@ -539,47 +539,8 @@ private struct NativeSubmission
 	ulong generation;
 	bool stdoutSeen;
 	SubmissionTailState tailState;
-}
-
-struct QueueTailEntry { string syntheticUuid; }
-
-struct ClaudeQueueTailState
-{
-private:
-	QueueTailEntry[] queued_;
-	QueueTailEntry[] awaiting_;
-
-public:
-	void enqueue(string syntheticUuid)
-	{
-		assert(syntheticUuid.length > 0, "queue entry requires a synthetic UUID");
-		queued_ ~= QueueTailEntry(syntheticUuid);
-	}
-	bool dequeueToAwaiting()
-	{
-		if (queued_.length == 0) return false;
-		awaiting_ ~= queued_[0];
-		queued_ = queued_[1 .. $];
-		return true;
-	}
-	QueueTailEntry removeQueued()
-	{
-		if (queued_.length == 0) return QueueTailEntry.init;
-		auto entry = queued_[0];
-		queued_ = queued_[1 .. $];
-		return entry;
-	}
-	QueueTailEntry consumeAwaiting()
-	{
-		assert(awaiting_.length > 0, "no awaiting queue entry to consume");
-		auto entry = awaiting_[0];
-		awaiting_ = awaiting_[1 .. $];
-		return entry;
-	}
-	@property bool hasAwaiting() const { return awaiting_.length > 0; }
-	@property size_t queuedCount() const { return queued_.length; }
-	@property size_t awaitingCount() const { return awaiting_.length; }
-	void clear() { queued_ = null; awaiting_ = null; }
+	/// The message text as displayed (pendingSteeringTexts entry).
+	string text;
 }
 
 struct TaskData
@@ -684,27 +645,47 @@ struct TaskData
 	VisibleTurnAnchor[] visibleTurnAnchors;
 	bool compactionReminderInFlight;
 
-	ClaudeQueueTailState queueTail;
-
-	void clearQueueTailState()
-	{
-		queueTail.clear();
-	}
-
 	void clearSubmissionCorrelationState()
 	{
 		nativeSubmissions = null;
 		appServerAcceptedNonceGeneration = null;
 		inFlightUiNonceGeneration = null;
-		clearQueueTailState();
 	}
 
-	void reserveNativeSubmission(string uuid, string nonce, ulong generation)
+	void reserveNativeSubmission(string uuid, string nonce, ulong generation,
+		string text)
 	{
 		assert(uuid.length > 0, "native submission UUID must not be empty");
 		assert(uuid !in nativeSubmissions, "duplicate native submission UUID");
 		nativeSubmissions[uuid] = NativeSubmission(nonce, generation, false,
-			SubmissionTailState.pending);
+			SubmissionTailState.pending, text);
+	}
+
+	/// The native UUID of the browser submission `nonce` while the agent has
+	/// neither replayed nor recorded consuming it, else null.
+	string unconsumedNativeSubmission(string nonce) const
+	{
+		assert(nonce.length > 0, "browser submission lookup requires a nonce");
+		foreach (uuid, ref submission; nativeSubmissions)
+			if (submission.browserNonce == nonce && !submission.stdoutSeen
+				&& submission.tailState == SubmissionTailState.pending)
+				return uuid;
+		return null;
+	}
+
+	/// The agent withdrew an unconsumed submission: forget it, and its text
+	/// as a pending steering text.
+	void withdrawNativeSubmission(string uuid, ulong generation)
+	{
+		import std.algorithm : countUntil, remove;
+
+		auto submission = uuid in nativeSubmissions;
+		assert(submission !is null, "withdrawn native submission must be reserved");
+		auto text = (*submission).text;
+		cancelUnobservedNativeSubmission(uuid, generation);
+		auto index = pendingSteeringTexts.countUntil(text);
+		if (index >= 0)
+			pendingSteeringTexts = pendingSteeringTexts.remove(index);
 	}
 
 	NativeSubmissionObservation observeNativeStdout(string uuid, ulong generation)
@@ -951,7 +932,7 @@ unittest
 	import std.exception : assertThrown;
 
 	auto task = TaskData(1, "local", "/tmp");
-	task.reserveNativeSubmission("u-one", "", 4);
+	task.reserveNativeSubmission("u-one", "", 4, "one");
 	assert(task.nativeSubmissionCount == 1
 		&& task.nativeSubmission("u-one").found);
 	auto canonical = task.observeNativeTail("u-one", SubmissionTailState.canonical, 4);
@@ -959,12 +940,12 @@ unittest
 	auto stdout = task.observeNativeStdout("u-one", 4);
 	assert(stdout.found && stdout.tailState == SubmissionTailState.canonical
 		&& task.nativeSubmissionCount == 0);
-	task.reserveNativeSubmission("u-two", "browser", 4);
+	task.reserveNativeSubmission("u-two", "browser", 4, "two");
 	auto absorbed = task.observeNativeStdout("u-two", 4);
 	assert(absorbed.browserNonce == "browser");
 	task.observeNativeTail("u-two", SubmissionTailState.absorbed, 4);
 	assert(task.nativeSubmissionCount == 0);
-	task.reserveNativeSubmission("u-three", "", 4);
+	task.reserveNativeSubmission("u-three", "", 4, "three");
 	task.cancelUnobservedNativeSubmission("u-three", 4);
 	assert(task.nativeSubmissionCount == 0);
 	assert(task.codexNativeUndoState == CodexNativeUndoState.idle
