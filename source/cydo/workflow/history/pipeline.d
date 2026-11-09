@@ -265,7 +265,10 @@ class HistoryEventPipeline
 			foreach (text; td.pendingSteeringTexts[cast(size_t) userMsgFromJsonl .. $])
 			{
 				auto uuid = randomUUID().toString();
-				if (jsonlPath.length > 0)
+				// The row is Copilot's events.jsonl format, so undo can cut a
+				// Copilot history at it. Other agents' files neither use this
+				// format nor are CyDo's to append to.
+				if (jsonlPath.length > 0 && ta.driver == AgentDriver.copilot)
 				{
 					mkdirRecurse(dirName(jsonlPath));
 					append(jsonlPath,
