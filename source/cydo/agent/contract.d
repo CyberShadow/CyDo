@@ -173,6 +173,12 @@ interface Agent
 	/// Each agent knows its own session ID field names.
 	string rewriteSessionId(string line, string oldId, string newId);
 
+	/// The 1-based lines of a whole history file that are not part of the
+	/// conversation the agent continues: turns it rolled back or rewound
+	/// in place, which stay in the file. Readers interpreting the file as
+	/// a conversation skip these lines; line numbers stay stable.
+	bool[int] inactiveHistoryLines(string content);
+
 	/// Extract persisted history boundaries with explicit kinds.
 	PersistedHistoryBoundary[] extractPersistedHistoryBoundaries(string content, int lineOffset = 0);
 

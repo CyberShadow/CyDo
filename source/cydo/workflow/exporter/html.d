@@ -147,22 +147,13 @@ string exportTaskData(Persistence.TaskRow[] taskRows, ref CydoConfig config,
 			throw new Exception("Cannot export task " ~ t.tid.to!string
 				~ ": session history is unreadable");
 
-		// Pre-compute rollback skip lines for Codex
-		bool[int] rollbackSkipLines;
-		if (agent !is null && agent.driver == AgentDriver.codex)
-		{
-			import std.file : exists, readText;
-			if (exists(jsonlPath))
-			{
-				import cydo.agent.drivers.codex : computeRollbackSkipLines;
-				rollbackSkipLines = computeRollbackSkipLines(readText(jsonlPath));
-			}
-		}
+		import std.file : readText;
+		auto inactiveLines = agent.inactiveHistoryLines(readText(jsonlPath));
 
 		agent.resetHistoryReplay();
 		auto loaded = loadTaskHistory(t.tid, jsonlPath,
 			delegate TranslatedEvent[](string line, int lineNum) {
-				if (lineNum in rollbackSkipLines)
+				if (lineNum in inactiveLines)
 					return [];
 				return agent.translateHistoryLine(line, lineNum);
 			});

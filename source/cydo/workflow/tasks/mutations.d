@@ -13,7 +13,8 @@ import ae.utils.json : jsonParse, toJson;
 import ae.utils.promise : Promise;
 import ae.utils.statequeue : StateQueue;
 
-import cydo.agent.contract : Agent, PersistedHistoryBoundaryKind, SessionConfig;
+import cydo.agent.contract : Agent, PersistedHistoryBoundary, PersistedHistoryBoundaryKind,
+	SessionConfig;
 import cydo.agent.drivers.claude : ClaudeCodeSession;
 import cydo.agent.drivers.codex : CodexAgent, CodexSession,
 	NativeUndoExecutionResult, NativeUndoExecutionStatus, NativeUndoPlan,
@@ -422,7 +423,8 @@ public:
 				access.path,
 				boundary.anchor,
 				&ta.forkIdMatchesLine,
-				&ta.isForkableLine);
+				&ta.isForkableLine,
+				ta.inactiveHistoryLines(readText(access.path)));
 			if (count < 0)
 			{
 				ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
@@ -1321,13 +1323,14 @@ private:
 
 	/// Undo through the live Claude process (`rewind_files`,
 	/// `rewind_conversation`) instead of stopping and resuming it. The CLI
-	/// keeps the abandoned rows in its session file, so they are cut from it
-	/// as in the JSONL mechanism, leaving the file holding exactly the
-	/// conversation the CLI continues.
+	/// records the rewind in its session file without removing the undone
+	/// turns; history readers leave them out (Agent.inactiveHistoryLines).
 	void executeClaudeNativeUndo(MutationReplySocket ws, int tid, WsMessage json,
 		HistoryBoundary boundary, HistoryAccess access, ClaudeCodeSession session)
 	{
+		import core.time : msecs;
 		import std.algorithm : canFind;
+		import ae.sys.timing : setTimeout;
 		import ae.utils.promise : resolve;
 
 		void fail(string message)
@@ -1355,6 +1358,9 @@ private:
 					rewindOutput)).representation));
 				return;
 			}
+			// Read before the rewind: afterwards the conversation no longer
+			// holds the undone turns.
+			auto lastForkId = lastHistoryBoundaryAnchor(access);
 			session.rewindConversation(boundary.anchor, lastUserBoundaryAnchor(access))
 				.then((string rewoundTo) {
 				auto current = host_.getTask(tid);
@@ -1365,32 +1371,60 @@ private:
 						~ "; sends are blocked only in this running CyDo process");
 					return;
 				}
-				try
+				void unconfirmed(string reason)
 				{
-					auto lastForkId = lastHistoryBoundaryAnchor(access);
+					current.markNativeUndoUnverified();
+					fail("Claude rewound its conversation, but CyDo could not confirm it in the session file; sends are blocked only in this running CyDo process. "
+						~ reason);
+				}
+				void apply()
+				{
+					// The backup copies the file up to the last boundary of
+					// the undone conversation, which precedes the rewind.
 					if (lastForkId.length > 0)
 						createUndoBackup(tid, access, lastForkId);
+					trimPendingSteeringTexts(tid, access);
 					host_.invalidateJsonlLineage(tid);
 					host_.clearUndoJsonl(tid);
-					enforce(truncateUndoneHistory(tid, access, boundary.anchor),
-						"UUID not found for truncation");
 					current.history.reset(watermarkFromPath(access.path));
 					host_.unsubscribeTaskHistorySubscribers(tid);
 					session.invalidatePendingSubmittedMessages();
 					host_.emitTaskReload(tid, "");
 					host_.startJsonlWatch(tid);
 					host_.broadcastTaskUpdate(tid);
+					current.completeVerifiedNativeUndoCleanup();
+					ws.send(Data(toJson(UndoResultMessage("undo_result", tid,
+						rewindOutput)).representation));
 				}
-				catch (Exception e)
+				// The CLI answers before its session writer flushes the
+				// rewind marker (it batches appends on a 100 ms timer), so
+				// wait for the file to record the rewind. The undone turns
+				// stay there as a rewound branch.
+				void awaitRecordedRewind(uint attemptsRemaining)
 				{
-					current.markNativeUndoUnverified();
-					fail("Claude rewound its conversation, but the session file could not be cut to match; sends are blocked only in this running CyDo process. "
-						~ e.msg);
-					return;
+					bool recorded;
+					try
+						recorded = !activeHistoryBoundaries(access)
+							.canFind!(persisted => persisted.anchor == boundary.anchor);
+					catch (Exception e)
+						return unconfirmed(e.msg);
+					if (!recorded && attemptsRemaining == 0)
+						return unconfirmed("the session file does not record the rewind");
+					if (!recorded)
+					{
+						setTimeout({ awaitRecordedRewind(attemptsRemaining - 1); }, 10.msecs);
+						return;
+					}
+					try
+						apply();
+					catch (Exception e)
+					{
+						current.markNativeUndoUnverified();
+						fail("Claude rewound its conversation, but CyDo failed to follow it; sends are blocked only in this running CyDo process. "
+							~ e.msg);
+					}
 				}
-				current.completeVerifiedNativeUndoCleanup();
-				ws.send(Data(toJson(UndoResultMessage("undo_result", tid,
-					rewindOutput)).representation));
+				awaitRecordedRewind(500);
 			}, (Exception e) {
 				host_.getTask(tid).clearNativeUndoRefusalBeforeDispatch();
 				fail(e.msg);
@@ -1401,21 +1435,32 @@ private:
 		}).ignoreResult();
 	}
 
-	/// Anchor of the history's last user message boundary.
+	/// The boundaries of the conversation the agent continues, leaving out
+	/// turns it rolled back or rewound in place.
+	PersistedHistoryBoundary[] activeHistoryBoundaries(HistoryAccess access)
+	{
+		import std.algorithm : filter;
+		import std.array : array;
+
+		auto content = readText(access.path);
+		auto inactive = access.agent.inactiveHistoryLines(content);
+		return access.agent.extractPersistedHistoryBoundaries(content)
+			.filter!(boundary => boundary.sourceLine !in inactive).array;
+	}
+
+	/// Anchor of the conversation's last user message boundary.
 	string lastUserBoundaryAnchor(HistoryAccess access)
 	{
-		auto boundaries = access.agent.extractPersistedHistoryBoundaries(readText(access.path));
-		foreach_reverse (boundary; boundaries)
+		foreach_reverse (boundary; activeHistoryBoundaries(access))
 			if (boundary.kind == PersistedHistoryBoundaryKind.user)
 				return boundary.anchor;
 		assert(false, "Undoing a user message requires a user boundary in the history");
 	}
 
-	/// Anchor of the history's last boundary, or null when it has none.
+	/// Anchor of the conversation's last boundary, or null when it has none.
 	string lastHistoryBoundaryAnchor(HistoryAccess access)
 	{
-		auto boundaries = exists(access.path)
-			? access.agent.extractPersistedHistoryBoundaries(readText(access.path)) : null;
+		auto boundaries = exists(access.path) ? activeHistoryBoundaries(access) : null;
 		return boundaries.length > 0 ? boundaries[$ - 1].anchor : null;
 	}
 
@@ -1423,22 +1468,29 @@ private:
 	/// Returns false when the anchor is not in the file.
 	bool truncateUndoneHistory(int tid, HistoryAccess access, string anchor)
 	{
+		if (truncateJsonl(access.path, anchor, &access.agent.forkIdMatchesLine, true) < 0)
+			return false;
+		trimPendingSteeringTexts(tid, access);
+		return true;
+	}
+
+	/// Drop the recorded sends beyond the user messages the conversation
+	/// still holds after an undo, so a reload does not recover them.
+	void trimPendingSteeringTexts(int tid, HistoryAccess access)
+	{
 		import std.string : splitLines;
 
 		auto td = host_.getTask(tid);
-		auto ta = access.agent;
-		if (truncateJsonl(access.path, anchor, &ta.forkIdMatchesLine, true) < 0)
-			return false;
-		if (td.pendingSteeringTexts.length > 0 && exists(access.path))
-		{
-			int remaining = 0;
-			foreach (line; readText(access.path).splitLines())
-				if (ta.isUserMessageLine(line))
-					remaining++;
-			if (remaining < cast(int) td.pendingSteeringTexts.length)
-				td.pendingSteeringTexts = td.pendingSteeringTexts[0 .. remaining].dup;
-		}
-		return true;
+		if (td.pendingSteeringTexts.length == 0 || !exists(access.path))
+			return;
+		auto content = readText(access.path);
+		auto inactive = access.agent.inactiveHistoryLines(content);
+		int remaining = 0;
+		foreach (i, line; content.splitLines())
+			if (cast(int) i + 1 !in inactive && access.agent.isUserMessageLine(line))
+				remaining++;
+		if (remaining < cast(int) td.pendingSteeringTexts.length)
+			td.pendingSteeringTexts = td.pendingSteeringTexts[0 .. remaining].dup;
 	}
 
 	/// Preserve the history about to be undone as a completed "(pre-undo)"

@@ -665,6 +665,12 @@ class ClaudeCodeAgent : Agent
 			.replace(`"session_id":"` ~ oldId ~ `"`, `"session_id":"` ~ newId ~ `"`);
 	}
 
+	bool[int] inactiveHistoryLines(string content)
+	{
+		import cydo.agent.drivers.claude_branches : claudeRewoundLines;
+		return claudeRewoundLines(content);
+	}
+
 	PersistedHistoryBoundary[] extractPersistedHistoryBoundaries(string content, int lineOffset = 0)
 	{
 		import std.algorithm : canFind;

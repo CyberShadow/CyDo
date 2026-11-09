@@ -51,12 +51,14 @@ struct ClaudeQueueOutcome
 }
 
 /// Classify every `enqueue` row of a Claude session file, keyed by its
-/// 1-based line number.
-ClaudeQueueOutcome[int] classifyClaudeQueueRecords(string content)
+/// 1-based line number. Rows on `inactiveLines` (rewound branches) are
+/// ignored.
+ClaudeQueueOutcome[int] classifyClaudeQueueRecords(string content,
+	const bool[int] inactiveLines)
 {
 	Row[] rows;
 	foreach (line; content.lineSplitter)
-		rows ~= Row.parse(line);
+		rows ~= cast(int) rows.length + 1 in inactiveLines ? Row.init : Row.parse(line);
 
 	ClaudeQueueOutcome[int] outcomes;
 	Entry[] queued; // unresolved enqueues, in enqueue order
@@ -300,7 +302,7 @@ unittest
 		/* 15 */ `{"type":"queue-operation","operation":"enqueue","content":"late"}`,
 	].join("\n") ~ "\n";
 
-	auto outcomes = classifyClaudeQueueRecords(content);
+	auto outcomes = classifyClaudeQueueRecords(content, null);
 	with (ClaudeQueueOutcomeKind)
 	{
 		assert(outcomes[1] == ClaudeQueueOutcome(turnStart, 3));
@@ -323,7 +325,7 @@ unittest
 		/* 3 */ `{"type":"user","version":"2.1.319","uuid":"u1","message":{"role":"user","content":""}}`,
 	].join("\n") ~ "\n";
 
-	auto outcomes = classifyClaudeQueueRecords(content);
+	auto outcomes = classifyClaudeQueueRecords(content, null);
 	assert(outcomes[1] == ClaudeQueueOutcome(ClaudeQueueOutcomeKind.turnStart, 3));
 }
 
@@ -342,7 +344,7 @@ unittest
 		/* 6 */ `{"type":"user","version":"2.1.319","uuid":"u2","message":{"role":"user","content":"keep"}}`,
 	].join("\n") ~ "\n";
 
-	auto outcomes = classifyClaudeQueueRecords(content);
+	auto outcomes = classifyClaudeQueueRecords(content, null);
 	with (ClaudeQueueOutcomeKind)
 	{
 		assert(outcomes[2] == ClaudeQueueOutcome(turnStart, 6));
@@ -365,7 +367,7 @@ unittest
 		/* 6 */ `{"type":"queue-operation","operation":"remove"}`,
 	].join("\n") ~ "\n";
 
-	auto outcomes = classifyClaudeQueueRecords(content);
+	auto outcomes = classifyClaudeQueueRecords(content, null);
 	with (ClaudeQueueOutcomeKind)
 	{
 		assert(outcomes[2] == ClaudeQueueOutcome(steering, 3));

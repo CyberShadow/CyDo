@@ -471,10 +471,11 @@ int truncateJsonl(string jsonlPath, string afterForkId,
 /// Count lines after a given fork ID in a JSONL file.
 /// matchFn checks whether a line matches the fork ID.
 /// countFn determines whether a line should be counted (e.g. user/assistant messages).
+/// Lines on `inactiveLines` (see Agent.inactiveHistoryLines) are ignored.
 /// Returns -1 if fork ID not found.
 int countLinesAfterForkId(string jsonlPath, string afterForkId,
 	bool delegate(string line, int lineNum, string forkId) matchFn,
-	bool delegate(string line) countFn)
+	bool delegate(string line) countFn, const bool[int] inactiveLines)
 {
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
@@ -489,7 +490,7 @@ int countLinesAfterForkId(string jsonlPath, string afterForkId,
 	foreach (line; readText(jsonlPath).lineSplitter)
 	{
 		lineNum++;
-		if (line.length == 0)
+		if (line.length == 0 || lineNum in inactiveLines)
 			continue;
 
 		if (pastTarget)
@@ -585,7 +586,7 @@ unittest
 
 	bool delegate(string) countForkable = (string line) =>
 		line.canFind(`"type":"user"`) || line.canFind(`"type":"assistant"`);
-	assert(countLinesAfterForkId(jsonlPath, "enqueue-1", matchEnqueue, countForkable) == 2);
+	assert(countLinesAfterForkId(jsonlPath, "enqueue-1", matchEnqueue, countForkable, null) == 2);
 }
 
 unittest

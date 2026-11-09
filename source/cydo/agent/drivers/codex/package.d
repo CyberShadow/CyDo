@@ -982,6 +982,11 @@ class CodexAgent : Agent
 			.replace(`"session_id":"` ~ oldId ~ `"`, `"session_id":"` ~ newId ~ `"`);
 	}
 
+	bool[int] inactiveHistoryLines(string content)
+	{
+		return computeRollbackSkipLines(content);
+	}
+
 	PersistedHistoryBoundary[] extractPersistedHistoryBoundaries(string content, int lineOffset = 0)
 	{
 		return extractPersistedHistoryBoundariesImpl(content, lineOffset);

@@ -8,6 +8,8 @@ import {
   type Page,
   assistantText,
   currentTaskTid,
+  historyPathForTask,
+  readHistoryFile,
 } from "./fixtures";
 
 const userEventText = (event: any): string =>
@@ -168,6 +170,20 @@ test(
     ).toHaveCount(0);
 
     await expect(input).toHaveValue('Please reply with "alert-two"');
+
+    // The CLI keeps the undone turn in its session file as a rewound
+    // branch; read back, the history continues from before it.
+    const historyPath = historyPathForTask(tid);
+    expect(readHistoryFile(historyPath)).toContain("alert-two");
+    await input.fill("");
+    await sendMessage(page, 'Please reply with "alert-three"');
+    await expect(assistantText(page, "alert-three")).toBeVisible({ timeout });
+    await page.reload();
+    await expect(assistantText(page, "alert-three")).toBeVisible({ timeout });
+    await expect(async () => {
+      await assertTurnPresence(page, ["alert-one", "alert-three"], true);
+      await assertTurnPresence(page, ["alert-two"], false);
+    }).toPass();
   },
 );
 

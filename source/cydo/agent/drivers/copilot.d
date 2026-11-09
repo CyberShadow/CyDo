@@ -606,6 +606,11 @@ class CopilotAgent : Agent
 		return line;
 	}
 
+	bool[int] inactiveHistoryLines(string content)
+	{
+		return null; // Copilot histories are linear
+	}
+
 	PersistedHistoryBoundary[] extractPersistedHistoryBoundaries(string content, int lineOffset = 0)
 	{
 		import std.algorithm : startsWith;

@@ -182,23 +182,15 @@ class HistoryEventPipeline
 			if (orphan || ta is null)
 				return LoadedHistory.init;
 
-			bool[int] rollbackSkipLines;
-			if (ta.driver == AgentDriver.codex && jsonlPath.length > 0 && maxBytes > 0)
-			{
-				if (exists(jsonlPath))
-				{
-					import cydo.agent.drivers.codex : computeRollbackSkipLines;
-					rollbackSkipLines = computeRollbackSkipLines(
-						cast(string) read(jsonlPath, cast(size_t) maxBytes));
-				}
-			}
+			string content;
+			if (jsonlPath.length > 0 && maxBytes > 0 && exists(jsonlPath))
+				content = cast(string) read(jsonlPath, cast(size_t) maxBytes);
+			auto inactiveLines = ta.inactiveHistoryLines(content);
 			queueOutcomes = null;
 			queueOutcomeTargets = null;
-			if (ta.driver == AgentDriver.claude && jsonlPath.length > 0 && maxBytes > 0
-				&& exists(jsonlPath))
+			if (ta.driver == AgentDriver.claude && content.length > 0)
 			{
-				queueOutcomes = classifyClaudeQueueRecords(
-					cast(string) read(jsonlPath, cast(size_t) maxBytes));
+				queueOutcomes = classifyClaudeQueueRecords(content, inactiveLines);
 				foreach (enqueueLine, outcome; queueOutcomes)
 					if (outcome.kind != ClaudeQueueOutcomeKind.queued)
 						queueOutcomeTargets[outcome.line] ~= format!"enqueue-%d"(enqueueLine);
@@ -206,7 +198,7 @@ class HistoryEventPipeline
 
 			ta.resetHistoryReplay();
 			return loadTaskHistory(tid, jsonlPath, delegate TranslatedEvent[](string line, int lineNum) {
-				if (lineNum in rollbackSkipLines)
+				if (lineNum in inactiveLines)
 					return [];
 				auto confirmations = queueConfirmations(queueOutcomes,
 					queueOutcomeTargets, lineNum);
