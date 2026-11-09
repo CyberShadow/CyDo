@@ -1057,6 +1057,53 @@ function usageTestHeadersForText(userText) {
   return {};
 }
 
+// Auto mode (`--permission-mode auto`) asks the API to judge each tool call
+// (`safeguards: [{type: "dangerous_tool_use"}]`) and reads the verdicts from
+// `message_delta.delta.safeguard_results`; without one, Claude Code blocks
+// the call. Flag the calls whose input mentions AUTO_MODE_FLAG.
+function attachDangerousToolUseVerdicts(res) {
+  const write = res.write.bind(res);
+  const inputs = new Map(); // tool_use id → streamed input JSON
+  const idsByIndex = new Map();
+  res.write = (chunk, ...rest) => {
+    const text = chunk.toString();
+    const match = /^event: (\S+)\ndata: (.*)\n\n$/s.exec(text);
+    if (!match) return write(chunk, ...rest);
+    const data = JSON.parse(match[2]);
+    if (
+      data.type === "content_block_start" &&
+      data.content_block.type === "tool_use"
+    ) {
+      idsByIndex.set(data.index, data.content_block.id);
+      inputs.set(data.content_block.id, "");
+    } else if (
+      data.type === "content_block_delta" &&
+      data.delta.type === "input_json_delta"
+    ) {
+      const id = idsByIndex.get(data.index);
+      inputs.set(id, inputs.get(id) + data.delta.partial_json);
+    } else if (data.type === "message_delta") {
+      const toolUses = {};
+      for (const [id, input] of inputs)
+        toolUses[id] = input.includes("AUTO_MODE_FLAG")
+          ? {
+              type: "evaluated",
+              outcome: "flagged",
+              explanation: "mock classifier: the call mentions AUTO_MODE_FLAG",
+            }
+          : { type: "evaluated", outcome: "not_flagged" };
+      data.delta.safeguard_results = [
+        {
+          type: "dangerous_tool_use",
+          status: { type: "available", tool_uses: toolUses },
+        },
+      ];
+      return write(`event: ${match[1]}\ndata: ${JSON.stringify(data)}\n\n`);
+    }
+    return write(chunk, ...rest);
+  };
+}
+
 function handleMessages(req, res) {
   let body = "";
   req.on("data", (chunk) => (body += chunk));
@@ -1116,6 +1163,13 @@ function handleMessages(req, res) {
       Connection: "keep-alive",
       ...usageTestHeaders,
     });
+
+    if (
+      Array.isArray(parsed.safeguards) &&
+      parsed.safeguards.some((s) => s?.type === "dangerous_tool_use")
+    ) {
+      attachDangerousToolUseVerdicts(res);
+    }
 
     const originalText = findOriginalUserText(messages);
     if (

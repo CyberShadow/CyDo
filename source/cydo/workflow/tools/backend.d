@@ -1,17 +1,20 @@
 module cydo.workflow.tools.backend;
 
+import core.time : Duration;
 import std.format : format;
 import std.logger : errorf, infof, tracef, warningf;
 import std.process : execute;
 import std.string : strip;
 
+import ae.sys.timing : TimerTask, setTimeout;
 import ae.utils.json : JSONFragment, jsonParse, toJson;
 import ae.utils.promise : Promise, resolve;
 import ae.utils.promise.await : await;
 
 import cydo.agent.contract : Agent;
 import cydo.agent.terminal : TerminalProcess;
-import cydo.domain.policy.permissions : evaluatePermissionPolicy,
+import cydo.domain.policy.permissions : PermissionSettings, ToolCallDecision,
+	ToolCallRuling, evaluatePermissionPolicy,
 	makePermissionAllowJson, makePermissionDenyJson;
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, DjinjaTemplate, TaskTypeDef,
 	UserEntryPointDef, WorktreeMode, byName, isInteractive,
@@ -111,7 +114,7 @@ struct WorkflowToolsHost
 		appendTaskSpawnedEvent;
 	void delegate(TaskCreatedMessage message) broadcastTaskCreated;
 
-	string delegate(string workspaceName) workspacePermissionPolicy;
+	PermissionSettings delegate(string workspaceName) workspacePermissionSettings;
 	void delegate(void delegate() cb) onNextTick;
 	void delegate(int tid, string prompt) generateTitle;
 }
@@ -215,7 +218,7 @@ unittest
 		clearAskUserQuestionPrompt: (int tid) {},
 		sendPermissionPrompt: (int tid, string toolUseId, string toolName, JSONFragment input) {},
 		clearPermissionPrompt: (int tid) {}, appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
-		broadcastTaskCreated: (TaskCreatedMessage message) {}, workspacePermissionPolicy: (string workspaceName) => "",
+		broadcastTaskCreated: (TaskCreatedMessage message) {}, workspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
 		onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); }, generateTitle: (int tid, string prompt) {},
 	));
 
@@ -248,6 +251,8 @@ private:
 	/// Fulfilled with the decision payload sent back to the agent.
 	Promise!string[int] pendingPermissionPrompts_;
 	string[int] pendingPermissionInputs_;
+	/// Deny a pending permission prompt nobody answers in time.
+	TimerTask[int] permissionPromptTimeouts_;
 	BatchRegistry batchRegistry_;
 	QuestionRouter questionRouter_;
 	SubtaskResultDelivery subtaskResultDelivery_;
@@ -834,15 +839,45 @@ public:
 		string toolName, JSONFragment input)
 	{
 		auto td = requireTask(tid, "Tool permission request for a missing task");
-		string policy = host_.workspacePermissionPolicy(td.workspace);
-		string resolved = evaluatePermissionPolicy(policy, toolName, input.json);
+		auto settings = host_.workspacePermissionSettings(td.workspace);
+		auto ruling = decidePreToolUse(tid, toolName, input);
+		final switch (ruling.decision)
+		{
+			case ToolCallDecision.deny:
+				return resolve(makePermissionDenyJson(ruling.denyReason));
+			case ToolCallDecision.allow:
+				return resolve(makePermissionAllowJson(input.json));
+			case ToolCallDecision.ask:
+			// Asked after the policy deferred to auto mode: the classifier
+			// left the call to a person.
+			case ToolCallDecision.classifier:
+				return promptUserForPermission(tid, toolUseId, toolName, input,
+					settings.promptTimeout);
+		}
+	}
 
-		if (resolved == "deny")
-			return resolve(makePermissionDenyJson("Permission denied by policy"));
-		if (resolved == "allow")
-			return resolve(makePermissionAllowJson(input.json));
-
-		return promptUserForPermission(tid, toolUseId, toolName, input);
+	/// The workspace policy's ruling on a tool call of `tid`, which also
+	/// stands before the agent's own permission checks (and its auto mode
+	/// classifier) run.
+	ToolCallRuling decidePreToolUse(int tid, string toolName, JSONFragment input)
+	{
+		auto td = requireTask(tid, "Tool call decision for a missing task");
+		auto settings = host_.workspacePermissionSettings(td.workspace);
+		final switch (evaluatePermissionPolicy(settings.policy, settings.autoMode,
+			toolName, input.json))
+		{
+			case "allow":
+				return ToolCallRuling(ToolCallDecision.allow);
+			case "deny":
+				return ToolCallRuling(ToolCallDecision.deny, "Permission denied by policy");
+			case "ask":
+				return ToolCallRuling(ToolCallDecision.ask);
+			case "auto":
+				if (!settings.autoMode)
+					return ToolCallRuling(ToolCallDecision.deny,
+						"Permission denied: the policy leaves this call to auto mode, which is not enabled for this workspace");
+				return ToolCallRuling(ToolCallDecision.classifier);
+		}
 	}
 
 	/// The agent no longer awaits the decision for `toolUseId` (e.g. its turn
@@ -1018,6 +1053,7 @@ public:
 		auto pending = pendingPermissionPrompts_[tid];
 		pendingPermissionPrompts_.remove(tid);
 		pendingPermissionInputs_.remove(tid);
+		cancelPermissionPromptTimeout(tid);
 
 		td.pendingPermissionToolUseId = null;
 		td.pendingPermissionToolName = null;
@@ -1165,6 +1201,15 @@ public:
 		}
 	}
 
+	private void cancelPermissionPromptTimeout(int tid)
+	{
+		if (auto timer = tid in permissionPromptTimeouts_)
+		{
+			timer.cancel();
+			permissionPromptTimeouts_.remove(tid);
+		}
+	}
+
 	void failPendingPermissionPromptOnExit(int tid)
 	{
 		auto td = host_.getTask(tid);
@@ -1175,6 +1220,7 @@ public:
 			permPending.fulfill(makePermissionDenyJson("Task exited"));
 			pendingPermissionPrompts_.remove(tid);
 			pendingPermissionInputs_.remove(tid);
+			cancelPermissionPromptTimeout(tid);
 			td.pendingPermissionToolUseId = null;
 			td.pendingPermissionToolName = null;
 			td.pendingPermissionInput = JSONFragment.init;
@@ -1384,7 +1430,7 @@ private:
 	}
 
 	Promise!string promptUserForPermission(int tid, string toolUseId,
-		string toolName, JSONFragment input)
+		string toolName, JSONFragment input, Duration timeout)
 	{
 		if (tid in pendingPermissionPrompts_)
 			return resolve(makePermissionDenyJson(
@@ -1401,6 +1447,12 @@ private:
 		td.pendingPermissionInput = input;
 
 		host_.sendPermissionPrompt(tid, toolUseId, toolName, input);
+		if (timeout > Duration.zero)
+			permissionPromptTimeouts_[tid] = setTimeout({
+				permissionPromptTimeouts_.remove(tid);
+				settlePermissionPrompt(tid, makePermissionDenyJson(format!(
+					"Permission denied: nobody answered the permission prompt within %s")(timeout)));
+			}, timeout);
 
 		td.needsAttention = true;
 		host_.persistNeedsAttention(tid, true);
@@ -1801,7 +1853,7 @@ unittest
 		clearPermissionPrompt: (int tid) {},
 		appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
 		broadcastTaskCreated: (TaskCreatedMessage message) {},
-		workspacePermissionPolicy: (string workspaceName) => "",
+		workspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
 		onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); },
 		generateTitle: (int tid, string prompt) {},
 	));
@@ -2093,7 +2145,7 @@ unittest
 				clearPermissionPrompt: (int tid) {},
 				appendTaskSpawnedEvent: (int parentTid, int childTid,
 					int specIndex) {},
-				workspacePermissionPolicy: (string workspaceName) => "",
+				workspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
 				onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); },
 				generateTitle: (int tid, string prompt) {},
 			));

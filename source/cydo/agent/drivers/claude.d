@@ -19,6 +19,7 @@ import cydo.agent.contract : Agent, DiscoveredSession, InterruptedToolCallRepair
 	PersistedHistoryBoundary, PersistedHistoryBoundaryKind, OneShotHandle,
 	RewindResult, SessionConfig, SessionMeta;
 import cydo.protocol;
+import cydo.domain.policy.permissions : ToolCallDecision, ToolCallRuling;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession, AgentSubmissionReceipt;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
@@ -1431,6 +1432,7 @@ class ClaudeCodeSession : AgentSession
 	private void delegate(string line) stderrHandler;
 	private void delegate(int status) exitHandler;
 	private Promise!string delegate(ToolPermissionRequest) permissionRequestHandler_;
+	private ToolCallRuling delegate(ToolPermissionRequest) preToolUseHandler_;
 	private void delegate(string toolUseId) permissionRequestWithdrawnHandler_;
 	/// can_use_tool requests the CLI still awaits an answer to: request_id → tool_use_id.
 	private string[string] pendingPermissionRequests_;
@@ -1480,8 +1482,11 @@ class ClaudeCodeSession : AgentSession
 		// --dangerously-skip-permissions precedence over the prompt tool,
 		// which would bypass the configured permission policy entirely.
 		// `stdio` makes the CLI ask over the control channel (can_use_tool
-		// control requests), answered by onToolPermissionRequest.
-		if (config.permissionPolicy.length > 0)
+		// control requests), answered by onToolPermissionRequest. In auto
+		// mode it asks only for the calls its classifier leaves to a person.
+		if (config.permissions.autoMode)
+			claudeArgs ~= ["--permission-mode", "auto"];
+		if (config.permissions.hostDecides)
 			claudeArgs ~= ["--permission-prompt-tool", "stdio"];
 		else
 			claudeArgs ~= ["--dangerously-skip-permissions"];
@@ -1583,7 +1588,33 @@ class ClaudeCodeSession : AgentSession
 		process.onLineHandlerError = (string source, Exception e) {
 			reportLineHandlerError(source, e);
 		};
+
+		if (config.permissions.autoMode)
+			registerPreToolUseHook();
 	}
+
+	/// Have the CLI consult the permission policy (onPreToolUse) before each
+	/// tool call, ahead of its auto mode classifier. A hook is the only
+	/// decision point that precedes the classifier.
+	private void registerPreToolUseHook()
+	{
+		static struct Matcher
+		{
+			string[] hookCallbackIds;
+			// A failed answer blocks the call rather than letting it run.
+			string onFailure;
+		}
+		static struct Hooks { Matcher[] PreToolUse; }
+		static struct Request { string subtype; Hooks hooks; }
+		sendControlRequest(Request("initialize",
+			Hooks([Matcher([preToolUseCallbackId], "block")])))
+			.then((JSONFragment) {}, (Exception e) {
+				reportLineHandlerError("initialize response", new Exception(
+					"Claude did not register the permission policy hook: " ~ e.msg));
+			}).ignoreResult();
+	}
+
+	private enum preToolUseCallbackId = "cydo-permission-policy";
 
 	/// Surface a contained line-handler fault on the task it belongs to.
 	/// The session keeps running: the agent process is unaffected by CyDo
@@ -1726,13 +1757,21 @@ class ClaudeCodeSession : AgentSession
 		permissionRequestWithdrawnHandler_ = dg;
 	}
 
+	/// Callback: rule on a tool call before the CLI's own permission checks
+	/// run. Only consulted in auto mode.
+	@property void onPreToolUse(ToolCallRuling delegate(ToolPermissionRequest) dg)
+	{
+		preToolUseHandler_ = dg;
+	}
+
 	@property bool alive()
 	{
 		return !process.dead;
 	}
 
 	/// A `control_request` the CLI sent to us. CyDo registers for nothing but
-	/// permission prompts, so any other subtype is refused.
+	/// permission prompts and the permission policy hook, so any other
+	/// subtype is refused.
 	private void handleCliControlRequest(string rawLine)
 	{
 		@JSONPartial static struct Request
@@ -1741,11 +1780,21 @@ class ClaudeCodeSession : AgentSession
 			@JSONOptional string tool_name;
 			@JSONOptional string tool_use_id;
 			@JSONOptional JSONFragment input;
+			@JSONOptional string callback_id;
 		}
 		@JSONPartial static struct Envelope { string request_id; Request request; }
 		auto envelope = jsonParse!Envelope(rawLine);
 		enforce(envelope.request_id.length > 0,
 			"Claude control request carries no request_id");
+
+		if (envelope.request.subtype == "hook_callback")
+		{
+			enforce(envelope.request.callback_id == preToolUseCallbackId,
+				"Claude invoked an unknown hook callback: " ~ envelope.request.callback_id);
+			sendControlResponse(ClaudeControlResponse.success(envelope.request_id,
+				JSONFragment(answerPreToolUseHook(envelope.request.input))));
+			return;
+		}
 
 		if (envelope.request.subtype != "can_use_tool")
 		{
@@ -1772,6 +1821,49 @@ class ClaudeCodeSession : AgentSession
 				sendControlResponse(ClaudeControlResponse.success(requestId,
 					JSONFragment(decision)));
 		}).ignoreResult();
+	}
+
+	/// The hook output for a PreToolUse `hook_callback`: the policy's ruling,
+	/// or nothing to leave the call to the CLI (and its classifier).
+	private string answerPreToolUseHook(JSONFragment hookInput)
+	{
+		@JSONPartial static struct Input
+		{
+			string hook_event_name;
+			string tool_name;
+			string tool_use_id;
+			JSONFragment tool_input;
+		}
+		auto input = jsonParse!Input(hookInput.json);
+		enforce(input.hook_event_name == "PreToolUse",
+			"Claude invoked the permission policy hook for " ~ input.hook_event_name);
+		assert(preToolUseHandler_ !is null,
+			"Claude consulted the permission policy hook, but no handler is attached");
+		auto ruling = preToolUseHandler_(ToolPermissionRequest(input.tool_use_id,
+			input.tool_name, input.tool_input));
+
+		static struct Decision
+		{
+			string hookEventName;
+			string permissionDecision;
+			string permissionDecisionReason;
+		}
+		static struct Output { Decision hookSpecificOutput; }
+		Output decide(string decision, string reason)
+		{
+			return Output(Decision("PreToolUse", decision, reason));
+		}
+		final switch (ruling.decision)
+		{
+			case ToolCallDecision.allow:
+				return toJson(decide("allow", "Allowed by the CyDo permission policy"));
+			case ToolCallDecision.deny:
+				return toJson(decide("deny", ruling.denyReason));
+			case ToolCallDecision.ask:
+				return toJson(decide("ask", "The CyDo permission policy asks a person"));
+			case ToolCallDecision.classifier:
+				return "{}";
+		}
 	}
 
 	/// The CLI withdrew a `control_request` it sent earlier.
@@ -3484,6 +3576,8 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 			return normalizeTaskNotification(rawLine);
 		case "api_retry":
 			return translateApiRetry(rawLine);
+		case "permission_denied":
+			return translatePermissionDenied(rawLine);
 		default:
 			return rawLine; // unknown subtypes pass through
 	}
@@ -3822,6 +3916,34 @@ unittest
 }
 
 /// Translate "system/api_retry" event to a retrying task diagnostic.
+/// Classifier denials become item/denied, which a person may overrule; the
+/// tool_result that follows carries the denial to the conversation either
+/// way. Other denials pass through.
+private string translatePermissionDenied(string rawLine)
+{
+	@JSONPartial static struct RawDenial
+	{
+		string tool_use_id;
+		string decision_reason_type;
+		@JSONOptional string decision_reason;
+	}
+	auto raw = jsonParse!RawDenial(rawLine);
+	if (raw.decision_reason_type != "classifier")
+		return rawLine;
+	return toJson(ItemDeniedEvent("item/denied", raw.tool_use_id, raw.decision_reason));
+}
+
+unittest
+{
+	assert(translatePermissionDenied(`{"type":"system","subtype":"permission_denied","tool_name":"Bash",`
+		~ `"tool_use_id":"toolu_1","decision_reason_type":"classifier","decision_reason":"risky",`
+		~ `"message":"Permission for this action was denied"}`)
+		== `{"type":"item/denied","item_id":"toolu_1","reason":"risky"}`);
+	enum ruleDenial = `{"type":"system","subtype":"permission_denied","tool_use_id":"toolu_2",`
+		~ `"decision_reason_type":"rule"}`;
+	assert(translatePermissionDenied(ruleDenial) == ruleDenial);
+}
+
 private string translateApiRetry(string rawLine)
 {
 	@JSONPartial static struct RawApiRetry

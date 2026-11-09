@@ -1,5 +1,6 @@
 module cydo.domain.policy.permissions;
 
+import core.time : Duration;
 import std.logger : warningf;
 
 import ae.utils.json : JSONFragment, toJson;
@@ -53,15 +54,54 @@ UniNode jsonToUniNode(string json)
 		return UniNode(null);
 }
 
-/// Evaluate a permission policy string. Returns "allow", "deny", or "ask".
-string evaluatePermissionPolicy(string policy, string toolName, string inputJson)
+/// How a workspace decides on tool calls, from its configuration.
+struct PermissionSettings
 {
-	if (policy == "allow" || policy == "deny" || policy == "ask")
-		return policy;
+	/// "allow", "deny", "ask", "auto", or a Djinja expression rendering
+	/// one of them; empty = defaultPermissionPolicy.
+	string policy;
+	/// Whether Claude Code's auto mode classifier judges the calls the
+	/// policy leaves to it ("auto").
+	bool autoMode;
+	/// How long a permission prompt waits for a person before it denies;
+	/// zero = indefinitely.
+	Duration promptTimeout;
 
-	// Empty policy defaults to allow
+	/// Whether the host must answer the agent's permission requests, as
+	/// opposed to letting every tool call run.
+	@property bool hostDecides() const
+	{
+		return policy.length > 0 || autoMode;
+	}
+}
+
+/// What a permission policy rules for one tool call.
+enum ToolCallDecision
+{
+	allow,
+	deny,
+	ask,        /// prompt a person
+	classifier, /// leave it to the auto mode classifier ("auto")
+}
+
+struct ToolCallRuling
+{
+	ToolCallDecision decision;
+	string denyReason; /// for `deny`: shown to the agent
+}
+
+/// The policy of a workspace that configures none.
+enum defaultPermissionPolicy = `{{ "auto" if auto_mode else "allow" }}`;
+
+/// Evaluate a permission policy for one tool call. Returns "allow", "deny",
+/// "ask", or "auto" (leave it to the auto mode classifier).
+string evaluatePermissionPolicy(string policy, bool autoMode, string toolName,
+	string inputJson)
+{
 	if (policy.length == 0)
-		return "allow";
+		policy = defaultPermissionPolicy;
+	if (isPermissionDecision(policy))
+		return policy;
 
 	// Evaluate as Djinja template expression
 	try
@@ -75,10 +115,11 @@ string evaluatePermissionPolicy(string policy, string toolName, string inputJson
 		UniNode[string] ctx;
 		ctx["tool_name"] = UniNode(toolName);
 		ctx["input"] = jsonToUniNode(inputJson);
+		ctx["auto_mode"] = UniNode(autoMode);
 
 		string result = renderer.render(UniNode(ctx)).strip();
 
-		if (result == "allow" || result == "deny" || result == "ask")
+		if (isPermissionDecision(result))
 			return result;
 
 		warningf("Permission policy expression returned invalid value %(%s%), defaulting to deny", [result]);
@@ -89,4 +130,20 @@ string evaluatePermissionPolicy(string policy, string toolName, string inputJson
 		warningf("Permission policy expression evaluation failed: %s", e.msg);
 		return "deny";
 	}
+}
+
+private bool isPermissionDecision(string value)
+{
+	return value == "allow" || value == "deny" || value == "ask" || value == "auto";
+}
+
+unittest
+{
+	assert(evaluatePermissionPolicy("", false, "Bash", `{}`) == "allow");
+	assert(evaluatePermissionPolicy("", true, "Bash", `{}`) == "auto");
+	assert(evaluatePermissionPolicy("auto", false, "Bash", `{}`) == "auto");
+	enum policy = `{{ "ask" if tool_name == "Bash" else ("auto" if auto_mode else "allow") }}`;
+	assert(evaluatePermissionPolicy(policy, true, "Bash", `{}`) == "ask");
+	assert(evaluatePermissionPolicy(policy, true, "Read", `{}`) == "auto");
+	assert(evaluatePermissionPolicy(policy, false, "Read", `{}`) == "allow");
 }

@@ -3,6 +3,7 @@ module cydo.agent.contract;
 import ae.utils.promise : Promise;
 
 import cydo.protocol : TranslatedEvent;
+import cydo.domain.policy.permissions : PermissionSettings;
 import cydo.agent.session : AgentSession;
 import cydo.runtime.config : AgentDriver, ModelSpec;
 import cydo.runtime.launch.sandbox_paths : SandboxPaths;
@@ -24,7 +25,7 @@ struct SessionConfig
 	string workDir;            /// Working directory for the session
 	string agentName;          /// User-chosen agent name (config key) — populates SessionInitEvent.agent_name
 	string mcpSocketPath;      /// Absolute path to the backend's UNIX socket for MCP proxy
-	string permissionPolicy;   /// Permission policy from workspace config (empty = not configured)
+	PermissionSettings permissions; /// How the workspace decides on tool calls
 }
 
 /// Result from a rewindFiles call.

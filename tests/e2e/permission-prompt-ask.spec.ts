@@ -87,3 +87,39 @@ workspaces:
     timeout: responseTimeout(agentType),
   });
 });
+
+test("permission_policy ask: an unanswered prompt denies the call after the timeout", { tag: "@claude-only" }, async ({
+  page,
+  agentType,
+}) => {
+
+  writeTestConfig(
+    "/tmp/playwright-home/.config/cydo/config.yaml",
+    `default_agent: claude
+workspaces:
+  local:
+    root: /tmp/cydo-test-workspace
+    permission_policy: ask
+    permission_prompt_timeout: 1
+`,
+  );
+
+  await page.waitForTimeout(500);
+
+  await enterSession(page);
+  await sendMessage(
+    page,
+    "run command echo ask-timeout-test > .claude/test-ask-timeout.md",
+  );
+
+  // Nobody answers: the prompt goes away and the agent hears the denial.
+  await expect(
+    page.locator(".tool-call", { hasText: "echo ask-timeout-test" }),
+  ).toContainText("nobody answered the permission prompt within 1 sec", {
+    timeout: responseTimeout(agentType),
+  });
+  await expect(page.locator(".permission-prompt-form")).toHaveCount(0);
+  await expect(assistantText(page, "Done.")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+});

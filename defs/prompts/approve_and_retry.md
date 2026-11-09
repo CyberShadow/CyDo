@@ -1,0 +1,1 @@
+Permission granted for this exact {{noun}} only, as one whole string: {{quoted}}. This does not approve any other {{noun}}, any part of this one, or running it with added options such as turning off the sandbox, extra network access, or running in the background. You may now retry this exact {{noun}} if you would like.

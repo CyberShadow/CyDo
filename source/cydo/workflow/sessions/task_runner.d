@@ -34,6 +34,7 @@ import cydo.agent.drivers.codex : CodexAgent, CodexForkSourceOwner, CodexSession
 import cydo.domain.tasks.model : PendingContinuation, ProcessState, TaskData, TaskStatus,
 	WaitingTaskDependencyState;
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
+import cydo.domain.policy.permissions : PermissionSettings, ToolCallRuling;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.domain.task_types.definition : TaskTypeDef,
 	formatCompactCreatableTaskTypeToolSummary, formatCompactHandoffToolSummary,
@@ -166,7 +167,7 @@ struct TaskSessionRunnerHost
 	string delegate(const TaskData* td) effectiveCwd;
 	string delegate(const TaskData* td) worktreePath;
 	CydoConfig* delegate() currentConfig;
-	string delegate(string workspaceName) findWorkspacePermissionPolicy;
+	PermissionSettings delegate(string workspaceName) findWorkspacePermissionSettings;
 	void delegate(string projectPath, string taskType,
 		ToolDescriptionViolation[] violations) reportMcpToolDescriptionLimit;
 	string delegate(int tid) resolveSharedTmpPath;
@@ -198,6 +199,9 @@ struct TaskSessionRunnerHost
 	/// resolves to the decision JSON sent back to the CLI.
 	Promise!string delegate(int tid, string toolUseId, string toolName,
 		JSONFragment input) decideToolPermission;
+	/// The workspace policy's ruling on a tool call of an auto mode Claude
+	/// session, consulted before the CLI's own checks and its classifier.
+	ToolCallRuling delegate(int tid, string toolName, JSONFragment input) decidePreToolUse;
 	/// The CLI cancelled a `can_use_tool` request it is no longer waiting on.
 	void delegate(int tid, string toolUseId) withdrawToolPermissionPrompt;
 	void delegate(int tid) failPendingAskRouteOnExit;
@@ -753,7 +757,7 @@ public:
 		if (typeDef !is null && typeDef.allow_native_subagents)
 			sessionConfig.allowNativeSubagents = true;
 
-		sessionConfig.permissionPolicy = host_.findWorkspacePermissionPolicy(td.workspace);
+		sessionConfig.permissions = host_.findWorkspacePermissionSettings(td.workspace);
 
 		RenderedCydoToolsOptions renderedToolOptions;
 		renderedToolOptions.includeBash = taskAgent.needsBash();
@@ -960,6 +964,8 @@ public:
 		{
 			claude.onToolPermissionRequest = (ToolPermissionRequest req) =>
 				host_.decideToolPermission(tid, req.toolUseId, req.toolName, req.input);
+			claude.onPreToolUse = (ToolPermissionRequest req) =>
+				host_.decidePreToolUse(tid, req.toolName, req.input);
 			claude.onToolPermissionRequestWithdrawn = (string toolUseId) =>
 				host_.withdrawToolPermissionPrompt(tid, toolUseId);
 			claude.onRewindAvailabilityChanged = () {
@@ -1820,7 +1826,7 @@ version (unittest) private TaskSessionRunner gitMetadataTestRunner(
 		effectiveCwd: (const TaskData* td) => taskCwd,
 		worktreePath: (const TaskData* td) => worktreePath,
 		currentConfig: () => config,
-		findWorkspacePermissionPolicy: (string workspaceName) => "",
+		findWorkspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
 		reportMcpToolDescriptionLimit: (string projectPath, string taskType,
 			ToolDescriptionViolation[] violations) {},
 		resolveSharedTmpPath: (int tid) => "",
@@ -1972,7 +1978,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				effectiveCwd: (const TaskData* td) => fixture.linkedCheckout,
 				worktreePath: (const TaskData* td) => "",
 				currentConfig: () => config,
-				findWorkspacePermissionPolicy: (string workspaceName) => "",
+				findWorkspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
 				reportMcpToolDescriptionLimit: (string projectPath, string taskType,
 					ToolDescriptionViolation[] violations) {},
 				resolveSharedTmpPath: (int tid) => "",
@@ -1996,6 +2002,8 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				failPendingAskUserQuestionOnExit: (int tid) {},
 				failPendingPermissionPromptOnExit: (int tid) {},
 				decideToolPermission: delegate Promise!string(int tid, string toolUseId, string toolName,
+					JSONFragment input) { assert(0, "unexpected call"); },
+				decidePreToolUse: delegate ToolCallRuling(int tid, string toolName,
 					JSONFragment input) { assert(0, "unexpected call"); },
 				withdrawToolPermissionPrompt: (int tid, string toolUseId) {},
 				failPendingAskRouteOnExit: (int tid) {},

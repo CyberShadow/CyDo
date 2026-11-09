@@ -314,6 +314,16 @@ export class Connection {
     );
   }
 
+  approveRetry(tid: number, toolName: string, input: unknown) {
+    this.send(
+      JSON.stringify({
+        type: "approve_retry",
+        tid,
+        content: { tool_name: toolName, input },
+      }),
+    );
+  }
+
   unsendMessage(tid: number, nonce: string) {
     this.send(
       JSON.stringify({ type: "unsend_message", tid, correlation_id: nonce }),

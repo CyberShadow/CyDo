@@ -61,6 +61,7 @@ import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
 import cydo.workflow.tasks.derived_text : DerivedTextJobs, DerivedTextJobsHost;
 import cydo.workflow.tasks.mutations : TaskMutationService, TaskMutationServiceHost;
 import cydo.workflow.tools.backend : WorkflowToolsBackend, WorkflowToolsHost;
+import cydo.domain.policy.permissions : PermissionSettings, ToolCallRuling;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
@@ -535,7 +536,7 @@ class App
 			broadcastTaskCreated: (TaskCreatedMessage message) {
 				clientHub.broadcast(toJson(message));
 			},
-			workspacePermissionPolicy: &findWorkspacePermissionPolicy,
+			workspacePermissionSettings: &findWorkspacePermissionSettings,
 			onNextTick: (void delegate() cb) {
 				onNextTick(socketManager, cb);
 			},
@@ -621,7 +622,7 @@ class App
 			effectiveCwd: &taskPathResolver.effectiveCwd,
 			worktreePath: &taskPathResolver.worktreePath,
 			currentConfig: () => &config,
-			findWorkspacePermissionPolicy: &findWorkspacePermissionPolicy,
+			findWorkspacePermissionSettings: &findWorkspacePermissionSettings,
 			reportMcpToolDescriptionLimit: &reportMcpToolDescriptionLimit,
 			resolveSharedTmpPath: &resolveSharedTmpPath,
 			mcpSocketPath: () => transport.mcpSocketPath,
@@ -657,6 +658,7 @@ class App
 			failPendingAskUserQuestionOnExit: &workflowTools.failPendingAskUserQuestionOnExit,
 			failPendingPermissionPromptOnExit: &workflowTools.failPendingPermissionPromptOnExit,
 			decideToolPermission: &workflowTools.decideToolPermission,
+			decidePreToolUse: &workflowTools.decidePreToolUse,
 			withdrawToolPermissionPrompt: &workflowTools.withdrawToolPermissionPrompt,
 			failPendingAskRouteOnExit: &workflowTools.failPendingAskRouteOnExit,
 			cancelExitBackgroundWork: &cancelExitBackgroundWork,
@@ -1324,6 +1326,7 @@ class App
 			case "delete_task":       handleDeleteTaskMsg(json); break;
 			case "ask_user_response": workflowTools.handleAskUserResponse(json); break;
 			case "permission_prompt_response": workflowTools.handlePermissionPromptResponse(json); break;
+			case "approve_retry":     handleApproveRetryMsg(json); break;
 			case "refresh_workspaces": handleRefreshWorkspacesMsg(); break;
 			case "promote_task":     handlePromoteTaskMsg(ws, json); break;
 			case "set_task_type":    handleSetTaskTypeMsg(json); break;
@@ -1629,6 +1632,37 @@ class App
 		string nativeUuid, ulong generation)
 	{
 		td.cancelUnobservedNativeSubmission(nativeUuid, generation);
+	}
+
+	/// A person overrules the auto mode classifier's denial of a tool call:
+	/// tell the agent it may retry exactly that call. `content` holds the
+	/// call (`{"tool_name":…,"input":…}`).
+	private void handleApproveRetryMsg(WsMessage json)
+	{
+		import cydo.protocol : ContentBlock;
+
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		@JSONPartial static struct DeniedCall
+		{
+			string tool_name;
+			JSONFragment input;
+		}
+		auto call = jsonParse!DeniedCall(json.content.json);
+		@JSONPartial static struct CommandInput { @JSONOptional string command; }
+		auto command = jsonParse!CommandInput(call.input.json).command;
+		auto text = readPromptFile("prompts/approve_and_retry.md", tasks[tid].projectPath, [
+			"tool_name": call.tool_name,
+			"noun": command.length > 0 ? "command" : "call",
+			"quoted": command.length > 0 ? toJson(command) : call.input.json,
+		]);
+		WsMessage message;
+		message.type = "message";
+		message.tid = tid;
+		message.content = JSONFragment(toJson([ContentBlock("text", text)]));
+		message.correlation_id = json.correlation_id;
+		handleUserMessage(message);
 	}
 
 	private void handleUserMessage(WsMessage json)
@@ -2990,12 +3024,15 @@ class App
 		return config.default_task_type;
 	}
 
-	private string findWorkspacePermissionPolicy(string workspaceName)
+	private PermissionSettings findWorkspacePermissionSettings(string workspaceName)
 	{
+		import core.time : seconds;
+
 		foreach (ref ws; config.workspaces)
-			if (ws.name == workspaceName && ws.permission_policy.length > 0)
-				return ws.permission_policy;
-		return "";
+			if (ws.name == workspaceName)
+				return PermissionSettings(ws.permission_policy, ws.auto_mode,
+					ws.permission_prompt_timeout.seconds);
+		return PermissionSettings.init;
 	}
 
 	/// Returns the HEAD SHA of the worktree (or main checkout) that the
@@ -5129,6 +5166,8 @@ unittest
 		failPendingPermissionPromptOnExit: (int tid) {},
 		decideToolPermission: delegate Promise!string(int tid, string toolUseId, string toolName,
 			JSONFragment input) { assert(0, "unexpected call"); },
+		decidePreToolUse: delegate ToolCallRuling(int tid, string toolName,
+			JSONFragment input) { assert(0, "unexpected call"); },
 		withdrawToolPermissionPrompt: (int tid, string toolUseId) {},
 		failPendingAskRouteOnExit: (int tid) {},
 		cancelExitBackgroundWork: (int tid) {},
@@ -5774,7 +5813,7 @@ unittest
 		effectiveCwd: (const TaskData* td) => app.taskPathResolver.effectiveCwd(td),
 		worktreePath: (const TaskData* td) => app.taskPathResolver.worktreePath(td),
 		currentConfig: () => &app.config,
-		findWorkspacePermissionPolicy: (string workspaceName) => "",
+		findWorkspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
 		reportMcpToolDescriptionLimit: (string projectPath, string taskType,
 			ToolDescriptionViolation[] violations) {},
 		resolveSharedTmpPath: (int tid) => buildPath(tmp, "shared-tmp"),
@@ -5981,7 +6020,7 @@ unittest
 		effectiveCwd: (const TaskData* td) => taskPathResolver.effectiveCwd(td),
 		worktreePath: (const TaskData* td) => taskPathResolver.worktreePath(td),
 		currentConfig: () => config,
-		findWorkspacePermissionPolicy: (string workspaceName) => "allow all",
+		findWorkspacePermissionSettings: (string workspaceName) => PermissionSettings("allow all"),
 		reportMcpToolDescriptionLimit: (string projectPathValue,
 			string taskTypeValue, ToolDescriptionViolation[] violations) {
 			reportedProjects ~= projectPathValue;
@@ -5996,7 +6035,7 @@ unittest
 	auto agent = new TestClaudePromptAgent();
 	auto typeDef = catalog.getTaskTypesForProject(projectPath).byName("parent");
 	auto launch = runner.prepareTaskSessionLaunch(7, agent, typeDef);
-	assert(launch.sessionConfig.permissionPolicy == "allow all");
+	assert(launch.sessionConfig.permissions.policy == "allow all");
 	assert(reportedViolations.length == 1);
 	assert(reportedProjects == [projectPath]);
 	assert(reportedTaskTypes == ["parent"]);

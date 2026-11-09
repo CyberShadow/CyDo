@@ -84,6 +84,7 @@ vi.mock("./useSessionManager", () => ({
       undo: vi.fn(),
       undoPreview: vi.fn(),
       unsendMessage: vi.fn(),
+      approveRetry: vi.fn(),
       undoConfirm: vi.fn(),
       undoDismiss: vi.fn(),
       dismissAttention: vi.fn(),

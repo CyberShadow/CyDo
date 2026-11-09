@@ -100,7 +100,16 @@ struct WorkspaceConfig
 	@Optional SandboxConfig sandbox;
 	@Optional string default_agent;
 	@Optional string default_task_type;
-	@Optional string permission_policy; /// Permission policy: "allow", "deny", "ask", or Djinja expression
+	/// Permission policy: "allow", "deny", "ask", "auto", or a Djinja
+	/// expression rendering one of them (variables: tool_name, input,
+	/// auto_mode). Unset = `{{ "auto" if auto_mode else "allow" }}`.
+	@Optional string permission_policy;
+	/// Run Claude Code in auto mode: its classifier judges the tool calls
+	/// the permission policy answers "auto" for.
+	@Optional bool auto_mode;
+	/// Seconds a permission prompt waits for an answer before it denies the
+	/// call; 0 = indefinitely. The default matches Claude Code's own prompts.
+	@Optional uint permission_prompt_timeout = 120;
 	@Optional ProjectDiscoveryConfig project_discovery;
 }
 

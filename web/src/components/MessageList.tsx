@@ -39,6 +39,8 @@ interface Props {
   onUndo?: (tid: number, anchor: string) => void;
   /** Withdraw a queued, not yet consumed message (by its send nonce). */
   onUnsend?: (tid: number, nonce: string) => void;
+  /** Overrule an auto mode classifier denial (live tasks only). */
+  onApproveRetry?: (tid: number, toolName: string, input: unknown) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
   onEditRawEvent?: (tid: number, seq: number, content: string) => void;
   onViewFile?: (filePath: string) => void;
@@ -514,6 +516,7 @@ const MessageView = memo(
     onFork,
     onUndo,
     onUnsend,
+    onApproveRetry,
     onEdit,
     onEditRaw,
     actionUuid,
@@ -530,6 +533,7 @@ const MessageView = memo(
     onFork?: (anchor: string) => void;
     onUndo?: (anchor: string) => void;
     onUnsend?: (nonce: string) => void;
+    onApproveRetry?: (toolName: string, input: unknown) => void;
     onEdit?: (uuid: string, content: string) => void;
     onEditRaw?: (seq: number, content: string) => void;
     actionUuid?: string;
@@ -613,6 +617,7 @@ const MessageView = memo(
             resolvedBlocksByMsg={resolvedBlocksByMsg}
             childrenByParent={childrenByParent}
             onViewFile={onViewFile}
+            onApproveRetry={onApproveRetry}
             sessionId={tid}
             spawnedTidsByItemId={spawnedTidsByItemId}
             getTaskHref={getTaskHref}
@@ -852,6 +857,7 @@ const MessageView = memo(
     prev.onFork === next.onFork &&
     prev.onUndo === next.onUndo &&
     prev.onUnsend === next.onUnsend &&
+    prev.onApproveRetry === next.onApproveRetry &&
     prev.onEdit === next.onEdit &&
     prev.actionBoundary?.kind === next.actionBoundary?.kind &&
     prev.actionBoundary?.checkpointUuid ===
@@ -895,6 +901,7 @@ export function MessageList({
   onFork,
   onUndo,
   onUnsend,
+  onApproveRetry,
   onEditMessage,
   onEditRawEvent,
   onViewFile,
@@ -950,6 +957,15 @@ export function MessageList({
           }
         : undefined,
     [onUnsend, taskTid],
+  );
+  const handleApproveRetry = useMemo(
+    () =>
+      onApproveRetry
+        ? (toolName: string, input: unknown) => {
+            onApproveRetry(taskTid, toolName, input);
+          }
+        : undefined,
+    [onApproveRetry, taskTid],
   );
   const handleEditMessage = useMemo(
     () =>
@@ -1140,6 +1156,7 @@ export function MessageList({
                 onFork={isForkable ? handleFork : undefined}
                 onUndo={isUndoable ? handleUndo : undefined}
                 onUnsend={isUnsendable(msg) ? handleUnsend : undefined}
+                onApproveRetry={handleApproveRetry}
                 onEdit={msg.type === "user" ? handleEditMessage : undefined}
                 onEditRaw={handleEditRawEvent}
                 actionUuid={actionUuid}

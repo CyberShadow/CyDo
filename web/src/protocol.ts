@@ -32,6 +32,7 @@ export type {
   ItemDeltaEvent,
   ItemCompletedEvent,
   ItemResultEvent,
+  ItemDeniedEvent,
   TurnStopEvent,
   TurnDeltaEvent,
   UserMessageConsumedEvent,
@@ -58,6 +59,7 @@ import type {
   ItemDeltaEvent,
   ItemCompletedEvent,
   ItemResultEvent,
+  ItemDeniedEvent,
   TurnStopEvent,
   TurnDeltaEvent,
   UserMessageConsumedEvent,
@@ -165,6 +167,7 @@ export type AgnosticEvent =
   | ItemDeltaEvent
   | ItemCompletedEvent
   | ItemResultEvent
+  | ItemDeniedEvent
   | TurnDeltaEvent
   | TurnStopEvent
   | UserMessageConsumedEvent

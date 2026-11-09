@@ -51,6 +51,7 @@ function AppContent() {
     undo,
     undoPreview,
     unsendMessage,
+    approveRetry,
     undoConfirm,
     undoDismiss,
     dismissAttention,
@@ -527,6 +528,7 @@ function AppContent() {
                     onFork={fork}
                     onUndo={undoPreview}
                     onUnsend={unsendMessage}
+                    onApproveRetry={approveRetry}
                     onUndoConfirm={undoConfirm}
                     onUndoDismiss={undoDismiss}
                     onClearInputDraft={clearInputDraft}

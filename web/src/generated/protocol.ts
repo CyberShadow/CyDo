@@ -207,6 +207,12 @@ export interface ItemResultEvent {
   extras?: Record<string, unknown>;
 }
 
+export interface ItemDeniedEvent {
+  type: "item/denied";
+  item_id: string;
+  reason: string;
+}
+
 export interface UserMessageConsumedEvent {
   type: "user_message/consumed";
   uuid: string;

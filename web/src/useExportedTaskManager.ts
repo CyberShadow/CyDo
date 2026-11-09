@@ -235,6 +235,7 @@ export function useExportedTaskManager(): TaskManager {
     undo: noop,
     undoPreview: noop,
     unsendMessage: noop,
+    approveRetry: noop,
     undoConfirm: noop,
     undoDismiss: noop,
     dismissAttention: noop,

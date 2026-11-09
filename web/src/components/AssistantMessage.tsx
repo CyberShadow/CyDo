@@ -136,10 +136,41 @@ interface Props {
   resolvedBlocksByMsg?: Map<string, Block[]>;
   childrenByParent?: Map<string, DisplayMessage[]>;
   onViewFile?: (filePath: string) => void;
+  /** Overrule an auto mode classifier denial; absent when not possible. */
+  onApproveRetry?: (toolName: string, input: unknown) => void;
   sessionId?: number | null;
   semanticSelectors?: boolean;
   spawnedTidsByItemId?: Map<string, Map<number, number>>;
   getTaskHref?: (id: string) => string;
+}
+
+/** A tool call the auto mode classifier refused, which a person may approve
+ *  once for the agent to retry. */
+function ClassifierDenial({
+  reason,
+  onApprove,
+}: {
+  reason: string;
+  onApprove: () => void;
+}) {
+  const [approved, setApproved] = useState(false);
+  return (
+    <div class="tool-denial">
+      <span class="tool-denial-reason">
+        Blocked by the auto mode classifier{reason ? `: ${reason}` : ""}
+      </span>
+      <button
+        class="approve-retry-btn"
+        disabled={approved}
+        onClick={() => {
+          setApproved(true);
+          onApprove();
+        }}
+      >
+        {approved ? "Approved" : "Approve & retry"}
+      </button>
+    </div>
+  );
 }
 
 export const AssistantMessage = memo(
@@ -149,6 +180,7 @@ export const AssistantMessage = memo(
     resolvedBlocksByMsg,
     childrenByParent,
     onViewFile,
+    onApproveRetry,
     sessionId,
     semanticSelectors = true,
     spawnedTidsByItemId,
@@ -286,6 +318,14 @@ export const AssistantMessage = memo(
                     spawnedTids={spawnedTidsByItemId?.get(block.itemId)}
                     getTaskHref={getTaskHref}
                   >
+                    {block.denial !== undefined && onApproveRetry && (
+                      <ClassifierDenial
+                        reason={block.denial}
+                        onApprove={() => {
+                          onApproveRetry(block.name!, block.input ?? {});
+                        }}
+                      />
+                    )}
                     {block.stdin && (
                       <StickyScrollPre class="tool-result streaming-stdin">
                         {block.stdin}
@@ -318,6 +358,7 @@ export const AssistantMessage = memo(
                                   resolvedBlocksByMsg={resolvedBlocksByMsg}
                                   childrenByParent={childrenByParent}
                                   onViewFile={onViewFile}
+                                  onApproveRetry={onApproveRetry}
                                   sessionId={sessionId}
                                   semanticSelectors={false}
                                   spawnedTidsByItemId={spawnedTidsByItemId}
@@ -409,6 +450,7 @@ export const AssistantMessage = memo(
     prev.childrenByParent === next.childrenByParent &&
     prev.resolvedBlocksByMsg === next.resolvedBlocksByMsg &&
     prev.onViewFile === next.onViewFile &&
+    prev.onApproveRetry === next.onApproveRetry &&
     prev.sessionId === next.sessionId &&
     prev.semanticSelectors === next.semanticSelectors,
 );

@@ -301,6 +301,15 @@ struct ItemResultEvent
 	@JSONOptional JSONFragment extras;
 }
 
+/// item/denied — the agent's auto mode classifier refused a tool_use item.
+/// A person may approve the call and have the agent retry it.
+struct ItemDeniedEvent
+{
+	string type = "item/denied";
+	string item_id;
+	string reason;
+}
+
 /// user_message/consumed — the agent's queue confirmed what became of a
 /// previously displayed user message. The message itself is emitted from the
 /// queue enqueue record (the authoritative "user sent this" fact, shown with

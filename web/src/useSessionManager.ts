@@ -219,6 +219,9 @@ export interface TaskManager {
   ) => void;
   undoPreview: (tid: number, anchor: string) => void;
   unsendMessage: (tid: number, nonce: string) => void;
+  /** Overrule the auto mode classifier's denial of a tool call and let the
+   *  agent retry it. */
+  approveRetry: (tid: number, toolName: string, input: unknown) => void;
   undoConfirm: (
     tid: number,
     revertConversation: boolean,
@@ -3070,6 +3073,13 @@ export function useTaskManager(
     connRef.current?.unsendMessage(tid, nonce);
   }, []);
 
+  const approveRetry = useCallback(
+    (tid: number, toolName: string, input: unknown) => {
+      connRef.current?.approveRetry(tid, toolName, input);
+    },
+    [],
+  );
+
   const clearInputDraft = useCallback((tid: number) => {
     const t = findByTid(tid);
     if (!t?.inputDraft) return;
@@ -3429,6 +3439,7 @@ export function useTaskManager(
     undo,
     undoPreview,
     unsendMessage,
+    approveRetry,
     undoConfirm,
     undoDismiss,
     dismissAttention,
