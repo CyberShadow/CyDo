@@ -311,7 +311,10 @@ struct UserMessageConsumedEvent
 {
 	string type = "user_message/consumed";
 	string uuid;          // identity of the user message being upgraded
-	string consumed_as;   // "steering" | "turn_start" | "removed"
+	/// "steering" | "turn_start" | "removed" (taken off the queue unconsumed
+	/// by a pre-2.1.250 CLI; kept, marked not delivered) | "cancelled"
+	/// (withdrawn by CyDo before consumption; dropped from the conversation)
+	string consumed_as;
 	@JSONOptional string correlation_id;  // send nonce, when the backend can link it
 	// The consumption echo's own uuid (the CLI's user-line identity). Replay
 	// swallows that line; live sessions display the message under this

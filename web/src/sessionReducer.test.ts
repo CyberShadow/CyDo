@@ -613,6 +613,20 @@ describe("live user echo reconciliation", () => {
     expect(userMessages(state)[0]?.isProvisional).toBeUndefined();
   });
 
+  it("drops a cancelled message's bubble", () => {
+    let state: TaskState = makeUnconfirmedState();
+    expect(userMessages(state)).toHaveLength(1);
+
+    state = reduceMessage(state, {
+      type: "user_message/consumed",
+      uuid: "enqueue-12",
+      correlation_id: correlationId,
+      consumed_as: "cancelled",
+    });
+
+    expect(userMessages(state)).toEqual([]);
+  });
+
   it("does not replace a terminal removed message with a later identical replay", () => {
     const firstNonce = "removed-first";
     const secondNonce = "replayed-second";

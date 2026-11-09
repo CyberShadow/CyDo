@@ -16,6 +16,8 @@ import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJso
 import ae.utils.time.types : AbsTime;
 
 import cydo.agent.contract : Agent, PersistedHistoryBoundaryKind;
+import cydo.agent.drivers.claude_queue : ClaudeQueueOutcome, ClaudeQueueOutcomeKind,
+	classifyClaudeQueueRecords;
 import cydo.protocol : ContentBlock, ItemStartedEvent, TaskEventEnvelope,
 	TaskHistoryBoundaryReplacedEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, UserMessageConsumedEvent, HistoryBoundary,
@@ -62,6 +64,34 @@ struct HistoryEventPipelineHost
 	void delegate(int tid) onHistorySubscribed;
 	bool delegate(int tid, string translated) updateClaudeUsageFromEvent;
 	HistoryBroadcastPlan delegate(int tid, TranslatedEvent ev) planBroadcast;
+}
+
+/// The user_message/consumed confirmations recorded at `lineNum`.
+private TranslatedEvent[] queueConfirmations(const ClaudeQueueOutcome[int] outcomes,
+	const string[][int] targets, int lineNum)
+{
+	auto here = lineNum in targets;
+	if (here is null)
+		return null;
+	TranslatedEvent[] result;
+	foreach (enqueueUuid; *here)
+	{
+		import std.conv : to;
+		auto enqueueLine = enqueueUuid["enqueue-".length .. $].to!int;
+		string consumedAs;
+		final switch (outcomes[enqueueLine].kind)
+		{
+			case ClaudeQueueOutcomeKind.queued:
+				assert(false, "a queued message records no outcome");
+			case ClaudeQueueOutcomeKind.turnStart: consumedAs = "turn_start"; break;
+			case ClaudeQueueOutcomeKind.steering: consumedAs = "steering"; break;
+			case ClaudeQueueOutcomeKind.removed: consumedAs = "removed"; break;
+			case ClaudeQueueOutcomeKind.cancelled: consumedAs = "cancelled"; break;
+		}
+		result ~= TranslatedEvent(toJson(UserMessageConsumedEvent(
+			uuid: enqueueUuid, consumed_as: consumedAs)), null, AbsTime.init, lineNum);
+	}
+	return result;
 }
 
 class HistoryEventPipeline
@@ -129,14 +159,16 @@ class HistoryEventPipeline
 		int userMsgFromJsonl = 0;
 		// Queue reconstruction: the enqueue record is the authoritative "user
 		// sent this" fact and emits the message immediately (pending
-		// presentation, identity enqueue-N). Dequeue moves the front entry to
-		// the awaiting-echo stage; the following echo user line is swallowed
-		// and replaced by a user_message/consumed confirmation carrying the
-		// CLI's own steering classification. Entries still queued at EOF stay
-		// pending — a killed session's unconsumed steer remains visible.
-		string[] queuedUuids;
-		string[] awaitingEchoUuids;
-		bool[string] consumedQueueEnqueues;
+		// presentation, identity enqueue-N). Its outcome, classified up front
+		// from the whole file (classifyClaudeQueueRecords), is reported where
+		// it is recorded by a user_message/consumed confirmation: the echo of
+		// a turn opener is swallowed and re-emitted after its confirmation;
+		// steering, legacy removal and withdrawal confirm in place. Entries
+		// still queued at EOF stay pending — a killed session's unconsumed
+		// steer remains visible.
+		ClaudeQueueOutcome[int] queueOutcomes;
+		// Outcome line → the enqueue identities whose outcome it records.
+		string[][int] queueOutcomeTargets;
 		auto stripTransientStatus = (TranslatedEvent[] events) {
 			foreach (ref e; events)
 				e.translated = host_.injectAgentNameIntoSessionInit(e.translated, td.agentName);
@@ -160,11 +192,24 @@ class HistoryEventPipeline
 						cast(string) read(jsonlPath, cast(size_t) maxBytes));
 				}
 			}
+			queueOutcomes = null;
+			queueOutcomeTargets = null;
+			if (ta.driver == AgentDriver.claude && jsonlPath.length > 0 && maxBytes > 0
+				&& exists(jsonlPath))
+			{
+				queueOutcomes = classifyClaudeQueueRecords(
+					cast(string) read(jsonlPath, cast(size_t) maxBytes));
+				foreach (enqueueLine, outcome; queueOutcomes)
+					if (outcome.kind != ClaudeQueueOutcomeKind.queued)
+						queueOutcomeTargets[outcome.line] ~= format!"enqueue-%d"(enqueueLine);
+			}
 
 			ta.resetHistoryReplay();
 			return loadTaskHistory(tid, jsonlPath, delegate TranslatedEvent[](string line, int lineNum) {
 				if (lineNum in rollbackSkipLines)
 					return [];
+				auto confirmations = queueConfirmations(queueOutcomes,
+					queueOutcomeTargets, lineNum);
 				if (isQueueOperation(line))
 				{
 					auto op = jsonParse!QueueOperationProbe(line);
@@ -172,93 +217,32 @@ class HistoryEventPipeline
 					{
 						hasQueueOps = true;
 						auto enqueueUuid = format!"enqueue-%d"(lineNum);
-						queuedUuids ~= enqueueUuid;
 						auto synEv = buildSyntheticUserEvent(op.content, false, true);
 						synEv.uuid = enqueueUuid;
 						return stripTransientStatus([TranslatedEvent(
 							toJsonWithSyntheticUserMeta(op.content, synEv, tid),
 							line, AbsTime.init, lineNum)]);
 					}
-					else if (op.operation == "dequeue")
-					{
-						if (queuedUuids.length > 0)
-						{
-							awaitingEchoUuids ~= queuedUuids[0];
-							queuedUuids = queuedUuids[1 .. $];
-						}
-						return [];
-					}
-					else if (op.operation == "remove")
-					{
-						TranslatedEvent[] result;
-						if (queuedUuids.length > 0)
-						{
-							result ~= TranslatedEvent(toJson(UserMessageConsumedEvent(
-								uuid: queuedUuids[0], consumed_as: "removed")),
-								null, AbsTime.init, lineNum);
-							queuedUuids = queuedUuids[1 .. $];
-						}
-						return stripTransientStatus(result);
-					}
-					return [];
+					return stripTransientStatus(confirmations);
 				}
-				if (awaitingEchoUuids.length > 0)
+				if (confirmations.length > 0)
 				{
-					if (ta.isUserMessageLine(line))
-					{
-						auto ts = ta.translateHistoryLine(line, lineNum);
-						// a type:"user" JSONL line translates to either an
-						// item/started user_message (the consumption echo we're
-						// waiting for) or an item/result (a tool_result that landed
-						// while the turn was mid-tool-use). only the former is the
-						// echo; parsing an item/result as ItemStartedEvent throws on
-						// its tool_result field, so peek at the type first
-						bool firstIsItemStarted = false;
-						if (ts.length > 0)
-						{
-							@JSONPartial static struct TypeProbe { string type; }
-							firstIsItemStarted =
-								jsonParse!TypeProbe(ts[0].translated).type == "item/started";
-						}
-						if (firstIsItemStarted)
-						{
-							// The consumption echo is the canonical message record:
-							// emit it exactly as the pre-queue-primary pipeline did
-							// (anchors, checkpoints and truncation semantics attach
-							// to it), preceded by the confirmation that tells the
-							// UI to drop the provisional enqueue-emitted bubble.
-							auto enqueueUuid = awaitingEchoUuids[0];
-							awaitingEchoUuids = awaitingEchoUuids[1 .. $];
-							consumedQueueEnqueues[enqueueUuid] = true;
-							auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
-							// Persisted echo lines carry no steering flag (it is a
-							// live-stdout-only field); mid-turn consumption is
-							// classified via the assistant-fallback branch below.
-							auto consumed = UserMessageConsumedEvent(
-								uuid: enqueueUuid,
-								consumed_as: "turn_start",
-								native_uuid: ev.uuid.length > 0 ? ev.uuid : enqueueUuid);
-							return stripTransientStatus([
-								TranslatedEvent(toJson(consumed), null, AbsTime.init, lineNum),
-								TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $]);
-						}
-						// not the echo (tool_result, or empty translation): pass
-						// through unchanged and stay awaiting the real echo
-						return stripTransientStatus(ts);
-					}
-					if (ta.isAssistantMessageLine(line))
-					{
-						// No echo before assistant output. The output proves the
-						// dequeued message was consumed; turn openers always echo
-						// before assistant output, so classify as steering.
-						auto consumed = UserMessageConsumedEvent(
-							uuid: awaitingEchoUuids[0], consumed_as: "steering");
-						awaitingEchoUuids = awaitingEchoUuids[1 .. $];
-						auto ts = ta.translateHistoryLine(line, lineNum);
-						return stripTransientStatus([TranslatedEvent(toJson(consumed),
-							null, AbsTime.init, lineNum)] ~ ts);
-					}
-					return stripTransientStatus(ta.translateHistoryLine(line, lineNum));
+					// The consumption echo is the canonical message record:
+					// emit it exactly as the pre-queue-primary pipeline did
+					// (anchors, checkpoints and truncation semantics attach to
+					// it), preceded by the confirmation that tells the UI to
+					// drop the provisional enqueue-emitted bubble.
+					auto ts = ta.translateHistoryLine(line, lineNum);
+					assert(ts.length > 0, "Claude queue echo must translate to a user message");
+					auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
+					assert(confirmations.length == 1,
+						"one echo row confirms exactly one queued message");
+					auto consumed = jsonParse!UserMessageConsumedEvent(
+						confirmations[0].translated);
+					consumed.native_uuid = ev.uuid.length > 0 ? ev.uuid : consumed.uuid;
+					return stripTransientStatus([
+						TranslatedEvent(toJson(consumed), null, AbsTime.init, lineNum),
+						TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $]);
 				}
 				if (ta.isUserMessageLine(line))
 					userMsgFromJsonl++;
@@ -318,8 +302,12 @@ class HistoryEventPipeline
 				auto event = extractEventFromEnvelope(bytes.as!(char[]));
 				probe = jsonParse!Probe(event);
 			});
+			// A turn opener's boundary belongs to its canonical echo; a
+			// withdrawn message has left the conversation.
 			if (boundaries[0].kind == PersistedHistoryBoundaryKind.provisional_user
-				&& boundaries[0].anchor in consumedQueueEnqueues)
+				&& boundaries[0].sourceLine in queueOutcomes
+				&& (queueOutcomes[boundaries[0].sourceLine].kind == ClaudeQueueOutcomeKind.turnStart
+					|| queueOutcomes[boundaries[0].sourceLine].kind == ClaudeQueueOutcomeKind.cancelled))
 			{
 				tracef("queue replay: suppressing boundary %s", boundaries[0].anchor);
 				continue;
@@ -1517,6 +1505,14 @@ unittest
 		`{"type":"queue-operation","operation":"remove","timestamp":"2026-08-02T06:00:05Z","sessionId":"S"}`,
 		// killed with the message still queued: enqueue(9), nothing after
 		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-02T06:00:06Z","sessionId":"S","content":"still queued"}`,
+		// Claude ≥2.1.250 shapes, after a row naming the CLI version (10):
+		// absorbed mid-turn: enqueue(11), remove(14) with its reason; and
+		// withdrawn by CyDo: enqueue(12), anonymous dequeue(13) with no echo
+		`{"type":"assistant","version":"2.1.319","uuid":"asst-2","message":{"id":"asst-2","content":[{"type":"text","text":"later"}],"model":"m","usage":{"input_tokens":1,"output_tokens":1}}}`,
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-02T06:00:07Z","sessionId":"S","content":"absorbed steer"}`,
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-02T06:00:08Z","sessionId":"S","content":"withdrawn steer"}`,
+		`{"type":"queue-operation","operation":"dequeue","timestamp":"2026-08-02T06:00:09Z","sessionId":"S"}`,
+		`{"type":"queue-operation","operation":"remove","timestamp":"2026-08-02T06:00:10Z","sessionId":"S","content":"absorbed steer","reason":"absorbed_mid_turn","commandUuid":"c-absorbed"}`,
 	].join("\n") ~ "\n";
 	write(jsonlPath, jsonl);
 
@@ -1547,7 +1543,7 @@ unittest
 		events ~= cast(string) ev.toGC();
 
 	// Echo-less queue messages retain their provisional enqueue boundaries.
-	foreach (needle; ["steer text", "withdrawn text", "still queued"])
+	foreach (needle; ["steer text", "withdrawn text", "still queued", "absorbed steer"])
 	{
 		bool found;
 		foreach (s; events)
@@ -1579,7 +1575,7 @@ unittest
 
 	// Confirmations: turn_start for the opener, steering for the steer,
 	// removed for the withdrawn message, and none for the still-queued one.
-	bool sawTurnStart, sawSteering, sawRemoved;
+	bool sawTurnStart, sawSteering, sawRemoved, sawAbsorbed, sawCancelled;
 	foreach (s; events)
 	{
 		if (!s.canFind(`"user_message/consumed"`))
@@ -1590,9 +1586,21 @@ unittest
 			sawSteering = true;
 		if (s.canFind(`"enqueue-7"`) && s.canFind(`"removed"`))
 			sawRemoved = true;
+		if (s.canFind(`"enqueue-11"`) && s.canFind(`"steering"`))
+			sawAbsorbed = true;
+		if (s.canFind(`"enqueue-12"`) && s.canFind(`"cancelled"`))
+			sawCancelled = true;
 		assert(!s.canFind(`"enqueue-9"`), "still-queued enqueue must have no confirmation");
 	}
 	assert(sawTurnStart, "turn_start confirmation missing");
 	assert(sawSteering, "steering confirmation missing");
 	assert(sawRemoved, "removed confirmation missing");
+	assert(sawAbsorbed, "absorbed steering must confirm as steering, not removed");
+	assert(sawCancelled, "withdrawn message must confirm as cancelled");
+
+	// A withdrawn message has left the conversation: no undo boundary.
+	foreach (s; events)
+		if (s.canFind(`"user_message"`) && s.canFind("withdrawn steer"))
+			assert(!s.canFind(`"history_boundary"`),
+				"withdrawn message must not keep a provisional boundary");
 }

@@ -1102,8 +1102,12 @@ function reduceItemStartedUserMessage(
 }
 
 /// A queue confirmation reported what became of a previously displayed user
-/// message: consumed as a steering injection, consumed as a turn opener, or
-/// removed without being consumed.
+/// message: consumed as a steering injection, consumed as a turn opener,
+/// removed without being consumed, or cancelled (withdrawn by CyDo).
+///
+/// A cancelled message never reached the conversation: drop its bubble. The
+/// un-send that cancels it reloads the task, so the pre-reload draft snapshot
+/// returns its text to the composer.
 ///
 /// When the confirmation targets a provisional enqueue-emitted bubble
 /// (identity "enqueue-N") and names a distinct native identity, the canonical
@@ -1121,6 +1125,10 @@ export function reduceUserMessageConsumed(
         (event.correlation_id && m.nonce === event.correlation_id)),
   );
   if (idx < 0) return s;
+
+  if (event.consumed_as === "cancelled") {
+    return { ...s, messages: s.messages.filter((_, i) => i !== idx) };
+  }
 
   const target = s.messages[idx]!;
   const canonicalFollows =
