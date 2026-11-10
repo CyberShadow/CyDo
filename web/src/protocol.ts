@@ -21,6 +21,7 @@ export type {
   SessionCompactedEvent,
   TurnResultEvent,
   SessionSummaryEvent,
+  SessionCostEvent,
   SessionRateLimitEvent,
   TaskStartedEvent,
   TaskNotificationEvent,
@@ -48,6 +49,7 @@ import type {
   SessionCompactedEvent,
   TurnResultEvent,
   SessionSummaryEvent,
+  SessionCostEvent,
   SessionRateLimitEvent,
   TaskStartedEvent,
   TaskNotificationEvent,
@@ -162,6 +164,7 @@ export type AgnosticEvent =
   | TaskNotificationEvent
   | TurnResultEvent
   | SessionSummaryEvent
+  | SessionCostEvent
   | SessionRateLimitEvent
   | ItemStartedEvent
   | ItemDeltaEvent

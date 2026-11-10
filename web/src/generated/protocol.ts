@@ -111,6 +111,11 @@ export interface SessionSummaryEvent {
   summary: string;
 }
 
+export interface SessionCostEvent {
+  type: "session/cost";
+  total_cost_usd: number;
+}
+
 export interface SessionRateLimitEvent {
   type: "session/rate_limit";
   rate_limit_info: RateLimitInfo;

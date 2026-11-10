@@ -140,6 +140,14 @@ struct SessionSummaryEvent
 	string summary;
 }
 
+/// session/cost — the session's running total cost, as the agent last
+/// recorded it.
+struct SessionCostEvent
+{
+	string type = "session/cost";
+	double total_cost_usd;
+}
+
 /// Rate limit information.
 struct RateLimitInfo
 {

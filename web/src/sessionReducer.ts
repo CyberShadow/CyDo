@@ -1734,6 +1734,9 @@ export function reduceMessage(
     case "session/summary":
       return reduceSummary(s, msg, seq);
 
+    case "session/cost":
+      return { ...s, totalCost: msg.total_cost_usd };
+
     case "session/rate_limit":
       return s;
 

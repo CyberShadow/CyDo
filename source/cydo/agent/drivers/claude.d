@@ -3615,6 +3615,8 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 			return normalizeTurnResult(rawLine);
 		case "summary":
 			return translateSummary(rawLine);
+		case "cost-state": // session file only: no result rows there
+			return translateCostState(rawLine);
 		case "rate_limit_event":
 			return translateRateLimitEvent(rawLine);
 		case "control_response":
@@ -3635,7 +3637,6 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 		case "api-request":
 		case "api-request-blob":
 		case "api-request-shape":
-		case "cost-state":
 		case "tools-used":
 		case "mode":
 		case "file-history-delta":
@@ -3863,6 +3864,26 @@ private string translateSummary(string rawLine)
 	}
 	catch (Exception e)
 	{ tracef("translateSummary: parse error: %s", e.msg); return makeUnrecognizedEvent("summary parse error: " ~ e.msg); }
+}
+
+/// Translate a session file's "cost-state" row to session/cost.
+private string translateCostState(string rawLine)
+{
+	@JSONPartial static struct RawCostState { double totalCostUSD; }
+	try
+	{
+		SessionCostEvent ev;
+		ev.total_cost_usd = jsonParse!RawCostState(rawLine).totalCostUSD;
+		return toJson(ev);
+	}
+	catch (Exception e)
+	{ tracef("translateCostState: parse error: %s", e.msg); return makeUnrecognizedEvent("cost-state parse error: " ~ e.msg); }
+}
+
+unittest
+{
+	assert(translateCostState(`{"type":"cost-state","sessionId":"s","totalCostUSD":1.5,"modelUsage":{}}`)
+		== `{"type":"session/cost","total_cost_usd":1.5}`);
 }
 
 /// Translate "rate_limit_event" event to session/rate_limit.
