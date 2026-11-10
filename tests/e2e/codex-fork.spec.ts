@@ -338,6 +338,10 @@ test(
     );
     await page.reload();
     await offlineSetupHistoryEnd;
+    // The history frame can arrive before the transcript renders.
+    await expect(activeAssistantText(page, offlineTail)).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
     const offlineParentHistory = await activePersistedMessages(page);
     const offlineTids = await snapshotTids(page);
     const taskCreatedBeforeUnsupported = taskCreatedEvents.length;
