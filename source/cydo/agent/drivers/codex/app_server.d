@@ -466,26 +466,16 @@ package class CodexServerRouter : ICodexServer
 package bool isSilentlyIgnoredCodexNotificationMethod(string method)
 {
 	// v1 legacy notifications duplicate v2 item/* / turn/* methods.
+	// (Notifications CyDo has no use for at all are opted out of at
+	// initialize instead.)
 	if (method.length >= 12 && method[0 .. 12] == "codex/event/")
 		return true;
-	// Codex app-server emits MCP startup status updates that are not useful
-	// for CyDo's translated session stream.
-	if (method == "mcpServer/startupStatus/updated")
-		return true;
 	// TODO: notifications not used yet
-	switch (method)
-	{
-		case "remoteControl/status/changed":
-		case "thread/settings/updated":
-			return true;
-		default:
-			return false;
-	}
+	return method == "thread/settings/updated";
 }
 
 unittest
 {
 	assert(isSilentlyIgnoredCodexNotificationMethod("codex/event/item.started"));
-	assert(isSilentlyIgnoredCodexNotificationMethod("mcpServer/startupStatus/updated"));
 	assert(!isSilentlyIgnoredCodexNotificationMethod("mcpServer/other"));
 }

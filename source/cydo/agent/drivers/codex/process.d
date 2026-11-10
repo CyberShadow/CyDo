@@ -293,9 +293,19 @@ class AppServerProcess
 	private void sendInitialize()
 	{
 		state_ = State.initializing;
+		static struct Capabilities
+		{
+			bool experimentalApi;
+			// Notifications CyDo has no use for: Codex then does not send them.
+			string[] optOutNotificationMethods;
+		}
+		auto capabilities = Capabilities(true, [
+			"mcpServer/startupStatus/updated",
+			"remoteControl/status/changed",
+		]);
 		sendRequest("initialize", toJson(InitializeParams(
 			InitializeParams.ClientInfo("cydo", "0.1.0"),
-			JSONFragment(`{"experimentalApi":true}`)
+			JSONFragment(toJson(capabilities))
 		))).then((JsonRpcResponse result) {
 			releaseStartupGateOnce();
 			sendLogin();
