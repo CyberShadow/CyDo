@@ -266,6 +266,16 @@ struct WarningParams
 	@JSONOptional string message;
 }
 
+/// deprecationNotice / configWarning: app-server-wide notices for the user.
+@RPCFlatten @JSONPartial
+struct NoticeParams
+{
+	string summary;
+	@JSONOptional string details;
+	@JSONOptional string path;  // configWarning: the config file at fault
+	@JSONOptional SO range;     // configWarning: where in that file
+}
+
 @RPCFlatten @JSONPartial
 struct TokenUsageUpdatedParams
 {

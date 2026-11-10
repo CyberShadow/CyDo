@@ -109,6 +109,12 @@ package interface ICodexServer
 
 	@RPCName("warning")
 	Promise!void warning(WarningParams params);
+
+	@RPCName("deprecationNotice")
+	Promise!void deprecationNotice(NoticeParams params);
+
+	@RPCName("configWarning")
+	Promise!void configWarning(NoticeParams params);
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +156,32 @@ private TranslatedEvent makeAgentWarningTranslatedEvent(WarningParams params)
 	ev.subject = "Agent warning";
 	ev.body = params.message;
 	return TranslatedEvent(toJson(ev), buildRawNotification("warning", toJson(params)));
+}
+
+private TranslatedEvent makeAgentNoticeTranslatedEvent(string method, string subject,
+	NoticeParams params)
+{
+	TaskDiagnosticEvent ev;
+	ev.severity = TaskDiagnosticSeverity.warning;
+	ev.subject = subject;
+	ev.body = params.summary;
+	if (params.details.length > 0)
+		ev.body ~= "\n\n" ~ params.details;
+	if (params.path.length > 0)
+		ev.body ~= "\n\nIn `" ~ params.path ~ "`.";
+	return TranslatedEvent(toJson(ev), buildRawNotification(method, toJson(params)));
+}
+
+unittest
+{
+	auto params = jsonParse!NoticeParams(
+		`{"summary":"thread/rollback is deprecated and will be removed soon","details":null}`);
+	auto translated = makeAgentNoticeTranslatedEvent("deprecationNotice", "Agent deprecation notice", params);
+	assert(translated.translated == `{"type":"cydo/task_diagnostic","severity":"warning",`
+		~ `"subject":"Agent deprecation notice","body":"thread/rollback is deprecated and will be removed soon"}`,
+		translated.translated);
+	assert(translated.raw == `{"jsonrpc":"2.0","method":"deprecationNotice","params":`
+		~ `{"summary":"thread/rollback is deprecated and will be removed soon"}}`, translated.raw);
 }
 
 unittest
@@ -388,6 +420,20 @@ package class CodexServerRouter : ICodexServer
 	Promise!void warning(WarningParams params)
 	{
 		emitToThreadOrAll(params.threadId, makeAgentWarningTranslatedEvent(params));
+		return resolve();
+	}
+
+	Promise!void deprecationNotice(NoticeParams params)
+	{
+		emitToThreadOrAll(null, makeAgentNoticeTranslatedEvent("deprecationNotice",
+			"Agent deprecation notice", params));
+		return resolve();
+	}
+
+	Promise!void configWarning(NoticeParams params)
+	{
+		emitToThreadOrAll(null, makeAgentNoticeTranslatedEvent("configWarning",
+			"Agent configuration warning", params));
 		return resolve();
 	}
 
