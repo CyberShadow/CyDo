@@ -524,7 +524,14 @@ class CodexAgent : Agent
 		auto codexBin = launch.executablePath.length > 0
 			? launch.executablePath
 			: executableName(launch.sandbox.env);
-		string[] codexArgs = [codexBin, "app-server", "--listen", "stdio://"];
+		// Disable Codex's "goals" feature. It gives the model goal tools, and
+		// an active goal makes Codex start turns on its own while idle, which
+		// breaks CyDo's ownership of turns (a waiting or blocked task must stay
+		// idle); CyDo's tasks already cover what goals do. This has to be the
+		// app-server's own configuration: a per-thread override leaves it
+		// sending goal snapshots (thread/goal/cleared) on resume.
+		string[] codexArgs = [codexBin, "-c", "features.goals=false",
+			"app-server", "--listen", "stdio://"];
 		string[] args;
 		if (launch.cmdPrefix !is null)
 			args = launch.cmdPrefix ~ codexArgs;

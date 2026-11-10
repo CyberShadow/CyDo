@@ -431,7 +431,6 @@ package bool isSilentlyIgnoredCodexNotificationMethod(string method)
 	{
 		case "remoteControl/status/changed":
 		case "thread/settings/updated":
-		case "thread/goal/cleared":
 			return true;
 		default:
 			return false;

@@ -158,7 +158,7 @@ test(
     writeFileSync(
       wrapperPath,
       `#!/bin/sh
-if [ "$1" = app-server ] && [ "$2" = --listen ] && [ "$3" = stdio:// ]; then
+if [ "$3" = app-server ] && [ "$4" = --listen ] && [ "$5" = stdio:// ]; then
   printf '{"pid":%s,"event":"start","timestampNs":%s,"codexHome":"%s"}\\n' "$$" "$(date +%s%N)" "$CODEX_HOME" >> "$CYDO_APP_SERVER_STARTUP_LOG"
   sleep 2
   printf '{"pid":%s,"event":"handoff","timestampNs":%s,"codexHome":"%s"}\\n' "$$" "$(date +%s%N)" "$CODEX_HOME" >> "$CYDO_APP_SERVER_STARTUP_LOG"
@@ -358,7 +358,7 @@ test(
     writeFileSync(
       wrapperPath,
       `#!/bin/sh
-if [ "$1" = app-server ] && [ "$2" = --listen ] && [ "$3" = stdio:// ]; then
+if [ "$3" = app-server ] && [ "$4" = --listen ] && [ "$5" = stdio:// ]; then
   printf '{"pid":%s,"event":"start","timestampNs":%s,"codexHome":"%s"}\\n' "$$" "$(date +%s%N)" "$CODEX_HOME" >> "$CYDO_APP_SERVER_STARTUP_LOG"
   sleep 31
   printf '{"pid":%s,"event":"handoff","timestampNs":%s,"codexHome":"%s"}\\n' "$$" "$(date +%s%N)" "$CODEX_HOME" >> "$CYDO_APP_SERVER_STARTUP_LOG"
