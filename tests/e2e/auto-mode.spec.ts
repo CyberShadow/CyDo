@@ -6,6 +6,9 @@ import {
   sendMessage,
   responseTimeout,
   assistantText,
+  currentTaskTid,
+  historyPathForTask,
+  readHistoryFile,
 } from "./fixtures";
 
 // The mock API's classifier flags tool calls that mention AUTO_MODE_FLAG.
@@ -39,12 +42,43 @@ workspaces:
 
     await denial.locator(".approve-retry-btn").click();
     await expect(denial.locator(".approve-retry-btn")).toBeDisabled();
+    // The approval is a CyDo system message, sent on the person's behalf.
+    const approval = page.locator(".result-divider.system-user-message", {
+      hasText: "Approve and retry",
+    });
+    await expect(approval).toBeVisible({ timeout: responseTimeout(agentType) });
+    await approval.click();
     await expect(
-      page.locator(".message.user-message", {
+      page.locator(".message.user-message.system-user-expanded", {
         hasText:
           'Permission granted for this exact command only, as one whole string: "echo AUTO_MODE_FLAG blocked".',
       }),
-    ).toBeVisible({ timeout: responseTimeout(agentType) });
+    ).toBeVisible();
+
+    // The session file records both the typed message and the approval as
+    // the person's.
+    const historyPath = historyPathForTask(currentTaskTid(page));
+    const userRows = () =>
+      readHistoryFile(historyPath)
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .filter(
+          (row) =>
+            row.type === "user" && typeof row.message?.content === "string",
+        );
+    await expect
+      .poll(() =>
+        userRows().find((row) =>
+          row.message.content.includes("Permission granted"),
+        ),
+      )
+      .toMatchObject({ origin: { kind: "human" } });
+    expect(
+      userRows().find((row) =>
+        row.message.content.includes("run command echo AUTO_MODE_FLAG blocked"),
+      ),
+    ).toMatchObject({ origin: { kind: "human" } });
 
     // Calls the classifier does not flag run without asking anyone.
     await sendMessage(page, "run command echo auto-mode-allowed");

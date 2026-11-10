@@ -76,7 +76,7 @@ import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	HistoryBoundary, ItemStartedEvent, SessionRateLimitEvent, TaskDiagnosticEvent, TaskDiagnosticSeverity,
 	TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, UserMessageConsumedEvent, extractContentText;
-import cydo.agent.session : AgentSession, AgentSubmissionReceipt;
+import cydo.agent.session : AgentSession, AgentSubmissionReceipt, MessageSource;
 import cydo.agent.drivers.claude : ClaudeCodeSession;
 import cydo.agent.drivers.codex : CodexSession;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
@@ -486,7 +486,8 @@ class App
 						TaskStatus.active, TaskNotificationChange.preserve);
 				return td.processQueue.setGoal(ProcessState.Alive);
 			},
-			sendKnownSystemMessage: &sendKnownSystemMessage,
+			sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind, string body) =>
+				sendKnownSystemMessage(tid, kind, body),
 			persistAddTaskDep: (int parentTid, int childTid) {
 				persistence.addTaskDep(parentTid, childTid);
 			},
@@ -1480,7 +1481,7 @@ class App
 			materializePendingTask(tid);
 			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
 				return sendTaskMessage(tid, messageToSend, msgContent, msgMeta,
-					null, true, &commitAcceptedInitialSubmission);
+					null, true, &commitAcceptedInitialSubmission, MessageSource.user);
 			}).except((Exception e) {
 				auto failed = tid in tasks;
 				assert(failed !is null,
@@ -1639,8 +1640,6 @@ class App
 	/// call (`{"tool_name":…,"input":…}`).
 	private void handleApproveRetryMsg(WsMessage json)
 	{
-		import cydo.protocol : ContentBlock;
-
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
 			return;
@@ -1657,12 +1656,12 @@ class App
 			"noun": command.length > 0 ? "command" : "call",
 			"quoted": command.length > 0 ? toJson(command) : call.input.json,
 		]);
-		WsMessage message;
-		message.type = "message";
-		message.tid = tid;
-		message.content = JSONFragment(toJson([ContentBlock("text", text)]));
-		message.correlation_id = json.correlation_id;
-		handleUserMessage(message);
+		// The person's decision, worded by CyDo.
+		sendKnownSystemMessage(tid, KnownSystemMessageKind.approveRetry, text,
+			MessageSource.user).except((Exception e) {
+			clientHub.sendToSubscribed(tid,
+				Data(toJson(ErrorMessage("error", e.msg, tid)).representation));
+		}).ignoreResult();
 	}
 
 	private void handleUserMessage(WsMessage json)
@@ -1787,7 +1786,7 @@ class App
 				return resolve();
 			}
 			return sendTaskMessage(tid, messageToSend, blocks, userMsgMeta, msgNonce,
-				userMsgMeta.length > 0, &commitAcceptedBrowserSubmission);
+				userMsgMeta.length > 0, &commitAcceptedBrowserSubmission, MessageSource.user);
 		}).except((Exception e) {
 			auto rejected = tid in tasks;
 			assert(rejected !is null,
@@ -2031,10 +2030,11 @@ class App
 	private Promise!void sendTaskMessage(int tid, const(ContentBlock)[] content,
 		const(ContentBlock)[] broadcastContent = null, string cydoMeta = null,
 		string nonce = null, bool isContextBootstrap = false,
-		void delegate(TaskData*) acceptedSubmissionMutation = null)
+		void delegate(TaskData*) acceptedSubmissionMutation = null,
+		MessageSource source = MessageSource.harness)
 	{
 		return sendPreparedTaskMessage(tid, content, broadcastContent, cydoMeta, true, nonce,
-			isContextBootstrap, acceptedSubmissionMutation);
+			isContextBootstrap, acceptedSubmissionMutation, source);
 	}
 
 	/// Send a prepared message to the agent and emit the matching pending UI echo.
@@ -2045,7 +2045,8 @@ class App
 		const(ContentBlock)[] broadcastContent = null, string cydoMeta = null,
 		bool captureUndoSnapshot = true, string nonce = null,
 		bool isContextBootstrap = false,
-		void delegate(TaskData*) acceptedSubmissionMutation = null)
+		void delegate(TaskData*) acceptedSubmissionMutation = null,
+		MessageSource source = MessageSource.harness)
 	{
 		import std.algorithm : min, filter;
 		import std.array : array;
@@ -2081,7 +2082,7 @@ class App
 		Promise!AgentSubmissionReceipt submission;
 		try
 			submission = session.sendMessage(toSend, nonce, isContextBootstrap,
-				nativeSubmissionUuid);
+				nativeSubmissionUuid, source);
 		catch (Exception e)
 		{
 			removeUnobservedNativeSubmissionReservation(td, nativeSubmissionUuid,
@@ -2976,13 +2977,14 @@ class App
 	}
 
 	private Promise!void sendKnownSystemMessage(int tid, KnownSystemMessageKind kind,
-		string body)
+		string body, MessageSource source = MessageSource.harness)
 	{
 		auto td = tid in tasks;
 		assert(td !is null, "Known system message task must exist");
 		auto msg = wrapKnownSystemMessage(config.system_keyword, kind, body);
 		auto meta = systemMessageNormalizer.buildKnownSystemMessageMeta(kind);
-		return sendTaskMessage(tid, [ContentBlock("text", msg)], null, meta)
+		return sendTaskMessage(tid, [ContentBlock("text", msg)], null, meta,
+			null, false, null, source)
 			.then(() {
 				auto accepted = tid in tasks;
 				assert(accepted !is null,
@@ -3999,7 +4001,7 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 
 	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content,
 		string correlationId = null, bool isContextBootstrap = false,
-		string nativeSubmissionUuid = null)
+		string nativeSubmissionUuid = null, MessageSource source = MessageSource.harness)
 	{
 		sendCalls++;
 		correlations ~= correlationId;

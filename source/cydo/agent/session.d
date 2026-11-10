@@ -17,6 +17,16 @@ enum AgentSubmissionReceipt
 
 /// Abstract agent session interface.
 /// Decouples the transport (WebSocket) from the agent implementation.
+/// Whom a message sent to the agent speaks for.
+enum MessageSource
+{
+	/// CyDo itself: deliveries, reminders, nudges.
+	harness,
+	/// The person using CyDo: what they typed, or a decision they made
+	/// (possibly worded by a CyDo template).
+	user,
+}
+
 interface AgentSession
 {
 	/// Send a user message to the agent.
@@ -29,7 +39,8 @@ interface AgentSession
 	/// completion. Rejects when the session lifecycle is lost before that boundary.
 	/// correlationId is the nonce from the originating UI send (may be null).
 	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content, string correlationId = null,
-		bool isContextBootstrap = false, string nativeSubmissionUuid = null);
+		bool isContextBootstrap = false, string nativeSubmissionUuid = null,
+		MessageSource source = MessageSource.harness);
 
 	/// Discard submitted messages buffered locally across a history-lineage reset.
 	void invalidatePendingSubmittedMessages();

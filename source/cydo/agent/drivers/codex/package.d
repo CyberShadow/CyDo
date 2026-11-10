@@ -37,7 +37,7 @@ public import cydo.agent.drivers.codex.rollout;
 public import cydo.agent.drivers.codex.rpc;
 import cydo.protocol : ContentBlock, HistoryBoundary, HistoryBoundaryKind,
 	ProcessStderrEvent, SessionCompactedEvent, TranslatedEvent, extrasToFragment;
-import cydo.agent.session : AgentSession, AgentSubmissionReceipt;
+import cydo.agent.session : AgentSession, AgentSubmissionReceipt, MessageSource;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
@@ -3419,7 +3419,8 @@ class CodexSession : AgentSession
 	// ----- AgentSession interface -----
 
 	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content, string correlationId = null,
-		bool isContextBootstrap = false, string nativeSubmissionUuid = null)
+		bool isContextBootstrap = false, string nativeSubmissionUuid = null,
+		MessageSource source = MessageSource.harness)
 	{
 		// Extract text (only text blocks supported; throw on others).
 		string text;

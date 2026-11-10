@@ -30,7 +30,7 @@ import cydo.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
 	ItemResultEvent, ItemStartedEvent, makeUnrecognizedEvent, ProcessExitEvent,
 	ProcessStderrEvent, SessionInitEvent, TranslatedEvent, TurnResultEvent,
 	TurnStopEvent, UsageInfo;
-import cydo.agent.session : AgentSession, AgentSubmissionReceipt;
+import cydo.agent.session : AgentSession, AgentSubmissionReceipt, MessageSource;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
@@ -1256,7 +1256,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	// ----- AgentSession interface -----
 
 	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content, string correlationId = null,
-		bool isContextBootstrap = false, string nativeSubmissionUuid = null)
+		bool isContextBootstrap = false, string nativeSubmissionUuid = null,
+		MessageSource source = MessageSource.harness)
 	{
 		// Extract text (only text blocks supported; throw on others).
 		string text;

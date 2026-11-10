@@ -130,6 +130,7 @@ private:
 		case KnownSystemMessageKind.questionFromTask:
 		case KnownSystemMessageKind.subTaskWaitingForAnswer:
 		case KnownSystemMessageKind.handoff:
+		case KnownSystemMessageKind.approveRetry:
 			return true;
 		case KnownSystemMessageKind.sessionStart:
 			return false;

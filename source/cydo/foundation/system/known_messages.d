@@ -17,6 +17,7 @@ enum KnownSystemMessageKind
 	restartNudge,
 	postCompactionTaskModeReminder,
 	modeSwitch,
+	approveRetry,
 }
 
 struct KnownSystemMessageMatch
@@ -56,6 +57,8 @@ string systemMessageSubject(KnownSystemMessageKind kind)
 		return "Post-compaction task mode reminder";
 	case KnownSystemMessageKind.modeSwitch:
 		return "Mode switch";
+	case KnownSystemMessageKind.approveRetry:
+		return "Approve and retry";
 	}
 }
 
@@ -293,6 +296,12 @@ bool tryKnownSystemMessageMatch(string subject, out KnownSystemMessageMatch matc
 		match.label = subject;
 		return true;
 	}
+	if (subject == systemMessageSubject(KnownSystemMessageKind.approveRetry))
+	{
+		match.kind = KnownSystemMessageKind.approveRetry;
+		match.label = subject;
+		return true;
+	}
 	return false;
 }
 
@@ -337,6 +346,7 @@ unittest
 		case KnownSystemMessageKind.subTaskResults:
 		case KnownSystemMessageKind.restartNudge:
 		case KnownSystemMessageKind.postCompactionTaskModeReminder:
+		case KnownSystemMessageKind.approveRetry:
 			return systemMessageSubject(kind);
 		case KnownSystemMessageKind.handoff:
 			return "Handoff: source -> target";

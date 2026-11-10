@@ -21,7 +21,7 @@ import cydo.agent.contract : Agent, DiscoveredSession, InterruptedToolCallRepair
 import cydo.protocol;
 import cydo.domain.policy.permissions : ToolCallDecision, ToolCallRuling;
 import cydo.agent.process : AgentProcess, FramingMode;
-import cydo.agent.session : AgentSession, AgentSubmissionReceipt;
+import cydo.agent.session : AgentSession, AgentSubmissionReceipt, MessageSource;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
@@ -1635,11 +1635,12 @@ class ClaudeCodeSession : AgentSession
 	/// correlationId is accepted for interface compatibility but not used:
 	/// Claude has no separable app-server acknowledgment beyond local enqueue.
 	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content, string correlationId = null,
-		bool isContextBootstrap = false, string nativeSubmissionUuid = null)
+		bool isContextBootstrap = false, string nativeSubmissionUuid = null,
+		MessageSource source = MessageSource.harness)
 	{
 		try
 		{
-			process.sendMessage(serializeClaudeInput(content, nativeSubmissionUuid));
+			process.sendMessage(serializeClaudeInput(content, nativeSubmissionUuid, source));
 		}
 		catch (Exception e)
 			return reject!AgentSubmissionReceipt(e);
@@ -1647,7 +1648,7 @@ class ClaudeCodeSession : AgentSession
 	}
 
 	private static string serializeClaudeInput(const(ContentBlock)[] content,
-		string nativeSubmissionUuid)
+		string nativeSubmissionUuid, MessageSource source)
 	{
 		import std.uuid : UUID, randomUUID;
 		JSONFragment claudeContent;
@@ -1660,8 +1661,31 @@ class ClaudeCodeSession : AgentSession
 		if (nativeSubmissionUuid.length > 0)
 			enforce(!UUID(nativeSubmissionUuid).empty,
 				"Claude submission UUID must not be nil");
+		// The CLI treats a message without an origin as unattributed; one
+		// stamped "human" counts as the person's (and is recorded so in the
+		// session file).
+		ClaudeInputOrigin origin;
+		final switch (source)
+		{
+			case MessageSource.harness:
+				break;
+			case MessageSource.user:
+				origin.kind = "human";
+				break;
+		}
 		return toJson(ClaudeInput("user", inputUuid,
-			ClaudeInputMessage("user", claudeContent), "default", null));
+			ClaudeInputMessage("user", claudeContent), "default", null, origin));
+	}
+
+	unittest
+	{
+		import std.algorithm : canFind;
+
+		enum uuid = "6f1e2d3c-4b5a-4978-8a6b-5c4d3e2f1a0b";
+		auto typed = serializeClaudeInput([ContentBlock("text", "hi")], uuid, MessageSource.user);
+		assert(typed.canFind(`"origin":{"kind":"human"}`), typed);
+		auto harness = serializeClaudeInput([ContentBlock("text", "hi")], uuid, MessageSource.harness);
+		assert(!harness.canFind(`"origin"`), harness);
 	}
 
 	void invalidatePendingSubmittedMessages() {}
@@ -2910,13 +2934,13 @@ unittest
 	{
 		enum supplied = "A32A27AF-7CC1-429D-888D-637C6CFCF9DD";
 		auto input = jsonParse!ClaudeInput(ClaudeCodeSession.serializeClaudeInput(
-			[ContentBlock("text", "uuid transport")], supplied));
+			[ContentBlock("text", "uuid transport")], supplied, MessageSource.harness));
 		assert(input.uuid == supplied);
 	}
 
 	{
 		auto input = jsonParse!ClaudeInput(ClaudeCodeSession.serializeClaudeInput(
-			[ContentBlock("text", "uuid transport")], null));
+			[ContentBlock("text", "uuid transport")], null, MessageSource.harness));
 		import std.uuid : UUID;
 		assert(!UUID(input.uuid).empty);
 	}
@@ -2924,7 +2948,8 @@ unittest
 	foreach (invalid; ["not-a-uuid", "00000000-0000-0000-0000-000000000000"])
 	{
 		bool rejected;
-		try ClaudeCodeSession.serializeClaudeInput([ContentBlock("text", "invalid uuid")], invalid);
+		try ClaudeCodeSession.serializeClaudeInput([ContentBlock("text", "invalid uuid")], invalid,
+			MessageSource.harness);
 		catch (Exception) rejected = true;
 		assert(rejected);
 	}
@@ -3013,6 +3038,13 @@ struct ClaudeInput
 	ClaudeInputMessage message;
 	string session_id;
 	string parent_tool_use_id;
+	@JSONOptional ClaudeInputOrigin origin;
+}
+
+/// Provenance of a user-role message (`origin`); absent = unattributed.
+struct ClaudeInputOrigin
+{
+	string kind;
 }
 
 struct ClaudeInputMessage
