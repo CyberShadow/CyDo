@@ -417,6 +417,8 @@ export interface AgentUsageMessage {
   agent: string;
   updated_at: number;
   limits: Record<string, AgentUsageLimitWindow>;
+  /** When the account login ends for good (ISO 8601). */
+  credential_expires_at?: string;
 }
 export interface ScanStatusMessage {
   type: "scan_status";

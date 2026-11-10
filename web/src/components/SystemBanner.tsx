@@ -33,6 +33,23 @@ interface Props {
   claudeUsage?: AgentUsageMessage;
 }
 
+/** How far ahead to warn that the login expires (as the Claude CLI does). */
+const loginExpiryWarningDays = 10;
+
+/** A warning that the account login is about to expire, if it is. */
+export function loginExpiryWarning(
+  expiresAt: string | undefined,
+  nowMs: number,
+): string | null {
+  if (expiresAt === undefined) return null;
+  const msLeft = Date.parse(expiresAt) - nowMs;
+  const dayMs = 24 * 60 * 60 * 1000;
+  if (msLeft > loginExpiryWarningDays * dayMs) return null;
+  if (msLeft <= 0) return "Login expired";
+  const days = Math.ceil(msLeft / dayMs);
+  return `Login expires in ${days} ${days === 1 ? "day" : "days"}`;
+}
+
 export function normalizeSessionStatus(status?: string | null): string | null {
   if (typeof status !== "string" || status.trim().length === 0) return null;
   return status;
@@ -172,6 +189,10 @@ export function SystemBanner({
     { label: "5h", window: fiveHour, windowSeconds: 5 * 60 * 60 },
     { label: "Week", window: week, windowSeconds: 7 * 24 * 60 * 60 },
   ];
+  const loginWarning = loginExpiryWarning(
+    claudeUsage?.credential_expires_at,
+    Date.now(),
+  );
   const showClaudeUsage =
     Number.isFinite(fiveHour?.utilization) ||
     Number.isFinite(week?.utilization);
@@ -231,6 +252,14 @@ export function SystemBanner({
         {taskType && <span class="banner-task-type">{taskType}</span>}
       </div>
       <div class="banner-right">
+        {loginWarning && (
+          <span
+            class="banner-login-expiry"
+            title={`The Claude login expires ${claudeUsage!.credential_expires_at!}. Run /login in Claude Code to renew it.`}
+          >
+            {loginWarning}
+          </span>
+        )}
         {showClaudeUsage && (
           <div class="banner-usage" title="Claude account usage">
             {usageRows.map((row) => {

@@ -775,6 +775,11 @@ body,
   color: var(--text-dim);
 }
 
+.banner-login-expiry {
+  color: var(--color-warning, #c8a000);
+  white-space: nowrap;
+}
+
 .theme-toggle {
   background: none;
   border: 1px solid var(--border);

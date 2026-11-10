@@ -106,6 +106,7 @@ export interface TurnResultEvent {
   stop_reason?: string;
   errors?: string[];
   end_reason?: TurnEndReason;
+  credential_expires_at?: string;
   extras?: Record<string, unknown>;
 }
 

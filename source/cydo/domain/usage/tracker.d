@@ -2,7 +2,7 @@ module cydo.domain.usage.tracker;
 
 import std.math : fabs, isFinite, isNaN;
 
-import ae.utils.json : JSONOptional, jsonParse, toJson;
+import ae.utils.json : JSONOptional, JSONPartial, jsonParse, toJson;
 
 import cydo.runtime.config : AgentDriver;
 import cydo.protocol : SessionRateLimitEvent;
@@ -20,6 +20,7 @@ private struct AgentUsageMessage
 	string agent;
 	long updated_at;
 	AgentUsageLimitWindowMessage[string] limits;
+	@JSONOptional string credential_expires_at;
 }
 
 private struct AgentUsageLimitWindowState
@@ -37,6 +38,7 @@ private struct AgentUsageState
 	string agent;
 	long updatedAt;
 	AgentUsageLimitWindowState[string] limits;
+	string credentialExpiresAt;
 }
 
 class AgentUsageTracker
@@ -55,7 +57,11 @@ class AgentUsageTracker
 	{
 		import std.datetime.systime : Clock;
 
-		if (driver != AgentDriver.claude || !isSessionRateLimitEvent(translated))
+		if (driver != AgentDriver.claude)
+			return false;
+		if (isTurnResultEvent(translated))
+			return updateCredentialExpiry(translated, payload);
+		if (!isSessionRateLimitEvent(translated))
 			return false;
 
 		SessionRateLimitEvent rateLimitEvent;
@@ -114,6 +120,28 @@ class AgentUsageTracker
 		payload = toJson(buildAgentUsageMessage(state));
 		return true;
 	}
+
+	private bool updateCredentialExpiry(string translated, out string payload)
+	{
+		import std.datetime.systime : Clock;
+
+		@JSONPartial static struct Probe { @JSONOptional string credential_expires_at; }
+		auto expiresAt = jsonParse!Probe(translated).credential_expires_at;
+		auto state = agentUsageByAgent.get("claude", AgentUsageState("claude", 0, null));
+		if (expiresAt.length == 0 || expiresAt == state.credentialExpiresAt)
+			return false;
+		state.credentialExpiresAt = expiresAt;
+		state.updatedAt = cast(long) Clock.currTime.toUnixTime;
+		agentUsageByAgent["claude"] = state;
+		payload = toJson(buildAgentUsageMessage(state));
+		return true;
+	}
+}
+
+private bool isTurnResultEvent(string translated)
+{
+	import std.algorithm : canFind;
+	return translated.canFind(`"type":"turn/result"`);
 }
 
 private bool isSessionRateLimitEvent(string translated)
@@ -142,6 +170,7 @@ private AgentUsageMessage buildAgentUsageMessage(ref const AgentUsageState state
 	AgentUsageMessage msg;
 	msg.agent = state.agent;
 	msg.updated_at = state.updatedAt;
+	msg.credential_expires_at = state.credentialExpiresAt;
 	foreach (limitType, ref window; state.limits)
 	{
 		if (!window.hasUtilization && !window.hasResetsAt && !window.hasStatus)
@@ -220,4 +249,19 @@ unittest
 		payload);
 	assert(!changed);
 	assert(tracker.agentUsageByAgent.length == 0);
+}
+
+unittest
+{
+	auto tracker = new AgentUsageTracker();
+	string payload;
+	enum result = `{"type":"turn/result","subtype":"success","credential_expires_at":"2026-11-12T12:31:33Z"}`;
+	assert(tracker.updateFromClaudeEvent(AgentDriver.claude, result, payload));
+	import std.algorithm : canFind;
+	assert(payload.canFind(`"credential_expires_at":"2026-11-12T12:31:33Z"`), payload);
+	// Unchanged: nothing to broadcast.
+	assert(!tracker.updateFromClaudeEvent(AgentDriver.claude, result, payload));
+	// A result without one keeps what is known.
+	assert(!tracker.updateFromClaudeEvent(AgentDriver.claude,
+		`{"type":"turn/result","subtype":"success"}`, payload));
 }

@@ -143,6 +143,9 @@ struct TurnResultEvent
 	@JSONOptional string stop_reason;
 	@JSONOptional string[] errors;
 	@JSONOptional TurnEndReason end_reason;
+	/// When the agent's account login ends for good (ISO 8601), where the
+	/// agent reports it.
+	@JSONOptional string credential_expires_at;
 	@JSONOptional JSONFragment extras;
 }
 

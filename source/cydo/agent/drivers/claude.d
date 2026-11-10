@@ -3794,6 +3794,7 @@ private string normalizeTurnResult(string rawLine)
 		@JSONOptional string[] errors;
 		@JSONOptional string terminal_reason;
 		@JSONOptional bool stopped_by_permission_check;
+		@JSONOptional string credential_expires_at;
 		// TODO: Claude Code result fields not used yet
 		@JSONOptional JSONFragment origin;
 		@JSONOptional JSONFragment subagent_stats;
@@ -3803,7 +3804,6 @@ private string normalizeTurnResult(string rawLine)
 		@JSONOptional JSONFragment queued_turn_count;
 		@JSONOptional string fast_mode_state;
 		@JSONOptional string fast_mode_disabled_reason;
-		@JSONOptional string credential_expires_at;
 		@JSONOptional JSONFragment model_usage_since_last_result;
 		@JSONOptional JSONFragment safety_stops;
 		@JSONOptional JSONFragment api_error_status;
@@ -3859,6 +3859,7 @@ private string normalizeTurnResult(string rawLine)
 	ev.end_reason         = raw.stopped_by_permission_check
 		? TurnEndReason.auto_mode_stopped
 		: claudeTurnEndReason(raw.terminal_reason);
+	ev.credential_expires_at = raw.credential_expires_at;
 	ev.extras = extrasToFragment(collectAllExtras(raw));
 	return toJson(ev);
 }

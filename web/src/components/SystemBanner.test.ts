@@ -5,6 +5,7 @@ import type { AgentUsageMessage } from "../protocol";
 import {
   computeUsagePaceRatio,
   isCompactingStatus,
+  loginExpiryWarning,
   normalizeSessionStatus,
   SystemBanner,
   usagePercent,
@@ -194,5 +195,29 @@ describe("SystemBanner Claude usage", () => {
     expect(html).toContain("banner-usage");
     expect(html).toContain("60%");
     expect(html).not.toContain("30%");
+  });
+});
+
+describe("loginExpiryWarning", () => {
+  const now = Date.parse("2026-11-10T12:00:00Z");
+
+  it("stays quiet while the login has more than ten days left", () => {
+    expect(loginExpiryWarning("2026-11-21T12:00:00Z", now)).toBeNull();
+    expect(loginExpiryWarning(undefined, now)).toBeNull();
+  });
+
+  it("counts the remaining days, rounding up", () => {
+    expect(loginExpiryWarning("2026-11-12T12:31:33Z", now)).toBe(
+      "Login expires in 3 days",
+    );
+    expect(loginExpiryWarning("2026-11-10T13:00:00Z", now)).toBe(
+      "Login expires in 1 day",
+    );
+  });
+
+  it("says when the login has expired", () => {
+    expect(loginExpiryWarning("2026-11-09T12:00:00Z", now)).toBe(
+      "Login expired",
+    );
   });
 });
