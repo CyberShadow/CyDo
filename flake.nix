@@ -496,7 +496,7 @@ EOF
 
               # ── CyDo workspace config ─────────────────────────────────
               mkdir -p /tmp/playwright-home/.config/cydo
-              cat ${./tests/e2e/agent-sandbox-env.yaml} > /tmp/playwright-home/.config/cydo/config.yaml
+              cat ${./tests/e2e/test-config-base.yaml} > /tmp/playwright-home/.config/cydo/config.yaml
               cat >> /tmp/playwright-home/.config/cydo/config.yaml <<'CYDO_CFG'
               default_agent: claude
               workspaces:
@@ -799,7 +799,7 @@ EOF
               ''}
 
               mkdir -p /tmp/playwright-home/.config/cydo
-              cat ${./tests/e2e/agent-sandbox-env.yaml} > /tmp/playwright-home/.config/cydo/config.yaml
+              cat ${./tests/e2e/test-config-base.yaml} > /tmp/playwright-home/.config/cydo/config.yaml
               cat >> /tmp/playwright-home/.config/cydo/config.yaml <<CYDO_CFG
               default_agent: ${agentType}
               log_level: trace

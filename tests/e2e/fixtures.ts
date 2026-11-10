@@ -305,62 +305,37 @@ export const test = base.extend<TestFixtures>({
       ).toEqual([]);
     }
 
-    // After the test body: assert no unknown message type errors in the DOM.
-    const errorMessages = page.locator(".message.system-message pre", {
-      hasText: /Unknown message type/,
-    });
-    const errorCount = await errorMessages.count();
-    if (errorCount > 0) {
-      const texts: string[] = [];
-      for (let i = 0; i < errorCount; i++) {
-        texts.push(await errorMessages.nth(i).innerText());
-      }
-      expect(
-        errorCount,
-        `Protocol errors in DOM:\n${texts.join("\n---\n")}`,
-      ).toBe(0);
-    }
-
-    // Also assert no unrecognized agent data messages.
-    const unrecognizedMessages = page.locator(".message.system-message pre", {
-      hasText: /Unrecognized agent data/,
-    });
-    const unrecognizedCount = await unrecognizedMessages.count();
-    if (unrecognizedCount > 0) {
-      const firstMsg = await unrecognizedMessages.first().textContent();
-      throw new Error(
-        `Found ${unrecognizedCount} unrecognized agent data message(s) in DOM. ` +
-          `First: ${firstMsg?.slice(0, 200)}`,
+    // After the test body: assert that the agent produced nothing CyDo
+    // does not understand. Dev mode (on in every e2e config) renders such
+    // data; collect all of it so one failing run lists everything an agent
+    // upgrade introduced.
+    const unknownData: string[] = [];
+    const collect = async (label: string, selector: string, hasText?: RegExp) => {
+      const nodes = page.locator(selector, hasText ? { hasText } : {});
+      const texts = new Set(
+        (await nodes.allInnerTexts()).map((text) =>
+          text.replace(/\s+/g, " ").trim().slice(0, 400),
+        ),
       );
-    }
-
-    // Assert no unknown tool result fields rendered.
-    const unknownResultFields = page.locator(".unknown-result-fields");
-    const unknownResultCount = await unknownResultFields.count();
-    if (unknownResultCount > 0) {
-      const descriptions: string[] = [];
-      for (let i = 0; i < unknownResultCount; i++) {
-        descriptions.push(await unknownResultFields.nth(i).innerText());
-      }
-      expect(
-        unknownResultCount,
-        `Unknown tool result fields rendered in DOM:\n${descriptions.join("\n---\n")}`,
-      ).toBe(0);
-    }
-
-    // Assert no unknown extra fields on messages.
-    const unknownExtraFields = page.locator(".unknown-extra-fields");
-    const unknownExtraCount = await unknownExtraFields.count();
-    if (unknownExtraCount > 0) {
-      const descriptions: string[] = [];
-      for (let i = 0; i < unknownExtraCount; i++) {
-        descriptions.push(await unknownExtraFields.nth(i).innerText());
-      }
-      expect(
-        unknownExtraCount,
-        `Unknown extra fields rendered in DOM:\n${descriptions.join("\n---\n")}`,
-      ).toBe(0);
-    }
+      for (const text of texts) unknownData.push(`${label}: ${text}`);
+    };
+    await collect(
+      "Protocol error",
+      ".message.system-message",
+      /Unknown message type/,
+    );
+    await collect(
+      "Unrecognized",
+      ".message.system-message",
+      /Unrecognized agent data|Unknown system subtype/,
+    );
+    await collect("Unknown block", ".unknown-block");
+    await collect("Unknown tool result fields", ".unknown-result-fields");
+    await collect("Unknown extra fields", ".unknown-extra-fields");
+    expect(
+      unknownData,
+      `Unknown agent data rendered in DOM:\n${unknownData.join("\n---\n")}`,
+    ).toEqual([]);
   },
 });
 

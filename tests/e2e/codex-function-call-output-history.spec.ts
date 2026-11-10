@@ -135,14 +135,6 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
       "/tmp/playwright-home/.config/cydo/config.yaml",
       `${workerHome}/.config/cydo/config.yaml`,
     );
-    const configPath = `${workerHome}/.config/cydo/config.yaml`;
-    const config = readFileSync(configPath, "utf8");
-    writeFileSync(
-      configPath,
-      config.includes("dev_mode:")
-        ? config.replace(/^dev_mode:.*$/m, "dev_mode: true")
-        : `${config}\ndev_mode: true\n`,
-    );
     mkdirSync(codexHome, { recursive: true });
     mkdirSync(`${codexHome}/shell_snapshots`, { recursive: true });
     writeFileSync(

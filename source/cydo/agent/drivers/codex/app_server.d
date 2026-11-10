@@ -424,7 +424,18 @@ package bool isSilentlyIgnoredCodexNotificationMethod(string method)
 		return true;
 	// Codex app-server emits MCP startup status updates that are not useful
 	// for CyDo's translated session stream.
-	return method == "mcpServer/startupStatus/updated";
+	if (method == "mcpServer/startupStatus/updated")
+		return true;
+	// TODO: notifications not used yet
+	switch (method)
+	{
+		case "remoteControl/status/changed":
+		case "thread/settings/updated":
+		case "thread/goal/cleared":
+			return true;
+		default:
+			return false;
+	}
 }
 
 unittest

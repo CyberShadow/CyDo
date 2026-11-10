@@ -1,3 +1,8 @@
+# Prepended to every e2e CyDo config.
+# Dev mode renders unknown events and extra protocol fields, which the
+# shared post-test assertions in fixtures.ts then fail on: an agent upgrade
+# that adds fields or events must be looked at, not silently hidden.
+dev_mode: true
 sandbox:
   env:
     ANTHROPIC_BASE_URL: "{{ env.ANTHROPIC_BASE_URL }}"

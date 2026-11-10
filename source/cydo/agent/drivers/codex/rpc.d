@@ -169,6 +169,10 @@ struct ItemStartedParams
 		@JSONOptional SO summary;
 		// agentMessage fields:
 		@JSONOptional typeof(null) memoryCitation;
+		// TODO: not used yet
+		@JSONOptional SO pluginId;    // mcpToolCall: plugin providing the MCP server
+		@JSONOptional SO appContext;  // mcpToolCall: app connector metadata
+		@JSONOptional string source;  // commandExecution: agent, userShell, unifiedExec*
 		// internal Codex metadata:
 		@JSONName("_creationOrder") @JSONOptional int _creationOrder;
 		JSONExtras extras;
@@ -317,6 +321,10 @@ struct ItemCompletedParams
 		@JSONOptional SO content;
 		// agentMessage fields:
 		@JSONOptional typeof(null) memoryCitation;
+		// TODO: not used yet
+		@JSONOptional SO pluginId;    // mcpToolCall: plugin providing the MCP server
+		@JSONOptional SO appContext;  // mcpToolCall: app connector metadata
+		@JSONOptional string source;  // commandExecution: agent, userShell, unifiedExec*
 		// internal Codex metadata:
 		@JSONName("_creationOrder") @JSONOptional int _creationOrder;
 		JSONExtras extras;                     // remaining unknown fields

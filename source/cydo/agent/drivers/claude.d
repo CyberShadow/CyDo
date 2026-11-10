@@ -2398,6 +2398,7 @@ class ClaudeCodeSession : AgentSession
 			@JSONOptional string permissionMode;
 			@JSONOptional string entrypoint;
 			@JSONOptional JSONFragment diagnostics;
+			mixin ClaudeAssistantUnhandledFields;
 			JSONExtras _extras;
 		}
 
@@ -3255,6 +3256,43 @@ unittest
 	assert(ev.type == "agent/unrecognized");
 }
 
+/// Claude Code assistant-message fields that CyDo does not use yet.
+/// Listed so they are not reported as unknown agent data.
+// TODO: evaluate and either consume or deliberately drop each of these.
+private mixin template ClaudeAssistantUnhandledFields()
+{
+	// Live stream only
+	@JSONOptional JSONFragment tool_use_meta;
+	@JSONOptional string user_message_uuid;
+	@JSONOptional string[] user_message_uuids;
+	@JSONOptional string agent_id;
+	@JSONOptional string subagent_type;
+	@JSONOptional string task_description;
+	@JSONOptional string request_id;
+	@JSONOptional JSONFragment wire_tool_inputs;
+	// Session file only
+	@JSONOptional string requestedModel;
+	@JSONOptional string requestRef;
+	@JSONOptional string promptCacheRequested;
+	@JSONOptional JSONFragment apiBlockIndex;
+	@JSONOptional string effort;
+	@JSONOptional string perTurnEffort;
+	@JSONOptional string advisorModel;
+	@JSONOptional JSONFragment toolInputStreamMs;
+	@JSONOptional string attributionAgent;
+	@JSONOptional string attributionMcpServer;
+	@JSONOptional string attributionMcpTool;
+	@JSONOptional JSONFragment thinkingDisplay;
+	@JSONOptional JSONFragment thinkingDurationMs;
+	@JSONOptional JSONFragment wireToolInputs;
+	@JSONOptional JSONFragment wireIngestContext;
+	@JSONOptional JSONFragment serverClassifierRequest;
+	@JSONOptional string sessionKind;
+	@JSONOptional JSONFragment apiErrorCode;
+	@JSONOptional JSONFragment apiErrorStatus;
+	@JSONOptional JSONFragment error;
+}
+
 /// Translate a Claude history assistant message to item/started+completed per block + turn/stop.
 private TranslatedEvent[] translateAssistantHistory(string rawLine)
 {
@@ -3284,6 +3322,10 @@ private TranslatedEvent[] translateAssistantHistory(string rawLine)
 		@JSONOptional string type;   // always "message", not forwarded
 		@JSONOptional string role;   // always "assistant", not forwarded
 		@JSONOptional JSONFragment context_management;
+		// TODO: not used yet
+		@JSONOptional JSONFragment diagnostics;
+		@JSONOptional JSONFragment container;
+		@JSONOptional JSONFragment input_transformations;
 		JSONExtras _extras;
 	}
 	static struct ClaudeAssistant
@@ -3308,6 +3350,7 @@ private TranslatedEvent[] translateAssistantHistory(string rawLine)
 		@JSONOptional string permissionMode;
 		@JSONOptional string entrypoint;
 		@JSONOptional JSONFragment diagnostics;
+		mixin ClaudeAssistantUnhandledFields;
 		JSONExtras _extras;
 	}
 
@@ -3585,6 +3628,23 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 		case "progress":
 		case "file-history-snapshot":
 			return null; // not used by frontend
+		// TODO: session file rows not used yet
+		case "atis-latch":
+		case "last-prompt":
+		case "attachment":
+		case "api-request":
+		case "api-request-blob":
+		case "api-request-shape":
+		case "cost-state":
+		case "tools-used":
+		case "mode":
+		case "file-history-delta":
+		case "session-owner":
+		case "ai-title":
+		case "permission-mode":
+		case "agent-name":
+		case "continued-in":
+			return null;
 		default:
 			import cydo.protocol : makeUnrecognizedEvent;
 			return makeUnrecognizedEvent("unknown event type: " ~ probe.type);
@@ -3610,6 +3670,14 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 			return translateApiRetry(rawLine);
 		case "permission_denied":
 			return translatePermissionDenied(rawLine);
+		// TODO: system events not used yet
+		case "task_updated":
+		case "background_tasks_changed":
+		case "post_turn_summary":
+		case "away_summary":
+		case "permission_retry":
+		case "informational":
+			return null;
 		default:
 			return rawLine; // unknown subtypes pass through
 	}
@@ -3714,6 +3782,28 @@ private string normalizeTurnResult(string rawLine)
 		@JSONOptional JSONFragment[] permission_denials;
 		@JSONOptional string stop_reason;
 		@JSONOptional string[] errors;
+		// TODO: Claude Code result fields not used yet
+		@JSONOptional string terminal_reason;
+		@JSONOptional JSONFragment stopped_by_permission_check;
+		@JSONOptional JSONFragment origin;
+		@JSONOptional JSONFragment subagent_stats;
+		@JSONOptional string user_message_uuid;
+		@JSONOptional string[] user_message_uuids;
+		@JSONOptional JSONFragment result_index;
+		@JSONOptional JSONFragment queued_turn_count;
+		@JSONOptional string fast_mode_state;
+		@JSONOptional string fast_mode_disabled_reason;
+		@JSONOptional string credential_expires_at;
+		@JSONOptional JSONFragment model_usage_since_last_result;
+		@JSONOptional JSONFragment safety_stops;
+		@JSONOptional JSONFragment api_error_status;
+		@JSONOptional JSONFragment ttft_ms;
+		@JSONOptional JSONFragment ttft_stream_ms;
+		@JSONOptional JSONFragment time_to_request_ms;
+		@JSONOptional JSONFragment first_content_frame_ms;
+		@JSONOptional JSONFragment first_request_input_tokens;
+		@JSONOptional JSONFragment request_sent_wall_ms;
+		@JSONOptional JSONFragment fallback_credit;
 		// TODO: Claude Code JSONL metadata fields — not forwarded to the agnostic protocol
 		@JSONOptional string type;
 		@JSONOptional string uuid;
@@ -3960,8 +4050,9 @@ private string translatePermissionDenied(string rawLine)
 		@JSONOptional string decision_reason;
 	}
 	auto raw = jsonParse!RawDenial(rawLine);
+	// TODO: surface the other denial kinds too.
 	if (raw.decision_reason_type != "classifier")
-		return rawLine;
+		return null;
 	return toJson(ItemDeniedEvent("item/denied", raw.tool_use_id, raw.decision_reason));
 }
 
@@ -3973,7 +4064,7 @@ unittest
 		== `{"type":"item/denied","item_id":"toolu_1","reason":"risky"}`);
 	enum ruleDenial = `{"type":"system","subtype":"permission_denied","tool_use_id":"toolu_2",`
 		~ `"decision_reason_type":"rule"}`;
-	assert(translatePermissionDenied(ruleDenial) == ruleDenial);
+	assert(translatePermissionDenied(ruleDenial) is null);
 }
 
 private string translateApiRetry(string rawLine)
