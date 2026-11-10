@@ -885,3 +885,29 @@ describe("claude/TaskGet result rendering", () => {
     expect(html).not.toContain("todo-item");
   });
 });
+
+describe("MCP tool headers", () => {
+  function renderMcpTool(toolServer: string): string {
+    return renderToString(
+      h(ToolCall, {
+        name: "search_fetch",
+        driver: "claude",
+        toolServer,
+        toolUseId: "mcp-1",
+        input: { query: "x" },
+      }),
+    );
+  }
+
+  it("names the MCP server a tool comes from", () => {
+    expect(renderMcpTool("kagi")).toContain(
+      '<span title="MCP server kagi" class="tool-server">kagi</span>',
+    );
+  });
+
+  it("marks CyDo's own tools with its logo instead", () => {
+    const html = renderMcpTool("cydo");
+    expect(html).not.toContain("tool-server");
+    expect(html).toContain("cydo-tool-logo");
+  });
+});

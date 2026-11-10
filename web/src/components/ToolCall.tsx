@@ -3340,6 +3340,11 @@ export const ToolCall = memo(
               />
             </svg>
           )}
+          {toolServer !== undefined && toolServer !== "cydo" && (
+            <span class="tool-server" title={`MCP server ${toolServer}`}>
+              {toolServer}
+            </span>
+          )}
           <span class="tool-name">{name}</span>
           {subtitle}
           {(toolIs(name, driver, toolServer, "claude/Edit") ||

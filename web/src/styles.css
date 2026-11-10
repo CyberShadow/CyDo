@@ -1247,6 +1247,16 @@ body,
   flex-shrink: 0;
 }
 
+.tool-server {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.tool-server::after {
+  content: " ·";
+}
+
 .cydo-tool-logo {
   flex-shrink: 0;
 }
