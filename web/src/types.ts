@@ -8,6 +8,7 @@ import type {
   AskUserQuestionItem,
   ModelUsageInfo,
   TaskDiagnosticEvent,
+  TurnEndReason,
 } from "./protocol";
 import type { PatchHunk } from "./lib/patches";
 
@@ -87,6 +88,7 @@ export interface DisplayMessage {
     permissionDenials?: unknown[];
     stopReason?: string | null;
     errors?: string[];
+    endReason?: TurnEndReason;
   };
   // Rate limit fields
   rateLimitInfo?: {

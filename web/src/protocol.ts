@@ -20,6 +20,7 @@ export type {
   SessionStatusEvent,
   SessionCompactedEvent,
   TurnResultEvent,
+  TurnEndReason,
   SessionSummaryEvent,
   SessionCostEvent,
   SessionRateLimitEvent,

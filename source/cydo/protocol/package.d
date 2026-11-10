@@ -115,6 +115,18 @@ struct SessionCompactedEvent
 }
 
 /// turn/result
+/// Why a turn ended, where the agent says more than success or failure.
+enum TurnEndReason : string
+{
+	unspecified = "unspecified",
+	completed = "completed",
+	interrupted = "interrupted",             /// stopped by the user
+	hook_stopped = "hook_stopped",           /// stopped by a hook
+	context_limit = "context_limit",         /// the conversation no longer fits
+	max_turns = "max_turns",                 /// the turn limit was reached
+	auto_mode_stopped = "auto_mode_stopped", /// auto mode could not judge a tool call
+}
+
 struct TurnResultEvent
 {
 	string type = "turn/result";
@@ -130,6 +142,7 @@ struct TurnResultEvent
 	@JSONOptional JSONFragment[] permission_denials;
 	@JSONOptional string stop_reason;
 	@JSONOptional string[] errors;
+	@JSONOptional TurnEndReason end_reason;
 	@JSONOptional JSONFragment extras;
 }
 

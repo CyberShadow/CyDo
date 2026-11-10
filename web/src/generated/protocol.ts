@@ -1,3 +1,5 @@
+export type TurnEndReason = "unspecified" | "completed" | "interrupted" | "hook_stopped" | "context_limit" | "max_turns" | "auto_mode_stopped";
+
 export type TaskDiagnosticSeverity = "info" | "warning" | "error";
 
 export interface ContentBlock {
@@ -103,6 +105,7 @@ export interface TurnResultEvent {
   permission_denials?: unknown[];
   stop_reason?: string;
   errors?: string[];
+  end_reason?: TurnEndReason;
   extras?: Record<string, unknown>;
 }
 

@@ -774,6 +774,7 @@ export function reduceResultMessage(
           permissionDenials: msg.permission_denials,
           stopReason: msg.stop_reason,
           errors: msg.errors,
+          endReason: msg.end_reason,
         },
       },
     ],

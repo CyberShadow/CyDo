@@ -2494,6 +2494,10 @@ body,
   color: var(--error);
 }
 
+.result-divider.result-interrupted .result-divider-icon {
+  color: var(--text-dim);
+}
+
 /* Result message (expanded state) */
 .result-message {
   padding: 12px 16px;
@@ -2510,6 +2514,10 @@ body,
   border-left: 3px solid var(--error);
 }
 
+.result-message.result-interrupted {
+  border-left: 3px solid var(--text-dim);
+}
+
 .result-header {
   font-weight: bold;
   font-size: 14px;
@@ -2522,6 +2530,10 @@ body,
 
 .result-error .result-header {
   color: var(--error);
+}
+
+.result-interrupted .result-header {
+  color: var(--text-dim);
 }
 
 .result-subtype {

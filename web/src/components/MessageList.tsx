@@ -8,6 +8,7 @@ import {
   useCallback,
 } from "preact/hooks";
 import type { DisplayMessage, Block } from "../types";
+import type { TurnEndReason } from "../protocol";
 import { outbox, type OutboxEntry } from "../outbox";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { AssistantMessage } from "./AssistantMessage";
@@ -26,6 +27,7 @@ import undoFileRevertIcon from "../icons/undo-file-revert.svg?raw";
 import sunIcon from "../icons/sun.svg?raw";
 import checkIcon from "../icons/check.svg?raw";
 import errorIcon from "../icons/error.svg?raw";
+import closeIcon from "../icons/close.svg?raw";
 
 interface Props {
   taskTid: number;
@@ -48,19 +50,35 @@ interface Props {
   getTaskHref?: (id: string) => string;
 }
 
+/** Headlines for turns that ended for a reason worth naming. */
+const endReasonHeadlines: Partial<Record<TurnEndReason, string>> = {
+  interrupted: "Interrupted",
+  hook_stopped: "Stopped by hook",
+  context_limit: "Context limit reached",
+  max_turns: "Turn limit reached",
+  auto_mode_stopped: "Stopped by auto mode",
+};
+
 function ResultMessageView({ message }: { message: DisplayMessage }) {
   const devMode = useDevMode();
   const d = message.resultData!;
   const durationSec = d.durationMs ? Math.floor(d.durationMs / 1000) : 0;
   const apiSec = d.durationApiMs ? Math.floor(d.durationApiMs / 1000) : 0;
-  const [expanded, setExpanded] = useState(d.isError);
+  // A turn the user stopped is not a failure, even where the agent flags it
+  // as an error.
+  const interrupted = d.endReason === "interrupted";
+  const tone = interrupted
+    ? "result-interrupted"
+    : d.isError
+      ? "result-error"
+      : "result-success";
+  const [expanded, setExpanded] = useState(d.isError && !interrupted);
 
   if (!expanded) {
     return (
       <div
-        class={`result-divider ${
-          d.isError ? "result-error" : "result-success"
-        }`}
+        class={`result-divider ${tone}`}
+        title={interrupted ? "Interrupted" : undefined}
         onClick={() => {
           setExpanded(true);
         }}
@@ -70,7 +88,11 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
           <span
             class="action-icon"
             dangerouslySetInnerHTML={{
-              __html: d.isError ? errorIcon : checkIcon,
+              __html: interrupted
+                ? closeIcon
+                : d.isError
+                  ? errorIcon
+                  : checkIcon,
             }}
           />
         </span>
@@ -81,15 +103,14 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
 
   return (
     <div
-      class={`message result-message ${
-        d.isError ? "result-error" : "result-success"
-      }`}
+      class={`message result-message ${tone}`}
       onClick={() => {
         setExpanded(false);
       }}
     >
       <div class="result-header">
-        {d.isError ? "Session Failed" : "Session Complete"}
+        {(d.endReason && endReasonHeadlines[d.endReason]) ??
+          (d.isError ? "Session Failed" : "Session Complete")}
         <span class="result-subtype">[{d.subtype}]</span>
       </div>
       <div class="result-meta">

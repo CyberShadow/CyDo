@@ -4295,7 +4295,7 @@ class CodexSession : AgentSession
 		if (outputHandler_)
 		{
 			import cydo.agent.drivers.codex.app_server : extractCodexErrorMessage;
-			import cydo.protocol : TurnResultEvent, UsageInfo;
+			import cydo.protocol : TurnEndReason, TurnResultEvent, UsageInfo;
 			TurnResultEvent tre;
 			tre.num_turns = 1;
 			tre.usage = UsageInfo(0, 0);
@@ -4313,6 +4313,8 @@ class CodexSession : AgentSession
 			}
 			else
 				tre.subtype = "success";
+			if (params.turn.status == "interrupted")
+				tre.end_reason = TurnEndReason.interrupted;
 			outputHandler_(TranslatedEvent(toJson(tre), rawNotification));
 		}
 		lastResultText_ = null;
@@ -4526,6 +4528,7 @@ unittest
 
 unittest
 {
+	import std.string : indexOf;
 	@JSONPartial struct EmittedTurnResult
 	{
 		string type;
@@ -4585,6 +4588,13 @@ unittest
 	ev = jsonParse!EmittedTurnResult(emitted[$ - 1]);
 	assert(ev.subtype == "success");
 	assert(!ev.is_error);
+	assert(indexOf(emitted[$ - 1], `"end_reason"`) < 0);
+
+	// An interrupted turn says so.
+	auto interrupted = jsonParse!CompletedNotification(
+		`{"params":{"threadId":"thread-failed","turn":{"id":"turn-5","status":"interrupted","error":null}}}`);
+	session.handleTurnCompleted(interrupted.params, "raw-interrupted");
+	assert(indexOf(emitted[$ - 1], `"end_reason":"interrupted"`) >= 0, emitted[$ - 1]);
 }
 
 unittest

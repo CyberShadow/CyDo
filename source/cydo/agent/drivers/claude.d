@@ -3792,9 +3792,9 @@ private string normalizeTurnResult(string rawLine)
 		@JSONOptional JSONFragment[] permission_denials;
 		@JSONOptional string stop_reason;
 		@JSONOptional string[] errors;
-		// TODO: Claude Code result fields not used yet
 		@JSONOptional string terminal_reason;
-		@JSONOptional JSONFragment stopped_by_permission_check;
+		@JSONOptional bool stopped_by_permission_check;
+		// TODO: Claude Code result fields not used yet
 		@JSONOptional JSONFragment origin;
 		@JSONOptional JSONFragment subagent_stats;
 		@JSONOptional string user_message_uuid;
@@ -3856,8 +3856,48 @@ private string normalizeTurnResult(string rawLine)
 	ev.permission_denials = raw.permission_denials;
 	ev.stop_reason        = raw.stop_reason;
 	ev.errors             = raw.errors;
+	ev.end_reason         = raw.stopped_by_permission_check
+		? TurnEndReason.auto_mode_stopped
+		: claudeTurnEndReason(raw.terminal_reason);
 	ev.extras = extrasToFragment(collectAllExtras(raw));
 	return toJson(ev);
+}
+
+/// Map Claude's `terminal_reason` (why its query loop ended).
+private TurnEndReason claudeTurnEndReason(string terminalReason)
+{
+	switch (terminalReason)
+	{
+		case "completed":
+			return TurnEndReason.completed;
+		case "aborted_streaming":
+		case "aborted_tools":
+			return TurnEndReason.interrupted;
+		case "hook_stopped":
+		case "stop_hook_prevented":
+			return TurnEndReason.hook_stopped;
+		case "prompt_too_long":
+		case "blocking_limit":
+			return TurnEndReason.context_limit;
+		case "max_turns":
+			return TurnEndReason.max_turns;
+		default: // older CLIs send none; the rest have no dedicated presentation
+			return TurnEndReason.unspecified;
+	}
+}
+
+unittest
+{
+	import std.algorithm.searching : canFind;
+
+	auto translated = normalizeTurnResult(`{"type":"result","subtype":"error_during_execution",`
+		~ `"is_error":true,"num_turns":1,"duration_ms":5,"total_cost_usd":0,`
+		~ `"terminal_reason":"aborted_tools"}`);
+	assert(translated.canFind(`"end_reason":"interrupted"`), translated);
+	translated = normalizeTurnResult(`{"type":"result","subtype":"error_during_execution",`
+		~ `"is_error":true,"num_turns":1,"duration_ms":5,"total_cost_usd":0,`
+		~ `"terminal_reason":"tool_deferred","stopped_by_permission_check":true}`);
+	assert(translated.canFind(`"end_reason":"auto_mode_stopped"`), translated);
 }
 
 /// Translate "summary" event to session/summary.

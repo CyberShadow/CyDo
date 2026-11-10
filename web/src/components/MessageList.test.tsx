@@ -755,3 +755,52 @@ describe("MessageList task diagnostics", () => {
     expect(html).not.toContain("btn-copy");
   });
 });
+
+describe("MessageList turn results", () => {
+  function renderResult(
+    resultData: Partial<NonNullable<DisplayMessage["resultData"]>>,
+  ) {
+    return renderToString(
+      <MessageList
+        taskTid={1}
+        messages={[
+          {
+            id: "result",
+            type: "result",
+            content: [],
+            resultData: {
+              subtype: "error_during_execution",
+              isError: true,
+              numTurns: 1,
+              durationMs: 0,
+              totalCostUsd: 0,
+              usage: { input_tokens: 0, output_tokens: 0 },
+              ...resultData,
+            },
+          },
+        ]}
+        replacementEvents={new Map()}
+        blocks={new Map()}
+        isProcessing={false}
+        bandStatus=""
+      />,
+    );
+  }
+
+  it("shows a turn the user stopped as a neutral divider, not a failure", () => {
+    const html = renderResult({ endReason: "interrupted" });
+    expect(html).toContain("result-divider result-interrupted");
+    expect(html).not.toContain("result-error");
+    expect(html).not.toContain("Session Failed");
+  });
+
+  it("expands a failed turn with the reason it stopped", () => {
+    const html = renderResult({ endReason: "context_limit" });
+    expect(html).toContain("result-message result-error");
+    expect(html).toContain("Context limit reached");
+  });
+
+  it("keeps the generic headline for unnamed failures", () => {
+    expect(renderResult({})).toContain("Session Failed");
+  });
+});
