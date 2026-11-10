@@ -3669,6 +3669,15 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 			return normalizeTaskNotification(rawLine);
 		case "api_retry":
 			return translateApiRetry(rawLine);
+		case "model_fallback":
+			return translateModelSwitch(rawLine, "Model switched");
+		case "model_refusal_fallback":
+			// TODO: also take back the messages it lists in retracted_message_uuids.
+			return translateModelSwitch(rawLine, "Model refused; switched");
+		case "model_refusal_no_fallback":
+			return translateModelSwitch(rawLine, "Model refused");
+		case "model_consent_fallback":
+			return translateModelSwitch(rawLine, "Model switched");
 		case "permission_denied":
 			return translatePermissionDenied(rawLine);
 		// TODO: system events not used yet
@@ -4086,6 +4095,33 @@ unittest
 	enum ruleDenial = `{"type":"system","subtype":"permission_denied","tool_use_id":"toolu_2",`
 		~ `"decision_reason_type":"rule"}`;
 	assert(translatePermissionDenied(ruleDenial) is null);
+}
+
+/// Translate a notice that the CLI swapped, or could not swap, the model
+/// (overload, refusal, consent) into a warning. The CLI words it itself.
+private string translateModelSwitch(string rawLine, string subject)
+{
+	@JSONPartial static struct RawNotice { string content; }
+	try
+	{
+		import cydo.protocol : TaskDiagnosticEvent, TaskDiagnosticSeverity;
+		TaskDiagnosticEvent ev;
+		ev.severity = TaskDiagnosticSeverity.warning;
+		ev.subject = subject;
+		ev.body = jsonParse!RawNotice(rawLine).content;
+		return toJson(ev);
+	}
+	catch (Exception e)
+	{ tracef("translateModelSwitch: parse error: %s", e.msg); import cydo.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("model switch notice parse error: " ~ e.msg); }
+}
+
+unittest
+{
+	assert(translateClaudeEventInner(`{"type":"system","subtype":"model_fallback","trigger":"overloaded",`
+		~ `"original_model":"a","fallback_model":"b","content":"Switched to b due to high demand for a",`
+		~ `"uuid":"u","session_id":"s"}`, "claude")
+		== `{"type":"cydo/task_diagnostic","severity":"warning","subject":"Model switched",`
+		~ `"body":"Switched to b due to high demand for a"}`);
 }
 
 private string translateApiRetry(string rawLine)
