@@ -3718,8 +3718,9 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 			return translateModelSwitch(rawLine, "Model switched");
 		case "permission_denied":
 			return translatePermissionDenied(rawLine);
-		// TODO: system events not used yet
 		case "task_updated":
+			return normalizeTaskUpdated(rawLine);
+		// TODO: system events not used yet
 		case "background_tasks_changed":
 		case "post_turn_summary":
 		case "away_summary":
@@ -4358,6 +4359,53 @@ private string normalizeTaskStarted(string rawLine)
 	ev.task_type    = raw.task_type;
 	ev.extras = extrasToFragment(collectAllExtras(raw));
 	return toJson(ev);
+}
+
+/// Normalize a Claude task_updated event (a patch to one task's state).
+private string normalizeTaskUpdated(string rawLine)
+{
+	static struct Patch
+	{
+		@JSONOptional string status;
+		@JSONOptional string error;
+		// TODO: not used yet
+		@JSONOptional string description;
+		@JSONOptional JSONFragment end_time;
+		@JSONOptional JSONFragment total_paused_ms;
+		@JSONOptional bool is_backgrounded;
+		JSONExtras _extras;
+	}
+	static struct ClaudeTaskUpdated
+	{
+		string task_id;
+		Patch patch;
+		@JSONOptional string run_id;
+		@JSONOptional string type;
+		@JSONOptional string subtype;
+		@JSONOptional string uuid;
+		@JSONOptional string session_id;
+		JSONExtras _extras;
+	}
+
+	ClaudeTaskUpdated raw;
+	try
+		raw = jsonParse!ClaudeTaskUpdated(rawLine);
+	catch (Exception e)
+	{ tracef("normalizeTaskUpdated: parse error: %s", e.msg); return makeUnrecognizedEvent("task/updated parse error: " ~ e.msg); }
+
+	TaskUpdatedEvent ev;
+	ev.task_id = raw.task_id;
+	ev.status  = raw.patch.status;
+	ev.error   = raw.patch.error;
+	ev.extras = extrasToFragment(collectAllExtras(raw));
+	return toJson(ev);
+}
+
+unittest
+{
+	assert(translateClaudeEventInner(`{"type":"system","subtype":"task_updated","task_id":"a2",`
+		~ `"run_id":"r","patch":{"status":"killed","end_time":1794341131907},"uuid":"u","session_id":"s"}`, "claude")
+		== `{"type":"task/updated","task_id":"a2","status":"killed"}`);
 }
 
 /// Normalize a Claude task_notification system event to the agnostic TaskNotificationEvent format.

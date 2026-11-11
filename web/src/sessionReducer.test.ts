@@ -1661,3 +1661,68 @@ describe("cydo/task_spawned reducer", () => {
     expect(s.pendingCydoTaskItemIds).toEqual([]);
   });
 });
+
+describe("task state reducer", () => {
+  function startedRow(state: TaskState) {
+    return state.messages.find(
+      (m) => m.subtype === "task_lifecycle" && m.taskState !== undefined,
+    );
+  }
+
+  it("tracks a task's state on the row that announced its start", () => {
+    let s: TaskState = reduceMessage(
+      makeState(),
+      asEvent({
+        type: "task/started",
+        task_id: "t1",
+        description: "watch logs",
+        task_type: "local_bash",
+      }),
+      1,
+    );
+    expect(startedRow(s)?.taskState).toEqual({ status: "running" });
+
+    s = reduceMessage(
+      s,
+      asEvent({ type: "task/updated", task_id: "t1", status: "killed" }),
+      2,
+    );
+    expect(startedRow(s)?.taskState).toEqual({ status: "killed" });
+    expect(s.messages).toHaveLength(1);
+
+    s = reduceMessage(
+      s,
+      asEvent({ type: "task/updated", task_id: "t1", error: "exit 137" }),
+      3,
+    );
+    expect(startedRow(s)?.taskState).toEqual({
+      status: "killed",
+      error: "exit 137",
+    });
+  });
+
+  it("takes the final status from the task notification", () => {
+    let s: TaskState = reduceMessage(
+      makeState(),
+      asEvent({ type: "task/started", task_id: "t2" }),
+      1,
+    );
+    s = reduceMessage(
+      s,
+      asEvent({ type: "task/notification", task_id: "t2", status: "failed" }),
+      2,
+    );
+    expect(startedRow(s)?.taskState).toEqual({ status: "failed" });
+  });
+
+  it("ignores updates for tasks started before the loaded history", () => {
+    const s = makeState();
+    expect(
+      reduceMessage(
+        s,
+        asEvent({ type: "task/updated", task_id: "gone", status: "killed" }),
+        1,
+      ).messages,
+    ).toEqual(s.messages);
+  });
+});

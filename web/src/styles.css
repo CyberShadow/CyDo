@@ -1117,6 +1117,27 @@ body,
   color: var(--text);
 }
 
+.task-lifecycle-state {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--text-dim);
+  border: 1px solid currentColor;
+}
+
+.task-lifecycle-state.task-state-running {
+  color: var(--processing);
+}
+
+.task-lifecycle-state.task-state-completed {
+  color: var(--success);
+}
+
+.task-lifecycle-state.task-state-failed,
+.task-lifecycle-state.task-state-killed {
+  color: var(--error);
+}
+
 /* Control response messages */
 .control-response-message {
   display: flex;

@@ -197,6 +197,17 @@ struct TaskStartedEvent
 	@JSONOptional JSONFragment extras;
 }
 
+/// task/updated — a task's state changed (fields absent: unchanged).
+struct TaskUpdatedEvent
+{
+	string type = "task/updated";
+	string task_id;
+	/// pending, running, completed, failed, killed or paused
+	@JSONOptional string status;
+	@JSONOptional string error;
+	@JSONOptional JSONFragment extras;
+}
+
 /// task/notification
 struct TaskNotificationEvent
 {

@@ -66,6 +66,8 @@ export interface DisplayMessage {
   blockIds?: string[];
   /** True while the assistant turn is still streaming; false after turn/stop. */
   streaming?: boolean;
+  /** On a "Task started" row: the task's latest state. */
+  taskState?: { status: string; error?: string };
   // Additional metadata for richer display
   isSidechain?: boolean;
   isSynthetic?: boolean;

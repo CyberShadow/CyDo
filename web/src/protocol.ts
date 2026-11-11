@@ -26,6 +26,7 @@ export type {
   SessionRateLimitEvent,
   TaskStartedEvent,
   TaskNotificationEvent,
+  TaskUpdatedEvent,
   ControlResponseEvent,
   ProcessStderrEvent,
   ProcessExitEvent,
@@ -54,6 +55,7 @@ import type {
   SessionRateLimitEvent,
   TaskStartedEvent,
   TaskNotificationEvent,
+  TaskUpdatedEvent,
   ControlResponseEvent,
   ProcessStderrEvent,
   ProcessExitEvent,
@@ -163,6 +165,7 @@ export type AgnosticEvent =
   | SystemStopHookSummaryMessage
   | TaskStartedEvent
   | TaskNotificationEvent
+  | TaskUpdatedEvent
   | TurnResultEvent
   | SessionSummaryEvent
   | SessionCostEvent

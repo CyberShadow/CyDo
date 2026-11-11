@@ -28,6 +28,7 @@ import type {
   SystemStatusMessage,
   SystemCompactBoundaryMessage,
   SystemTaskStartedMessage,
+  TaskUpdatedEvent,
   SystemTaskNotificationMessage,
   SummaryMessage,
   RateLimitEventMessage,
@@ -423,10 +424,14 @@ export function reduceTaskLifecycle(
   } else {
     text = `Task ${msg.status}: ${msg.summary || msg.task_id}`;
   }
+  const messages =
+    msg.type === "task/notification"
+      ? withTaskState(s.messages, msg.task_id, { status: msg.status })
+      : s.messages;
   return {
     ...s,
     messages: [
-      ...s.messages,
+      ...messages,
       {
         id,
         type: "system" as const,
@@ -434,9 +439,48 @@ export function reduceTaskLifecycle(
         content: [{ type: "text" as const, text }],
         rawSource: msg,
         seq,
+        ...(msg.type === "task/started" && {
+          taskState: { status: "running" },
+        }),
       },
     ],
   };
+}
+
+/** Show a task's changed state on the row that announced its start. */
+export function reduceTaskUpdated(
+  s: SessionState,
+  msg: TaskUpdatedEvent,
+): SessionState {
+  if (msg.status === undefined && msg.error === undefined) return s;
+  return {
+    ...s,
+    messages: withTaskState(s.messages, msg.task_id, {
+      ...(msg.status !== undefined && { status: msg.status }),
+      ...(msg.error !== undefined && { error: msg.error }),
+    }),
+  };
+}
+
+function withTaskState(
+  messages: DisplayMessage[],
+  taskId: string,
+  change: { status?: string; error?: string },
+): DisplayMessage[] {
+  const index = messages.findIndex(
+    (m) =>
+      m.taskState !== undefined &&
+      (m.rawSource as SystemTaskStartedMessage).task_id === taskId,
+  );
+  // The start may predate the loaded history.
+  if (index < 0) return messages;
+  const started = messages[index]!;
+  const next = [...messages];
+  next[index] = {
+    ...started,
+    taskState: { ...started.taskState!, ...change },
+  };
+  return next;
 }
 
 export function reduceSummary(
@@ -1678,6 +1722,9 @@ export function reduceMessage(
     case "task/started":
     case "task/notification":
       return reduceTaskLifecycle(s, msg, seq);
+
+    case "task/updated":
+      return reduceTaskUpdated(s, msg);
 
     case "system": {
       const sysMsg = msg as Record<string, unknown>;

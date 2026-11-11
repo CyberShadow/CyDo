@@ -134,6 +134,14 @@ export interface TaskStartedEvent {
   extras?: Record<string, unknown>;
 }
 
+export interface TaskUpdatedEvent {
+  type: "task/updated";
+  task_id: string;
+  status?: string;
+  error?: string;
+  extras?: Record<string, unknown>;
+}
+
 export interface TaskNotificationEvent {
   type: "task/notification";
   task_id: string;

@@ -501,6 +501,15 @@ function TaskLifecycleView({ message }: { message: DisplayMessage }) {
       <span class="task-lifecycle-label">{label}</span>
       {taskType && <span class="task-lifecycle-type">{taskType}</span>}
       {description && <span class="task-lifecycle-desc">{description}</span>}
+      {message.taskState && (
+        <span
+          class={`task-lifecycle-state task-state-${message.taskState.status}`}
+          title={message.taskState.error}
+        >
+          {message.taskState.status}
+          {message.taskState.error && `: ${message.taskState.error}`}
+        </span>
+      )}
     </div>
   );
 }
