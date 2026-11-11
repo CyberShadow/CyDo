@@ -528,11 +528,11 @@ export function matchPattern(userText) {
 
   // "semantic shell pipe reject <path>" — pipe with unrecognized stage (should NOT get semantic rendering)
   match = userText.match(/semantic shell pipe reject (\S+)/i);
-  if (match) return { type: "shell", command: `cat ${match[1]} | rm -rf /` };
+  if (match) return { type: "shell", command: `cat ${match[1]} | rev` };
 
   // Legacy: "semantic shell pipe <path>" — keep for backwards compatibility
   match = userText.match(/semantic shell pipe (\S+)/i);
-  if (match) return { type: "shell", command: `cat ${match[1]} | rm -rf /` };
+  if (match) return { type: "shell", command: `cat ${match[1]} | rev` };
 
   // "semantic shell diff" — git log -p for semantic diff rendering tests
   if (/semantic shell diff/i.test(userText))

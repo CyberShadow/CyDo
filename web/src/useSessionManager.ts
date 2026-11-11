@@ -2016,12 +2016,12 @@ export function useTaskManager(
           break;
         }
         case "permission_prompt": {
-          const { tid, tool_use_id, tool_name, input } = msg;
+          const { tid, tool_use_id, tool_name, input, reason } = msg;
           const t = findByTid(tid);
           if (!t) break;
           // Empty tool_use_id signals clear (prompt resolved)
           const pendingPermission = tool_use_id
-            ? { toolUseId: tool_use_id, toolName: tool_name, input }
+            ? { toolUseId: tool_use_id, toolName: tool_name, input, reason }
             : null;
           const updated = { ...t, pendingPermission };
           liveStates.set(t.uuid, updated);

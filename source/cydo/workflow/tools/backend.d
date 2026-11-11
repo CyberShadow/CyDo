@@ -13,8 +13,8 @@ import ae.utils.promise.await : await;
 
 import cydo.agent.contract : Agent;
 import cydo.agent.terminal : TerminalProcess;
-import cydo.domain.policy.permissions : PermissionSettings, ToolCallDecision,
-	ToolCallRuling, evaluatePermissionPolicy,
+import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
+	PermissionSettings, ToolCallDecision, ToolCallRuling, evaluatePermissionPolicy,
 	makePermissionAllowJson, makePermissionDenyJson;
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, DjinjaTemplate, TaskTypeDef,
 	UserEntryPointDef, WorktreeMode, byName, isInteractive,
@@ -107,8 +107,7 @@ struct WorkflowToolsHost
 	void delegate(int tid, JSONFragment questions, string toolUseId)
 		sendAskUserQuestionPrompt;
 	void delegate(int tid) clearAskUserQuestionPrompt;
-	void delegate(int tid, string toolUseId, string toolName,
-		JSONFragment input) sendPermissionPrompt;
+	void delegate(int tid, PermissionPrompt prompt) sendPermissionPrompt;
 	void delegate(int tid) clearPermissionPrompt;
 	void delegate(int parentTid, int childTid, int specIndex)
 		appendTaskSpawnedEvent;
@@ -216,7 +215,7 @@ unittest
 		broadcastTaskUpdate: (int tid) {}, broadcastFocusHint: (int fromTid, int toTid) {},
 		sendAskUserQuestionPrompt: (int tid, JSONFragment questions, string toolUseId) {},
 		clearAskUserQuestionPrompt: (int tid) {},
-		sendPermissionPrompt: (int tid, string toolUseId, string toolName, JSONFragment input) {},
+		sendPermissionPrompt: (int tid, PermissionPrompt prompt) {},
 		clearPermissionPrompt: (int tid) {}, appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
 		broadcastTaskCreated: (TaskCreatedMessage message) {}, workspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
 		onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); }, generateTitle: (int tid, string prompt) {},
@@ -832,39 +831,53 @@ public:
 		return questionRouter_.handleAnswer(callerTidStr, qid, message);
 	}
 
-	/// Decide whether the agent of `tid` may run a tool call: by the
-	/// workspace permission policy, or by asking the user. Fulfils with the
-	/// decision payload (`{"behavior":"allow",…}` / `{"behavior":"deny",…}`).
-	Promise!string decideToolPermission(int tid, string toolUseId,
-		string toolName, JSONFragment input)
+	/// Decide a tool call the agent of `tid` asks about after the policy's
+	/// first ruling (`decidePreToolUse`): by asking the user, or, for a call
+	/// the agent's safety checks flag, by the policy again (as dangerous).
+	/// Fulfils with the decision payload (`{"behavior":"allow",…}` /
+	/// `{"behavior":"deny",…}`).
+	Promise!string decideToolPermission(int tid, PermissionPrompt prompt,
+		PermissionEscalation escalation)
 	{
 		auto td = requireTask(tid, "Tool permission request for a missing task");
 		auto settings = host_.workspacePermissionSettings(td.workspace);
-		auto ruling = decidePreToolUse(tid, toolName, input);
+		final switch (escalation)
+		{
+			case PermissionEscalation.policyAsk:
+			case PermissionEscalation.classifier:
+				return promptUserForPermission(tid, prompt, settings.promptTimeout);
+			case PermissionEscalation.safetyCheck:
+				break;
+		}
+		auto ruling = rulePolicy(td, prompt.toolName, prompt.input, true);
 		final switch (ruling.decision)
 		{
 			case ToolCallDecision.deny:
 				return resolve(makePermissionDenyJson(ruling.denyReason));
 			case ToolCallDecision.allow:
-				return resolve(makePermissionAllowJson(input.json));
+				return resolve(makePermissionAllowJson(prompt.input.json));
 			case ToolCallDecision.ask:
-			// Asked after the policy deferred to auto mode: the classifier
-			// left the call to a person.
+			// The classifier has had its say already.
 			case ToolCallDecision.classifier:
-				return promptUserForPermission(tid, toolUseId, toolName, input,
-					settings.promptTimeout);
+				return promptUserForPermission(tid, prompt, settings.promptTimeout);
 		}
 	}
 
-	/// The workspace policy's ruling on a tool call of `tid`, which also
-	/// stands before the agent's own permission checks (and its auto mode
+	/// The workspace policy's ruling on a tool call of `tid`, which stands
+	/// before the agent's own permission checks (and its auto mode
 	/// classifier) run.
 	ToolCallRuling decidePreToolUse(int tid, string toolName, JSONFragment input)
 	{
 		auto td = requireTask(tid, "Tool call decision for a missing task");
+		return rulePolicy(td, toolName, input, false);
+	}
+
+	private ToolCallRuling rulePolicy(TaskData* td, string toolName,
+		JSONFragment input, bool dangerous)
+	{
 		auto settings = host_.workspacePermissionSettings(td.workspace);
 		final switch (evaluatePermissionPolicy(settings.policy, settings.autoMode,
-			toolName, input.json))
+			toolName, input.json, dangerous))
 		{
 			case "allow":
 				return ToolCallRuling(ToolCallDecision.allow);
@@ -888,7 +901,7 @@ public:
 		// A concurrent request refused with "Another permission prompt is
 		// already pending" never had a prompt of its own.
 		if ((tid in pendingPermissionPrompts_) is null
-			|| td.pendingPermissionToolUseId != toolUseId)
+			|| td.pendingPermission.toolUseId != toolUseId)
 			return;
 		settlePermissionPrompt(tid,
 			makePermissionDenyJson("Permission request withdrawn by the agent"));
@@ -1055,9 +1068,7 @@ public:
 		pendingPermissionInputs_.remove(tid);
 		cancelPermissionPromptTimeout(tid);
 
-		td.pendingPermissionToolUseId = null;
-		td.pendingPermissionToolName = null;
-		td.pendingPermissionInput = JSONFragment.init;
+		td.pendingPermission = PermissionPrompt.init;
 		td.needsAttention = false;
 		host_.persistNeedsAttention(tid, false);
 		td.hasPendingQuestion = false;
@@ -1083,11 +1094,9 @@ public:
 		}
 
 		if ((tid in pendingPermissionPrompts_) !is null
-			&& td.pendingPermissionToolUseId.length > 0)
+			&& td.pendingPermission.toolUseId.length > 0)
 		{
-			send(toJson(PermissionPromptMessage("permission_prompt", tid,
-				td.pendingPermissionToolUseId, td.pendingPermissionToolName,
-				td.pendingPermissionInput)));
+			send(toJson(PermissionPromptMessage.of(tid, td.pendingPermission)));
 		}
 	}
 
@@ -1221,9 +1230,7 @@ public:
 			pendingPermissionPrompts_.remove(tid);
 			pendingPermissionInputs_.remove(tid);
 			cancelPermissionPromptTimeout(tid);
-			td.pendingPermissionToolUseId = null;
-			td.pendingPermissionToolName = null;
-			td.pendingPermissionInput = JSONFragment.init;
+			td.pendingPermission = PermissionPrompt.init;
 		}
 	}
 
@@ -1429,8 +1436,8 @@ private:
 		return resolve(McpResult.structured(wrappedJson, anyError));
 	}
 
-	Promise!string promptUserForPermission(int tid, string toolUseId,
-		string toolName, JSONFragment input, Duration timeout)
+	Promise!string promptUserForPermission(int tid, PermissionPrompt prompt,
+		Duration timeout)
 	{
 		if (tid in pendingPermissionPrompts_)
 			return resolve(makePermissionDenyJson(
@@ -1438,15 +1445,13 @@ private:
 
 		auto promise = new Promise!string;
 		pendingPermissionPrompts_[tid] = promise;
-		pendingPermissionInputs_[tid] = input.json;
+		pendingPermissionInputs_[tid] = prompt.input.json;
 
 		auto td = requireTask(tid,
 			"Permission prompt target must be a live task");
-		td.pendingPermissionToolUseId = toolUseId;
-		td.pendingPermissionToolName = toolName;
-		td.pendingPermissionInput = input;
+		td.pendingPermission = prompt;
 
-		host_.sendPermissionPrompt(tid, toolUseId, toolName, input);
+		host_.sendPermissionPrompt(tid, prompt);
 		if (timeout > Duration.zero)
 			permissionPromptTimeouts_[tid] = setTimeout({
 				permissionPromptTimeouts_.remove(tid);
@@ -1848,8 +1853,7 @@ unittest
 		sendAskUserQuestionPrompt: (int tid, JSONFragment questions,
 			string toolUseId) {},
 		clearAskUserQuestionPrompt: (int tid) {},
-		sendPermissionPrompt: (int tid, string toolUseId, string toolName,
-			JSONFragment input) {},
+		sendPermissionPrompt: (int tid, PermissionPrompt prompt) {},
 		clearPermissionPrompt: (int tid) {},
 		appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
 		broadcastTaskCreated: (TaskCreatedMessage message) {},
@@ -2140,8 +2144,7 @@ unittest
 				sendAskUserQuestionPrompt: (int tid, JSONFragment questions,
 					string toolUseId) {},
 				clearAskUserQuestionPrompt: (int tid) {},
-				sendPermissionPrompt: (int tid, string toolUseId, string toolName,
-					JSONFragment input) {},
+				sendPermissionPrompt: (int tid, PermissionPrompt prompt) {},
 				clearPermissionPrompt: (int tid) {},
 				appendTaskSpawnedEvent: (int parentTid, int childTid,
 					int specIndex) {},

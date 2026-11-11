@@ -379,6 +379,8 @@ export interface PermissionPromptControlMessage {
   tool_use_id: string;
   tool_name: string;
   input: Record<string, unknown>;
+  /** Why the agent's own safety checks flag the call, if they do. */
+  reason?: string;
 }
 export interface DraftUpdatedMessage {
   type: "draft_updated";

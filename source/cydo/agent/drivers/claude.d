@@ -19,7 +19,8 @@ import cydo.agent.contract : Agent, DiscoveredSession, InterruptedToolCallRepair
 	PersistedHistoryBoundary, PersistedHistoryBoundaryKind, OneShotHandle,
 	RewindResult, SessionConfig, SessionMeta;
 import cydo.protocol;
-import cydo.domain.policy.permissions : ToolCallDecision, ToolCallRuling;
+import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
+	ToolCallDecision, ToolCallRuling;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession, AgentSubmissionReceipt, MessageSource;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
@@ -1431,7 +1432,7 @@ class ClaudeCodeSession : AgentSession
 	private void delegate(TranslatedEvent) outputHandler;
 	private void delegate(string line) stderrHandler;
 	private void delegate(int status) exitHandler;
-	private Promise!string delegate(ToolPermissionRequest) permissionRequestHandler_;
+	private Promise!string delegate(PermissionPrompt, PermissionEscalation) permissionRequestHandler_;
 	private ToolCallRuling delegate(ToolPermissionRequest) preToolUseHandler_;
 	private void delegate(string toolUseId) permissionRequestWithdrawnHandler_;
 	/// can_use_tool requests the CLI still awaits an answer to: request_id → tool_use_id.
@@ -1478,18 +1479,19 @@ class ClaudeCodeSession : AgentSession
 			"--settings", `{"fileCheckpointingEnabled": true}`,
 		];
 
-		// Mutually exclusive: Claude Code ≥2.1.2xx gives
-		// --dangerously-skip-permissions precedence over the prompt tool,
-		// which would bypass the configured permission policy entirely.
+		// The permission policy rules on every tool call first, through a
+		// PreToolUse hook (registerPreToolUseHook). Outside auto mode the hook
+		// always answers, so the default mode runs what the policy allows;
+		// auto mode has its classifier judge what the policy leaves to it.
 		// `stdio` makes the CLI ask over the control channel (can_use_tool
-		// control requests), answered by onToolPermissionRequest. In auto
-		// mode it asks only for the calls its classifier leaves to a person.
+		// control requests, answered by onToolPermissionRequest) about what
+		// remains: the policy's "ask", the classifier's referrals, and calls
+		// its own safety checks flag, which a hook "allow" does not override.
+		// (Not bypass mode: there, a hook "ask" on a call a safety check also
+		// flags, e.g. a write into .claude/, is dropped and the call runs.)
 		if (config.permissions.autoMode)
 			claudeArgs ~= ["--permission-mode", "auto"];
-		if (config.permissions.hostDecides)
-			claudeArgs ~= ["--permission-prompt-tool", "stdio"];
-		else
-			claudeArgs ~= ["--dangerously-skip-permissions"];
+		claudeArgs ~= ["--permission-prompt-tool", "stdio"];
 
 		if (mcpConfigPath !is null)
 			claudeArgs ~= ["--mcp-config", mcpConfigPath];
@@ -1589,13 +1591,12 @@ class ClaudeCodeSession : AgentSession
 			reportLineHandlerError(source, e);
 		};
 
-		if (config.permissions.autoMode)
-			registerPreToolUseHook();
+		registerPreToolUseHook();
 	}
 
 	/// Have the CLI consult the permission policy (onPreToolUse) before each
-	/// tool call, ahead of its auto mode classifier. A hook is the only
-	/// decision point that precedes the classifier.
+	/// tool call, ahead of its own checks and its auto mode classifier. A
+	/// hook is the only decision point that precedes them.
 	private void registerPreToolUseHook()
 	{
 		static struct Matcher
@@ -1765,11 +1766,12 @@ class ClaudeCodeSession : AgentSession
 		exitHandler = dg;
 	}
 
-	/// Callback: the CLI asks whether a tool call may run. Fulfil with the
-	/// decision payload: `{"behavior":"allow","updatedInput":{…}}` or
-	/// `{"behavior":"deny","message":"…"}`. Only consulted when the session
-	/// was launched with a permission policy.
-	@property void onToolPermissionRequest(Promise!string delegate(ToolPermissionRequest) dg)
+	/// Callback: the CLI asks whether a tool call may run, after the
+	/// policy's ruling (onPreToolUse) left it open. Fulfil with the decision
+	/// payload: `{"behavior":"allow","updatedInput":{…}}` or
+	/// `{"behavior":"deny","message":"…"}`.
+	@property void onToolPermissionRequest(
+		Promise!string delegate(PermissionPrompt, PermissionEscalation) dg)
 	{
 		permissionRequestHandler_ = dg;
 	}
@@ -1782,7 +1784,7 @@ class ClaudeCodeSession : AgentSession
 	}
 
 	/// Callback: rule on a tool call before the CLI's own permission checks
-	/// run. Only consulted in auto mode.
+	/// (and its auto mode classifier) run.
 	@property void onPreToolUse(ToolCallRuling delegate(ToolPermissionRequest) dg)
 	{
 		preToolUseHandler_ = dg;
@@ -1805,6 +1807,8 @@ class ClaudeCodeSession : AgentSession
 			@JSONOptional string tool_use_id;
 			@JSONOptional JSONFragment input;
 			@JSONOptional string callback_id;
+			@JSONOptional string decision_reason_type;
+			@JSONOptional string decision_reason;
 		}
 		@JSONPartial static struct Envelope { string request_id; Request request; }
 		auto envelope = jsonParse!Envelope(rawLine);
@@ -1838,8 +1842,21 @@ class ClaudeCodeSession : AgentSession
 		assert(requestId !in pendingPermissionRequests_,
 			"Claude repeated a pending can_use_tool request_id");
 		pendingPermissionRequests_[requestId] = envelope.request.tool_use_id;
-		permissionRequestHandler_(ToolPermissionRequest(envelope.request.tool_use_id,
-			envelope.request.tool_name, envelope.request.input)).then((string decision) {
+		// With the policy hook answering first, the CLI is left three reasons
+		// to ask: the hook said "ask", the classifier defers to a person, or
+		// one of its own safety checks (dangerous removals, sensitive files,
+		// …) flags the call.
+		PermissionEscalation escalation;
+		switch (envelope.request.decision_reason_type)
+		{
+			case "hook":       escalation = PermissionEscalation.policyAsk; break;
+			case "classifier": escalation = PermissionEscalation.classifier; break;
+			default:           escalation = PermissionEscalation.safetyCheck; break;
+		}
+		auto prompt = PermissionPrompt(envelope.request.tool_use_id,
+			envelope.request.tool_name, envelope.request.input,
+			escalation == PermissionEscalation.policyAsk ? null : envelope.request.decision_reason);
+		permissionRequestHandler_(prompt, escalation).then((string decision) {
 			// Withdrawn or process exited while the decision was pending.
 			if (pendingPermissionRequests_.remove(requestId))
 				sendControlResponse(ClaudeControlResponse.success(requestId,
@@ -2698,10 +2715,12 @@ unittest
 {
 	auto session = new ClaudeCodeSession("true");
 	scope(exit) session.stop();
-	ToolPermissionRequest[] requests;
+	PermissionPrompt[] requests;
+	PermissionEscalation[] escalations;
 	string[] withdrawn;
-	session.onToolPermissionRequest = (ToolPermissionRequest req) {
+	session.onToolPermissionRequest = (PermissionPrompt req, PermissionEscalation escalation) {
 		requests ~= req;
+		escalations ~= escalation;
 		return new Promise!string;
 	};
 	session.onToolPermissionRequestWithdrawn = (string toolUseId) { withdrawn ~= toolUseId; };
@@ -2713,6 +2732,18 @@ unittest
 	assert(requests[0].toolUseId == "toolu_1");
 	assert(requests[0].toolName == "Bash");
 	assert(requests[0].input.json == `{"command":"touch x"}`);
+	assert(escalations == [PermissionEscalation.safetyCheck]);
+
+	session.translateLiveLine(`{"type":"control_request","request_id":"req-2","request":`
+		~ `{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"toolu_2",`
+		~ `"input":{"command":"cat x | rm -rf /"},"decision_reason_type":"subcommandResults",`
+		~ `"decision_reason":"Dangerous rm operation on critical path: /"}}`);
+	assert(requests[1].reason == "Dangerous rm operation on critical path: /");
+	session.translateLiveLine(`{"type":"control_request","request_id":"req-3","request":`
+		~ `{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"toolu_3",`
+		~ `"input":{},"decision_reason_type":"hook","decision_reason":"The CyDo permission policy asks a person"}}`);
+	assert(escalations[2] == PermissionEscalation.policyAsk);
+	assert(requests[2].reason is null);
 
 	session.translateLiveLine(`{"type":"control_cancel_request","request_id":"req-other"}`);
 	assert(withdrawn.length == 0);
@@ -2754,8 +2785,15 @@ unittest
 		session.translateLiveLine(`{"type":"system","subtype":"init","session_id":"s",`
 			~ `"claude_code_version":"` ~ version_ ~ `"}`);
 	}
+	// Every session registers the permission policy hook as it starts.
+	ClaudeCodeSession start()
+	{
+		auto session = new ClaudeCodeSession("true");
+		answerProbe(session, `"subtype":"success","response":{}`);
+		return session;
+	}
 
-	auto supporting = new ClaudeCodeSession("true");
+	auto supporting = start();
 	scope(exit) supporting.stop();
 	size_t changes;
 	supporting.onRewindAvailabilityChanged = () { changes++; };
@@ -2768,13 +2806,13 @@ unittest
 	init(supporting, "probe-supported");
 	assert(supporting.pendingControlRequests_.length == 0);
 
-	auto cached = new ClaudeCodeSession("true");
+	auto cached = start();
 	scope(exit) cached.stop();
 	init(cached, "probe-supported");
 	assert(cached.pendingControlRequests_.length == 0);
 	assert(cached.rewindSupported_.get);
 
-	auto older = new ClaudeCodeSession("true");
+	auto older = start();
 	scope(exit) older.stop();
 	init(older, "probe-unsupported");
 	answerProbe(older, `"subtype":"error",`

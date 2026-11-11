@@ -66,13 +66,26 @@ struct PermissionSettings
 	/// How long a permission prompt waits for a person before it denies;
 	/// zero = indefinitely.
 	Duration promptTimeout;
+}
 
-	/// Whether the host must answer the agent's permission requests, as
-	/// opposed to letting every tool call run.
-	@property bool hostDecides() const
-	{
-		return policy.length > 0 || autoMode;
-	}
+/// Why an agent asks the host about a tool call the policy has already
+/// ruled on before it ran (see `ToolCallDecision`).
+enum PermissionEscalation
+{
+	policyAsk,   /// the policy said "ask"
+	classifier,  /// the auto mode classifier leaves the call to a person
+	safetyCheck, /// the agent's own safety checks flag the call
+}
+
+/// A tool call put to a person.
+struct PermissionPrompt
+{
+	string toolUseId;
+	string toolName;
+	JSONFragment input;
+	/// Why the agent's own checks flag the call, in its words; empty when
+	/// the policy itself asks.
+	string reason;
 }
 
 /// What a permission policy rules for one tool call.
@@ -91,12 +104,15 @@ struct ToolCallRuling
 }
 
 /// The policy of a workspace that configures none.
-enum defaultPermissionPolicy = `{{ "auto" if auto_mode else "allow" }}`;
+enum defaultPermissionPolicy =
+	`{{ "ask" if dangerous else ("auto" if auto_mode else "allow") }}`;
 
 /// Evaluate a permission policy for one tool call. Returns "allow", "deny",
-/// "ask", or "auto" (leave it to the auto mode classifier).
+/// "ask", or "auto" (leave it to the auto mode classifier). `dangerous`:
+/// the agent's own safety checks flag the call (e.g. a recursive delete of
+/// a system directory) and want it confirmed.
 string evaluatePermissionPolicy(string policy, bool autoMode, string toolName,
-	string inputJson)
+	string inputJson, bool dangerous)
 {
 	if (policy.length == 0)
 		policy = defaultPermissionPolicy;
@@ -116,6 +132,7 @@ string evaluatePermissionPolicy(string policy, bool autoMode, string toolName,
 		ctx["tool_name"] = UniNode(toolName);
 		ctx["input"] = jsonToUniNode(inputJson);
 		ctx["auto_mode"] = UniNode(autoMode);
+		ctx["dangerous"] = UniNode(dangerous);
 
 		string result = renderer.render(UniNode(ctx)).strip();
 
@@ -139,11 +156,17 @@ private bool isPermissionDecision(string value)
 
 unittest
 {
-	assert(evaluatePermissionPolicy("", false, "Bash", `{}`) == "allow");
-	assert(evaluatePermissionPolicy("", true, "Bash", `{}`) == "auto");
-	assert(evaluatePermissionPolicy("auto", false, "Bash", `{}`) == "auto");
+	assert(evaluatePermissionPolicy("", false, "Bash", `{}`, false) == "allow");
+	assert(evaluatePermissionPolicy("", true, "Bash", `{}`, false) == "auto");
+	assert(evaluatePermissionPolicy("", false, "Bash", `{}`, true) == "ask");
+	assert(evaluatePermissionPolicy("auto", false, "Bash", `{}`, false) == "auto");
+	// A plain decision covers dangerous calls too.
+	assert(evaluatePermissionPolicy("allow", false, "Bash", `{}`, true) == "allow");
 	enum policy = `{{ "ask" if tool_name == "Bash" else ("auto" if auto_mode else "allow") }}`;
-	assert(evaluatePermissionPolicy(policy, true, "Bash", `{}`) == "ask");
-	assert(evaluatePermissionPolicy(policy, true, "Read", `{}`) == "auto");
-	assert(evaluatePermissionPolicy(policy, false, "Read", `{}`) == "allow");
+	assert(evaluatePermissionPolicy(policy, true, "Bash", `{}`, false) == "ask");
+	assert(evaluatePermissionPolicy(policy, true, "Read", `{}`, false) == "auto");
+	assert(evaluatePermissionPolicy(policy, false, "Read", `{}`, false) == "allow");
+	enum rejectDangerous = `{{ "deny" if dangerous else "allow" }}`;
+	assert(evaluatePermissionPolicy(rejectDangerous, false, "Bash", `{}`, true) == "deny");
+	assert(evaluatePermissionPolicy(rejectDangerous, false, "Bash", `{}`, false) == "allow");
 }

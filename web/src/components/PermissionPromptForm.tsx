@@ -3,6 +3,8 @@ import { useState } from "preact/hooks";
 interface Props {
   toolName: string;
   input: Record<string, unknown>;
+  /** Why the agent's own safety checks flag the call, if they do. */
+  reason?: string;
   onAllow: () => void;
   onDeny: (message?: string) => void;
 }
@@ -10,6 +12,7 @@ interface Props {
 export function PermissionPromptForm({
   toolName,
   input,
+  reason,
   onAllow,
   onDeny,
 }: Props) {
@@ -20,6 +23,7 @@ export function PermissionPromptForm({
     <div class="permission-prompt-form">
       <div class="permission-prompt-header">Permission Request</div>
       <div class="permission-prompt-tool">{toolName}</div>
+      {reason && <div class="permission-prompt-reason">{reason}</div>}
       <pre class="permission-prompt-input">
         {JSON.stringify(input, null, 2)}
       </pre>

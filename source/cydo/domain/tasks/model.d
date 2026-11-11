@@ -15,6 +15,7 @@ import ae.utils.promise : Promise, PromiseQueue;
 import ae.utils.statequeue : StateQueue;
 
 import cydo.agent.session : AgentSubmissionReceipt;
+import cydo.domain.policy.permissions : PermissionPrompt;
 import cydo.protocol : ContentBlock, ItemStartedEvent;
 import cydo.runtime.launch.types : ProcessLaunch;
 import cydo.domain.storage.persistence : LoadedHistory, noSourceLine;
@@ -915,9 +916,7 @@ struct TaskData
 	string[] pendingSteeringTexts;
 	string pendingAskToolUseId;  // correlation ID of a pending AskUserQuestion call
 	JSONFragment pendingAskQuestions;  // serialized questions for re-broadcast on reconnect
-	string pendingPermissionToolUseId;  // tool_use_id for pending PermissionPrompt, empty when none
-	string pendingPermissionToolName;   // tool name for pending PermissionPrompt
-	JSONFragment pendingPermissionInput; // input for pending PermissionPrompt (for late-join)
+	PermissionPrompt pendingPermission; // empty toolUseId when none; kept for late joiners
 	Promise!McpResult pendingAskPromise;   // child waiting for parent's answer
 	string pendingAskQuestion;             // question text from child
 	int pendingAskQid;                     // qid allocated for this question
@@ -1400,9 +1399,16 @@ struct PermissionPromptMessage
 {
 	string type = "permission_prompt";
 	int tid;
-	string tool_use_id;
+	string tool_use_id; // empty: the prompt is resolved
 	string tool_name;
 	JSONFragment input;
+	@JSONOptional string reason;
+
+	static PermissionPromptMessage of(int tid, PermissionPrompt prompt)
+	{
+		return PermissionPromptMessage("permission_prompt", tid, prompt.toolUseId,
+			prompt.toolName, prompt.input, prompt.reason);
+	}
 }
 
 unittest

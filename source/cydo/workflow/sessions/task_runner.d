@@ -34,7 +34,8 @@ import cydo.agent.drivers.codex : CodexAgent, CodexForkSourceOwner, CodexSession
 import cydo.domain.tasks.model : PendingContinuation, ProcessState, TaskData, TaskStatus,
 	WaitingTaskDependencyState;
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
-import cydo.domain.policy.permissions : PermissionSettings, ToolCallRuling;
+import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
+	PermissionSettings, ToolCallRuling;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.domain.task_types.definition : TaskTypeDef,
 	formatCompactCreatableTaskTypeToolSummary, formatCompactHandoffToolSummary,
@@ -197,10 +198,10 @@ struct TaskSessionRunnerHost
 	void delegate(int tid) failPendingPermissionPromptOnExit;
 	/// Decide a Claude `can_use_tool` request (policy or user prompt);
 	/// resolves to the decision JSON sent back to the CLI.
-	Promise!string delegate(int tid, string toolUseId, string toolName,
-		JSONFragment input) decideToolPermission;
-	/// The workspace policy's ruling on a tool call of an auto mode Claude
-	/// session, consulted before the CLI's own checks and its classifier.
+	Promise!string delegate(int tid, PermissionPrompt prompt,
+		PermissionEscalation escalation) decideToolPermission;
+	/// The workspace policy's ruling on a tool call of a Claude session,
+	/// consulted before the CLI's own checks and its classifier.
 	ToolCallRuling delegate(int tid, string toolName, JSONFragment input) decidePreToolUse;
 	/// The CLI cancelled a `can_use_tool` request it is no longer waiting on.
 	void delegate(int tid, string toolUseId) withdrawToolPermissionPrompt;
@@ -962,8 +963,9 @@ public:
 
 		if (auto claude = cast(ClaudeCodeSession) session)
 		{
-			claude.onToolPermissionRequest = (ToolPermissionRequest req) =>
-				host_.decideToolPermission(tid, req.toolUseId, req.toolName, req.input);
+			claude.onToolPermissionRequest = (PermissionPrompt prompt,
+				PermissionEscalation escalation) =>
+				host_.decideToolPermission(tid, prompt, escalation);
 			claude.onPreToolUse = (ToolPermissionRequest req) =>
 				host_.decidePreToolUse(tid, req.toolName, req.input);
 			claude.onToolPermissionRequestWithdrawn = (string toolUseId) =>
@@ -2001,8 +2003,8 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 					stopJsonlWatch: (int tid) {},
 				failPendingAskUserQuestionOnExit: (int tid) {},
 				failPendingPermissionPromptOnExit: (int tid) {},
-				decideToolPermission: delegate Promise!string(int tid, string toolUseId, string toolName,
-					JSONFragment input) { assert(0, "unexpected call"); },
+				decideToolPermission: delegate Promise!string(int tid, PermissionPrompt prompt,
+					PermissionEscalation escalation) { assert(0, "unexpected call"); },
 				decidePreToolUse: delegate ToolCallRuling(int tid, string toolName,
 					JSONFragment input) { assert(0, "unexpected call"); },
 				withdrawToolPermissionPrompt: (int tid, string toolUseId) {},

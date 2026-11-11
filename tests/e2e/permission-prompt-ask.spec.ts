@@ -28,12 +28,14 @@ workspaces:
   await enterSession(page);
   await sendMessage(
     page,
-    "run command echo ask-allow-test > .claude/test-ask-allow.md",
+    "run command echo ask-allow-test > test-ask-allow.md",
   );
 
-  // The permission prompt form must appear.
+  // The permission prompt form must appear. The CLI itself would run this
+  // write unasked; only the policy asks, so the prompt carries no CLI reason.
   const form = page.locator(".permission-prompt-form");
   await expect(form).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(page.locator(".permission-prompt-reason")).toHaveCount(0);
 
   // Click Allow — the backend sends allow back to Claude, which runs the command.
   await page.locator(".permission-allow-btn").click();
@@ -119,6 +121,41 @@ workspaces:
     timeout: responseTimeout(agentType),
   });
   await expect(page.locator(".permission-prompt-form")).toHaveCount(0);
+  await expect(assistantText(page, "Done.")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+});
+
+test("default policy: a call the CLI's safety checks flag asks a person", { tag: "@claude-only" }, async ({
+  page,
+  agentType,
+}) => {
+  writeTestConfig(
+    "/tmp/playwright-home/.config/cydo/config.yaml",
+    `default_agent: claude
+workspaces:
+  local:
+    root: /tmp/cydo-test-workspace
+`,
+  );
+
+  await page.waitForTimeout(500);
+
+  await enterSession(page);
+  await sendMessage(page, "run command cat README.md | rm -rf /");
+
+  // Everything else runs unasked; this one waits, saying why.
+  const form = page.locator(".permission-prompt-form");
+  await expect(form).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(form.locator(".permission-prompt-reason")).toContainText(
+    "Dangerous rm operation",
+  );
+
+  // Never allow it: the command would really run.
+  await page.locator(".permission-deny-btn").click();
+  await page.locator(".permission-deny-btn").click();
+  await expect(form).not.toBeVisible();
+
   await expect(assistantText(page, "Done.")).toBeVisible({
     timeout: responseTimeout(agentType),
   });

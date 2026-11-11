@@ -174,8 +174,8 @@ test("semantic shell: pipe read renders through file content preview", async ({
 /**
  * Test 4: rejection fallback
  *
- * Sends a prompt that triggers `cat README.md | rm -rf /`. The pipe stage
- * "rm" is not in the formatting allowlist, so the parser rejects it and
+ * Sends a prompt that triggers `cat README.md | rev`. The pipe stage
+ * "rev" is not in the formatting allowlist, so the parser rejects it and
  * output renders through the normal .tool-result path.
  */
 test("semantic shell: unrecognized pipe stage falls back to normal rendering", async ({

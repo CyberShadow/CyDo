@@ -102,7 +102,9 @@ struct WorkspaceConfig
 	@Optional string default_task_type;
 	/// Permission policy: "allow", "deny", "ask", "auto", or a Djinja
 	/// expression rendering one of them (variables: tool_name, input,
-	/// auto_mode). Unset = `{{ "auto" if auto_mode else "allow" }}`.
+	/// auto_mode, and dangerous: the agent's own safety checks flag the
+	/// call). Unset = `{{ "ask" if dangerous else ("auto" if auto_mode else
+	/// "allow") }}`.
 	@Optional string permission_policy;
 	/// Run Claude Code in auto mode: its classifier judges the tool calls
 	/// the permission policy answers "auto" for.

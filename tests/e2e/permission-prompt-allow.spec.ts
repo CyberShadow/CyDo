@@ -8,14 +8,12 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("permission_policy allow auto-approves tool calls via can_use_tool", { tag: "@claude-only" }, async ({
+test("permission_policy allow lets tool calls run unasked", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
 
-  // Configure the workspace with permission_policy: allow so the backend passes
-  // --permission-prompt-tool stdio to Claude and answers its can_use_tool
-  // control requests.
+  // The policy's PreToolUse hook allows the call, so no prompt appears.
   writeTestConfig(
     "/tmp/playwright-home/.config/cydo/config.yaml",
     `default_agent: claude

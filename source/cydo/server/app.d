@@ -61,7 +61,8 @@ import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
 import cydo.workflow.tasks.derived_text : DerivedTextJobs, DerivedTextJobsHost;
 import cydo.workflow.tasks.mutations : TaskMutationService, TaskMutationServiceHost;
 import cydo.workflow.tools.backend : WorkflowToolsBackend, WorkflowToolsHost;
-import cydo.domain.policy.permissions : PermissionSettings, ToolCallRuling;
+import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
+	PermissionSettings, ToolCallRuling;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
@@ -511,11 +512,9 @@ class App
 					AskUserQuestionMessage("ask_user_question", tid,
 						"", JSONFragment("[]"))).representation));
 			},
-			sendPermissionPrompt: (int tid, string toolUseId, string toolName,
-				JSONFragment input) {
+			sendPermissionPrompt: (int tid, PermissionPrompt prompt) {
 				clientHub.sendToSubscribed(tid, Data(toJson(
-					PermissionPromptMessage("permission_prompt", tid,
-						toolUseId, toolName, input)).representation));
+					PermissionPromptMessage.of(tid, prompt)).representation));
 			},
 			clearPermissionPrompt: (int tid) {
 				clientHub.sendToSubscribed(tid, Data(toJson(
@@ -5166,8 +5165,8 @@ unittest
 		deliverWaitingParentResultsIfReady: (int tid) => resolve(),
 		failPendingAskUserQuestionOnExit: (int tid) {},
 		failPendingPermissionPromptOnExit: (int tid) {},
-		decideToolPermission: delegate Promise!string(int tid, string toolUseId, string toolName,
-			JSONFragment input) { assert(0, "unexpected call"); },
+		decideToolPermission: delegate Promise!string(int tid, PermissionPrompt prompt,
+			PermissionEscalation escalation) { assert(0, "unexpected call"); },
 		decidePreToolUse: delegate ToolCallRuling(int tid, string toolName,
 			JSONFragment input) { assert(0, "unexpected call"); },
 		withdrawToolPermissionPrompt: (int tid, string toolUseId) {},

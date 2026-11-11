@@ -4479,3 +4479,7 @@ pre.extra-field-value {
   word-break: break-word;
   font-size: 11px;
 }
+
+.permission-prompt-reason {
+  color: var(--color-warning, #c8a000);
+}

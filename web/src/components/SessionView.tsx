@@ -483,6 +483,7 @@ function SessionViewInner({
         <PermissionPromptForm
           toolName={task.pendingPermission.toolName}
           input={task.pendingPermission.input}
+          reason={task.pendingPermission.reason}
           onAllow={handlePermissionAllow}
           onDeny={handlePermissionDeny}
         />
