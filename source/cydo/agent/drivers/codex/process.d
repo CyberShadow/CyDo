@@ -302,6 +302,13 @@ class AppServerProcess
 		auto capabilities = Capabilities(true, [
 			"mcpServer/startupStatus/updated",
 			"remoteControl/status/changed",
+			// Codex sends this only when a request applies thread settings
+			// (thread/settings/update, or turn/start overrides such as the
+			// sandbox policy CyDo passes on every turn), to echo the
+			// resulting model, effort, cwd, approval and sandbox settings.
+			// CyDo chose those settings itself and is the app-server's only
+			// client, so the echo carries nothing it doesn't already know.
+			"thread/settings/updated",
 		]);
 		sendRequest("initialize", toJson(InitializeParams(
 			InitializeParams.ClientInfo("cydo", "0.1.0"),

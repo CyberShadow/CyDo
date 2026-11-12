@@ -468,10 +468,7 @@ package bool isSilentlyIgnoredCodexNotificationMethod(string method)
 	// v1 legacy notifications duplicate v2 item/* / turn/* methods.
 	// (Notifications CyDo has no use for at all are opted out of at
 	// initialize instead.)
-	if (method.length >= 12 && method[0 .. 12] == "codex/event/")
-		return true;
-	// TODO: notifications not used yet
-	return method == "thread/settings/updated";
+	return method.length >= 12 && method[0 .. 12] == "codex/event/";
 }
 
 unittest
