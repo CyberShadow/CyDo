@@ -14,9 +14,14 @@ import type { TaskState } from "./types";
 // SharedWorker — detects needsAttention transitions for browser Notifications
 // ---------------------------------------------------------------------------
 
-export function makeWorkerCode(wsUrl: string) {
+// Notifications carry CyDo's icon, which identifies them as CyDo's to what
+// receives them (e.g. a desktop notification daemon or a monitor of it): the
+// title and body are only the task's. It is absolute, as a worker made from a
+// blob: URL has no base to resolve a relative one against.
+export function makeWorkerCode(wsUrl: string, iconUrl: string) {
   return `
 var WS_URL = "${wsUrl}";
+var ICON_URL = ${JSON.stringify(iconUrl)};
 var state = new Map();
 var notifications = new Map();
 var ports = [];
@@ -77,7 +82,7 @@ function handleTasksList(entries, complete) {
       if (!anyTabFocused() && typeof Notification !== "undefined") {
         var title = e.title || ("Task " + e.tid);
         var body = e.notificationBody || "Awaiting input";
-        var n = new Notification(title, { body: body, tag: "cydo-" + e.tid });
+        var n = new Notification(title, { body: body, tag: "cydo-" + e.tid, icon: ICON_URL });
         notifications.set(e.tid, n);
       }
     } else if (wasAttention && !e.needsAttention) {
@@ -102,7 +107,8 @@ function startWorker() {
   try {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${proto}//${location.host}/ws`;
-    const blob = new Blob([makeWorkerCode(wsUrl)], {
+    const iconUrl = `${location.origin}/icon-192.png`;
+    const blob = new Blob([makeWorkerCode(wsUrl, iconUrl)], {
       type: "application/javascript",
     });
     const url = URL.createObjectURL(blob);

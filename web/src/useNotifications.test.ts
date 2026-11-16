@@ -9,6 +9,7 @@ type WorkerScope = {
 type WorkerNotificationOptions = {
   body?: string;
   tag?: string;
+  icon?: string;
 };
 
 type ScheduledTimer = {
@@ -123,7 +124,7 @@ function startWorker() {
     "Notification",
     "TextDecoder",
     "setTimeout",
-    makeWorkerCode(workerUrl),
+    makeWorkerCode(workerUrl, "http://notifications.test/icon-192.png"),
   ) as (
     self: WorkerScope,
     WebSocket: typeof MockWebSocket,
@@ -225,7 +226,11 @@ describe("notification SharedWorker baseline", () => {
     expect(worker.notifications).toHaveLength(1);
     expect(worker.notifications[0]).toMatchObject({
       title: "Needs response",
-      options: { body: "Please reply", tag: "cydo-101" },
+      options: {
+        body: "Please reply",
+        tag: "cydo-101",
+        icon: "http://notifications.test/icon-192.png",
+      },
     });
 
     socket.emitJson({
