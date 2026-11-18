@@ -460,6 +460,46 @@ test("active task receives nudge and continues after restart", { tag: "@claude-o
   await expect(assistantText(page, "Done.")).toBeVisible();
 });
 
+test("task waiting for a background command is nudged after restart", { tag: "@claude-only" }, async ({
+  page,
+  restartableBackend,
+}) => {
+  // The command blocks on a FIFO nobody writes to: the task's turn ends with
+  // it still running, so the task waits for it. The restart takes the agent
+  // process, and with it the command and the turn its exit would have
+  // started — only the nudge can wake the task again.
+  const fifo = `/tmp/bgw-${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    await page.goto("/");
+    await page.locator('button[title="New task"]').first().click();
+    const input = page.locator(".input-textarea:visible").first();
+    await expect(input).toBeEnabled();
+    await input.fill(`run detached command mkfifo ${fifo} && read r < ${fifo}`);
+    const sendBtn = page.locator(".btn-send:visible").first();
+    await expect(sendBtn).toBeEnabled();
+    await sendBtn.click();
+
+    await expect(assistantText(page, "Done.")).toHaveCount(1);
+    await expect(
+      page.locator(".sidebar-item .task-type-icon.waiting"),
+    ).toBeVisible();
+
+    await restartableBackend.restart();
+    await page.goto("/");
+    await expect(page.locator(".sidebar-item")).toHaveCount(1);
+    await page.locator(".sidebar-item").first().click();
+
+    // The agent answers the nudge, and with nothing left to wait for the
+    // task ends up idle.
+    await expect(assistantText(page, "Done.")).toHaveCount(2);
+    await expect(
+      page.locator(".sidebar-item .task-type-icon.alive"),
+    ).toBeVisible();
+  } finally {
+    rmSync(fifo, { force: true });
+  }
+});
+
 test("sub-task result delivered to parent after backend restart", { tag: "@claude-only" }, async ({
   page,
   restartableBackend,

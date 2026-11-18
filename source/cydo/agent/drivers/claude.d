@@ -1460,6 +1460,9 @@ class ClaudeCodeSession : AgentSession
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
 	private JSONFragment[string] blockExtras_; // item_id → extras from assistant event
 	private AbsTime lineReceiptTs_;    // receipt time captured at start of each live line
+	/// How many background tasks (commands, monitors, agents) the CLI
+	/// reports as live, per its latest `background_tasks_changed`.
+	private size_t liveBackgroundTasks_;
 	private string executablePath_;
 	private string agentName_;
 
@@ -1793,6 +1796,11 @@ class ClaudeCodeSession : AgentSession
 	@property bool alive()
 	{
 		return !process.dead;
+	}
+
+	@property bool hasBackgroundWork()
+	{
+		return liveBackgroundTasks_ > 0;
 	}
 
 	/// A `control_request` the CLI sent to us. CyDo registers for nothing but
@@ -2177,6 +2185,9 @@ class ClaudeCodeSession : AgentSession
 			notifyNativeSessionStarted(init.session_id);
 			resolveRewindSupport(init.claude_code_version);
 		}
+
+		if (probe.type == "system" && probe.subtype == "background_tasks_changed")
+			liveBackgroundTasks_ = countLiveBackgroundTasks(rawLine);
 
 		switch (probe.type)
 		{
@@ -3725,8 +3736,10 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 			return translatePermissionDenied(rawLine);
 		case "task_updated":
 			return normalizeTaskUpdated(rawLine);
-		// TODO: system events not used yet
+		// Consumed by the live session (ClaudeCodeSession.hasBackgroundWork).
 		case "background_tasks_changed":
+			return null;
+		// TODO: system events not used yet
 		case "post_turn_summary":
 		case "away_summary":
 		case "permission_retry":
@@ -4453,6 +4466,37 @@ private string normalizeTaskStarted(string rawLine)
 	ev.task_type    = raw.task_type;
 	ev.extras = extrasToFragment(collectAllExtras(raw));
 	return toJson(ev);
+}
+
+/// The number of live background tasks a `background_tasks_changed` event
+/// reports. The event carries the whole set, replacing the previous one.
+/// Ambient tasks (housekeeping, live-update watchers) are not activity: the
+/// CLI asks hosts to leave them out of activity indicators.
+private size_t countLiveBackgroundTasks(string rawLine)
+{
+	import std.algorithm : count;
+
+	@JSONPartial static struct BackgroundTask
+	{
+		@JSONOptional bool ambient;
+	}
+	@JSONPartial static struct BackgroundTasksChanged
+	{
+		BackgroundTask[] tasks;
+	}
+
+	return jsonParse!BackgroundTasksChanged(rawLine).tasks.count!(t => !t.ambient);
+}
+
+unittest
+{
+	assert(countLiveBackgroundTasks(`{"type":"system","subtype":"background_tasks_changed","tasks":[`
+		~ `{"task_id":"b1","run_id":"r","task_type":"local_bash","description":"Running command"}],`
+		~ `"uuid":"u","session_id":"s"}`) == 1);
+	assert(countLiveBackgroundTasks(`{"type":"system","subtype":"background_tasks_changed","tasks":[`
+		~ `{"task_id":"b1","task_type":"local_bash","description":"d","ambient":true}]}`) == 0);
+	assert(countLiveBackgroundTasks(
+		`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`) == 0);
 }
 
 /// Normalize a Claude task_updated event (a patch to one task's state).

@@ -194,7 +194,9 @@ public:
 
 			enum nudgeBody = "Your session was interrupted by a harness restart. "
 				~ "Continue from where you left off. If you had a tool call in progress "
-				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.";
+				~ "(Task, Handoff, SwitchMode, or any other tool), retry it. Background "
+				~ "commands and monitors you had started are gone and will not report: "
+				~ "start again the ones you still need.";
 			try
 			{
 				host_.sendKnownSystemMessage(tid, KnownSystemMessageKind.restartNudge,

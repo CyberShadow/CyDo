@@ -886,6 +886,23 @@ public:
 			current.resultText = taskAgent.extractResultText(ev.translated);
 			current.lastTurnFailed = isErrorTurnResult(ev.translated);
 
+			// The agent ended its turn with work still running in the
+			// background: it is not done, and starts a turn of its own when
+			// that work reports. Only an accepted continuation (which ends
+			// this session whatever it left running) and a failed turn are
+			// final regardless.
+			if (session.hasBackgroundWork && current.pendingContinuation is null
+				&& !current.lastTurnFailed)
+			{
+				if (current.status == TaskStatus.waiting)
+					host_.publishTaskSnapshot(tid);
+				else
+					host_.transitionTaskFrom(tid,
+						[TaskStatus.active, TaskStatus.alive], TaskStatus.waiting,
+						TaskNotificationChange.preserve);
+				return;
+			}
+
 			bool hasOnYield = taskHasOnYield(current);
 			if (host_.hasPendingSubTask(tid) || current.pendingContinuation !is null
 				|| host_.hasTaskDependency(tid) || hasOnYield

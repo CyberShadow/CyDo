@@ -115,7 +115,8 @@ export function SearchPopup({
             let statusClass = "";
             if (t.isProcessing)
               statusClass = t.status === "waiting" ? "waiting" : "processing";
-            else if (t.alive) statusClass = "alive";
+            else if (t.alive)
+              statusClass = t.status === "waiting" ? "waiting" : "alive";
             else if (t.resumable) statusClass = "resumable";
             else if (t.status === "completed") statusClass = "completed";
             else if (t.status === "failed") statusClass = "failed";

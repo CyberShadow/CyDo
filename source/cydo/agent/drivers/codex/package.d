@@ -3834,6 +3834,12 @@ class CodexSession : AgentSession
 		return true;
 	}
 
+	// Not tracked: a command outliving its turn reports to the UI only.
+	@property bool hasBackgroundWork()
+	{
+		return false;
+	}
+
 	@property void onNativeSessionStarted(void delegate(string sessionId) callback)
 	{
 		nativeSessionStartedHandler_ = callback;

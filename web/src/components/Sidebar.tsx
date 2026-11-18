@@ -359,7 +359,9 @@ export function computeStatusClass(t: {
 }): string {
   if (t.isProcessing) return t.status === "waiting" ? "waiting" : "processing";
   if (t.alive && t.stdinClosed) return "ending";
-  if (t.alive) return "alive";
+  // Between turns but not idle: its background work or sub-tasks will
+  // start the next turn.
+  if (t.alive) return t.status === "waiting" ? "waiting" : "alive";
   if (t.status === "failed") return "failed";
   if (t.resumable) return "resumable";
   if (t.status === "importable") return "importable";

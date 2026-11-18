@@ -705,6 +705,21 @@ export function matchPattern(userText) {
   match = userText.match(/run delayed command (.+)/i);
   if (match) return { type: "shell", command: match[1].trim(), delay: 750 };
 
+  // "run detached command <cmd>" — Claude's Bash with run_in_background: the
+  // tool returns at once and the CLI starts a turn of its own when the
+  // command exits.
+  match = userText.match(/run detached command (.+)/i);
+  if (match)
+    return {
+      type: "tool_call",
+      name: "Bash",
+      input: {
+        command: match[1].trim(),
+        description: "Running command",
+        run_in_background: true,
+      },
+    };
+
   // "run command <cmd>"
   match = userText.match(/run command (.+)/i);
   if (match) return { type: "shell", command: match[1].trim() };

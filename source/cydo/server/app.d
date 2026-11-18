@@ -4074,6 +4074,7 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 	void closeStdin() {}
 	void killAfterTimeout(Duration timeout) {}
 	@property bool canStopAfterCloseStdin() const { return true; }
+	@property bool hasBackgroundWork() { return false; }
 	@property void onNativeSessionStarted(void delegate(string) dg)
 	{
 		nativeSessionStartedHandler_ = dg;

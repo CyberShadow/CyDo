@@ -11,12 +11,25 @@ vi.hoisted(() => {
 
 import {
   buildTree,
+  computeStatusClass,
   flatTaskOrder,
   flattenTree,
   Sidebar,
   shouldHandleSidebarAltArchive,
   type SidebarTask,
 } from "./Sidebar";
+
+describe("computeStatusClass", () => {
+  const live = { isProcessing: false, alive: true, resumable: false };
+
+  it("shows a live task between turns as idle", () => {
+    expect(computeStatusClass({ ...live, status: "alive" })).toBe("alive");
+  });
+
+  it("shows a live task between turns that waits for background work or sub-tasks as waiting", () => {
+    expect(computeStatusClass({ ...live, status: "waiting" })).toBe("waiting");
+  });
+});
 
 describe("Sidebar archive click guard", () => {
   it("allows Alt-click archive when task is not archiving", () => {

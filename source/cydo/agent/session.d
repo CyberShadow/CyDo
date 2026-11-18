@@ -81,4 +81,10 @@ interface AgentSession
 
 	/// Whether the session is still alive (process running, pipes open).
 	@property bool alive();
+
+	/// Whether work the agent started is still running outside its turns
+	/// (a background command, a monitor). The agent starts a turn of its
+	/// own when that work reports, so a turn ending meanwhile does not
+	/// mean the agent is done.
+	@property bool hasBackgroundWork();
 }

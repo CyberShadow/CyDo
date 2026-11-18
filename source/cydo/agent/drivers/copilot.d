@@ -1349,6 +1349,12 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		return false;
 	}
 
+	// Not tracked.
+	@property bool hasBackgroundWork()
+	{
+		return false;
+	}
+
 	@property void onNativeSessionStarted(void delegate(string sessionId) callback)
 	{
 		nativeSessionStartedHandler_ = callback;
