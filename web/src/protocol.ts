@@ -328,6 +328,8 @@ export type HistoryOperationMechanism =
   | "claude_native";
 export interface HistoryOperationKinds {
   user?: HistoryOperationMechanism;
+  /** The conversation's first user message. */
+  first_user?: HistoryOperationMechanism;
   provisional_user?: HistoryOperationMechanism;
   agent_turn?: HistoryOperationMechanism;
 }

@@ -110,7 +110,10 @@ describe("MessageList parse-error rendering", () => {
         taskTid={1}
         messages={[user]}
         replacementEvents={replacementEvents}
-        historyOperations={{ fork: { user: "jsonl" }, undo: { user: "jsonl" } }}
+        historyOperations={{
+          fork: { first_user: "jsonl" },
+          undo: { first_user: "jsonl" },
+        }}
         blocks={new Map()}
         isProcessing={false}
         bandStatus=""
@@ -233,7 +236,7 @@ describe("MessageList parse-error rendering", () => {
               ],
             ])
           }
-          historyOperations={{ fork: {}, undo: { user: "jsonl" } }}
+          historyOperations={{ fork: {}, undo: { first_user: "jsonl" } }}
           blocks={new Map()}
           isProcessing={false}
           bandStatus=""
@@ -278,8 +281,8 @@ describe("MessageList parse-error rendering", () => {
       ],
     ]);
     const render = (historyOperations: {
-      fork: { user?: "jsonl" };
-      undo: { user?: "jsonl" };
+      fork: { first_user?: "jsonl" };
+      undo: { first_user?: "jsonl" };
     }) =>
       renderToString(
         <MessageList
@@ -294,13 +297,60 @@ describe("MessageList parse-error rendering", () => {
           onUndo={() => {}}
         />,
       );
-    expect(render({ fork: { user: "jsonl" }, undo: {} })).toContain("fork-btn");
-    expect(render({ fork: { user: "jsonl" }, undo: {} })).not.toContain(
+    expect(render({ fork: { first_user: "jsonl" }, undo: {} })).toContain(
+      "fork-btn",
+    );
+    expect(render({ fork: { first_user: "jsonl" }, undo: {} })).not.toContain(
       "undo-btn",
     );
-    expect(render({ fork: {}, undo: { user: "jsonl" } })).toContain("undo-btn");
-    expect(render({ fork: {}, undo: { user: "jsonl" } })).not.toContain(
+    expect(render({ fork: {}, undo: { first_user: "jsonl" } })).toContain(
+      "undo-btn",
+    );
+    expect(render({ fork: {}, undo: { first_user: "jsonl" } })).not.toContain(
       "fork-btn",
+    );
+  });
+
+  it("gates the first user message by its own policy entry", () => {
+    const first: DisplayMessage = {
+      id: "u1",
+      type: "user",
+      content: [{ type: "text", text: "first prompt" }],
+      seq: 1,
+    };
+    const second: DisplayMessage = {
+      id: "u2",
+      type: "user",
+      content: [{ type: "text", text: "second prompt" }],
+      seq: 2,
+    };
+    const userStarted = (anchor: string): AgnosticEvent => ({
+      type: "item/started",
+      item_type: "user_message",
+      item_id: "",
+      history_boundary: { anchor, kind: "user" },
+    });
+    const html = renderToString(
+      <MessageList
+        taskTid={1}
+        messages={[first, second]}
+        replacementEvents={
+          new Map([
+            [1, userStarted("a1")],
+            [2, userStarted("a2")],
+          ])
+        }
+        historyOperations={{ fork: {}, undo: { user: "jsonl" } }}
+        blocks={new Map()}
+        isProcessing={false}
+        bandStatus=""
+        onFork={() => {}}
+        onUndo={() => {}}
+      />,
+    );
+    expect(html.match(/undo-btn/g)).toHaveLength(1);
+    expect(html.indexOf("undo-btn")).toBeGreaterThan(
+      html.indexOf("first prompt"),
     );
   });
 

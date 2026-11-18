@@ -8,7 +8,7 @@ import {
   useCallback,
 } from "preact/hooks";
 import type { DisplayMessage, Block } from "../types";
-import type { TurnEndReason } from "../protocol";
+import type { AgnosticEvent, TurnEndReason } from "../protocol";
 import { outbox, type OutboxEntry } from "../outbox";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { AssistantMessage } from "./AssistantMessage";
@@ -921,6 +921,33 @@ function makeOutboxPlaceholder(entry: OutboxEntry): DisplayMessage {
   };
 }
 
+interface MessageHistoryBoundary {
+  anchor: string;
+  kind: "user" | "provisional_user" | "agent_turn";
+  checkpoint_uuid?: string;
+}
+
+/** The history boundary a message carries, when exactly one of its events
+ *  has one. */
+function historyBoundaryOf(
+  msg: DisplayMessage,
+  replacementEvents: Map<number, AgnosticEvent>,
+): MessageHistoryBoundary | undefined {
+  const seqs =
+    msg.seq == null ? [] : Array.isArray(msg.seq) ? msg.seq : [msg.seq];
+  const boundaries = seqs
+    .map((seq) => replacementEvents.get(seq))
+    .filter(
+      (event) =>
+        (event?.type === "item/started" || event?.type === "turn/stop") &&
+        event.history_boundary,
+    );
+  return boundaries.length === 1
+    ? (boundaries[0] as { history_boundary: MessageHistoryBoundary })
+        .history_boundary
+    : undefined;
+}
+
 export function MessageList({
   taskTid,
   messages,
@@ -1131,6 +1158,16 @@ export function MessageList({
       };
     }, [composedMessages, blocks]);
 
+  // The conversation's first user message, which some agents can only undo
+  // in-process (HistoryOperationKinds.first_user).
+  const firstUserBoundaryAnchor = useMemo(() => {
+    for (const msg of topLevelMessages) {
+      const boundary = historyBoundaryOf(msg, replacementEvents);
+      if (boundary?.kind === "user") return boundary.anchor;
+    }
+    return undefined;
+  }, [topLevelMessages, replacementEvents]);
+
   return (
     <ReplacementEventsContext.Provider value={replacementEvents}>
       <div class="message-list" ref={containerRef}>
@@ -1143,37 +1180,17 @@ export function MessageList({
                     .map((id) => blocks.get(id))
                     .filter(Boolean) as Block[])
                 : [];
-            const seqs =
-              msg.seq == null
-                ? []
-                : Array.isArray(msg.seq)
-                  ? msg.seq
-                  : [msg.seq];
-            const boundaries = seqs
-              .map((seq) => replacementEvents.get(seq))
-              .filter(
-                (event) =>
-                  (event?.type === "item/started" ||
-                    event?.type === "turn/stop") &&
-                  event.history_boundary,
-              );
-            const boundary =
-              boundaries.length === 1
-                ? (
-                    boundaries[0] as {
-                      history_boundary: {
-                        anchor: string;
-                        kind: "user" | "provisional_user" | "agent_turn";
-                        checkpoint_uuid?: string;
-                      };
-                    }
-                  ).history_boundary
-                : undefined;
+            const boundary = historyBoundaryOf(msg, replacementEvents);
             const actionUuid = boundary?.anchor;
+            const operationKind =
+              boundary?.kind === "user" &&
+              boundary.anchor === firstUserBoundaryAnchor
+                ? "first_user"
+                : boundary?.kind;
             const isForkable =
-              !!boundary && !!historyOperations?.fork[boundary.kind];
+              !!operationKind && !!historyOperations?.fork[operationKind];
             const isUndoable =
-              !!boundary && !!historyOperations?.undo[boundary.kind];
+              !!operationKind && !!historyOperations?.undo[operationKind];
             return (
               <MessageView
                 key={msg.id}

@@ -123,10 +123,11 @@ test("completed messages are not recreated when new messages arrive", { tag: "@c
       );
       expect(policies).not.toHaveLength(0);
       expect(policies.at(-1)?.history_operations).toEqual({
-        fork: { user: "jsonl", agent_turn: "jsonl" },
+        fork: { user: "jsonl", first_user: "jsonl", agent_turn: "jsonl" },
         // The idle live session is rewound in-process.
         undo: {
           user: "claude_native",
+          first_user: "claude_native",
           provisional_user: "jsonl",
           agent_turn: "jsonl",
         },
@@ -141,12 +142,19 @@ test("completed messages are not recreated when new messages arrive", { tag: "@c
   expect(totalCalls, "Render hook never fired").toBeGreaterThan(0);
 
   // Collect IDs of all currently rendered message wrappers.
-  // These are the "pre-existing" messages that must NOT re-render.
-  const preExistingIds = await page.evaluate(() =>
-    Array.from(document.querySelectorAll(".message-wrapper"))
+  // These are the "pre-existing" messages that must NOT re-render. The
+  // exception is the conversation's first user message: its undo is offered
+  // only while the session is idle (undoing it otherwise rewrites the session
+  // file, leaving Claude nothing to resume), so it rightly re-renders as a
+  // turn starts and ends.
+  const preExistingIds = await page.evaluate(() => {
+    const wrappers = Array.from(document.querySelectorAll(".message-wrapper"));
+    const firstUser = wrappers.find((el) => el.querySelector(".user-message"));
+    return wrappers
+      .filter((el) => el !== firstUser)
       .map((el) => el.id.replace("msg-", ""))
-      .filter(Boolean),
-  );
+      .filter(Boolean);
+  });
   expect(preExistingIds.length).toBeGreaterThan(0);
 
   // Activate render tracking for pre-existing message IDs

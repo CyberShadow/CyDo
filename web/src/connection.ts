@@ -17,6 +17,7 @@ function isHistoryOperationsMessage(raw: Record<string, unknown>): boolean {
       Object.entries(kinds).every(
         ([kind, mechanism]) =>
           (kind === "user" ||
+            kind === "first_user" ||
             kind === "provisional_user" ||
             kind === "agent_turn") &&
           (mechanism === "jsonl" ||

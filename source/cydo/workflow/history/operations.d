@@ -14,6 +14,9 @@ enum NativeSessionState { dead, liveReady, liveBusy }
 struct HistoryOperationKinds
 {
 	@JSONOptional HistoryOperationMechanism user;
+	/// The conversation's first user message: a `user` boundary no other
+	/// precedes.
+	@JSONOptional HistoryOperationMechanism first_user;
 	@JSONOptional HistoryOperationMechanism provisional_user;
 	@JSONOptional HistoryOperationMechanism agent_turn;
 }
@@ -42,7 +45,16 @@ HistoryOperations selectHistoryOperations(AgentDriver driver,
 			// prompt stays on the JSONL mechanism.
 			if (session == NativeSessionState.liveReady)
 				result.undo.user = HistoryOperationMechanism.claude_native;
+			// Rewriting the session file back to before its first message
+			// leaves Claude no conversation to resume ("No conversation
+			// found"), and every later message fails the same way.
+			result.undo.first_user = session == NativeSessionState.liveReady
+				? HistoryOperationMechanism.claude_native
+				: HistoryOperationMechanism.none;
 		}
+		else
+			result.undo.first_user = result.undo.user;
+		result.fork.first_user = result.fork.user;
 		return result;
 	}
 
@@ -64,14 +76,18 @@ HistoryOperations selectHistoryOperations(AgentDriver driver,
 		result.undo.agent_turn = HistoryOperationMechanism.jsonl;
 		break;
 	}
+	result.fork.first_user = result.fork.user;
+	result.undo.first_user = result.undo.user;
 	return result;
 }
 
-bool allowsOperation(const HistoryBoundary boundary, const HistoryOperations operations,
-	HistoryOperation operation)
+/// `opensConversation`: no other `user` boundary precedes `boundary`.
+bool allowsOperation(const HistoryBoundary boundary, bool opensConversation,
+	const HistoryOperations operations, HistoryOperation operation)
 {
 	return boundary.anchor.length > 0
-		&& operationMechanism(boundary, operations, operation) != HistoryOperationMechanism.none;
+		&& operationMechanism(boundary, opensConversation, operations, operation)
+			!= HistoryOperationMechanism.none;
 }
 
 bool allowsFileRevert(const HistoryBoundary boundary)
@@ -81,11 +97,11 @@ bool allowsFileRevert(const HistoryBoundary boundary)
 }
 
 HistoryOperationMechanism operationMechanism(const HistoryBoundary boundary,
-	const HistoryOperations operations, HistoryOperation operation)
+	bool opensConversation, const HistoryOperations operations, HistoryOperation operation)
 {
 	auto kinds = operation == HistoryOperation.fork ? operations.fork : operations.undo;
 	if (boundary.kind == HistoryBoundaryKind.user)
-		return kinds.user;
+		return opensConversation ? kinds.first_user : kinds.user;
 	if (boundary.kind == HistoryBoundaryKind.provisional_user)
 		return kinds.provisional_user;
 	return kinds.agent_turn;
@@ -126,18 +142,28 @@ unittest
 	assert(claudeReady.undo.user == HistoryOperationMechanism.claude_native);
 	assert(claudeReady.undo.agent_turn == HistoryOperationMechanism.jsonl);
 	assert(claudeReady.undo.provisional_user == HistoryOperationMechanism.jsonl);
+	assert(claudeReady.undo.first_user == HistoryOperationMechanism.claude_native);
+	assert(claude.undo.first_user == HistoryOperationMechanism.none,
+		"a stopped Claude session must keep its first message");
+	assert(claudeBusy.undo.first_user == HistoryOperationMechanism.none);
+	assert(claude.fork.first_user == HistoryOperationMechanism.jsonl);
+	assert(offline.undo.first_user == HistoryOperationMechanism.jsonl);
+	auto opening = HistoryBoundary("first", HistoryBoundaryKind.user, "");
+	assert(!allowsOperation(opening, true, claude, HistoryOperation.undo));
+	assert(allowsOperation(opening, false, claude, HistoryOperation.undo));
+	assert(allowsOperation(opening, true, claudeReady, HistoryOperation.undo));
 	auto provisional = HistoryBoundary("enqueue-4",
 		HistoryBoundaryKind.provisional_user, "");
-	assert(!allowsOperation(provisional, claude, HistoryOperation.fork),
+	assert(!allowsOperation(provisional, false, claude, HistoryOperation.fork),
 		"provisional queue boundaries must not be forkable");
-	assert(allowsOperation(provisional, claude, HistoryOperation.undo),
+	assert(allowsOperation(provisional, false, claude, HistoryOperation.undo),
 		"provisional queue boundaries must remain undoable");
 	auto boundary = HistoryBoundary("a", HistoryBoundaryKind.agent_turn, "");
-	assert(allowsOperation(boundary, offline, HistoryOperation.undo));
-	assert(!allowsOperation(boundary, native, HistoryOperation.undo));
+	assert(allowsOperation(boundary, false, offline, HistoryOperation.undo));
+	assert(!allowsOperation(boundary, false, native, HistoryOperation.undo));
 	boundary.kind = HistoryBoundaryKind.user;
-	assert(!allowsOperation(boundary, offline, HistoryOperation.fork));
-	assert(!allowsOperation(boundary, native, HistoryOperation.fork));
+	assert(!allowsOperation(boundary, false, offline, HistoryOperation.fork));
+	assert(!allowsOperation(boundary, false, native, HistoryOperation.fork));
 	assert(!allowsFileRevert(boundary));
 	boundary.checkpoint_uuid = "checkpoint";
 	assert(allowsFileRevert(boundary));

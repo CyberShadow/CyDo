@@ -758,9 +758,9 @@ class App
 			},
 			nativeSessionState: &nativeSessionState,
 			resolveFreshPersistedBoundary: (int tid, const ref HistoryAccess access,
-				string requestedAnchor, out HistoryBoundary boundary) {
+				string requestedAnchor, out HistoryBoundary boundary, out bool opensConversation) {
 				return historyPipeline.resolveFreshPersistedBoundary(tid, access,
-					requestedAnchor, boundary);
+					requestedAnchor, boundary, opensConversation);
 			},
 			prepareHistoryForkDestination: &prepareHistoryForkDestination,
 			getUndoJsonl: (int tid) => jsonlTracker.getUndoJsonl(tid),

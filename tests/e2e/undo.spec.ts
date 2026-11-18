@@ -124,41 +124,34 @@ test("undo moves user message text to input box", async ({
 });
 
 test(
-  "undo on first Claude message restores draft input",
+  "a stopped Claude session offers no undo for its first message",
   { tag: "@claude-only" },
   async ({ page, agentType }) => {
+    // Rewriting the session file back to before its first message would leave
+    // Claude no conversation to resume.
     await enterSession(page);
 
-    const prompt = 'Please reply with "first-undo-draft"';
-    await sendMessage(page, prompt);
-    await expect(assistantText(page, "first-undo-draft")).toBeVisible();
+    await sendMessage(page, 'Please reply with "first-undo-kept"');
+    await expect(assistantText(page, "first-undo-kept")).toBeVisible();
+    await sendMessage(page, 'Please reply with "second-undo-offered"');
+    await expect(assistantText(page, "second-undo-offered")).toBeVisible();
 
     await killSession(page, agentType);
 
-    const firstUserMsg = page
-      .locator(".message-wrapper", {
-        has: page.locator(".user-message", { hasText: "first-undo-draft" }),
-      })
-      .last();
-    await expect(firstUserMsg).toBeVisible();
-    await firstUserMsg.hover();
+    const userMessage = (text: string) =>
+      page
+        .locator(".message-wrapper", {
+          has: page.locator(".user-message", { hasText: text }),
+        })
+        .last();
+    const second = userMessage("second-undo-offered");
+    await second.hover();
+    await expect(second.locator(".undo-btn")).toBeVisible();
 
-    await expect(firstUserMsg.locator(".undo-btn")).toBeVisible();
-    await firstUserMsg.locator(".undo-btn").click();
-
-    await expect(page.locator(".undo-dialog")).toBeVisible();
-    await page.locator(".btn-undo").click();
-
-    await expect(
-      page.locator(".message.user-message:not(.pending)", {
-        hasText: "first-undo-draft",
-      }),
-    ).toHaveCount(0);
-    await expect(assistantText(page, "first-undo-draft")).toHaveCount(0);
-
-    const input = page.locator(".input-textarea:visible").first();
-    await expect(input).toBeVisible();
-    await expect(input).toHaveValue(prompt);
+    const first = userMessage("first-undo-kept");
+    await first.hover();
+    await expect(first.locator(".fork-btn")).toBeVisible();
+    await expect(first.locator(".undo-btn")).toHaveCount(0);
   },
 );
 

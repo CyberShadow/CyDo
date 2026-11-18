@@ -339,8 +339,10 @@ class HistoryEventPipeline
 		return Nullable!TaskHistoryResolution(resolution);
 	}
 
+	/// Find the boundary `requestedAnchor` names in the task's session file
+	/// as it is now. `opensConversation`: no other user boundary precedes it.
 	bool resolveFreshPersistedBoundary(int tid, const ref HistoryAccess access,
-		string requestedAnchor, out HistoryBoundary boundary)
+		string requestedAnchor, out HistoryBoundary boundary, out bool opensConversation)
 	{
 		if (requestedAnchor.length == 0)
 			return false;
@@ -363,7 +365,7 @@ class HistoryEventPipeline
 		auto pipeline = new HistoryEventPipeline(snapshotHost);
 		pipeline.ensureHistoryLoaded(tid);
 
-		bool found;
+		bool found, userBefore;
 		foreach (ref entry; snapshot.history)
 		{
 			HistoryBoundary candidate;
@@ -373,9 +375,15 @@ class HistoryEventPipeline
 				candidate = jsonParse!Probe(event).history_boundary;
 			});
 			if (candidate.anchor != requestedAnchor)
+			{
+				if (!found && candidate.anchor.length > 0
+					&& candidate.kind == HistoryBoundaryKind.user)
+					userBefore = true;
 				continue;
+			}
 			assert(!found, "persisted history boundary anchor must be unique");
 			boundary = candidate;
+			opensConversation = !userBefore;
 			found = true;
 		}
 		return found;

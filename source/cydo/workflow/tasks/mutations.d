@@ -94,7 +94,7 @@ struct TaskMutationServiceHost
 		openCodexForkSourceOperation;
 	NativeSessionState delegate(int tid) nativeSessionState;
 	bool delegate(int tid, const ref HistoryAccess access,
-		string requestedAnchor, out HistoryBoundary boundary)
+		string requestedAnchor, out HistoryBoundary boundary, out bool opensConversation)
 		resolveFreshPersistedBoundary;
 	HistoryForkDestination delegate(int sourceTid) prepareHistoryForkDestination;
 	string delegate(int tid) getUndoJsonl;
@@ -239,7 +239,9 @@ public:
 			return;
 		auto ta = source.agent;
 		HistoryBoundary boundary;
-		if (!host_.resolveFreshPersistedBoundary(tid, source, json.anchor, boundary))
+		bool opensConversation;
+		if (!host_.resolveFreshPersistedBoundary(tid, source, json.anchor, boundary,
+			opensConversation))
 		{
 			ws.send(Data(toJson(ErrorMessage("error",
 				"Fork failed: message UUID not found in task history", tid)).representation));
@@ -248,13 +250,14 @@ public:
 		auto codexSession = cast(CodexSession) host_.sessionForTask(tid);
 		auto operations = selectHistoryOperations(ta.driver,
 			host_.nativeSessionState(tid));
-		if (!allowsOperation(boundary, operations, HistoryOperation.fork))
+		if (!allowsOperation(boundary, opensConversation, operations, HistoryOperation.fork))
 		{
 			ws.send(Data(toJson(ErrorMessage("error",
 				"Fork failed: message UUID not found in task history", tid)).representation));
 			return;
 		}
-		auto mechanism = operationMechanism(boundary, operations, HistoryOperation.fork);
+		auto mechanism = operationMechanism(boundary, opensConversation, operations,
+			HistoryOperation.fork);
 		if (mechanism == HistoryOperationMechanism.codex_native)
 		{
 			auto ca = cast(CodexAgent) ta;
@@ -361,19 +364,24 @@ public:
 			return;
 		auto ta = access.agent;
 		HistoryBoundary boundary;
-		if (!host_.resolveFreshPersistedBoundary(tid, access, json.anchor, boundary))
+		bool opensConversation;
+		if (!host_.resolveFreshPersistedBoundary(tid, access, json.anchor, boundary,
+			opensConversation))
 		{
 			ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
 			return;
 		}
 		auto nativeSourceState = host_.nativeSessionState(tid);
 		auto operations = selectHistoryOperations(ta.driver, nativeSourceState);
-		if (!allowsOperation(boundary, operations, HistoryOperation.undo))
+		if (!allowsOperation(boundary, opensConversation, operations, HistoryOperation.undo))
 		{
-			ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
+			ws.send(Data(toJson(ErrorMessage("error", opensConversation
+				? "Undoing the first message needs its agent session running and idle"
+				: "UUID not found in task history", tid)).representation));
 			return;
 		}
-		auto mechanism = operationMechanism(boundary, operations, HistoryOperation.undo);
+		auto mechanism = operationMechanism(boundary, opensConversation, operations,
+			HistoryOperation.undo);
 		auto codexSession = cast(CodexSession) host_.sessionForTask(tid);
 		if (json.revert_files && !allowsFileRevert(boundary))
 		{
@@ -1730,7 +1738,7 @@ unittest
 	};
 	host.generateSuggestions = (int) { sideEffects++; assert(false); };
 	host.resolveFreshPersistedBoundary = (int, const ref HistoryAccess access,
-		string, out HistoryBoundary boundary) {
+		string, out HistoryBoundary boundary, out bool opensConversation) {
 		if (resolution != Resolution.noCheckpoint)
 			return false;
 		boundary = HistoryBoundary("assistant", HistoryBoundaryKind.agent_turn, "");
@@ -1886,7 +1894,7 @@ unittest
 		return selectedSourceState;
 	};
 	host.resolveFreshPersistedBoundary = (int, const ref HistoryAccess,
-		string, out HistoryBoundary boundary) {
+		string, out HistoryBoundary boundary, out bool opensConversation) {
 		boundaryCalls++;
 		boundary = fallbackAnchorMatrix
 			? HistoryBoundary("line:3", HistoryBoundaryKind.agent_turn, null)
