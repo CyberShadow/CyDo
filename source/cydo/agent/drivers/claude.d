@@ -1515,13 +1515,10 @@ class ClaudeCodeSession : AgentSession
 				"--system-prompt-snapshot", "off",
 			];
 
-		// Monitor interacts poorly with batch execution: the agent may yield its
-		// turn (producing a result) after calling Monitor, expecting a ping when
-		// the command finishes, but the session is ended instead.
 		string taskTools = "TaskCreate,TaskGet,TaskList,TaskOutput,TaskStop,TaskUpdate";
 		string disallowed = config.allowNativeSubagents
-			? taskTools ~ ",Monitor,EnterPlanMode,ExitPlanMode,AskUserQuestion"
-			: "Task," ~ taskTools ~ ",Monitor,EnterPlanMode,ExitPlanMode,AskUserQuestion";
+			? taskTools ~ ",EnterPlanMode,ExitPlanMode,AskUserQuestion"
+			: "Task," ~ taskTools ~ ",EnterPlanMode,ExitPlanMode,AskUserQuestion";
 		claudeArgs ~= ["--disallowedTools", disallowed];
 
 		// When sandboxed, cmdPrefix handles workDir via --chdir (bwrap) or -C (env)

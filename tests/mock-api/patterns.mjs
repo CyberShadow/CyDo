@@ -720,6 +720,22 @@ export function matchPattern(userText) {
       },
     };
 
+  // "run monitor <cmd>" — Claude's Monitor: the tool returns at once, and the
+  // CLI starts a turn of its own for each line the command prints and when it
+  // exits.
+  match = userText.match(/run monitor (.+)/i);
+  if (match)
+    return {
+      type: "tool_call",
+      name: "Monitor",
+      input: {
+        command: match[1].trim(),
+        description: "Watching command",
+        timeout_ms: 60000,
+        persistent: false,
+      },
+    };
+
   // "run command <cmd>"
   match = userText.match(/run command (.+)/i);
   if (match) return { type: "shell", command: match[1].trim() };

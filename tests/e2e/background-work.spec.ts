@@ -128,6 +128,17 @@ test(
 );
 
 test(
+  "a session waits for its monitor instead of going idle",
+  { tag: "@claude-only" },
+  async ({ page }) => {
+    await expectSessionWaitsForBackgroundWork(
+      page,
+      (fifo) => `run monitor ${blockOn(fifo)} && echo monitor-event`,
+    );
+  },
+);
+
+test(
   "a sub-task's result waits for its background command",
   { tag: "@claude-only" },
   async ({ page }) => {
