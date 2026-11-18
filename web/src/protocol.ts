@@ -21,6 +21,7 @@ export type {
   SessionCompactedEvent,
   TurnResultEvent,
   TurnEndReason,
+  ItemDenier,
   SessionSummaryEvent,
   SessionCostEvent,
   SessionRateLimitEvent,

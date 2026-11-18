@@ -1442,7 +1442,10 @@ function reduceItemDenied(
   const block = s.blocks.get(blockKey);
   if (!block) return s;
   const blocks = new Map(s.blocks);
-  blocks.set(blockKey, { ...block, denial: event.reason });
+  blocks.set(blockKey, {
+    ...block,
+    denial: { by: event.by, reason: event.reason },
+  });
   return { ...s, blocks };
 }
 

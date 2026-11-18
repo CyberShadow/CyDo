@@ -2,6 +2,8 @@ export type TurnEndReason = "unspecified" | "completed" | "interrupted" | "hook_
 
 export type TaskDiagnosticSeverity = "info" | "warning" | "error";
 
+export type ItemDenier = "classifier" | "settingsRule" | "backgroundAgent";
+
 export interface ContentBlock {
   type: string;
   text?: string;
@@ -227,7 +229,8 @@ export interface ItemResultEvent {
 export interface ItemDeniedEvent {
   type: "item/denied";
   item_id: string;
-  reason: string;
+  by: ItemDenier;
+  reason?: string;
 }
 
 export interface UserMessageConsumedEvent {

@@ -1726,3 +1726,47 @@ describe("task state reducer", () => {
     ).toEqual(s.messages);
   });
 });
+
+describe("item denial reducer", () => {
+  function toolBlock(s: TaskState) {
+    return [...s.blocks.values()].find((b) => b.itemId === "toolu_1");
+  }
+
+  it("records who refused a tool call, and why", () => {
+    const started = reduceMessage(
+      makeState(),
+      asEvent({
+        type: "item/started",
+        item_id: "toolu_1",
+        item_type: "tool_use",
+        name: "Bash",
+        input: { command: "rm -rf build" },
+      }),
+      1,
+    );
+    const denied = reduceMessage(
+      started,
+      asEvent({ type: "item/denied", item_id: "toolu_1", by: "settingsRule" }),
+      2,
+    );
+    expect(toolBlock(denied)?.denial).toEqual({
+      by: "settingsRule",
+      reason: undefined,
+    });
+
+    const classified = reduceMessage(
+      started,
+      asEvent({
+        type: "item/denied",
+        item_id: "toolu_1",
+        by: "classifier",
+        reason: "risky",
+      }),
+      2,
+    );
+    expect(toolBlock(classified)?.denial).toEqual({
+      by: "classifier",
+      reason: "risky",
+    });
+  });
+});

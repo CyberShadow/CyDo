@@ -336,13 +336,22 @@ struct ItemResultEvent
 	@JSONOptional JSONFragment extras;
 }
 
-/// item/denied — the agent's auto mode classifier refused a tool_use item.
-/// A person may approve the call and have the agent retry it.
+/// Who refused a tool call without asking anyone.
+enum ItemDenier : string
+{
+	classifier = "classifier",            /// auto mode classifier; a person may overrule it
+	settingsRule = "settingsRule",        /// a deny rule in the agent's own settings
+	backgroundAgent = "backgroundAgent",  /// a call needing approval where none can be asked for
+}
+
+/// item/denied — the agent refused a tool_use item on its own, without a
+/// permission prompt.
 struct ItemDeniedEvent
 {
 	string type = "item/denied";
 	string item_id;
-	string reason;
+	ItemDenier by;
+	@JSONOptional string reason;  /// the agent's own wording, when it gives one
 }
 
 /// user_message/consumed — the agent's queue confirmed what became of a

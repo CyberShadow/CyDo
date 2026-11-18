@@ -2,6 +2,7 @@ import { Fragment, h } from "preact";
 import { memo } from "preact/compat";
 import { useState } from "preact/hooks";
 import type { DisplayMessage, Block } from "../types";
+import type { ItemDenier } from "../protocol";
 import { Markdown } from "./Markdown";
 import { TaskDiagnosticView } from "./TaskDiagnosticView";
 import { ToolCall } from "./ToolCall";
@@ -144,31 +145,43 @@ interface Props {
   getTaskHref?: (id: string) => string;
 }
 
-/** A tool call the auto mode classifier refused, which a person may approve
- *  once for the agent to retry. */
-function ClassifierDenial({
+const denierHeadlines: Record<ItemDenier, string> = {
+  classifier: "Blocked by the auto mode classifier",
+  settingsRule: "Blocked by a deny rule in the agent's settings",
+  backgroundAgent:
+    "Blocked: this call needs approval, which the agent could not ask for",
+};
+
+/** A tool call the agent refused without asking anyone. A classifier denial
+ *  may be overruled: a person approves the call once for the agent to retry. */
+function ToolDenial({
+  by,
   reason,
   onApprove,
 }: {
-  reason: string;
-  onApprove: () => void;
+  by: ItemDenier;
+  reason?: string;
+  onApprove?: () => void;
 }) {
   const [approved, setApproved] = useState(false);
   return (
     <div class="tool-denial">
       <span class="tool-denial-reason">
-        Blocked by the auto mode classifier{reason ? `: ${reason}` : ""}
+        {denierHeadlines[by]}
+        {reason ? `: ${reason}` : ""}
       </span>
-      <button
-        class="approve-retry-btn"
-        disabled={approved}
-        onClick={() => {
-          setApproved(true);
-          onApprove();
-        }}
-      >
-        {approved ? "Approved" : "Approve & retry"}
-      </button>
+      {by === "classifier" && onApprove && (
+        <button
+          class="approve-retry-btn"
+          disabled={approved}
+          onClick={() => {
+            setApproved(true);
+            onApprove();
+          }}
+        >
+          {approved ? "Approved" : "Approve & retry"}
+        </button>
+      )}
     </div>
   );
 }
@@ -318,12 +331,16 @@ export const AssistantMessage = memo(
                     spawnedTids={spawnedTidsByItemId?.get(block.itemId)}
                     getTaskHref={getTaskHref}
                   >
-                    {block.denial !== undefined && onApproveRetry && (
-                      <ClassifierDenial
-                        reason={block.denial}
-                        onApprove={() => {
-                          onApproveRetry(block.name!, block.input ?? {});
-                        }}
+                    {block.denial !== undefined && (
+                      <ToolDenial
+                        by={block.denial.by}
+                        reason={block.denial.reason}
+                        onApprove={
+                          onApproveRetry &&
+                          (() => {
+                            onApproveRetry(block.name!, block.input ?? {});
+                          })
+                        }
                       />
                     )}
                     {block.stdin && (

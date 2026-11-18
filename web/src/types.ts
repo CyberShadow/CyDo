@@ -7,6 +7,7 @@ import type {
   AssistantContentBlock,
   AskUserQuestionItem,
   ModelUsageInfo,
+  ItemDenier,
   TaskDiagnosticEvent,
   TurnEndReason,
 } from "./protocol";
@@ -216,7 +217,7 @@ interface BlockBase {
   completed: boolean; // false while streaming, true after item/completed or turn/stop
   creationOrder: number; // monotonic counter for stable ordering
   result?: ToolResult; // tool result (tool_use only, set by item/result)
-  denial?: string; // auto mode classifier's reason for refusing this call (item/denied)
+  denial?: { by: ItemDenier; reason?: string }; // the agent refused this call unasked (item/denied)
   extras?: Record<string, unknown>;
 }
 

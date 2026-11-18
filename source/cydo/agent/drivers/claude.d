@@ -4147,23 +4147,30 @@ unittest
 	}
 }
 
-/// Translate "system/api_retry" event to a retrying task diagnostic.
-/// Classifier denials become item/denied, which a person may overrule; the
-/// tool_result that follows carries the denial to the conversation either
-/// way. Other denials pass through.
+/// Translate "system/permission_denied": the CLI refused a tool call
+/// without asking anyone. The tool_result that follows carries the denial
+/// to the conversation either way; item/denied says who refused it, where
+/// that is not CyDo itself (a policy hook "deny") or a mode CyDo never sets.
 private string translatePermissionDenied(string rawLine)
 {
+	import cydo.protocol : ItemDenier;
+
 	@JSONPartial static struct RawDenial
 	{
 		string tool_use_id;
-		string decision_reason_type;
+		@JSONOptional string decision_reason_type;
 		@JSONOptional string decision_reason;
 	}
 	auto raw = jsonParse!RawDenial(rawLine);
-	// TODO: surface the other denial kinds too.
-	if (raw.decision_reason_type != "classifier")
-		return null;
-	return toJson(ItemDeniedEvent("item/denied", raw.tool_use_id, raw.decision_reason));
+	ItemDenier by;
+	switch (raw.decision_reason_type)
+	{
+		case "classifier": by = ItemDenier.classifier; break;
+		case "rule":       by = ItemDenier.settingsRule; break;
+		case "asyncAgent": by = ItemDenier.backgroundAgent; break;
+		default:           return null;
+	}
+	return toJson(ItemDeniedEvent("item/denied", raw.tool_use_id, by, raw.decision_reason));
 }
 
 unittest
@@ -4171,10 +4178,15 @@ unittest
 	assert(translatePermissionDenied(`{"type":"system","subtype":"permission_denied","tool_name":"Bash",`
 		~ `"tool_use_id":"toolu_1","decision_reason_type":"classifier","decision_reason":"risky",`
 		~ `"message":"Permission for this action was denied"}`)
-		== `{"type":"item/denied","item_id":"toolu_1","reason":"risky"}`);
-	enum ruleDenial = `{"type":"system","subtype":"permission_denied","tool_use_id":"toolu_2",`
-		~ `"decision_reason_type":"rule"}`;
-	assert(translatePermissionDenied(ruleDenial) is null);
+		== `{"type":"item/denied","item_id":"toolu_1","by":"classifier","reason":"risky"}`);
+	assert(translatePermissionDenied(`{"type":"system","subtype":"permission_denied","tool_use_id":"toolu_2",`
+		~ `"decision_reason_type":"rule"}`)
+		== `{"type":"item/denied","item_id":"toolu_2","by":"settingsRule"}`);
+	assert(translatePermissionDenied(`{"type":"system","subtype":"permission_denied","tool_use_id":"toolu_3",`
+		~ `"decision_reason_type":"asyncAgent","decision_reason":"no prompt"}`)
+		== `{"type":"item/denied","item_id":"toolu_3","by":"backgroundAgent","reason":"no prompt"}`);
+	assert(translatePermissionDenied(`{"type":"system","subtype":"permission_denied","tool_use_id":"toolu_4",`
+		~ `"decision_reason_type":"hook","decision_reason":"Permission denied by policy"}`) is null);
 }
 
 /// Translate a notice that the CLI swapped, or could not swap, the model
@@ -4204,6 +4216,7 @@ unittest
 		~ `"body":"Switched to b due to high demand for a"}`);
 }
 
+/// Translate "system/api_retry" event to a retrying task diagnostic.
 private string translateApiRetry(string rawLine)
 {
 	@JSONPartial static struct RawApiRetry
