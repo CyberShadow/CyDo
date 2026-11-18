@@ -30,7 +30,7 @@ import cydo.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
 	ItemResultEvent, ItemStartedEvent, makeUnrecognizedEvent, ProcessExitEvent,
 	ProcessStderrEvent, SessionInitEvent, TranslatedEvent, TurnResultEvent,
 	TurnStopEvent, UsageInfo;
-import cydo.agent.session : AgentSession, AgentSubmissionReceipt, MessageSource;
+import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork, MessageSource;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
@@ -1350,9 +1350,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	}
 
 	// Not tracked.
-	@property bool hasBackgroundWork()
+	@property const(BackgroundWork)[] backgroundWork()
 	{
-		return false;
+		return null;
 	}
 
 	@property void onNativeSessionStarted(void delegate(string sessionId) callback)

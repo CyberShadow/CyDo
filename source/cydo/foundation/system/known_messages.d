@@ -18,6 +18,7 @@ enum KnownSystemMessageKind
 	postCompactionTaskModeReminder,
 	modeSwitch,
 	approveRetry,
+	backgroundWorkReminder,
 }
 
 struct KnownSystemMessageMatch
@@ -59,6 +60,8 @@ string systemMessageSubject(KnownSystemMessageKind kind)
 		return "Mode switch";
 	case KnownSystemMessageKind.approveRetry:
 		return "Approve and retry";
+	case KnownSystemMessageKind.backgroundWorkReminder:
+		return "Background work still running";
 	}
 }
 
@@ -302,6 +305,12 @@ bool tryKnownSystemMessageMatch(string subject, out KnownSystemMessageMatch matc
 		match.label = subject;
 		return true;
 	}
+	if (subject == systemMessageSubject(KnownSystemMessageKind.backgroundWorkReminder))
+	{
+		match.kind = KnownSystemMessageKind.backgroundWorkReminder;
+		match.label = subject;
+		return true;
+	}
 	return false;
 }
 
@@ -347,6 +356,7 @@ unittest
 		case KnownSystemMessageKind.restartNudge:
 		case KnownSystemMessageKind.postCompactionTaskModeReminder:
 		case KnownSystemMessageKind.approveRetry:
+		case KnownSystemMessageKind.backgroundWorkReminder:
 			return systemMessageSubject(kind);
 		case KnownSystemMessageKind.handoff:
 			return "Handoff: source -> target";

@@ -707,8 +707,9 @@ export function matchPattern(userText) {
 
   // "run detached command <cmd>" — Claude's Bash with run_in_background: the
   // tool returns at once and the CLI starts a turn of its own when the
-  // command exits.
-  match = userText.match(/run detached command (.+)/i);
+  // command exits. "run forgotten command <cmd>" starts it the same way; the
+  // agent then stops it when reminded that it is still running (server.mjs).
+  match = userText.match(/run (?:detached|forgotten) command (.+)/i);
   if (match)
     return {
       type: "tool_call",

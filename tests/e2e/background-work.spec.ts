@@ -8,9 +8,11 @@ import {
 } from "./fixtures";
 
 // An agent that ends its turn with work still running in the background (a
-// command started with run_in_background, a Monitor) is not done: the CLI
-// starts a turn of its own when that work reports. Until then the task is
-// waiting, not idle: no attention flag, no result delivered to a parent.
+// command started with run_in_background, a Monitor) either waits for it (the
+// CLI starts a turn of its own when that work reports) or forgot about it.
+// CyDo asks the agent, once. An agent that ends its turn again is waiting:
+// its task is not idle, asks for no attention and delivers no result to a
+// parent. An agent that stops the work instead is done like after any turn.
 
 type Snapshot = {
   tid: number;
@@ -88,12 +90,15 @@ async function expectSessionWaitsForBackgroundWork(
     const tid = await firstWorkingTid(snapshots);
     await expect.poll(() => existsSync(fifo)).toBe(true);
 
-    // The turn that started the background work ends...
-    const turnEnd = () =>
-      sinceFirstTurn(snapshots, tid).find((s) => !s.isProcessing);
-    await expect.poll(() => turnEnd() !== undefined).toBe(true);
-    // ...and leaves the task waiting, with nothing asked of the user.
-    expect(turnEnd()).toMatchObject({
+    // The turn that started the background work ends, the agent confirms
+    // that it is waiting for it, and the task settles: waiting, never idle,
+    // with nothing asked of the user.
+    const settled = () =>
+      sinceFirstTurn(snapshots, tid).find(
+        (s) => !s.isProcessing && s.status !== "active",
+      );
+    await expect.poll(() => settled() !== undefined).toBe(true);
+    expect(settled()).toMatchObject({
       status: "waiting",
       needsAttention: false,
     });
@@ -155,12 +160,15 @@ test(
       await expect.poll(() => existsSync(fifo)).toBe(true);
       const childTid = snapshots.find((s) => s.parentTid === parentTid)!.tid;
 
-      // The sub-task's turn ends with its command still running: it is not
+      // The sub-task's turn ends with its command still running, and the
+      // agent confirms that it is waiting for it: the sub-task is not
       // finished, so nothing is delivered to the parent yet.
-      const turnEnd = () =>
-        sinceFirstTurn(snapshots, childTid).find((s) => !s.isProcessing);
-      await expect.poll(() => turnEnd() !== undefined).toBe(true);
-      expect(turnEnd()).toMatchObject({ status: "waiting" });
+      const settled = () =>
+        sinceFirstTurn(snapshots, childTid).find(
+          (s) => !s.isProcessing && s.status !== "active",
+        );
+      await expect.poll(() => settled() !== undefined).toBe(true);
+      expect(settled()).toMatchObject({ status: "waiting" });
 
       // The command finishes, the sub-task reacts to that and only then
       // completes; the parent gets the result of the whole work.
@@ -177,6 +185,41 @@ test(
     } finally {
       rmSync(fifo, { force: true });
       rmSync(marker, { force: true });
+    }
+  },
+);
+
+test(
+  "a sub-task that forgot its background command stops it and completes",
+  { tag: "@claude-only" },
+  async ({ page }) => {
+    const fifo = uniquePath();
+    const snapshots = captureTaskSnapshots(page);
+    try {
+      await enterSession(page);
+      await sendMessage(
+        page,
+        `call task research run forgotten command ${blockOn(fifo)}`,
+      );
+      const parentTid = await firstWorkingTid(snapshots);
+      await expect.poll(() => existsSync(fifo)).toBe(true);
+      const childTid = snapshots.find((s) => s.parentTid === parentTid)!.tid;
+
+      // Nothing ever writes to the FIFO: the command would run forever.
+      // Reminded of it, the agent stops it, and its sub-task is finished.
+      const settled = () =>
+        sinceFirstTurn(snapshots, childTid).find(
+          (s) => !s.isProcessing && s.status !== "active",
+        );
+      await expect.poll(() => settled() !== undefined).toBe(true);
+      expect(settled()).toMatchObject({ status: "completed" });
+      await expect(
+        page
+          .locator('[style*="display: contents"] .message-list .cydo-task-spec')
+          .last(),
+      ).toBeVisible();
+    } finally {
+      rmSync(fifo, { force: true });
     }
   },
 );

@@ -13,7 +13,7 @@ import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJso
 import ae.utils.promise : Promise, reject, resolve;
 
 import cydo.agent.contract : Agent, SessionConfig;
-import cydo.agent.session : AgentSession;
+import cydo.agent.session : AgentSession, BackgroundWork;
 import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
 	ToolDescriptionViolation, checkRenderedCydoToolDescriptionViolations;
 import cydo.protocol : ItemDeltaEvent, ItemStartedEvent, ProcessExitEvent,
@@ -188,6 +188,7 @@ struct TaskSessionRunnerHost
 	bool delegate(int tid) hasTaskDependency;
 	bool delegate(int tid) hasPendingChildQuestion;
 	void delegate(int tid) sendPendingChildAnswerReminder;
+	void delegate(int tid, const(BackgroundWork)[] running) sendBackgroundWorkReminder;
 	string delegate(int tid) checkDeclaredOutputs;
 	bool delegate(int tid, bool eagerDepCleanup) finalizeCompletedSubTask;
 	bool delegate(int tid) deliverFailedPendingSubTaskResult;
@@ -824,6 +825,10 @@ public:
 		if (taskAgent.lastMcpConfigPath.length > 0)
 			td.launch.sandbox.tempFiles ~= taskAgent.lastMcpConfigPath;
 
+		// The background work (by id) the agent of this session has been
+		// asked about: whether it is waiting for it or forgot it.
+		bool[string] remindedBackgroundWork;
+
 		session.onOutput = (TranslatedEvent ev) {
 			auto stored = tid in sessions_;
 			if (stored is null || *stored !is session)
@@ -887,14 +892,26 @@ public:
 			current.lastTurnFailed = isErrorTurnResult(ev.translated);
 
 			// The agent ended its turn with work still running in the
-			// background: it is not done, and starts a turn of its own when
-			// that work reports. Only an accepted continuation (which ends
-			// this session whatever it left running) and a failed turn are
-			// final regardless.
-			if (session.hasBackgroundWork && current.pendingContinuation is null
+			// background. Either it waits for that work (it starts a turn of
+			// its own when the work reports) or it forgot about it, and only
+			// the agent can tell: ask it, once per piece of work. An agent
+			// that ends its turn again with nothing new running is waiting.
+			// Only an accepted continuation (which ends this session whatever
+			// it left running) and a failed turn are final regardless.
+			auto running = session.backgroundWork;
+			if (running.length > 0 && current.pendingContinuation is null
 				&& !current.lastTurnFailed)
 			{
-				if (current.status == TaskStatus.waiting)
+				import std.algorithm : all;
+
+				if (!running.all!(work => work.id in remindedBackgroundWork))
+				{
+					foreach (work; running)
+						remindedBackgroundWork[work.id] = true;
+					host_.sendBackgroundWorkReminder(tid, running);
+					host_.publishTaskSnapshot(tid);
+				}
+				else if (current.status == TaskStatus.waiting)
 					host_.publishTaskSnapshot(tid);
 				else
 					host_.transitionTaskFrom(tid,

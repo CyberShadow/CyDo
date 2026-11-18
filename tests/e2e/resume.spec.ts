@@ -479,10 +479,12 @@ test("task waiting for a background command is nudged after restart", { tag: "@c
     await expect(sendBtn).toBeEnabled();
     await sendBtn.click();
 
-    await expect(assistantText(page, "Done.")).toHaveCount(1);
+    // One "Done." ends the turn that started the command, another answers
+    // CyDo asking whether the agent is waiting for it.
     await expect(
       page.locator(".sidebar-item .task-type-icon.waiting"),
     ).toBeVisible();
+    await expect(assistantText(page, "Done.")).toHaveCount(2);
 
     await restartableBackend.restart();
     await page.goto("/");
@@ -491,7 +493,7 @@ test("task waiting for a background command is nudged after restart", { tag: "@c
 
     // The agent answers the nudge, and with nothing left to wait for the
     // task ends up idle.
-    await expect(assistantText(page, "Done.")).toHaveCount(2);
+    await expect(assistantText(page, "Done.")).toHaveCount(3);
     await expect(
       page.locator(".sidebar-item .task-type-icon.alive"),
     ).toBeVisible();

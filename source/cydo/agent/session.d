@@ -27,6 +27,14 @@ enum MessageSource
 	user,
 }
 
+/// One piece of work an agent started that runs outside its turns: a
+/// background command, a monitor.
+struct BackgroundWork
+{
+	string id;          /// the agent's own handle for it
+	string description;
+}
+
 interface AgentSession
 {
 	/// Send a user message to the agent.
@@ -82,9 +90,8 @@ interface AgentSession
 	/// Whether the session is still alive (process running, pipes open).
 	@property bool alive();
 
-	/// Whether work the agent started is still running outside its turns
-	/// (a background command, a monitor). The agent starts a turn of its
-	/// own when that work reports, so a turn ending meanwhile does not
-	/// mean the agent is done.
-	@property bool hasBackgroundWork();
+	/// The work the agent started that is still running outside its turns.
+	/// The agent starts a turn of its own when that work reports, so a
+	/// turn ending meanwhile need not mean the agent is done.
+	@property const(BackgroundWork)[] backgroundWork();
 }

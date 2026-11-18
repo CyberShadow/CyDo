@@ -77,7 +77,7 @@ import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	HistoryBoundary, ItemStartedEvent, SessionRateLimitEvent, TaskDiagnosticEvent, TaskDiagnosticSeverity,
 	TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, UserMessageConsumedEvent, extractContentText;
-import cydo.agent.session : AgentSession, AgentSubmissionReceipt, MessageSource;
+import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork, MessageSource;
 import cydo.agent.drivers.claude : ClaudeCodeSession;
 import cydo.agent.drivers.codex : CodexSession;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
@@ -643,6 +643,7 @@ class App
 			broadcastAppendedTaskEvent: &broadcastAppendedTaskEvent,
 			publishTaskSnapshot: &broadcastTaskUpdate,
 			onTaskTurnCompletedAlive: &onTaskTurnCompletedAlive,
+			sendBackgroundWorkReminder: &sendBackgroundWorkReminder,
 			drainIdleCallbacksForTurnResult: &drainIdleCallbacksForTurnResult,
 			drainIdleCallbacksOnExit: &drainIdleCallbacksOnExit,
 			hasPendingSubTask: &workflowTools.hasPendingSubTask,
@@ -2856,6 +2857,25 @@ class App
 			warningf("Error generating suggestions: %s", e.msg);
 	}
 
+	/// Ask an agent that ended its turn with background work running whether
+	/// it is waiting for that work or forgot about it.
+	private void sendBackgroundWorkReminder(int tid, const(BackgroundWork)[] running)
+	{
+		import std.algorithm : map;
+		import std.array : join;
+
+		auto text = readPromptFile("prompts/background_work_reminder.md", tasks[tid].projectPath, [
+			"background_work": running
+				.map!(work => "- " ~ work.description ~ " (task ID: " ~ work.id ~ ")")
+				.join("\n"),
+		]);
+		sendKnownSystemMessage(tid, KnownSystemMessageKind.backgroundWorkReminder, text)
+			.except((Exception e) {
+				// The session is gone, and with it the work and the question.
+				warningf("Could not send background work reminder to tid=%d: %s", tid, e.msg);
+			}).ignoreResult();
+	}
+
 	private bool drainIdleCallbacksForTurnResult(int tid)
 	{
 		if (tid !in tasks)
@@ -4074,7 +4094,7 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 	void closeStdin() {}
 	void killAfterTimeout(Duration timeout) {}
 	@property bool canStopAfterCloseStdin() const { return true; }
-	@property bool hasBackgroundWork() { return false; }
+	@property const(BackgroundWork)[] backgroundWork() { return null; }
 	@property void onNativeSessionStarted(void delegate(string) dg)
 	{
 		nativeSessionStartedHandler_ = dg;

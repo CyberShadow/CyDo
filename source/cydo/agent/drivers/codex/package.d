@@ -37,7 +37,7 @@ public import cydo.agent.drivers.codex.rollout;
 public import cydo.agent.drivers.codex.rpc;
 import cydo.protocol : ContentBlock, HistoryBoundary, HistoryBoundaryKind,
 	ProcessStderrEvent, SessionCompactedEvent, TranslatedEvent, extrasToFragment;
-import cydo.agent.session : AgentSession, AgentSubmissionReceipt, MessageSource;
+import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork, MessageSource;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
@@ -3835,9 +3835,9 @@ class CodexSession : AgentSession
 	}
 
 	// Not tracked: a command outliving its turn reports to the UI only.
-	@property bool hasBackgroundWork()
+	@property const(BackgroundWork)[] backgroundWork()
 	{
-		return false;
+		return null;
 	}
 
 	@property void onNativeSessionStarted(void delegate(string sessionId) callback)

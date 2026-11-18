@@ -1230,6 +1230,20 @@ function handleMessages(req, res) {
       return;
     }
 
+    // Reminded that background work it started is still running, the agent
+    // that "forgot" it (see patterns.mjs) stops it. Any other agent is
+    // waiting for it and just ends its turn again (the default for system
+    // messages).
+    if (
+      typeof userText === "string" &&
+      userText.includes("Background work still running]") &&
+      /run forgotten command/i.test(originalText ?? "")
+    ) {
+      const taskId = userText.match(/\(task ID: (\w+)\)/)[1];
+      streamToolUseResponse(res, "TaskStop", { task_id: taskId }, model);
+      return;
+    }
+
     // The primary model refuses (twice: the CLI first retries it once),
     // then the CLI retries the turn on its fallback model for the refusal's
     // category, which answers. (Only the conversation itself: a title

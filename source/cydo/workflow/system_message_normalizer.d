@@ -131,6 +131,7 @@ private:
 		case KnownSystemMessageKind.subTaskWaitingForAnswer:
 		case KnownSystemMessageKind.handoff:
 		case KnownSystemMessageKind.approveRetry:
+		case KnownSystemMessageKind.backgroundWorkReminder:
 			return true;
 		case KnownSystemMessageKind.sessionStart:
 			return false;

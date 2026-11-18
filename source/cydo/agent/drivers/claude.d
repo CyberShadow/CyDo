@@ -22,7 +22,7 @@ import cydo.protocol;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	ToolCallDecision, ToolCallRuling;
 import cydo.agent.process : AgentProcess, FramingMode;
-import cydo.agent.session : AgentSession, AgentSubmissionReceipt, MessageSource;
+import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork, MessageSource;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
@@ -1460,9 +1460,9 @@ class ClaudeCodeSession : AgentSession
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
 	private JSONFragment[string] blockExtras_; // item_id → extras from assistant event
 	private AbsTime lineReceiptTs_;    // receipt time captured at start of each live line
-	/// How many background tasks (commands, monitors, agents) the CLI
-	/// reports as live, per its latest `background_tasks_changed`.
-	private size_t liveBackgroundTasks_;
+	/// The background tasks (commands, monitors, agents) the CLI reports as
+	/// live, per its latest `background_tasks_changed`.
+	private BackgroundWork[] liveBackgroundTasks_;
 	private string executablePath_;
 	private string agentName_;
 
@@ -1515,7 +1515,9 @@ class ClaudeCodeSession : AgentSession
 				"--system-prompt-snapshot", "off",
 			];
 
-		string taskTools = "TaskCreate,TaskGet,TaskList,TaskOutput,TaskStop,TaskUpdate";
+		// The task-list tools; not TaskOutput and TaskStop, which read and
+		// stop background work.
+		string taskTools = "TaskCreate,TaskGet,TaskList,TaskUpdate";
 		string disallowed = config.allowNativeSubagents
 			? taskTools ~ ",EnterPlanMode,ExitPlanMode,AskUserQuestion"
 			: "Task," ~ taskTools ~ ",EnterPlanMode,ExitPlanMode,AskUserQuestion";
@@ -1795,9 +1797,9 @@ class ClaudeCodeSession : AgentSession
 		return !process.dead;
 	}
 
-	@property bool hasBackgroundWork()
+	@property const(BackgroundWork)[] backgroundWork()
 	{
-		return liveBackgroundTasks_ > 0;
+		return liveBackgroundTasks_;
 	}
 
 	/// A `control_request` the CLI sent to us. CyDo registers for nothing but
@@ -2184,7 +2186,7 @@ class ClaudeCodeSession : AgentSession
 		}
 
 		if (probe.type == "system" && probe.subtype == "background_tasks_changed")
-			liveBackgroundTasks_ = countLiveBackgroundTasks(rawLine);
+			liveBackgroundTasks_ = parseLiveBackgroundTasks(rawLine);
 
 		switch (probe.type)
 		{
@@ -3733,7 +3735,7 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 			return translatePermissionDenied(rawLine);
 		case "task_updated":
 			return normalizeTaskUpdated(rawLine);
-		// Consumed by the live session (ClaudeCodeSession.hasBackgroundWork).
+		// Consumed by the live session (ClaudeCodeSession.backgroundWork).
 		case "background_tasks_changed":
 			return null;
 		// TODO: system events not used yet
@@ -4465,16 +4467,19 @@ private string normalizeTaskStarted(string rawLine)
 	return toJson(ev);
 }
 
-/// The number of live background tasks a `background_tasks_changed` event
-/// reports. The event carries the whole set, replacing the previous one.
-/// Ambient tasks (housekeeping, live-update watchers) are not activity: the
-/// CLI asks hosts to leave them out of activity indicators.
-private size_t countLiveBackgroundTasks(string rawLine)
+/// The live background tasks a `background_tasks_changed` event reports.
+/// The event carries the whole set, replacing the previous one. Ambient
+/// tasks (housekeeping, live-update watchers) are not activity: the CLI
+/// asks hosts to leave them out of activity indicators.
+private BackgroundWork[] parseLiveBackgroundTasks(string rawLine)
 {
-	import std.algorithm : count;
+	import std.algorithm : filter, map;
+	import std.array : array;
 
 	@JSONPartial static struct BackgroundTask
 	{
+		string task_id;
+		string description;
 		@JSONOptional bool ambient;
 	}
 	@JSONPartial static struct BackgroundTasksChanged
@@ -4482,18 +4487,21 @@ private size_t countLiveBackgroundTasks(string rawLine)
 		BackgroundTask[] tasks;
 	}
 
-	return jsonParse!BackgroundTasksChanged(rawLine).tasks.count!(t => !t.ambient);
+	return jsonParse!BackgroundTasksChanged(rawLine).tasks
+		.filter!(t => !t.ambient)
+		.map!(t => BackgroundWork(t.task_id, t.description))
+		.array;
 }
 
 unittest
 {
-	assert(countLiveBackgroundTasks(`{"type":"system","subtype":"background_tasks_changed","tasks":[`
+	assert(parseLiveBackgroundTasks(`{"type":"system","subtype":"background_tasks_changed","tasks":[`
 		~ `{"task_id":"b1","run_id":"r","task_type":"local_bash","description":"Running command"}],`
-		~ `"uuid":"u","session_id":"s"}`) == 1);
-	assert(countLiveBackgroundTasks(`{"type":"system","subtype":"background_tasks_changed","tasks":[`
-		~ `{"task_id":"b1","task_type":"local_bash","description":"d","ambient":true}]}`) == 0);
-	assert(countLiveBackgroundTasks(
-		`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`) == 0);
+		~ `"uuid":"u","session_id":"s"}`) == [BackgroundWork("b1", "Running command")]);
+	assert(parseLiveBackgroundTasks(`{"type":"system","subtype":"background_tasks_changed","tasks":[`
+		~ `{"task_id":"b1","task_type":"local_bash","description":"d","ambient":true}]}`) == []);
+	assert(parseLiveBackgroundTasks(
+		`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`) == []);
 }
 
 /// Normalize a Claude task_updated event (a patch to one task's state).
