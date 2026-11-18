@@ -3818,6 +3818,8 @@ private string normalizeTurnResult(string rawLine)
 		@JSONOptional string inference_geo;
 		@JSONOptional JSONFragment iterations;
 		@JSONOptional string speed;
+		@JSONOptional JSONFragment output_tokens_details;
+		@JSONOptional JSONFragment fallback_credit;
 		JSONExtras _extras;
 	}
 
@@ -3906,6 +3908,39 @@ private string normalizeTurnResult(string rawLine)
 	ev.credential_expires_at = raw.credential_expires_at;
 	ev.extras = extrasToFragment(collectAllExtras(raw));
 	return toJson(ev);
+}
+
+unittest
+{
+	// A whole Claude Code 2.1.319 result: every field is known. (Collapsed
+	// successful results would not show unknown extras in the UI.)
+	enum line = `{"duration_api_ms":18,"stop_reason":"end_turn","session_id":"s","total_cost_usd":0.00034,"`
+		~ `usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"out`
+		~ `put_tokens":15,"output_tokens_details":{"thinking_tokens":0},"server_tool_use":{"web_searc`
+		~ `h_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemer`
+		~ `al_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"s`
+		~ `peed":"standard","fallback_credit":null},"modelUsage":{"claude-opus-5-5":{"inputTokens":10`
+		~ `,"outputTokens":15,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"webSearchRequest`
+		~ `s":0,"costUSD":0.00034,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":0`
+		~ `,"cacheCreationEphemeral5mInputTokens":0,"cacheCreationEphemeral1hInputTokens":0,"canonica`
+		~ `lModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}},"permission_denials`
+		~ `":[],"terminal_reason":"completed","fast_mode_state":"off","fast_mode_disabled_reason":"sd`
+		~ `k_opt_in_required","origin":{"kind":"human"},"subagent_stats":{"spawned":0,"requested":{"b`
+		~ `ackground":0,"foreground":0,"unset":0},"started_in_background":0,"max_depth":0,"spawned_by`
+		~ `_subagents":0,"completed":0,"failed":0,"killed":{"parent":0,"user":0,"system":0},"refused"`
+		~ `:{"depth_limit":0,"concurrency_limit":0,"budget":0},"by_type":{}},"safety_stops":0,"is_err`
+		~ `or":false,"num_turns":1,"subtype":"success","api_error_status":null,"result":"first-undo-k`
+		~ `ept","ttft_ms":59,"type":"result","duration_ms":65,"uuid":"u","ttft_stream_ms":58,"time_to`
+		~ `_request_ms":49,"first_content_frame_ms":58,"user_message_uuid":"m","user_message_uuids":[`
+		~ `"m"],"request_sent_wall_ms":1795004930470,"first_request_input_tokens":10,"queued_turn_cou`
+		~ `nt":0,"result_index":0,"model_usage_since_last_result":{"claude-opus-5-5":{"inputTokens":1`
+		~ `0,"outputTokens":15,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"webSearchReques`
+		~ `ts":0,"costUSD":0.00034,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":`
+		~ `0,"cacheCreationEphemeral5mInputTokens":0,"cacheCreationEphemeral1hInputTokens":0,"canonic`
+		~ `alModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}}}`;
+	import std.algorithm.searching : canFind;
+	auto translated = normalizeTurnResult(line);
+	assert(!translated.canFind(`"extras"`), translated);
 }
 
 /// Map Claude's `terminal_reason` (why its query loop ended).
