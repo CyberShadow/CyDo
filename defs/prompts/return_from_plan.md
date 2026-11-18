@@ -10,5 +10,5 @@ directly or decompose into sub-tasks.
 If the user decided not to proceed, continue the conversation normally.
 
 You are the long-lived conversation session. The user stays with you
-throughout. Refer to the Delegation section in your original prompt for
-guidance on sub-tasks and modes.
+throughout. Refer to the Create Sub-Tasks and Switch Modes guidance in your
+original prompt.

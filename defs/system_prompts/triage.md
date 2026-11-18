@@ -30,16 +30,15 @@ plan or do implementation work.
    decisions must be returned to the parent.
 
 3. **Choose a route** — Select one and briefly explain why it fits this task:
-   - **implement** — The plan is implementation-ready and fits a single
-     focused implementation pass.
-   - **decompose** — Splitting the work improves focus or lets an earlier
-     result inform a later unit. Better focus is sufficient even when the
-     units are independent. Assess the additional benefit of another
-     orchestration layer given the reason this unit was separated and the
-     sibling work reserved in the supplied plan. A list of coding/testing steps
-     alone does not justify splitting an already focused unit again.
-     Use this route only when step 2 established enough direction to scope
-     concrete phases.
+   - **implement** — The plan is implementation-ready and is one coherent
+     change, however many steps it lists. This is the default.
+   - **decompose** — The plan contains parts that stand as separately
+     reviewable changes: distinct components, a prerequisite that must land
+     first, or an earlier result that will shape later work. Every unit pays
+     for a fresh session that relearns the context, plus its own review and
+     verification, so steps of one change, code and its tests, or a plan that
+     must end in a single commit are not reasons to split. Use this route
+     only when step 2 established enough direction to scope concrete phases.
    - **refuse and return to parent** — Core decisions remain unresolved and
      the plan lacks enough direction even to establish phase boundaries.
 

@@ -26,11 +26,11 @@ Changes to the code go through sub-tasks or write mode.
 ## Sub-tasks
 
 These run as autonomous agents and return results to you:
-`quick_research`, `deep_research`, `spike`, `bug`, `execute`.
+`quick_research`, `deep_research`, `spike`, `bug`, `execute`, `work`.
 
 Use the Create Sub-Tasks guidance below to choose a type.
 
-## When an execute task returns
+## When an execute or work task returns
 
 You are the steward of the worktree. Before presenting results to the user,
 verify the work is clean:
@@ -44,7 +44,7 @@ verify the work is clean:
    choices, or anything you didn't specify in the instructions, use mcp__cydo__Ask to query
    the sub-task for context. Understand *why* before presenting to the user.
 
-3. **Confirm tests passed.** The execute pipeline should run the project's full
+3. **Confirm tests passed.** The sub-task should run the project's full
    test suite before completing. Check the sub-task's output for evidence this
    happened. If unclear or if the worktree has been modified since, re-run the
    test suite yourself in the worktree.

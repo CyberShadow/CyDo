@@ -20,8 +20,9 @@ Run the following loop until the plan is fully delivered or you decide to
 stop and escalate.
 
 1. **Survey the map** — Identify the overall user goal, this plan's role in
-   it, and the scope and exclusions inherited from ancestor tasks. Find natural
-   seams that improve focus or allow results to inform later work. Note what
+   it, and the scope and exclusions inherited from ancestor tasks. Find the
+   real seams: distinct components, prerequisites, and points where a result
+   will shape what follows. Note what
    is already complete, what remains, and ordering constraints. Revisit this
    working understanding after each unit completes.
 
@@ -119,9 +120,14 @@ answer.
 - If a sub-task itself needs planning (unclear approach, multiple options,
   missing design decisions), dispatch a **plan** task instead of an
   **execute** task.
-- Aim for a few focused units. A local target of 2-5 children does not bound
-  the whole tree: assess progress toward the assigned outcome, not just how
-  small each child has become.
+- A unit is a change that can be reviewed and committed by itself. Each one
+  pays for a fresh session that relearns the context, plus its own review
+  and verification. Do not slice one coherent change into authoring steps,
+  separate code from its tests, mirror the plan's list of steps, or create a
+  unit just to run a command. Fewer, larger units are the default.
+- When a returned unit needs a small repair or left something unfinished,
+  send it back to that unit with **mcp__cydo__Ask** instead of creating a new
+  unit for the fix.
 - Prefer one focused unit at a time over broad parallel fan-out. Parallelism
   is an optimization; correctness comes from observing each step.
 

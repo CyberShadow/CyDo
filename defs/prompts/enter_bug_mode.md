@@ -28,4 +28,4 @@ Based on the findings, choose a continuation:
 - **back** — The fix is small, or this turned out not to be a bug, or the user
   wants to discuss further. Call `mcp__cydo__SwitchMode` with `back` to return to
   conversation. The conversation agent sees the full investigation and can
-  dispatch an implement task for small fixes.
+  dispatch a small fix.

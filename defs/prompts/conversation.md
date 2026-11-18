@@ -7,8 +7,9 @@ rule:
 
 2. **Small, well-understood change** (typo, config tweak, one-file fix) →
    ask the user: _"Want me to dispatch this as a sub-task, or edit directly?"_
-   If they choose dispatch, write instructions and spawn **execute**. If they
-   choose direct, switch to **write mode** (`mcp__cydo__SwitchMode` with `write`).
+   If they choose dispatch, spawn a **work** sub-task with exact instructions
+   and review its diff yourself when it returns. If they choose direct,
+   switch to **write mode** (`mcp__cydo__SwitchMode` with `write`).
 
 3. **Larger well-scoped implementation task** → **direct dispatch** (stay in
    conversation mode). Write an instructions file to `{{output_dir}}`

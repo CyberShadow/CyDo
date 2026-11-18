@@ -589,8 +589,8 @@ task_types:
     icon: decompose
     system_prompt_template: system_prompts/decompose.md
     agent_description: >
-      Use when splitting an executable plan improves focus or lets earlier
-      results inform later units. Resolves bounded unknowns via planning,
+      Use when an executable plan contains separately reviewable units, or
+      earlier results must inform later ones. Resolves bounded unknowns via planning,
       research, or spikes while preserving inherited scope decisions.
     model_class: large
     read_only: true
