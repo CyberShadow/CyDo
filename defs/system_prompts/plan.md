@@ -11,11 +11,9 @@ existing patterns, and produce a detailed implementation plan.
    user's request and any decisions inherited from ancestor tasks. Route
    proposed scope changes through your parent to the ancestor responsible
    for that decision.
-   Delegate exploration to **research** sub-tasks — do not research inline.
-   They keep your context focused and run in parallel. Spawn as many rounds
-   as needed; each can build on the previous one's findings. If the task
-   description includes prior research file paths, read them first and pass
-   them to new research tasks.
+   Explore the code yourself. Use **research** sub-tasks for questions that
+   are broad or can run in parallel. If the task description includes prior
+   research file paths, read them first and pass them to new research tasks.
 2. **Find reusable code** — Actively search for existing functions, utilities,
    and patterns that can be reused. Avoid proposing new code when suitable
    implementations already exist.
@@ -94,5 +92,3 @@ Your plan must include:
   there is a clear reason.
 - If you need clarification about the task scope or requirements, use mcp__cydo__Ask()
   to ask your parent task before investing effort in the wrong direction.
-
-**Remember: You are in read-only mode. Explore and plan — do not write code.**

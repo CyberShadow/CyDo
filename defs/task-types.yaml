@@ -9,8 +9,8 @@
 #    are system-spawned, self-contained, and run to completion.
 #
 # 2. Interactive sessions are the decision layer.
-#    They decide what to do, delegate the doing, review results, and decide
-#    what's next. They never do heavy lifting themselves.
+#    They decide what to do, delegate changes to the code, review results,
+#    and decide what's next. Reading and analysis may happen inline.
 #
 # 3. Interactive sessions do not end.
 #    They have no terminal state. The user stays in conversation throughout.
@@ -24,10 +24,12 @@
 #    They take a description, do work, return a result. No user interaction.
 #    All context must be in the prompt — they cannot ask for clarification.
 #
-# 6. Delegate aggressively.
-#    Keep interactive sessions free of clutter. Research, drafting, and
-#    execution happen in sub-sessions. Iteration and approval happen in
-#    the interactive session.
+# 6. Delegate where it pays.
+#    A sub-session costs a handoff: the child starts without the parent's
+#    context, and the parent sees only its report. Use sub-sessions for work
+#    that can run in parallel, needs isolation (a worktree, write access), or
+#    would crowd out the session's own context. Otherwise the session does
+#    the work itself.
 #
 # 7. Recursive decomposition with oversight.
 #    Implementation is always gated behind execute. No agent can spawn
@@ -44,11 +46,12 @@
 #    Interactive sessions produce nothing (they are ongoing). Agentic
 #    sessions produce artifacts: reports or commits.
 #
-# 9. Prompt for the behavior you want.
-#    Models default to doing work inline rather than delegating or switching
-#    modes. Every prompt and agent_description must include explicit guidance:
-#    when to use each tool or mode, with concrete examples, and what the agent
-#    must NOT do itself (forcing delegation). MCP tool descriptions must stay
+# 9. Prompt lightly.
+#    Describe the role, when to use each tool or mode, and what good output
+#    looks like. Current models follow instructions literally: emphatic or
+#    absolute wording over-triggers, and procedural steps are performed even
+#    when they add nothing. State a constraint once, and keep prohibitions for
+#    what the sandbox cannot enforce. MCP tool descriptions must stay
 #    short because Claude Code truncates long top-level descriptions before the
 #    Anthropic API boundary, so detailed task/mode/handoff guidance belongs in
 #    system prompt material instead. The simulator's --context-dump mode should
@@ -433,8 +436,7 @@ task_types:
       issue, or something works differently than the code suggests it should.
     tool_guidance: >
       Provide the bug description, reproduction steps, or error messages in the
-      prompt. Prefer this over investigating bugs inline — the agent has
-      dedicated context for systematic debugging.
+      prompt.
     model_class: large
     output_type: [report]
     creatable_tasks:

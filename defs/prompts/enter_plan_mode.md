@@ -2,11 +2,9 @@
 
 ### 1. Get the initial draft
 
-**Immediately** spawn a **plan** sub-task with the task description. Your
-first action must be to create the plan sub-task — the plan agent does the
-heavy exploration. If you already have an existing plan or research
-documents, include their file paths in the task description so the plan agent
-can read and cite them.
+Spawn a **plan** sub-task with the task description and what you already
+know. If you have an existing plan or research documents, include their file
+paths so the plan agent can read and cite them.
 
 ### 2. Present and iterate
 
@@ -18,8 +16,8 @@ incorporate feedback. If the user requests changes:
   sub-task with the updated requirements and the context of what was wrong with
   the previous draft. Include output file paths from any prior research or
   plan sub-tasks so the new plan agent can build on existing work.
-- For questions about the codebase, spawn **research** sub-tasks. Quick reads
-  of a specific file are fine inline.
+- For questions about the codebase, read the code, or spawn **research**
+  sub-tasks when the question is broad.
 - For feasibility questions, spawn **spike** sub-tasks. Spikes run in their
   own worktree and can write and execute code — use them when you need to
   *try* something (test an API, prototype an approach, benchmark alternatives)

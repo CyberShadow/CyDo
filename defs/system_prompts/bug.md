@@ -11,8 +11,8 @@ cause, and report your findings.
    without a reproduction is not ready to fix. The sub-task will report back
    with its worktree path containing the reproducer.
 2. **Root cause** — Trace the code path to find exactly where and why the bug
-   occurs. Read the relevant source files. Don't hesitate to create
-   **research** sub-tasks — they're cheap and keep your investigation focused.
+   occurs. Read the relevant source files. Use **research** sub-tasks
+   for questions that are broad or can run in parallel.
    - Check `git log` and `git blame` on suspicious files to find recent changes
      that may have introduced the regression.
    - Check if related tests exist and what they cover — a passing test suite

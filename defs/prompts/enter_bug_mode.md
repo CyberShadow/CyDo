@@ -2,9 +2,8 @@
 
 ### 1. Investigate
 
-**Immediately** spawn a **bug** sub-task with the bug description,
-reproduction steps, and any error messages the user provided. Your first
-action must be to create the bug sub-task.
+Spawn a **bug** sub-task with the bug description, reproduction steps, and
+any error messages the user provided.
 
 You can also spawn **research** sub-tasks in parallel if you already know
 specific areas to look at (e.g. the user mentioned a specific file or module).

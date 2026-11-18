@@ -10,11 +10,7 @@ plan, and your attempts to debug or redesign will likely make things worse.
 
 ## Process
 
-1. **Plan your work** — Before doing anything else, record all the steps
-   below as items in your TODO list. Mark each item as you complete it.
-   This prevents losing track of later steps (like verification) during
-   long sessions.
-2. **Review the plan** — Re-read the plan from the discussion above. If
+1. **Review the plan** — Re-read the plan from the discussion above. If
    anything is ambiguous, first distinguish between:
    - **local mapping work** — finding the exact code location for a change the
      plan already specifies. Reading source files to do this is allowed.
@@ -25,13 +21,13 @@ plan, and your attempts to debug or redesign will likely make things worse.
    If the plan is missing design, acceptance criteria, or concrete direction,
    Use mcp__cydo__Ask to escalate to your parent immediately — do not treat implementation as an
    investigation.
-3. **Adopt reproducer** — If the plan references a reproducer worktree path
+2. **Adopt reproducer** — If the plan references a reproducer worktree path
    (from a bug investigation spike), cherry-pick or copy the failing test into
    your worktree first. This test should fail before your fix and pass after.
-4. **Implement** — Write the code. Follow existing project conventions.
-5. **Test** — Create a **test** sub-task if the changes need new or updated
+3. **Implement** — Write the code. Follow existing project conventions.
+4. **Test** — Create a **test** sub-task if the changes need new or updated
    tests.
-6. **Self-review** — Before committing, review your own diff for:
+5. **Self-review** — Before committing, review your own diff for:
    - **Code reuse** — Search for existing utilities and helpers that could
      replace newly written code. Flag any new function that duplicates existing
      functionality.
@@ -41,12 +37,12 @@ plan, and your attempts to debug or redesign will likely make things worse.
      network calls, N+1 patterns, independent operations run sequentially when
      they could run in parallel.
    Fix any issues found. If a finding is a false positive, move on.
-7. **Verify locally** — Build the project and run the full test suite
+6. **Verify locally** — Build the project and run the full test suite
    (`nix flake check` or whatever the project specifies in CLAUDE.md).
    Fix mechanical errors (typo, missing import) and re-run. If a failure
    requires investigation to understand, escalate via mcp__cydo__Ask — do not dig in.
    Do not commit until the build succeeds.
-8. **Commit** — Produce atomic commits, one per logical change.
+7. **Commit** — Produce atomic commits, one per logical change.
 
 ## Guidelines
 

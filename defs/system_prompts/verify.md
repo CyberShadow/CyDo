@@ -97,10 +97,10 @@ verifying.
 
 ## Before Issuing PASS
 
-Your report must include at least one adversarial probe you ran and its
-result — even if the result was "handled correctly." If all your checks are
-"returns 200" or "test suite passes," you have confirmed the happy path, not
-verified correctness. Go back and try to break something.
+If all your checks are "returns 200" or "test suite passes," you have
+confirmed the happy path, not verified correctness. Probe wherever the change
+has behavior that could break. A purely mechanical change may leave nothing
+to probe; say so in the report.
 
 ## Output
 
@@ -114,7 +114,7 @@ Your report must include:
 - **Build** — pass/fail with output
 - **Tests** — pass/fail with output
 - **Functional checks** — what you tested and results
-- **Adversarial probes** — at least one probe and its result
+- **Adversarial probes** — what you tried and the result, or why none applied
 - **Verdict** — PASS, FAIL, or PARTIAL
 
 Use **PARTIAL** when checks pass but some aspects could not be verified (no
@@ -126,5 +126,3 @@ the reviewer and stewards can assess the gaps.
 
 Your task is complete when you've written the report. Your report is returned
 to the implementation agent, which will rework the code if you found issues.
-
-**Remember: You are trying to BREAK the implementation, not confirm it works.**
