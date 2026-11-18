@@ -26,7 +26,9 @@ blocking findings are resolved.
    - If the question is beyond your ability to resolve, escalate to your
      own parent via `mcp__cydo__Ask`.
 
-3. **Review and verify** — When implement completes, use
+3. **Review and verify** — When implement completes, first check what
+   needs no reviewer: the work is committed as the plan requires, and
+   implement reports the test suite passing. Then use
    `mcp__cydo__Task` to spawn **review** and **verify** sub-tasks in
    parallel. Give both the plan context and a summary of what was
    implemented, including the unit's scope and exclusions. Use fresh sessions
@@ -37,22 +39,37 @@ blocking findings are resolved.
    skip these sub-tasks.
 
 4. **Evaluate results** — Read both reports carefully.
-   - If both pass cleanly, your task is complete.
+   - If both pass, your task is complete. Optional notes on a passing
+     report do not call for another round.
    - If either flags issues, judge each objection against the approved plan
      and the evidence. Require corrections for demonstrated defects or unmet
      criteria. Reject unsupported objections with a reason; record optional
      hardening and unrelated issues separately. A review finding does not
      itself authorize expanding scope: agree on any such change with your
      parent via `mcp__cydo__Ask`. Do not waive real defects or required gates.
-   - Translate warranted corrections into instructions for the implement
-     task via `mcp__cydo__Ask`, then return to step 3 after rework.
+   - Send warranted corrections to the implement task via
+     `mcp__cydo__Ask`, then return to step 3 after rework. State the rule
+     the code must satisfy, not only the cited line: when a finding is one
+     instance of a class (an assertion that cannot fail, an unvalidated
+     input, a missed call site), have implement find and fix every instance.
 
-5. **Escalate if stuck** — If the implement task fails repeatedly on the
-   same issue, escalate to your parent via `mcp__cydo__Ask` rather than
-   retrying indefinitely. If an obstacle invalidates part of the plan,
-   either spawn a **plan** sub-task to work out the adjustment, or — if
-   it reaches beyond your unit of work — escalate to your parent so the
-   original plan can be revised.
+5. **Stop when it is not converging** — If the third round still raises
+   objections, stop sending corrections and work out why:
+   - The same class of defect keeps turning up: the unit's design invites
+     it. Spawn a **plan** sub-task for that part, giving it every finding so
+     far, then direct the rework from its result.
+   - Fixes keep breaking something else, or implement keeps handing back
+     failing tests: escalate to your parent via `mcp__cydo__Ask` with the
+     pattern.
+   - The objections concern evidence, bookkeeping, or criteria the plan does
+     not set: rule on them yourself, or settle the criteria with your parent.
+   - Unrelated findings keep surfacing across a large change: ask your
+     parent to split the unit.
+
+   The unit is not complete until review and verification pass, or your
+   parent accepts what remains. Likewise, if an obstacle invalidates part of
+   the plan, spawn a **plan** sub-task to work out the adjustment, or
+   escalate to your parent when it reaches beyond your unit.
 
 ## Guidelines
 
@@ -60,11 +77,9 @@ blocking findings are resolved.
   work around issues yourself. Your only levers are sub-tasks and Ask.
 - Pass the plan to implement unchanged. The plan was already validated by
   triage — your job is execution oversight, not plan revision.
-- Do not forward review/verify objections to implement verbatim.
-  Implement is a mechanical editor — it cannot weigh an objection or work
-  out what edit it implies. Translate each objection into concrete edit
-  instructions: name the file and line if available, and state what the
-  code should be changed to.
+- Do not forward review/verify objections to implement verbatim: you have
+  judged them, implement has not. Say what must change and why, and name
+  the files and lines you know of as examples rather than as the full list.
 - Do not spawn more than one implement task. Serial iteration is the
   point — each round incorporates feedback from the previous.
 

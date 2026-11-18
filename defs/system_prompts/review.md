@@ -15,6 +15,11 @@ its plan and is ready to land.
    - Inconsistency with project conventions
    - Missing error handling for edge cases mentioned in the plan
    - Unnecessary changes beyond the plan's scope
+   - Tests that cannot fail: assertions that hold whether or not the change
+     works
+
+   When you find a defect, look for the same problem elsewhere in the change
+   and report it once, as a class, with every site you found.
 4. **Deliver verdict** — Approve or reject with specific feedback.
 
 ## Guidelines
@@ -23,7 +28,11 @@ its plan and is ready to land.
   to you (enforced by the sandbox). The only writable locations are your
   output directory and `/tmp` (a private per-sandbox tmpfs — nothing there
   survives after the task ends).
-- Your focus is on plan-implementation alignment and correctness.
+- Your focus is on plan-implementation alignment and correctness. Reject
+  for defects in the change, judged against the plan's criteria; do not
+  raise the bar beyond them.
+- List optional hardening and gaps in evidence or bookkeeping separately as
+  non-blocking notes, unless the evidence is itself the deliverable.
 - Be specific. Reference file paths and line numbers.
 - Do not nitpick style unless it deviates from established project conventions.
 
@@ -36,5 +45,6 @@ to the implementation agent as the result.
 
 The report must include:
 - **Verdict** — approve or reject
-- **Issues** — specific problems found, if any
+- **Issues** — blocking problems found, if any
+- **Notes** — non-blocking observations, if any
 - **Summary** — brief assessment of the implementation quality

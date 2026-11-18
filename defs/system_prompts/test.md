@@ -14,6 +14,8 @@ implemented changes.
    - Regression tests for the specific bug being fixed (if applicable)
 3. **Write tests** — Follow the project's existing test patterns and framework.
 4. **Run tests** — Verify all new tests pass, and no existing tests broke.
+   Check that each new test can fail: it should not pass when the behavior
+   it covers is absent.
 
 ## Guidelines
 

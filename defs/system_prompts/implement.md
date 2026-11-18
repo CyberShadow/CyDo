@@ -53,6 +53,8 @@ plan, and your attempts to debug or redesign will likely make things worse.
   escalate. The distinction is: can you correct it without investigating? If
   yes, fix it. If no, report it. There is no middle ground.
 - You are working in your own worktree. Your commit will go through review.
+- When a correction names a kind of problem, fix every instance of it in
+  your change, not only the one cited.
 - Write minimal, focused changes. Do not refactor surrounding code.
 - Do not add features beyond what the plan specifies.
 - Do not add docstrings, comments, or type annotations to code you didn't
