@@ -1770,3 +1770,68 @@ describe("item denial reducer", () => {
     });
   });
 });
+
+describe("turn retraction reducer", () => {
+  it("marks the withdrawn response and shows the agent's notice", () => {
+    let s: TaskState = reduceMessage(
+      makeState(),
+      asEvent({
+        type: "item/started",
+        item_id: "text-1",
+        item_type: "text",
+        text: "A partial answer",
+      }),
+      1,
+    );
+    s = reduceMessage(s, asEvent({ type: "turn/delta", uuid: "u-text" }), 2);
+    s = reduceMessage(s, asEvent({ type: "turn/stop" }), 3);
+    const notice = {
+      type: "cydo/task_diagnostic" as const,
+      severity: "warning" as const,
+      subject: "Model refused; switched",
+      body: "Using the fallback model",
+    };
+
+    s = reduceMessage(
+      s,
+      asEvent({ type: "turn/retracted", uuids: ["u-text"], notice }),
+      4,
+    );
+
+    expect(s.messages[0]).toMatchObject({ type: "assistant", retracted: true });
+    expect(s.messages[1]).toMatchObject({
+      type: "diagnostic",
+      diagnostic: { severity: "warning", subject: "Model refused; switched" },
+    });
+  });
+
+  it("leaves responses it does not name alone", () => {
+    let s: TaskState = reduceMessage(
+      makeState(),
+      asEvent({
+        type: "item/started",
+        item_id: "text-1",
+        item_type: "text",
+        text: "Kept",
+      }),
+      1,
+    );
+    s = reduceMessage(s, asEvent({ type: "turn/delta", uuid: "u-kept" }), 2);
+    s = reduceMessage(s, asEvent({ type: "turn/stop" }), 3);
+    s = reduceMessage(
+      s,
+      asEvent({
+        type: "turn/retracted",
+        uuids: ["u-other"],
+        notice: {
+          type: "cydo/task_diagnostic",
+          severity: "warning",
+          subject: "Model refused; switched",
+          body: "",
+        },
+      }),
+      4,
+    );
+    expect(s.messages[0]!.retracted).toBeUndefined();
+  });
+});

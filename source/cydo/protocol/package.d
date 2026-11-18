@@ -264,6 +264,16 @@ struct TaskDiagnosticEvent
 	string body;
 }
 
+/// turn/retracted — the agent withdrew messages it had already delivered
+/// (the response a model refused, before retrying it on a fallback model),
+/// saying why in `notice`. CyDo keeps them on display, marked as retracted.
+struct TurnRetractedEvent
+{
+	string type = "turn/retracted";
+	string[] uuids;  /// the withdrawn messages' native uuids
+	TaskDiagnosticEvent notice;
+}
+
 /// item/started — a new content item begins streaming.
 enum HistoryBoundaryKind
 {

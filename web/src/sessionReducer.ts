@@ -1648,6 +1648,25 @@ export function reduceExit(s: SessionState): SessionState {
   return cancelPendingFileEdits({ ...s, sessionStatus: null });
 }
 
+/** The agent withdrew responses it had delivered: keep them, marked as
+ *  retracted, and show its notice. A response is one assistant message; the
+ *  agent names it by the uuid of each of its parts, the last of which the
+ *  message carries. */
+function reduceTurnRetracted(
+  s: SessionState,
+  msg: Extract<AgnosticEvent, { type: "turn/retracted" }>,
+  seq?: number,
+  ts?: number,
+): SessionState {
+  const uuids = new Set(msg.uuids);
+  const messages = s.messages.map((m) =>
+    m.type === "assistant" && m.uuid !== undefined && uuids.has(m.uuid)
+      ? { ...m, retracted: true }
+      : m,
+  );
+  return reduceTaskDiagnostic({ ...s, messages }, msg.notice, seq, ts);
+}
+
 function reduceTaskDiagnostic(
   s: SessionState,
   msg: Extract<AgnosticEvent, { type: "cydo/task_diagnostic" }>,
@@ -1710,6 +1729,8 @@ export function reduceMessage(
   switch (msg.type) {
     case "cydo/task_diagnostic":
       return reduceTaskDiagnostic(s, msg, seq, ts);
+    case "turn/retracted":
+      return reduceTurnRetracted(s, msg, seq, ts);
     case "session/init":
       return reduceSystemInit(s, msg, seq);
 

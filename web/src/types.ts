@@ -71,6 +71,8 @@ export interface DisplayMessage {
   taskState?: { status: string; error?: string };
   // Additional metadata for richer display
   isSidechain?: boolean;
+  /** The agent withdrew this response (turn/retracted); kept on display. */
+  retracted?: boolean;
   isSynthetic?: boolean;
   isMeta?: boolean;
   isSteering?: boolean;

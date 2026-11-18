@@ -176,6 +176,12 @@ export interface TaskDiagnosticEvent {
   body: string;
 }
 
+export interface TurnRetractedEvent {
+  type: "turn/retracted";
+  uuids: string[];
+  notice: TaskDiagnosticEvent;
+}
+
 export interface ItemStartedEvent {
   type: "item/started";
   item_id: string;

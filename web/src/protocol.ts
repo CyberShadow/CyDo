@@ -28,6 +28,7 @@ export type {
   TaskStartedEvent,
   TaskNotificationEvent,
   TaskUpdatedEvent,
+  TurnRetractedEvent,
   ControlResponseEvent,
   ProcessStderrEvent,
   ProcessExitEvent,
@@ -57,6 +58,7 @@ import type {
   TaskStartedEvent,
   TaskNotificationEvent,
   TaskUpdatedEvent,
+  TurnRetractedEvent,
   ControlResponseEvent,
   ProcessStderrEvent,
   ProcessExitEvent,
@@ -167,6 +169,7 @@ export type AgnosticEvent =
   | TaskStartedEvent
   | TaskNotificationEvent
   | TaskUpdatedEvent
+  | TurnRetractedEvent
   | TurnResultEvent
   | SessionSummaryEvent
   | SessionCostEvent

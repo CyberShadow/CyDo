@@ -3329,6 +3329,12 @@ private mixin template ClaudeAssistantUnhandledFields()
 	@JSONOptional JSONFragment apiErrorCode;
 	@JSONOptional JSONFragment apiErrorStatus;
 	@JSONOptional JSONFragment error;
+
+	// Deliberately dropped: on a fallback model's response, the messages of
+	// the refused one it replaces. The model_refusal_fallback notice, which
+	// precedes it, lists the same messages (turn/retracted).
+	@JSONOptional string[] supersedes;       // live stream
+	@JSONOptional string[] supersedesUuids;  // session file
 }
 
 /// Translate a Claude history assistant message to item/started+completed per block + turn/stop.
@@ -3710,8 +3716,7 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 		case "model_fallback":
 			return translateModelSwitch(rawLine, "Model switched");
 		case "model_refusal_fallback":
-			// TODO: also take back the messages it lists in retracted_message_uuids.
-			return translateModelSwitch(rawLine, "Model refused; switched");
+			return translateRefusalFallback(rawLine);
 		case "model_refusal_no_fallback":
 			return translateModelSwitch(rawLine, "Model refused");
 		case "model_consent_fallback":
@@ -4214,6 +4219,47 @@ unittest
 		~ `"uuid":"u","session_id":"s"}`, "claude")
 		== `{"type":"cydo/task_diagnostic","severity":"warning","subject":"Model switched",`
 		~ `"body":"Switched to b due to high demand for a"}`);
+}
+
+/// Translate a notice that the model refused and the turn went on with a
+/// fallback model. The response it refused is withdrawn: turn/retracted
+/// names it, where the CLI says which messages that was.
+private string translateRefusalFallback(string rawLine)
+{
+	import cydo.protocol : TaskDiagnosticEvent, TaskDiagnosticSeverity, TurnRetractedEvent;
+
+	@JSONPartial static struct RawNotice
+	{
+		string content;
+		@JSONOptional string[] retracted_message_uuids; // stdout
+		@JSONOptional string[] retractedMessageUuids;   // session file
+	}
+	auto raw = jsonParse!RawNotice(rawLine);
+	auto notice = TaskDiagnosticEvent("cydo/task_diagnostic",
+		TaskDiagnosticSeverity.warning, "Model refused; switched", raw.content);
+	auto uuids = raw.retracted_message_uuids ~ raw.retractedMessageUuids;
+	// Absent from older CLIs, and when nothing had been delivered yet.
+	if (uuids.length == 0)
+		return toJson(notice);
+	return toJson(TurnRetractedEvent("turn/retracted", uuids, notice));
+}
+
+unittest
+{
+	enum line = `{"type":"system","subtype":"model_refusal_fallback","trigger":"refusal",`
+		~ `"direction":"retry","original_model":"a","fallback_model":"b","content":"Refused; using b",`
+		~ `"retracted_message_uuids":["u1","u2"],"uuid":"u","session_id":"s"}`;
+	assert(translateClaudeEventInner(line, "claude")
+		== `{"type":"turn/retracted","uuids":["u1","u2"],"notice":{"type":"cydo/task_diagnostic",`
+		~ `"severity":"warning","subject":"Model refused; switched","body":"Refused; using b"}}`);
+	assert(translateClaudeEventInner(`{"type":"system","subtype":"model_refusal_fallback",`
+		~ `"content":"Refused; using b","retractedMessageUuids":["u1"]}`, "claude")
+		== `{"type":"turn/retracted","uuids":["u1"],"notice":{"type":"cydo/task_diagnostic",`
+		~ `"severity":"warning","subject":"Model refused; switched","body":"Refused; using b"}}`);
+	assert(translateClaudeEventInner(`{"type":"system","subtype":"model_refusal_fallback",`
+		~ `"content":"Refused; using b"}`, "claude")
+		== `{"type":"cydo/task_diagnostic","severity":"warning","subject":"Model refused; switched",`
+		~ `"body":"Refused; using b"}`);
 }
 
 /// Translate "system/api_retry" event to a retrying task diagnostic.

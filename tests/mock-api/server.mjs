@@ -82,6 +82,51 @@ function streamTextResponse(res, text, model = "claude-sonnet-4-20250514") {
   res.end();
 }
 
+// A response the model breaks off with a refusal, as the API's safeguards
+// do: stop_reason "refusal" with the refusal's category.
+function streamRefusalResponse(res, text, model) {
+  const msgId = nextMsgId();
+  sseEvent(res, "message_start", {
+    type: "message_start",
+    message: {
+      id: msgId,
+      type: "message",
+      role: "assistant",
+      content: [],
+      model,
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 1 },
+    },
+  });
+  sseEvent(res, "content_block_start", {
+    type: "content_block_start",
+    index: 0,
+    content_block: { type: "text", text: "" },
+  });
+  sseEvent(res, "content_block_delta", {
+    type: "content_block_delta",
+    index: 0,
+    delta: { type: "text_delta", text },
+  });
+  sseEvent(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+  sseEvent(res, "message_delta", {
+    type: "message_delta",
+    delta: {
+      stop_reason: "refusal",
+      stop_sequence: null,
+      stop_details: {
+        type: "refusal",
+        category: "cyber",
+        explanation: "mock refusal",
+      },
+    },
+    usage: { output_tokens: text.length },
+  });
+  sseEvent(res, "message_stop", { type: "message_stop" });
+  res.end();
+}
+
 function streamToolUseResponse(
   res,
   toolName,
@@ -1182,6 +1227,22 @@ function handleMessages(req, res) {
         `[mock-api] title-switch-overlap release=${released ? "completed" : "already-closed"}`,
       );
       streamTextResponse(res, "mode-switch-title-release", model);
+      return;
+    }
+
+    // The primary model refuses (twice: the CLI first retries it once),
+    // then the CLI retries the turn on its fallback model for the refusal's
+    // category, which answers. (Only the conversation itself: a title
+    // request quoting the prompt carries no tools.)
+    if (
+      originalText?.includes("refuse-fallback-test") &&
+      parsed.tools?.length > 0
+    ) {
+      if (model.startsWith("claude-opus-4-8")) {
+        streamTextResponse(res, "fallback-answer", model);
+      } else {
+        streamRefusalResponse(res, "refused-partial", model);
+      }
       return;
     }
 

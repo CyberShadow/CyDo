@@ -216,14 +216,22 @@ export const AssistantMessage = memo(
       <div
         class={`message assistant-message${isStreaming ? " streaming" : ""}${
           isSynthetic ? " synthetic-message" : ""
-        }`}
+        }${message.retracted ? " retracted-message" : ""}`}
       >
-        {(message.isSidechain || isSynthetic) && (
+        {(message.isSidechain || isSynthetic || message.retracted) && (
           <div class="message-meta">
             {message.isSidechain && (
               <span class="meta-badge sidechain">sub-agent</span>
             )}
             {isSynthetic && <span class="meta-badge synthetic">synthetic</span>}
+            {message.retracted && (
+              <span
+                class="meta-badge retracted"
+                title="Withdrawn by the agent: the model no longer sees this response"
+              >
+                retracted
+              </span>
+            )}
           </div>
         )}
         {blocksToRender.map((block, i) => {
