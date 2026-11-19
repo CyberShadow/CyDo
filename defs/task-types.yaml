@@ -87,12 +87,19 @@ user_entry_points:
   isolated:
     task_type: isolated
     worktree: require
-    description: "Own worktree with sub-agent support — changes stay isolated until you pull them"
+    description: "Own worktree with sub-agent support — changes stay isolated until they are landed"
     prompt_template: prompts/isolated.md
   agentic:
     task_type: conversation
     description: "Orchestrated session — plans, delegates, and reviews via sub-agents"
     prompt_template: prompts/conversation.md
+
+# The task that lands other tasks' work. Interactive sessions get a Land tool
+# that submits work to the project's integrator, which CyDo starts when the
+# project has none. Set task_type to "" to have no integrator.
+integrator:
+  task_type: integrator
+  prompt_template: prompts/integrator.md
 
 task_types:
   # =========================================================================
@@ -338,6 +345,12 @@ task_types:
       work:
         prompt_template: prompts/work.md
         result_note: "The changes are in your working tree; review them."
+
+  integrator:
+    icon: oversee
+    system_prompt_template: system_prompts/integrator.md
+    model_class: large
+    output_type: []
 
   # =========================================================================
   # Helper types — sub-task only, no continuations

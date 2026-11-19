@@ -229,6 +229,8 @@ private EntryPointEntry[] buildEntryPointEntries(
 	EntryPointEntry[] entries;
 	foreach (ref ep; entryPoints)
 	{
+		if (ep.system)
+			continue;
 		auto typeDef = types.byName(ep.resolvedType);
 		EntryPointEntry entry;
 		entry.name = ep.name;

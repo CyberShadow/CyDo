@@ -86,7 +86,7 @@ import cydo.server.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
 import cydo.server.environment : consumeServerEnvironment;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir, sharedTmpBaseDir;
 import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule;
-import cydo.domain.task_types.definition : DjinjaTemplate, TaskTypeDef, OutputType, WorktreeMode, byName, loadTaskTypes,
+import cydo.domain.task_types.definition : DjinjaTemplate, TaskTypeDef, UserEntryPointDef, OutputType, WorktreeMode, byName, loadTaskTypes,
 	loadTaskTypeSystemPrompt, renderPrompt, substituteVars,
 	loadProjectMemory, resolveAgent;
 import cydo.foundation.system.framing : prependTaskFraming, validateTemplateSource;
@@ -455,6 +455,8 @@ class App
 				broadcastTaskUpdate(tid);
 			},
 			taskAlive: &taskAlive,
+			integratorForTask: &integratorForTask,
+			effectiveCwd: &taskPathResolver.effectiveCwd,
 			tasksShareWorkspace: (int aTid, int bTid) {
 				auto aTd = aTid in tasks;
 				auto bTd = bTid in tasks;
@@ -1405,21 +1407,13 @@ class App
 			return;
 		}
 		auto ep = entryPoints.byName(json.entry_point);
-		if (ep is null)
+		if (ep is null || ep.system)
 		{
 			ws.send(Data(toJson(ErrorMessage("error",
 				"Unknown entry point: " ~ json.entry_point)).representation));
 			return;
 		}
-		auto epTemplate = ep.prompt_template;
-		auto tid = createTask(json.workspace, projectPath, at, json.entry_point);
-		// Call getTaskTypesForProject() after getEntryPointsForProject() so the cache is populated.
-		auto taskTypes = taskTypeCatalog.getTaskTypesForProject(projectPath);
-		tasks[tid].entryPoint = json.entry_point;
-		persistence.setEntryPoint(tid, json.entry_point);
-		tasks[tid].taskType = ep.resolvedType;
-		if (taskTypes.byName(ep.resolvedType) !is null)
-			persistence.setTaskType(tid, ep.resolvedType);
+		auto tid = createEntryPointTask(json.workspace, projectPath, at, ep);
 		// Send task_created only to the requesting client (unicast) so that
 		// parallel test workers don't steal each other's task IDs.
 		ws.send(Data(toJson(TaskCreatedMessage("task_created", tid, json.workspace, projectPath, 0, "", json.correlation_id)).representation));
@@ -1432,77 +1426,153 @@ class App
 		if (json.content.json !is null)
 			blocks = jsonParse!(ContentBlock[])(json.content.json);
 		if (blocks.length > 0)
+			submitInitialMessage(tid, blocks, MessageSource.user).ignoreResult();
+	}
+
+	/// Create a top-level task at an entry point. It has no session until it
+	/// is sent its first message.
+	private int createEntryPointTask(string workspace, string projectPath, string agentName,
+		const UserEntryPointDef* ep)
+	{
+		auto tid = createTask(workspace, projectPath, agentName, ep.name);
+		// Call getTaskTypesForProject() after getEntryPointsForProject() so the cache is populated.
+		auto taskTypes = taskTypeCatalog.getTaskTypesForProject(projectPath);
+		persistence.setEntryPoint(tid, ep.name);
+		tasks[tid].taskType = ep.resolvedType;
+		if (taskTypes.byName(ep.resolvedType) !is null)
+			persistence.setTaskType(tid, ep.resolvedType);
+		return tid;
+	}
+
+	/// The task that lands work for the project of `callerTid`, started if the
+	/// project has none; 0 if the project's task types name no integrator.
+	/// Fulfills once the task can be asked: one that had to be started has
+	/// finished the turn of its first message. (An agent need not take a
+	/// second message while it is still starting the turn of the first.)
+	///
+	/// A project has one integrator at a time, so that it sees everything
+	/// that is being landed: the newest unarchived task at the integrator
+	/// entry point.
+	private Promise!int integratorForTask(int callerTid)
+	{
+		auto caller = &tasks[callerTid];
+		auto ep = taskTypeCatalog.integratorEntryPointForProject(caller.projectPath);
+		if (ep is null)
+			return resolve(0);
+
+		int found;
+		foreach (tid, ref td; tasks)
+			if (tid > found && td.parentTid <= 0 && td.entryPoint == ep.name
+				&& td.projectPath == caller.projectPath && td.workspace == caller.workspace
+				&& !td.archived && !td.archiving && td.status != TaskStatus.importable)
+				found = tid;
+		if (found > 0)
+			return resolve(found);
+
+		auto typeDef = taskTypeCatalog.getTaskTypesForProject(caller.projectPath)
+			.byName(ep.resolvedType);
+		enforce(typeDef !is null, "Integrator entry point '" ~ ep.name
+			~ "' has unknown task type '" ~ ep.resolvedType ~ "'");
+		auto workspace = caller.workspace;
+		auto projectPath = caller.projectPath;
+		auto agentName = resolveAgent(typeDef.agent, caller.agentName, workspace);
+		// `caller` dangles from here on: creating a task grows `tasks`.
+		auto tid = createEntryPointTask(workspace, projectPath, agentName, ep);
+		tasks[tid].title = "Integrator";
+		persistence.setTitle(tid, tasks[tid].title);
+		clientHub.broadcast(toJson(TaskCreatedMessage("task_created", tid, workspace,
+			projectPath, 0, "")));
+		broadcastTaskUpdate(tid);
+		return submitInitialMessage(tid, [ContentBlock("text", readPromptFile(
+			"prompts/integrator_started_by_land.md", projectPath, null))],
+			MessageSource.harness).then((bool accepted) {
+				enforce(accepted, format!"Could not start the integrator (task %d): %s"(
+					tid, tasks[tid].error));
+				auto ready = new Promise!int;
+				tasks[tid].onIdleCallbacks ~= () { ready.fulfill(tid); };
+				return ready;
+			});
+	}
+
+	/// Start a new top-level task's session with its first message: `blocks`,
+	/// wrapped in the prompt of the task's entry point. Fulfills once the
+	/// agent has the message, with false if it could not be given it; the
+	/// task then says why.
+	private Promise!bool submitInitialMessage(int tid, ContentBlock[] blocks, MessageSource source)
+	{
+		auto td = &tasks[tid];
+		auto taskTypes = taskTypeCatalog.getTaskTypesForProject(td.projectPath);
+		auto epTemplate = taskTypeCatalog.getEntryPointsForProject(td.projectPath)
+			.byName(td.entryPoint).prompt_template;
+		auto typeDef = taskTypes.byName(td.taskType);
+		auto textContent = extractContentText(blocks);
+		auto messageToSend = blocks;
+		string sessionStartMsgSubject;
+		if (typeDef !is null)
 		{
-			auto td = &tasks[tid];
-			auto typeDef = taskTypes.byName(td.taskType);
-			auto textContent = extractContentText(blocks);
-			auto messageToSend = blocks;
-			string sessionStartMsgSubject;
-			if (typeDef !is null)
-			{
-				import std.algorithm : filter;
-				import std.array : array;
-				auto rendered = renderPrompt(*typeDef, textContent,
-					taskTypeCatalog.promptSearchPath(td.projectPath),
-					taskPathResolver.outputPath(td), epTemplate);
-				rendered = prependTaskFraming(rendered,
-					taskSystemPromptForMessage(tid, typeDef),
-					loadProjectMemory(typeDef, td.repoPath, taskTypeCatalog.promptSearchPath(td.projectPath)));
-				auto sessionStartMsgName = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
-				sessionStartMsgSubject = sessionStartSubject(sessionStartMsgName);
-				// Preserve image blocks alongside the rendered text prompt.
-				messageToSend = ContentBlock("text", wrapKnownSystemMessage(
-					config.system_keyword,
-					KnownSystemMessageKind.sessionStart, rendered, sessionStartMsgSubject))
-					~ blocks.filter!(b => b.type == "image").array;
-			}
-			auto msgContent = blocks;
-			auto msgMeta = typeDef !is null
-				? systemMessageNormalizer.buildKnownSystemMessageMeta(
-					KnownSystemMessageKind.sessionStart,
-					sessionStartMsgSubject,
-					["task_description": textContent], "task_description")
-				: null;
-			void commitAcceptedInitialSubmission(TaskData* accepted)
-			{
-				if (accepted.description.length == 0)
-				{
-					accepted.description = textContent;
-					persistence.setDescription(tid, textContent);
-				}
-				if (accepted.title.length == 0)
-				{
-					accepted.title = truncateTitle(textContent, 80);
-					persistence.setTitle(tid, accepted.title);
-					broadcastTitleUpdate(tid, accepted.title);
-					derivedTextJobs.generateTitle(tid, textContent);
-				}
-			}
-			materializePendingTask(tid);
-			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
-				return sendTaskMessage(tid, messageToSend, msgContent, msgMeta,
-					null, true, &commitAcceptedInitialSubmission, MessageSource.user);
-			}).except((Exception e) {
-				auto failed = tid in tasks;
-				assert(failed !is null,
-					"Initial message submission task disappeared");
-				// TaskSessionRunner already owns a failed launch and its diagnostic.
-				if (failed.status == TaskStatus.failed)
-					return;
-				assert(failed.status == TaskStatus.active,
-					"Initial message submission failed outside an active task");
-				failed.error = e.msg;
-				failed.resultText = e.msg;
-				persistence.setResultText(tid, failed.resultText);
-				transitionTask(tid, TaskStatus.active, TaskStatus.failed,
-					TaskNotificationChange.preserve);
-				auto translated = historyPipeline.appendTaskDiagnostic(tid,
-					"Failed to submit initial message", e.msg);
-				broadcastAppendedTaskEvent(tid, translated);
-				workflowTools.deliverFailedPendingSubTaskResult(tid);
-				broadcastTaskUpdate(tid);
-			}).ignoreResult();
+			import std.algorithm : filter;
+			import std.array : array;
+			auto rendered = renderPrompt(*typeDef, textContent,
+				taskTypeCatalog.promptSearchPath(td.projectPath),
+				taskPathResolver.outputPath(td), epTemplate);
+			rendered = prependTaskFraming(rendered,
+				taskSystemPromptForMessage(tid, typeDef),
+				loadProjectMemory(typeDef, td.repoPath, taskTypeCatalog.promptSearchPath(td.projectPath)));
+			auto sessionStartMsgName = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
+			sessionStartMsgSubject = sessionStartSubject(sessionStartMsgName);
+			// Preserve image blocks alongside the rendered text prompt.
+			messageToSend = ContentBlock("text", wrapKnownSystemMessage(
+				config.system_keyword,
+				KnownSystemMessageKind.sessionStart, rendered, sessionStartMsgSubject))
+				~ blocks.filter!(b => b.type == "image").array;
 		}
+		auto msgContent = blocks;
+		auto msgMeta = typeDef !is null
+			? systemMessageNormalizer.buildKnownSystemMessageMeta(
+				KnownSystemMessageKind.sessionStart,
+				sessionStartMsgSubject,
+				["task_description": textContent], "task_description")
+			: null;
+		void commitAcceptedInitialSubmission(TaskData* accepted)
+		{
+			if (accepted.description.length == 0)
+			{
+				accepted.description = textContent;
+				persistence.setDescription(tid, textContent);
+			}
+			if (accepted.title.length == 0)
+			{
+				accepted.title = truncateTitle(textContent, 80);
+				persistence.setTitle(tid, accepted.title);
+				broadcastTitleUpdate(tid, accepted.title);
+				derivedTextJobs.generateTitle(tid, textContent);
+			}
+		}
+		materializePendingTask(tid);
+		return tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
+			return sendTaskMessage(tid, messageToSend, msgContent, msgMeta,
+				null, true, &commitAcceptedInitialSubmission, source);
+		}).then(() => true, (Exception e) {
+			auto failed = tid in tasks;
+			assert(failed !is null,
+				"Initial message submission task disappeared");
+			// TaskSessionRunner already owns a failed launch and its diagnostic.
+			if (failed.status == TaskStatus.failed)
+				return false;
+			assert(failed.status == TaskStatus.active,
+				"Initial message submission failed outside an active task");
+			failed.error = e.msg;
+			failed.resultText = e.msg;
+			persistence.setResultText(tid, failed.resultText);
+			transitionTask(tid, TaskStatus.active, TaskStatus.failed,
+				TaskNotificationChange.preserve);
+			auto translated = historyPipeline.appendTaskDiagnostic(tid,
+				"Failed to submit initial message", e.msg);
+			broadcastAppendedTaskEvent(tid, translated);
+			workflowTools.deliverFailedPendingSubTaskResult(tid);
+			broadcastTaskUpdate(tid);
+			return false;
+		});
 	}
 
 	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)

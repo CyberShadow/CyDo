@@ -46,6 +46,34 @@ steward_domain: string                # what this steward cares about
 knowledge_base: path?                 # persistent state directory
 ```
 
+## Landing
+
+The top-level `integrator:` mapping of `task-types.yaml` defines the project's
+**integrator**: the one session that lands work on the main branch, so that
+everything being landed passes through one queue.
+
+```yaml
+integrator:
+  task_type: integrator                  # "" = the project has no integrator
+  prompt_template: prompts/integrator.md # wraps its first message
+```
+
+It is an entry point like the ones under `user_entry_points`, except that CyDo
+starts the task rather than the user, so the new-task page does not offer it.
+Its task never ends its session, like the tasks users start.
+
+When a project has an integrator, interactive sessions (the ones
+that would otherwise hand finished work to the user) get a `Land(message)`
+tool. It is an `Ask` whose target CyDo fills in: the newest unarchived integrator
+task in the caller's project and workspace, started if
+there is none. The caller waits for the integrator's `Answer`, which says what
+landed or why the work was sent back.
+
+CyDo does not know how a project is checked or when work should land. The
+integrator reads the project's instructions for the former; whether sessions
+land on request, proactively, or never is for the project's instructions too.
+Without an integrator, no task is offered `Land`.
+
 ## Output Types
 
 - **commit** — A reviewable commit in an isolated worktree. Goes through CI

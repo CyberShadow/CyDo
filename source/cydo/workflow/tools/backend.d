@@ -90,6 +90,11 @@ struct WorkflowToolsHost
 		string body) appendAndBroadcastRecoveryDeliveryDiagnostic;
 
 	bool delegate(int tid) taskAlive;
+	/// The task that lands work for the project of `callerTid`, started if
+	/// the project has none and then ready to be asked; 0 if the project
+	/// has no integrator.
+	Promise!int delegate(int callerTid) integratorForTask;
+	string delegate(const TaskData* td) effectiveCwd;
 	bool delegate(int aTid, int bTid) tasksShareWorkspace;
 	string delegate(int tid) taskWorkspaceLabel;
 	void delegate(int tid, void delegate() cb) addIdleCallback;
@@ -829,6 +834,33 @@ public:
 		string message)
 	{
 		return questionRouter_.handleAnswer(callerTidStr, qid, message);
+	}
+
+	/// Land: a question to the project's integrator, which answers once the
+	/// work has landed or needs more work.
+	Promise!McpResult handleLand(string callerTidStr, string message)
+	{
+		import std.conv : to;
+
+		int callerTid;
+		try
+			callerTid = to!int(callerTidStr);
+		catch (Exception)
+			return resolve(McpResult("Invalid calling task ID", true));
+		auto callerTd = host_.getTask(callerTid);
+		if (callerTd is null)
+			return resolve(McpResult("Task not found", true));
+
+		auto request = host_.readPromptFile("prompts/land_request.md",
+			callerTd.projectPath, [
+				"message": message,
+				"directory": host_.effectiveCwd(callerTd),
+			]);
+		return host_.integratorForTask(callerTid).then((int integratorTid) {
+			if (integratorTid == 0)
+				return resolve(McpResult("This project has no integrator", true));
+			return questionRouter_.handleAsk(callerTidStr, request, integratorTid);
+		}, (Exception e) => resolve(McpResult(e.msg, true)));
 	}
 
 	/// Decide a tool call the agent of `tid` asks about after the policy's

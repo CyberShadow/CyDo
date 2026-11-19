@@ -751,11 +751,18 @@ public:
 			sessionConfig.includeTools ~= "SwitchMode";
 		if (sessionConfig.handoffs.length > 0)
 			sessionConfig.includeTools ~= "Handoff";
-		if (taskTypes.isInteractive(host_.taskTypeCatalog.getEntryPointsForProject(td.projectPath),
-			td.taskType))
+		bool interactive = taskTypes.isInteractive(entryPoints, td.taskType);
+		if (interactive)
 			sessionConfig.includeTools ~= "AskUserQuestion";
 		sessionConfig.includeTools ~= "Ask";
 		sessionConfig.includeTools ~= "Answer";
+		// Interactive sessions are the ones that hand finished work to the
+		// user; the integrator itself is the one Land asks.
+		auto integrator = host_.taskTypeCatalog.integratorEntryPointForProject(td.projectPath);
+		bool offersLand = integrator !is null && interactive
+			&& td.taskType != integrator.resolvedType;
+		if (offersLand)
+			sessionConfig.includeTools ~= "Land";
 		if (typeDef !is null && typeDef.allow_native_subagents)
 			sessionConfig.allowNativeSubagents = true;
 
@@ -763,6 +770,7 @@ public:
 
 		RenderedCydoToolsOptions renderedToolOptions;
 		renderedToolOptions.includeBash = taskAgent.needsBash();
+		renderedToolOptions.includeLand = offersLand;
 		host_.reportMcpToolDescriptionLimit(td.projectPath, td.taskType,
 			checkRenderedCydoToolDescriptionViolations(taskTypes, entryPoints,
 				td.taskType, options: renderedToolOptions));
@@ -851,8 +859,13 @@ public:
 				bool processingChanged = !current.isProcessing;
 				if (processingChanged)
 					current.isProcessing = true;
-				if (current.status == TaskStatus.waiting)
-					host_.transitionTask(tid, TaskStatus.waiting, TaskStatus.active,
+				// A turn can start without CyDo having just sent anything: the
+				// agent wakes for its background work, or takes a message that
+				// was queued behind the turn that just ended.
+				if (current.status == TaskStatus.waiting
+					|| current.status == TaskStatus.alive)
+					host_.transitionTaskFrom(tid,
+						[TaskStatus.waiting, TaskStatus.alive], TaskStatus.active,
 						TaskNotificationChange.preserve);
 				else if (processingChanged)
 					host_.publishTaskSnapshot(tid);

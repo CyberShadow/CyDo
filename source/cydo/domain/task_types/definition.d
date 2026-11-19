@@ -111,6 +111,8 @@ struct UserEntryPointDef
 	string description; // required — shown in UI
 	@Optional string prompt_template;
 	@Optional WorktreeMode worktree;
+	/// CyDo starts tasks here itself; the UI does not offer it.
+	@Optional bool system;
 
 	string resolvedType() const
 	{
@@ -160,13 +162,27 @@ struct TaskTypesFile
 {
 	@Key("name") TaskTypeDef[] task_types;
 	@Optional @Key("name") UserEntryPointDef[] user_entry_points;
+	@Optional IntegratorDef integrator;
 }
+
+/// The task that lands other tasks' work: the target of the Land tool, which
+/// starts one when the project has none. A project whose `task_type` is empty
+/// has no integrator, and no task is offered Land.
+struct IntegratorDef
+{
+	@Optional string task_type;
+	@Optional string prompt_template;
+}
+
+/// The system entry point the loader derives from `IntegratorDef`.
+enum integratorEntryPoint = "integrator";
 
 /// Combined result of loading task types (types + entry points).
 struct TaskTypeConfig
 {
 	TaskTypeDef[] types;
 	UserEntryPointDef[] entryPoints;
+	bool hasIntegrator; /// entryPoints has the `integratorEntryPoint`
 }
 
 /// Look up a task type by name. Returns a pointer into the array, or null.
@@ -281,7 +297,51 @@ TaskTypeConfig loadTaskTypes(string[] paths...)
 		result.user_entry_points = ep ~ result.user_entry_points;
 	}
 
-	return TaskTypeConfig(result.task_types, result.user_entry_points);
+	if (result.user_entry_points.byName(integratorEntryPoint) !is null)
+		throw new Exception("user_entry_points: '" ~ integratorEntryPoint
+			~ "' is reserved for the integrator");
+	bool hasIntegrator = result.integrator.task_type.length > 0;
+	if (hasIntegrator)
+	{
+		if (result.task_types.byName(result.integrator.task_type) is null)
+			throw new Exception("integrator: unknown task type '"
+				~ result.integrator.task_type ~ "'");
+		UserEntryPointDef ep;
+		ep.name = integratorEntryPoint;
+		ep.task_type = result.integrator.task_type;
+		ep.prompt_template = result.integrator.prompt_template;
+		ep.system = true;
+		result.user_entry_points ~= ep;
+	}
+
+	return TaskTypeConfig(result.task_types, result.user_entry_points, hasIntegrator);
+}
+
+unittest
+{
+	import std.exception : assertThrown;
+	import std.file : remove, write;
+
+	enum path = "/tmp/cydo-task-types-integrator-test.yaml";
+	scope(exit) remove(path);
+	enum types = "task_types:\n  lander:\n    model_class: large\n";
+
+	write(path, types);
+	assert(!loadTaskTypes(path).hasIntegrator);
+
+	write(path, types ~ "integrator:\n  task_type: lander\n  prompt_template: p.md\n");
+	auto config = loadTaskTypes(path);
+	assert(config.hasIntegrator);
+	auto ep = config.entryPoints.byName(integratorEntryPoint);
+	assert(ep.resolvedType == "lander" && ep.prompt_template == "p.md" && ep.system);
+	// It never ends its session, like the tasks users start.
+	assert(isInteractive(config.types, config.entryPoints, "lander"));
+
+	write(path, types ~ "integrator:\n  task_type: missing\n");
+	assertThrown(loadTaskTypes(path));
+	write(path, types ~ "user_entry_points:\n  integrator:\n    task_type: lander\n"
+		~ "    description: Lands\n");
+	assertThrown(loadTaskTypes(path));
 }
 
 /// Deep-merge two YAML nodes. For mappings, keys from `overlay` are merged
@@ -565,7 +625,7 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 		// Validate entry points
 		foreach (ref ep; entryPoints)
 		{
-			if (ep.description.length == 0)
+			if (!ep.system && ep.description.length == 0)
 				errors ~= format("entry_point '%s': missing required description", ep.name);
 			if (ep.prompt_template.length == 0)
 				errors ~= format("entry_point '%s': missing required prompt_template", ep.name);

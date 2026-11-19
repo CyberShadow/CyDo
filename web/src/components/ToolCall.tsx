@@ -1896,6 +1896,22 @@ const knownResultFields: Record<string, Set<string>> = {
     "worktree",
     "commits",
   ]),
+  "cydo:Land": new Set([
+    "tasks",
+    "content",
+    "structuredContent",
+    "status",
+    "tid",
+    "qid",
+    "summary",
+    "error",
+    "title",
+    "message",
+    "note",
+    "output_file",
+    "worktree",
+    "commits",
+  ]),
   "cydo:Answer": new Set([
     "tasks",
     "content",
@@ -2496,7 +2512,7 @@ function formatInput(
   }
   // --- CyDo MCP tools ---
   if (
-    toolIs(name, driver, toolServer, "cydo:Ask", "cydo:Answer") &&
+    toolIs(name, driver, toolServer, "cydo:Ask", "cydo:Answer", "cydo:Land") &&
     typeof input.message === "string"
   ) {
     const { message, ...remaining } = input;
@@ -2944,6 +2960,7 @@ const defaultExpandedTools = new Set([
   "copilot/task",
   "cydo:Ask",
   "cydo:Answer",
+  "cydo:Land",
   "cydo:Handoff",
   "cydo:AskUserQuestion",
   "cydo:Bash", // CyDo MCP Bash tool (used by Copilot/Codex)
@@ -2968,6 +2985,7 @@ const defaultExpandedResults = new Set([
   "copilot/task",
   "cydo:Ask",
   "cydo:Answer",
+  "cydo:Land",
   "claude/WebSearch",
   "codex/webSearch",
   "claude/WebFetch",
@@ -3070,6 +3088,7 @@ export const ToolCall = memo(
       "cydo:Task",
       "cydo:Ask",
       "cydo:Answer",
+      "cydo:Land",
     )
       ? getCydoTaskResultItems(result)
       : null;

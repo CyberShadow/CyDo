@@ -3091,6 +3091,10 @@ string buildToolDefinitions(SessionConfig config)
 		"Answer a question from a related task",
 		JSONFragment(`{"type":"object","properties":{"qid":{"type":"integer"},"message":{"type":"string"}},"required":["qid","message"]}`),
 		true);
+	tools ~= ToolDefinition("cydo-Land",
+		"Submit finished work to this project's integrator and wait for its answer",
+		JSONFragment(`{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}`),
+		true);
 	return toJson(tools);
 }
 
@@ -3108,6 +3112,7 @@ unittest
 		"cydo-AskUserQuestion",
 		"cydo-Ask",
 		"cydo-Answer",
+		"cydo-Land",
 	];
 	string[] expectedSchemas = [
 		`{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"object"}}},"required":["tasks"]}`,
@@ -3117,6 +3122,7 @@ unittest
 		`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object"}}},"required":["questions"]}`,
 		`{"type":"object","properties":{"message":{"type":"string"},"tid":{"type":"integer"}},"required":["message"]}`,
 		`{"type":"object","properties":{"qid":{"type":"integer"},"message":{"type":"string"}},"required":["qid","message"]}`,
+		`{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}`,
 	];
 
 	assert(tools.length == expectedNames.length);

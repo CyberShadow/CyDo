@@ -3,12 +3,14 @@ module cydo.domain.task_types.catalog;
 import std.logger : warningf;
 
 import cydo.domain.task_types.definition : TaskTypeDef, UserEntryPointDef, byName, computeReachesWorktree,
+	integratorEntryPoint,
 	computeTreeReadOnly, loadTaskTypes, validateTaskTypes;
 
 private struct ProjectTypeCache
 {
 	TaskTypeDef[] types;
 	UserEntryPointDef[] entryPoints;
+	bool hasIntegrator;
 	bool[string] reachesWorktree;
 	bool[string] treeReadOnly;
 }
@@ -65,6 +67,7 @@ class TaskTypeCatalog
 			taskTypesByProject[projectPath] = ProjectTypeCache(
 				config.types,
 				config.entryPoints,
+				config.hasIntegrator,
 				computeReachesWorktree(config.types),
 				computeTreeReadOnly(config.types),
 			);
@@ -87,6 +90,16 @@ class TaskTypeCatalog
 		if (auto p = projectPath in taskTypesByProject)
 			return p.entryPoints;
 		return null;
+	}
+
+	/// The entry point of the project's integrator task; null if it has none.
+	UserEntryPointDef* integratorEntryPointForProject(string projectPath)
+	{
+		getTaskTypesForProject(projectPath);
+		auto p = projectPath in taskTypesByProject;
+		if (p is null || !p.hasIntegrator)
+			return null;
+		return p.entryPoints.byName(integratorEntryPoint);
 	}
 
 	TaskTypeDef[] getTaskTypes()
