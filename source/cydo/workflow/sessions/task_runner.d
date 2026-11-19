@@ -81,9 +81,17 @@ private bool isAssistantTurnWork(TranslatedEvent ev)
 		auto started = jsonParse!ItemStartedEvent(ev.translated);
 		if (started.is_replay || started.is_synthetic || started.is_meta)
 			return false;
+		// A call to one of CyDo's own tools reaches CyDo as the call itself,
+		// and the tool decides there what becomes of the task (Task and Ask
+		// put it to wait). The agent also announces the call in its output,
+		// over another channel, and nothing orders the two: Codex sends the
+		// announcement and the call at the same moment. An announcement that
+		// arrives after its call says nothing the call did not, and must not
+		// wake the task the call has just put to wait.
+		if (started.item_type == "tool_use")
+			return started.tool_server != "cydo";
 		return started.item_type == "text"
-			|| started.item_type == "thinking"
-			|| started.item_type == "tool_use";
+			|| started.item_type == "thinking";
 	}
 	if (eventType == "item/delta")
 	{
@@ -101,6 +109,7 @@ unittest
 		`{"type":"item/started","item_id":"text","item_type":"text"}`,
 		`{"type":"item/started","item_id":"thinking","item_type":"thinking"}`,
 		`{"type":"item/started","item_id":"tool","item_type":"tool_use"}`,
+		`{"type":"item/started","item_id":"tool","item_type":"tool_use","name":"search","tool_server":"github","tool_source":"mcp"}`,
 		`{"type":"item/delta","item_id":"text","delta_type":"text_delta","content":"work"}`,
 		`{"type":"item/delta","item_id":"thinking","delta_type":"thinking_delta","content":"work"}`,
 		`{"type":"item/delta","item_id":"tool","delta_type":"input_json_delta","content":"{}"}`,
@@ -118,6 +127,7 @@ unittest
 		`{"type":"item/started","item_id":"replay","item_type":"text","is_replay":true}`,
 		`{"type":"item/started","item_id":"synthetic","item_type":"thinking","is_synthetic":true}`,
 		`{"type":"item/started","item_id":"meta","item_type":"tool","is_meta":true}`,
+		`{"type":"item/started","item_id":"call","item_type":"tool_use","name":"Task","tool_server":"cydo","tool_source":"mcp"}`,
 		`{"type":"item/delta","item_id":"background","delta_type":"output_delta","content":"late output"}`,
 		`{"type":"item/completed","item_id":"text","text":"done"}`,
 		`{"type":"item/result","item_id":"tool","content":"done"}`,
@@ -858,21 +868,7 @@ public:
 			}
 
 			if (isAssistantTurnWork(ev))
-			{
-				bool processingChanged = !current.isProcessing;
-				if (processingChanged)
-					current.isProcessing = true;
-				// A turn can start without CyDo having just sent anything: the
-				// agent wakes for its background work, or takes a message that
-				// was queued behind the turn that just ended.
-				if (current.status == TaskStatus.waiting
-					|| current.status == TaskStatus.alive)
-					host_.transitionTaskFrom(tid,
-						[TaskStatus.waiting, TaskStatus.alive], TaskStatus.active,
-						TaskNotificationChange.preserve);
-				else if (processingChanged)
-					host_.publishTaskSnapshot(tid);
-			}
+				assistantTurnWorkObserved(tid, current);
 
 			if (!taskAgent.isTurnResult(ev.translated))
 				return;
@@ -1443,6 +1439,24 @@ private:
 		return null;
 	}
 
+	/// The agent of task `tid` is working on a turn.
+	private void assistantTurnWorkObserved(int tid, TaskData* current)
+	{
+		bool processingChanged = !current.isProcessing;
+		if (processingChanged)
+			current.isProcessing = true;
+		// A turn can start without CyDo having just sent anything: the
+		// agent wakes for its background work, or takes a message that
+		// was queued behind the turn that just ended.
+		if (current.status == TaskStatus.waiting
+			|| current.status == TaskStatus.alive)
+			host_.transitionTaskFrom(tid,
+				[TaskStatus.waiting, TaskStatus.alive], TaskStatus.active,
+				TaskNotificationChange.preserve);
+		else if (processingChanged)
+			host_.publishTaskSnapshot(tid);
+	}
+
 	void observeWaitingParentDeliveryAttempt(int childTid, Promise!void attempt)
 	{
 		requireTask(childTid,
@@ -1677,6 +1691,69 @@ unittest
 	assert(tasks[handoffSuccessorTid].status == TaskStatus.completed
 		&& tasks[handoffSuccessorTid].parentTid == handoffPredecessorTid);
 	assert(transitionCalls == 0 && resultWrites == 0 && diagnosticCalls == 0);
+}
+
+// Codex announces a call to a CyDo tool in its output and makes the call over
+// MCP at the same moment, so the announcement can arrive after the call was
+// handled. A parent that the Task call has put to wait stays waiting then,
+// and still wakes when the agent resumes inference on its own.
+unittest
+{
+	enum parentTid = 1;
+	TaskData[int] tasks;
+	tasks[parentTid] = TaskData(parentTid, "local", "/tmp/cydo-late-tool-announcement");
+	tasks[parentTid].status = TaskStatus.active;
+	tasks[parentTid].isProcessing = true;
+
+	string[] log;
+	auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
+		transitionTaskFrom: (int tid, TaskStatus[] expectedFrom, TaskStatus to,
+			TaskNotificationChange notification) {
+			import std.algorithm : canFind;
+			import std.conv : text;
+
+			assert(tid == parentTid);
+			assert(expectedFrom.canFind(tasks[tid].status));
+			tasks[tid].status = to;
+			log ~= text("status:", to);
+		},
+		publishTaskSnapshot: (int tid) { log ~= "snapshot"; },
+	));
+
+	void output(string translated)
+	{
+		if (isAssistantTurnWork(TranslatedEvent(translated, null)))
+			runner.assistantTurnWorkObserved(parentTid, &tasks[parentTid]);
+	}
+
+	enum taskAnnouncement = `{"type":"item/started","item_id":"call_1",`
+		~ `"item_type":"tool_use","name":"Task","tool_server":"cydo",`
+		~ `"tool_source":"mcp","input":{"tasks":[]}}`;
+
+	// The Task call arrives first and puts the parent to wait for its child;
+	// its announcement follows.
+	tasks[parentTid].status = TaskStatus.waiting;
+	output(taskAnnouncement);
+	assert(tasks[parentTid].status == TaskStatus.waiting);
+	assert(log == []);
+
+	// An AskUserQuestion call stops the task's processing the same way.
+	tasks[parentTid].isProcessing = false;
+	output(`{"type":"item/started","item_id":"call_2","item_type":"tool_use",`
+		~ `"name":"AskUserQuestion","tool_server":"cydo","tool_source":"mcp"}`);
+	assert(!tasks[parentTid].isProcessing);
+	assert(log == []);
+
+	// Codex gave up on the call and went on with its turn.
+	output(`{"type":"item/started","item_id":"text_1","item_type":"text"}`);
+	assert(tasks[parentTid].status == TaskStatus.active);
+	assert(tasks[parentTid].isProcessing);
+	assert(log == ["status:active"]);
+
+	// The usual order: the announcement precedes the call, in an active turn.
+	output(taskAnnouncement);
+	assert(tasks[parentTid].status == TaskStatus.active);
+	assert(log == ["status:active"]);
 }
 
 version (unittest) private final class LinkedWorktreeSandboxTestAgent : ClaudeCodeAgent

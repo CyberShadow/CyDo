@@ -5146,6 +5146,7 @@ unittest
 	struct EmittedStartedEvent
 	{
 		string type;
+		string tool_server;
 		@JSONOptional JSONFragment input;
 	}
 
@@ -5219,6 +5220,10 @@ unittest
 
 	auto startedEvent = jsonParse!EmittedStartedEvent(emitted[0]);
 	auto resultEvent = jsonParse!EmittedResultEvent(emitted[$ - 1]);
+
+	// The task runner tells the announcement of a CyDo tool call from the
+	// agent's other work by its server.
+	assert(startedEvent.tool_server == "cydo");
 
 	bool inputOk = false;
 	string actualInput = "<missing>";
