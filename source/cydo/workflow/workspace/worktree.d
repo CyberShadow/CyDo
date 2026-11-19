@@ -9,6 +9,74 @@ import std.path : buildPath, dirName;
 import std.process : execute, pipeProcess, Redirect, wait;
 import std.string : strip;
 
+/// Link files of a repository's main checkout into one of its worktrees:
+/// the untracked ones (personal instruction files, local settings) that a
+/// new worktree does not have. `relativePaths` are relative to the root of
+/// both. A file the checkout lacks is not linked, and one the worktree
+/// already has (it is tracked, or already linked) is left alone.
+void linkCheckoutFiles(string checkoutRoot, string worktreeRoot, const(string)[] relativePaths)
+{
+    import std.algorithm : canFind;
+    import std.exception : enforce;
+    import std.file : isSymlink, mkdirRecurse, symlink;
+    import std.path : isAbsolute, pathSplitter;
+
+    foreach (relativePath; relativePaths)
+    {
+        enforce(!relativePath.isAbsolute && !relativePath.pathSplitter.canFind(".."),
+            format!"worktree_links: '%s' is not a path inside the checkout"(relativePath));
+        auto source = buildPath(checkoutRoot, relativePath);
+        auto link = buildPath(worktreeRoot, relativePath);
+        if (!exists(source) || exists(link) || isSymlinkPath(link))
+            continue;
+        mkdirRecurse(dirName(link));
+        symlink(source, link);
+        infof("Linked %s into worktree %s", source, worktreeRoot);
+    }
+}
+
+/// Whether `path` is a symlink, including one whose target is gone.
+private bool isSymlinkPath(string path)
+{
+    import core.sys.posix.sys.stat : lstat, S_ISLNK, stat_t;
+    import std.string : toStringz;
+
+    stat_t st;
+    return lstat(path.toStringz, &st) == 0 && S_ISLNK(st.st_mode);
+}
+
+unittest
+{
+    import std.exception : assertThrown;
+    import std.file : mkdirRecurse, readLink, readText, rmdirRecurse, tempDir, write;
+
+    auto root = buildPath(tempDir, "cydo-test-link-checkout-files");
+    if (exists(root))
+        rmdirRecurse(root);
+    scope(exit) rmdirRecurse(root);
+    auto checkout = buildPath(root, "checkout");
+    auto worktree = buildPath(root, "worktree");
+    mkdirRecurse(buildPath(checkout, "sub"));
+    mkdirRecurse(worktree);
+    write(buildPath(checkout, "CLAUDE.md"), "personal\n");
+    write(buildPath(checkout, "sub", "local.env"), "local\n");
+    write(buildPath(checkout, "tracked.md"), "checkout version\n");
+    write(buildPath(worktree, "tracked.md"), "worktree version\n");
+
+    auto paths = ["CLAUDE.md", "sub/local.env", "tracked.md", "absent.md"];
+    // Twice: the second call finds the links in place.
+    foreach (_; 0 .. 2)
+        linkCheckoutFiles(checkout, worktree, paths);
+
+    assert(readLink(buildPath(worktree, "CLAUDE.md")) == buildPath(checkout, "CLAUDE.md"));
+    assert(readText(buildPath(worktree, "sub", "local.env")) == "local\n");
+    assert(readText(buildPath(worktree, "tracked.md")) == "worktree version\n");
+    assert(!exists(buildPath(worktree, "absent.md")));
+
+    assertThrown(linkCheckoutFiles(checkout, worktree, ["../outside"]));
+    assertThrown(linkCheckoutFiles(checkout, worktree, ["/etc/hostname"]));
+}
+
 private enum ArchiveRefState
 {
     Missing,

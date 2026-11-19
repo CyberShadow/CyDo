@@ -37,6 +37,7 @@ import cydo.domain.tasks.lifecycle : TaskNotificationChange;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
+import cydo.workflow.workspace.worktree : linkCheckoutFiles;
 import cydo.domain.task_types.definition : TaskTypeDef,
 	formatCompactCreatableTaskTypeToolSummary, formatCompactHandoffToolSummary,
 	isInteractive, formatCompactSwitchModeToolSummary, loadTaskTypeSystemPrompt, byName;
@@ -696,6 +697,7 @@ public:
 			// workspace-root mount (it may live on another volume).
 			auto wtPath = host_.worktreePath(td);
 			enforce(wtPath.length > 0, "Worktree path must not be empty for worktree task");
+			linkCheckoutFiles(td.repoPath, wtPath, worktreeLinks(td));
 			auto wtAccess = readOnly ? PathAccess.ro : PathAccess.rw;
 			sandbox.paths.require(wtPath, wtAccess,
 				SandboxPathOrigin(SandboxPathOriginKind.launchRequirement, wtPath,
@@ -1418,6 +1420,28 @@ public:
 	}
 
 private:
+	/// The `worktree_links` of the task's workspace, rendered for its
+	/// project. A workspace no longer in the configuration has none.
+	string[] worktreeLinks(const TaskData* td)
+	{
+		import std.algorithm : filter, map;
+		import std.array : array;
+		import cydo.domain.task_types.definition : substituteVars;
+
+		foreach (ref ws; host_.currentConfig().workspaces)
+			if (ws.name == td.workspace)
+				return ws.worktree_links
+					.map!(link => substituteVars(link, [
+						"workspace": ws.name,
+						"workspace_root": ws.root,
+						"project_path": td.projectPath,
+						"repo_path": td.repoPath,
+					]))
+					.filter!(link => link.length > 0)
+					.array;
+		return null;
+	}
+
 	void observeWaitingParentDeliveryAttempt(int childTid, Promise!void attempt)
 	{
 		requireTask(childTid,

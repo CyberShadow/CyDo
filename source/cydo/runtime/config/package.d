@@ -113,6 +113,13 @@ struct WorkspaceConfig
 	/// call; 0 = indefinitely. The default matches Claude Code's own prompts.
 	@Optional uint permission_prompt_timeout = 120;
 	@Optional ProjectDiscoveryConfig project_discovery;
+	/// Files of a project's main checkout to link into each task worktree
+	/// of it, as paths relative to the repository root: the untracked files
+	/// (personal instruction files, local settings) a worktree does not
+	/// have. Each entry is a Djinja template (variables: workspace,
+	/// workspace_root, project_path, repo_path); one that renders empty is
+	/// skipped, as is a file the project does not have.
+	@Optional string[] worktree_links;
 }
 
 struct CydoConfig
