@@ -365,11 +365,11 @@ task_types:
     agent_description: >
       Software architect agent for designing implementation plans. Reads the
       codebase, identifies critical files, considers trade-offs, and returns a
-      step-by-step plan with file-by-file changes. Does not write code — use
-      'implement' for that. Use when: a task touches more than 2-3 files, there
-      are multiple valid approaches and you need to evaluate trade-offs, you're
-      unsure where to start, or the change requires understanding existing
-      patterns before diving in. Plans are cheap; rework is expensive.
+      step-by-step plan with file-by-file changes. Does not write code. Use
+      when: a task touches more than 2-3 files, there are multiple valid
+      approaches and you need to evaluate trade-offs, you're unsure where to
+      start, or the change requires understanding existing patterns before
+      diving in. Plans are cheap; rework is expensive.
     tool_guidance: >
       Recommended before any non-trivial implementation. Use when a task has
       multiple valid approaches, touches many files, or requires understanding
@@ -538,8 +538,7 @@ task_types:
       troubleshooting or data wrangling. It is not a planning, decomposition, or
       review step — when the work needs a design decision, splits into several
       pieces, or carries enough risk that it should be independently reviewed and
-      verified before you trust it, route it through the heavier plan → implement
-      → review/verify flow instead.
+      verified before you trust it, have it planned first instead.
     tool_guidance: >
       Spell out exactly what to do and what "done" looks like — the sub-agent
       sees only your prompt, not this conversation. Best when you can describe
