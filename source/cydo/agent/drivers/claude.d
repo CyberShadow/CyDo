@@ -1524,9 +1524,11 @@ class ClaudeCodeSession : AgentSession
 		// The task-list tools; not TaskOutput and TaskStop, which read and
 		// stop background work.
 		string taskTools = "TaskCreate,TaskGet,TaskList,TaskUpdate";
+		// Task and Workflow start Claude Code's own sub-agents, which CyDo
+		// neither shows nor manages; its own task system takes their place.
 		string disallowed = config.allowNativeSubagents
 			? taskTools ~ ",EnterPlanMode,ExitPlanMode,AskUserQuestion"
-			: "Task," ~ taskTools ~ ",EnterPlanMode,ExitPlanMode,AskUserQuestion";
+			: "Task,Workflow," ~ taskTools ~ ",EnterPlanMode,ExitPlanMode,AskUserQuestion";
 		claudeArgs ~= ["--disallowedTools", disallowed];
 
 		// When sandboxed, cmdPrefix handles workDir via --chdir (bwrap) or -C (env)
