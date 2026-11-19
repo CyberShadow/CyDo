@@ -776,6 +776,7 @@ unittest
 		{
 			expectedEnv["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "1";
 			expectedEnv["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] = "0";
+			expectedEnv["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false";
 		}
 
 		CydoConfig config;
@@ -841,6 +842,7 @@ unittest
 		{
 			isolatedExpectedEnv["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "1";
 			isolatedExpectedEnv["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] = "0";
+			isolatedExpectedEnv["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false";
 		}
 
 		CydoConfig isolatedConfig;

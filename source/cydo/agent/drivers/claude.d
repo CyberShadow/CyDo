@@ -58,6 +58,11 @@ class ClaudeCodeAgent : Agent
 		// Claude Code's KX9() guard requires this env var for checkpointing.
 		env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "1";
 
+		// The user's claude.ai connectors (mail, calendar, ...) belong to
+		// their account, not to the task. A configured value re-enables them.
+		if ("ENABLE_CLAUDEAI_MCP_SERVERS" !in env)
+			env["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false";
+
 		// Disable Claude Code's MCP tool idle watchdog. The generated cydo server
 		// config separately raises its hard wall-clock timeout to the maximum.
 		// CyDo task-interop calls can intentionally block while a sub-task works.
@@ -1384,6 +1389,7 @@ unittest
 	assert(resolved.env["CLAUDE_CONFIG_DIR"] == profileRoot);
 	assert(resolved.env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] == "1");
 	assert(resolved.env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] == "0");
+	assert(resolved.env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false");
 
 	// With no configured PATH, Claude keeps its existing host-PATH defaulting.
 	SandboxPaths defaultPaths;
