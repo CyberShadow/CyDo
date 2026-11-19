@@ -46,6 +46,35 @@ steward_domain: string                # what this steward cares about
 knowledge_base: path?                 # persistent state directory
 ```
 
+## Prompt Templates
+
+Every prompt CyDo sends is a [Jinja](https://jinja.palletsprojects.com/)
+template under `prompts/` or `system_prompts/`. CyDo looks for a template in
+three places and takes the first that has it:
+
+1. `<project>/.cydo/defs/`
+2. `~/.config/cydo/defs/`
+3. the definitions shipped with CyDo
+
+A file higher up replaces the one below it. To add to a prompt instead of
+replacing it, write `{{ default }}` where the prompt from further down should
+go:
+
+```markdown
+{{ default }}
+
+In this project, run `make check` before every commit.
+```
+
+`{{ read_file("path") }}` is the text of a file outside these directories,
+taken as it is. The path is absolute or starts with `~`:
+
+```markdown
+{{ default }}
+
+{{ read_file("~/notes/landing-workflow.md") }}
+```
+
 ## Landing
 
 The top-level `integrator:` mapping of `task-types.yaml` defines the project's

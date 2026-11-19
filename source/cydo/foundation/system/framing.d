@@ -163,11 +163,14 @@ struct CompiledTemplate
 /// Template syntax: `{{varName}}` placeholders; everything else is literal.
 /// First occurrence of each var becomes a named capture `(?P<var>.*?)`.
 /// Subsequent occurrences become numeric backreferences `\N`.
+/// A placeholder holding any other expression (`{{ read_file("...") }}`)
+/// matches whatever it rendered to, without capturing it.
 /// The pattern is anchored (`^...$`) and compiled with the `s` (dotall) flag.
 CompiledTemplate compileTemplate(string templateText)
 {
-    import std.regex : escaper;
+    import std.regex : ctRegex, escaper;
 
+    static immutable identifier = ctRegex!`^[A-Za-z_][A-Za-z0-9_]*$`;
     string pattern = "^";
     string[] varNames;
     int[string] groupIndex; // var → 1-based group number in pattern
@@ -194,10 +197,12 @@ CompiledTemplate compileTemplate(string templateText)
             pattern ~= escaper("{{" ~ remaining).to!string;
             break;
         }
-        auto varName = remaining[0 .. cast(size_t) closeIdx];
+        auto varName = remaining[0 .. cast(size_t) closeIdx].strip;
         remaining = remaining[cast(size_t) closeIdx + 2 .. $];
 
-        if (auto idxP = varName in groupIndex)
+        if (varName.matchFirst(identifier).empty)
+            pattern ~= "(?:.*?)";
+        else if (auto idxP = varName in groupIndex)
         {
             // Repeated placeholder — numeric backref
             pattern ~= "\\" ~ to!string(*idxP);
@@ -332,6 +337,12 @@ unittest
     assert(v4["body"] == "line1\nline2", v4["body"]);
 
     // No match
+    // An expression is matched but not captured; spaces around a name are fine.
+    auto ct6 = compileTemplate("{{ read_file(\"/x\") }}\n---\n{{ body }}");
+    string[string] vars6;
+    assert(tryMatchTemplate(ct6, "included\ntext\n---\nthe body", vars6));
+    assert(vars6 == ["body": "the body"]);
+
     auto ct5 = compileTemplate("PREFIX {{x}} SUFFIX");
     string[string] v5;
     assert(!tryMatchTemplate(ct5, "wrong prefix", v5));

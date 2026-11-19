@@ -87,7 +87,7 @@ import cydo.server.environment : consumeServerEnvironment;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir, sharedTmpBaseDir;
 import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule;
 import cydo.domain.task_types.definition : DjinjaTemplate, TaskTypeDef, UserEntryPointDef, OutputType, WorktreeMode, byName, loadTaskTypes,
-	loadTaskTypeSystemPrompt, renderPrompt, substituteVars,
+	loadTaskTypeSystemPrompt, promptTemplateSource, renderPrompt, substituteVars,
 	loadProjectMemory, resolveAgent;
 import cydo.foundation.system.framing : prependTaskFraming, validateTemplateSource;
 import cydo.foundation.system.known_messages : KnownSystemMessageKind,
@@ -3591,34 +3591,17 @@ class App
 	/// Read a prompt template file from the prompt search path and substitute variables.
 	private string readPromptFile(string relativePath, string projectPath, string[string] vars)
 	{
-		import std.file : exists, readText;
-		import std.path : buildPath;
-
-		foreach (dir; taskTypeCatalog.promptSearchPath(projectPath))
-		{
-			auto path = buildPath(dir, relativePath);
-			if (exists(path))
-			{
-				auto prompt = substituteVars(readText(path), vars);
-				return prompt.strip.length == 0 ? "" : prompt;
-			}
-		}
-		throw new Exception("Prompt file not found: " ~ relativePath);
+		auto source = promptTemplateSource(taskTypeCatalog.promptSearchPath(projectPath),
+			relativePath);
+		enforce(source !is null, "Prompt file not found: " ~ relativePath);
+		auto prompt = substituteVars(source, vars);
+		return prompt.strip.length == 0 ? "" : prompt;
 	}
 
 	/// Read a prompt template file from the search path without variable substitution.
 	private string loadTemplateText(string templateName, string projectPath)
 	{
-		import std.file : exists, readText;
-		import std.path : buildPath;
-
-		foreach (dir; taskTypeCatalog.promptSearchPath(projectPath))
-		{
-			auto path = buildPath(dir, templateName);
-			if (exists(path))
-				return readText(path);
-		}
-		return null;
+		return promptTemplateSource(taskTypeCatalog.promptSearchPath(projectPath), templateName);
 	}
 
 	private void touchTask(int tid)

@@ -9,6 +9,7 @@ import configy.attributes : Key, Optional;
 import std.algorithm : canFind, filter, map, reverse, sort;
 import std.array : array, join;
 import std.conv : to;
+import std.exception : enforce;
 import std.format : format;
 import std.string : lineSplitter, strip;
 
@@ -410,18 +411,11 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 	{
 		if (tmpl.length == 0 || typesDirs.length == 0)
 			return;
-		foreach (dir; typesDirs)
-		{
-			auto fullPath = buildPath(dir, tmpl);
-			if (exists(fullPath))
-			{
-				auto templateText = readText(fullPath);
-				if (auto err = validateTemplateSource(templateText))
-					errors ~= format("%s: prompt_template '%s': %s", context, tmpl, err);
-				return;
-			}
-		}
-		errors ~= format("%s: prompt_template '%s' not found", context, tmpl);
+		auto templateText = promptTemplateSource(typesDirs, tmpl);
+		if (templateText is null)
+			errors ~= format("%s: prompt_template '%s' not found", context, tmpl);
+		else if (auto err = validateTemplateSource(templateText))
+			errors ~= format("%s: prompt_template '%s': %s", context, tmpl, err);
 	}
 
 	/// Validate a single ContinuationDef, returning any errors found.
@@ -959,17 +953,110 @@ private string detectCycle(TaskTypeDef[] types, string current, string[] visited
 // Prompt Rendering
 // ---------------------------------------------------------------------------
 
-/// Replace `{{key}}` placeholders in a string with values from the given map.
+/// The source of the prompt template `name`: the file from the first
+/// directory of `dirs` that has it, or null if none does. A `{{ default }}`
+/// in it stands for the source of the same template further down `dirs`, so
+/// that an override can extend what it overrides instead of replacing it.
+string promptTemplateSource(const(string)[] dirs, string name)
+{
+	import std.file : exists, readText;
+	import std.path : buildPath;
+	import std.regex : ctRegex, matchFirst, replaceAll;
+
+	foreach (i, dir; dirs)
+	{
+		auto path = buildPath(dir, name);
+		if (!exists(path))
+			continue;
+		auto source = readText(path);
+		static immutable defaultPlaceholder = ctRegex!`\{\{\s*default\s*\}\}`;
+		if (source.matchFirst(defaultPlaceholder).empty)
+			return source;
+		auto overridden = promptTemplateSource(dirs[i + 1 .. $], name);
+		enforce(overridden !is null, format(
+			"%s extends {{ default }}, but nothing further down the prompt search path has '%s'",
+			path, name));
+		return source.replaceAll!(m => overridden)(defaultPlaceholder);
+	}
+	return null;
+}
+
+unittest
+{
+	import std.exception : assertThrown;
+	import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir, write;
+	import std.path : buildPath;
+
+	auto root = buildPath(tempDir, "cydo-test-prompt-template-source");
+	if (exists(root))
+		rmdirRecurse(root);
+	scope(exit) rmdirRecurse(root);
+	auto project = buildPath(root, "project");
+	auto user = buildPath(root, "user");
+	auto shipped = buildPath(root, "shipped");
+	foreach (dir; [project, user, shipped])
+		mkdirRecurse(buildPath(dir, "prompts"));
+	auto dirs = [project, user, shipped];
+
+	write(buildPath(shipped, "prompts/a.md"), "shipped {{x}}");
+	assert(promptTemplateSource(dirs, "prompts/a.md") == "shipped {{x}}");
+	assert(promptTemplateSource(dirs, "prompts/missing.md") is null);
+
+	// An override replaces what it overrides ...
+	write(buildPath(user, "prompts/a.md"), "user");
+	assert(promptTemplateSource(dirs, "prompts/a.md") == "user");
+	// ... unless it extends it, at every level.
+	write(buildPath(user, "prompts/a.md"), "{{ default }}\nuser");
+	write(buildPath(project, "prompts/a.md"), "project\n{{default}}");
+	assert(promptTemplateSource(dirs, "prompts/a.md") == "project\nshipped {{x}}\nuser");
+
+	write(buildPath(user, "prompts/b.md"), "{{ default }}");
+	assertThrown(promptTemplateSource(dirs, "prompts/b.md"));
+}
+
+/// `read_file(path)` in a prompt template: the text of a file outside the
+/// prompt search path, as it is (it is not itself a template). `path` is
+/// absolute or starts with `~`.
+private string readFileForTemplate(string path)
+{
+	import std.file : readText;
+	import std.path : expandTilde, isAbsolute;
+
+	auto expanded = expandTilde(path);
+	enforce(expanded.isAbsolute, format(
+		"read_file(\"%s\"): the path must be absolute or start with ~", path));
+	return readText(expanded);
+}
+
+/// Render a prompt template: `{{key}}` placeholders take their values from
+/// the given map, and `{{ read_file("path") }}` is the text of that file.
 string substituteVars(string text, string[string] vars)
 {
 	import djinja.djinja : loadData, JinjaConfig;
-	import djinja.render : Render;
+	import djinja.render : Render, registerFunction;
 	import uninode.serialization : serialize = serializeToUniNode;
 
     enum JinjaConfig conf = { cmntOpInline: "$$", stmtOpInline: "$$$" };
 	auto tmpl = loadData!conf(text);
 	auto renderer = new Render(tmpl);
+	renderer.registerFunction!readFileForTemplate("read_file");
 	return renderer.render(serialize(vars));
+}
+
+unittest
+{
+	import std.exception : assertThrown;
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+
+	auto path = buildPath(tempDir, "cydo-test-read-file-for-template.md");
+	write(path, "literal {{not_a_var}}\n");
+	scope(exit) remove(path);
+
+	assert(substituteVars("a {{x}}\n{{ read_file(path) }}b", ["x": "1", "path": path])
+		== "a 1\nliteral {{not_a_var}}\nb");
+	assertThrown(substituteVars(`{{ read_file("relative.md") }}`, null));
+	assertThrown(substituteVars(`{{ read_file("/nonexistent/cydo-test.md") }}`, null));
 }
 
 /// Render a prompt template by reading the template file and substituting
@@ -977,24 +1064,14 @@ string substituteVars(string text, string[string] vars)
 string renderPrompt(ref TaskTypeDef def, string description, string[] typesDirs,
 	string outputFile = "", string edgeTemplate = "", string[string] extraVars = null)
 {
-	import std.file : exists, readText;
-	import std.path : buildPath, dirName;
+	import std.path : dirName;
 
 	auto templateName = edgeTemplate.length > 0 ? edgeTemplate : def.prompt_template;
 	if (templateName.length == 0)
 		return description;
 
-	string templatePath;
-	foreach (dir; typesDirs)
-	{
-		auto candidate = buildPath(dir, templateName);
-		if (exists(candidate))
-		{
-			templatePath = candidate;
-			break;
-		}
-	}
-	if (templatePath.length == 0)
+	auto templateText = promptTemplateSource(typesDirs, templateName);
+	if (templateText is null)
 		return description;
 
 	string[string] vars;
@@ -1008,7 +1085,7 @@ string renderPrompt(ref TaskTypeDef def, string description, string[] typesDirs,
 	}
 	foreach (k, v; extraVars)
 		vars[k] = v;
-	return substituteVars(readText(templatePath), vars);
+	return substituteVars(templateText, vars);
 }
 
 /// Load and render a system prompt template from disk. Returns null if the
@@ -1018,22 +1095,12 @@ string renderPrompt(ref TaskTypeDef def, string description, string[] typesDirs,
 string loadSystemPrompt(ref TaskTypeDef def, string[] typesDirs,
 	string outputFile = "", string[string] extraVars = null)
 {
-	import std.file : exists, readText;
 	import std.path : buildPath, dirName;
 
 	if (def.system_prompt_template.length == 0 || typesDirs.length == 0)
 		return null;
-	string path;
-	foreach (dir; typesDirs)
-	{
-		auto candidate = buildPath(dir, def.system_prompt_template);
-		if (exists(candidate))
-		{
-			path = candidate;
-			break;
-		}
-	}
-	if (path.length == 0)
+	auto rolePromptText = promptTemplateSource(typesDirs, def.system_prompt_template);
+	if (rolePromptText is null)
 		return null;
 	if ("generated_guidance" !in extraVars)
 		throw new Exception(format(
@@ -1049,31 +1116,14 @@ string loadSystemPrompt(ref TaskTypeDef def, string[] typesDirs,
 	}
 	foreach (k, v; extraVars)
 		vars[k] = v;
-	auto rolePromptText = readText(path);
-	auto rolePrompt = vars.length > 0 ? substituteVars(rolePromptText, vars) : rolePromptText;
+	auto rolePrompt = substituteVars(rolePromptText, vars);
 
-	string masterPath;
-	string[] searchedPaths;
-	foreach (dir; typesDirs)
-	{
-		auto candidate = buildPath(dir, "system_prompts", "master.md");
-		searchedPaths ~= candidate;
-		if (exists(candidate))
-		{
-			masterPath = candidate;
-			break;
-		}
-	}
-	if (masterPath.length == 0)
-	{
-		throw new Exception(format(
-			"Task type '%s' could not resolve system prompt master template. Searched: %s",
-			def.name,
-			searchedPaths.join(", ")));
-	}
+	auto masterText = promptTemplateSource(typesDirs, "system_prompts/master.md");
+	enforce(masterText !is null, format(
+		"Task type '%s' could not resolve system prompt master template. Searched: %s",
+		def.name, typesDirs.map!(dir => buildPath(dir, "system_prompts/master.md")).join(", ")));
 
 	vars["role_prompt"] = rolePrompt;
-	auto masterText = readText(masterPath);
 	return substituteVars(masterText, vars);
 }
 
@@ -1104,22 +1154,11 @@ string loadProjectMemory(TaskTypeDef* def, string projectPath, string[] typesDir
 		? "(Memory is currently empty.)"
 		: raw;
 
-	// Walk typesDirs for preamble template
-	string preamblePath;
-	foreach (dir; typesDirs)
-	{
-		auto candidate = buildPath(dir, "system_prompts/memory_preamble.md");
-		if (exists(candidate))
-		{
-			preamblePath = candidate;
-			break;
-		}
-	}
-
-	if (preamblePath.length == 0)
+	auto preamble = promptTemplateSource(typesDirs, "system_prompts/memory_preamble.md");
+	if (preamble is null)
 		return "[CYDO PROJECT MEMORY]\n" ~ contents ~ "\n[/CYDO PROJECT MEMORY]\n";
 
-	return substituteVars(readText(preamblePath), [
+	return substituteVars(preamble, [
 		"memory_dir": memoryDir,
 		"memory_contents": contents,
 	]);
@@ -1408,25 +1447,12 @@ unittest // 8. Validator warns when entry point target has non-default agent (ro
 string renderContinuationPrompt(ref ContinuationDef contDef, string fallback, string[] typesDirs,
 	string[string] extraVars = null)
 {
-	import std.file : exists, readText;
-	import std.path : buildPath;
-
 	if (contDef.prompt_template.length == 0)
 		return fallback;
 
-	string templatePath;
-	foreach (dir; typesDirs)
-	{
-		auto candidate = buildPath(dir, contDef.prompt_template);
-		if (exists(candidate))
-		{
-			templatePath = candidate;
-			break;
-		}
-	}
-	assert(templatePath.length > 0, "Continuation prompt template not found: " ~ contDef.prompt_template);
+	auto text = promptTemplateSource(typesDirs, contDef.prompt_template);
+	assert(text !is null, "Continuation prompt template not found: " ~ contDef.prompt_template);
 
-	auto text = readText(templatePath);
 	if (extraVars.length > 0)
 		text = substituteVars(text, extraVars);
 	return text;
