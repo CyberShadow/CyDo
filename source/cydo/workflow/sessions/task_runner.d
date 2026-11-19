@@ -767,6 +767,7 @@ public:
 			sessionConfig.includeTools ~= "Land";
 		if (typeDef !is null && typeDef.allow_native_subagents)
 			sessionConfig.allowNativeSubagents = true;
+		sessionConfig.allowScheduledWakeups = interactive;
 
 		sessionConfig.permissions = host_.findWorkspacePermissionSettings(td.workspace);
 

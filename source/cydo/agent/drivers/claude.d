@@ -1521,15 +1521,11 @@ class ClaudeCodeSession : AgentSession
 				"--system-prompt-snapshot", "off",
 			];
 
-		// The task-list tools; not TaskOutput and TaskStop, which read and
-		// stop background work.
-		string taskTools = "TaskCreate,TaskGet,TaskList,TaskUpdate";
-		// Task and Workflow start Claude Code's own sub-agents, which CyDo
-		// neither shows nor manages; its own task system takes their place.
-		string disallowed = config.allowNativeSubagents
-			? taskTools ~ ",EnterPlanMode,ExitPlanMode,AskUserQuestion"
-			: "Task,Workflow," ~ taskTools ~ ",EnterPlanMode,ExitPlanMode,AskUserQuestion";
-		claudeArgs ~= ["--disallowedTools", disallowed];
+		import std.array : join;
+
+		auto disallowed = disallowedTools(config.allowNativeSubagents,
+			config.allowScheduledWakeups);
+		claudeArgs ~= ["--disallowedTools", disallowed.join(",")];
 
 		// When sandboxed, cmdPrefix handles workDir via --chdir (bwrap) or -C (env)
 		string[] args;
@@ -4645,4 +4641,47 @@ private int findMatchingBrace(string s, size_t pos)
 		}
 	}
 	return -1;
+}
+
+/// The Claude Code tools a CyDo session does not get, because each one
+/// bypasses or duplicates something CyDo provides.
+private string[] disallowedTools(bool allowNativeSubagents, bool allowScheduledWakeups)
+{
+	string[] tools = [
+		// The task list; not TaskOutput and TaskStop, which read and stop
+		// background work.
+		"TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
+		// CyDo has its own modes and its own way to ask the user.
+		"EnterPlanMode", "ExitPlanMode", "AskUserQuestion",
+		// CyDo places each task in its checkout or worktree; an agent that
+		// needs another worktree uses git.
+		"EnterWorktree", "ExitWorktree",
+	];
+	// Claude Code's own sub-agents, and the tools that address them. CyDo
+	// neither shows nor manages them; its task system takes their place.
+	if (!allowNativeSubagents)
+		tools ~= ["Task", "Workflow", "SendMessage", "ListAgents"];
+	// A scheduled prompt starts a turn at a later time. Only a session the
+	// user converses with stays around for that; a sub-task's process ends
+	// with the turn that delivers its result.
+	if (!allowScheduledWakeups)
+		tools ~= ["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"];
+	return tools;
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	auto subTask = disallowedTools(false, false);
+	assert(subTask.canFind("Task") && subTask.canFind("SendMessage"));
+	assert(subTask.canFind("CronCreate") && subTask.canFind("ScheduleWakeup"));
+	assert(subTask.canFind("EnterWorktree"));
+
+	auto interactive = disallowedTools(false, true);
+	assert(interactive.canFind("Workflow") && !interactive.canFind("CronCreate"));
+
+	auto nativeSubagents = disallowedTools(true, true);
+	assert(!nativeSubagents.canFind("Task") && !nativeSubagents.canFind("SendMessage"));
+	assert(nativeSubagents.canFind("TaskCreate") && nativeSubagents.canFind("ExitWorktree"));
 }
