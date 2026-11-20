@@ -40,7 +40,7 @@ integrator:
 
 task_types:
   integrator:
-    icon: oversee
+    icon: integrator
     system_prompt_template: system_prompts/integrator.md
     model_class: large
     output_type: []

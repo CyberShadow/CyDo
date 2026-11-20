@@ -347,7 +347,7 @@ task_types:
         result_note: "The changes are in your working tree; review them."
 
   integrator:
-    icon: oversee
+    icon: integrator
     system_prompt_template: system_prompts/integrator.md
     model_class: large
     output_type: []
