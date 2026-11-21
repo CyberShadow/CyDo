@@ -367,6 +367,8 @@ export interface TaskState {
     input: Record<string, unknown>;
     /** Why the agent's own safety checks flag the call, if they do. */
     reason?: string;
+    /** When CyDo denies the call unanswered (Unix ms); absent: never. */
+    expiresAt?: number;
   } | null;
   /** Files modified by the agent, keyed by absolute file path. */
   trackedFiles: Map<string, TrackedFile>;

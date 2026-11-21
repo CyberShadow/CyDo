@@ -515,9 +515,9 @@ class App
 					AskUserQuestionMessage("ask_user_question", tid,
 						"", JSONFragment("[]"))).representation));
 			},
-			sendPermissionPrompt: (int tid, PermissionPrompt prompt) {
+			sendPermissionPrompt: (int tid, const PendingPermission pending) {
 				clientHub.sendToSubscribed(tid, Data(toJson(
-					PermissionPromptMessage.of(tid, prompt)).representation));
+					PermissionPromptMessage.of(tid, pending)).representation));
 			},
 			clearPermissionPrompt: (int tid) {
 				clientHub.sendToSubscribed(tid, Data(toJson(

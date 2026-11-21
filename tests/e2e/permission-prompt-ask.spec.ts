@@ -37,6 +37,10 @@ workspaces:
   const form = page.locator(".permission-prompt-form");
   await expect(form).toBeVisible({ timeout: responseTimeout(agentType) });
   await expect(page.locator(".permission-prompt-reason")).toHaveCount(0);
+  // Unanswered, it is denied after permission_prompt_timeout (2 min).
+  await expect(page.locator(".permission-prompt-timeout")).toContainText(
+    /Denied automatically in [12]:\d\d/,
+  );
 
   // Click Allow — the backend sends allow back to Claude, which runs the command.
   await page.locator(".permission-allow-btn").click();

@@ -390,6 +390,8 @@ export interface PermissionPromptControlMessage {
   input: Record<string, unknown>;
   /** Why the agent's own safety checks flag the call, if they do. */
   reason?: string;
+  /** When CyDo denies the call unanswered (Unix ms); absent: never. */
+  expires_at?: number;
 }
 export interface DraftUpdatedMessage {
   type: "draft_updated";

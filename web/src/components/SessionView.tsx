@@ -484,6 +484,7 @@ function SessionViewInner({
           toolName={task.pendingPermission.toolName}
           input={task.pendingPermission.input}
           reason={task.pendingPermission.reason}
+          expiresAt={task.pendingPermission.expiresAt}
           onAllow={handlePermissionAllow}
           onDeny={handlePermissionDeny}
         />

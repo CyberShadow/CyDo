@@ -8,6 +8,8 @@ private struct ProjectRepoResolution
 
 private ProjectRepoResolution[string] projectRepoResolutionCache;
 
+import std.datetime.systime : SysTime;
+
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial;
@@ -916,7 +918,7 @@ struct TaskData
 	string[] pendingSteeringTexts;
 	string pendingAskToolUseId;  // correlation ID of a pending AskUserQuestion call
 	JSONFragment pendingAskQuestions;  // serialized questions for re-broadcast on reconnect
-	PermissionPrompt pendingPermission; // empty toolUseId when none; kept for late joiners
+	PendingPermission pendingPermission; // kept for late joiners
 	Promise!McpResult pendingAskPromise;   // child waiting for parent's answer
 	string pendingAskQuestion;             // question text from child
 	int pendingAskQid;                     // qid allocated for this question
@@ -1395,6 +1397,14 @@ struct AskUserQuestionMessage
 	JSONFragment questions;  // serialized AskQuestion[]
 }
 
+/// A tool call put to a person, waiting on their decision.
+struct PendingPermission
+{
+	PermissionPrompt prompt; // empty toolUseId when none
+	/// When CyDo stops waiting and denies the call; SysTime.init: never.
+	SysTime deadline;
+}
+
 struct PermissionPromptMessage
 {
 	string type = "permission_prompt";
@@ -1403,12 +1413,33 @@ struct PermissionPromptMessage
 	string tool_name;
 	JSONFragment input;
 	@JSONOptional string reason;
+	/// When CyDo denies the call unanswered, in Unix milliseconds; absent
+	/// when it waits indefinitely.
+	@JSONOptional long expires_at;
 
-	static PermissionPromptMessage of(int tid, PermissionPrompt prompt)
+	static PermissionPromptMessage of(int tid, const PendingPermission pending)
 	{
+		import std.datetime.systime : unixTimeToStdTime;
+
+		auto prompt = pending.prompt;
 		return PermissionPromptMessage("permission_prompt", tid, prompt.toolUseId,
-			prompt.toolName, prompt.input, prompt.reason);
+			prompt.toolName, prompt.input, prompt.reason,
+			pending.deadline == SysTime.init ? 0
+				: (pending.deadline - SysTime(unixTimeToStdTime(0))).total!"msecs");
 	}
+}
+
+unittest
+{
+	import std.datetime.systime : unixTimeToStdTime;
+	import core.time : msecs;
+	import std.datetime.timezone : UTC;
+
+	auto prompt = PermissionPrompt("toolu_1", "Bash", JSONFragment("{}"), "");
+	assert(PermissionPromptMessage.of(1, PendingPermission(prompt)).expires_at == 0);
+	auto deadline = SysTime(unixTimeToStdTime(1_700_000_000), UTC()) + 250.msecs;
+	assert(PermissionPromptMessage.of(1, PendingPermission(prompt, deadline)).expires_at
+		== 1_700_000_000_250);
 }
 
 unittest

@@ -4511,6 +4511,89 @@ pre.extra-field-value {
   font-size: 11px;
 }
 
+/* PermissionPromptForm: shown in place of the input box, like AskUserForm */
+.permission-prompt-form {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  max-height: 50vh;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+}
+.permission-prompt-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.permission-prompt-timeout {
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: normal;
+  font-variant-numeric: tabular-nums;
+}
+.permission-prompt-tool {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
 .permission-prompt-reason {
-  color: var(--color-warning, #c8a000);
+  margin-top: 4px;
+  color: var(--warn);
+}
+.permission-prompt-input {
+  margin: 8px 0 12px;
+  padding: 8px;
+  background: var(--tool-bg);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.permission-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 8px;
+}
+.permission-deny-reason {
+  flex: 1;
+  min-height: 40px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.permission-deny-btn {
+  padding: 10px 20px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+}
+.permission-deny-btn:hover {
+  border-color: var(--error);
+  color: var(--error);
+}
+.permission-allow-btn {
+  padding: 10px 20px;
+  border: none;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  font-size: 14px;
+}
+.permission-allow-btn:hover {
+  background: var(--accent-dim);
 }

@@ -1,6 +1,7 @@
 module cydo.workflow.tools.backend;
 
 import core.time : Duration;
+import std.datetime.systime : Clock, SysTime;
 import std.format : format;
 import std.logger : errorf, infof, tracef, warningf;
 import std.process : execute;
@@ -112,7 +113,7 @@ struct WorkflowToolsHost
 	void delegate(int tid, JSONFragment questions, string toolUseId)
 		sendAskUserQuestionPrompt;
 	void delegate(int tid) clearAskUserQuestionPrompt;
-	void delegate(int tid, PermissionPrompt prompt) sendPermissionPrompt;
+	void delegate(int tid, const PendingPermission pending) sendPermissionPrompt;
 	void delegate(int tid) clearPermissionPrompt;
 	void delegate(int parentTid, int childTid, int specIndex)
 		appendTaskSpawnedEvent;
@@ -220,7 +221,7 @@ unittest
 		broadcastTaskUpdate: (int tid) {}, broadcastFocusHint: (int fromTid, int toTid) {},
 		sendAskUserQuestionPrompt: (int tid, JSONFragment questions, string toolUseId) {},
 		clearAskUserQuestionPrompt: (int tid) {},
-		sendPermissionPrompt: (int tid, PermissionPrompt prompt) {},
+		sendPermissionPrompt: (int tid, const PendingPermission pending) {},
 		clearPermissionPrompt: (int tid) {}, appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
 		broadcastTaskCreated: (TaskCreatedMessage message) {}, permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 		onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); }, generateTitle: (int tid, string prompt) {},
@@ -933,7 +934,7 @@ public:
 		// A concurrent request refused with "Another permission prompt is
 		// already pending" never had a prompt of its own.
 		if ((tid in pendingPermissionPrompts_) is null
-			|| td.pendingPermission.toolUseId != toolUseId)
+			|| td.pendingPermission.prompt.toolUseId != toolUseId)
 			return;
 		settlePermissionPrompt(tid,
 			makePermissionDenyJson("Permission request withdrawn by the agent"));
@@ -1100,7 +1101,7 @@ public:
 		pendingPermissionInputs_.remove(tid);
 		cancelPermissionPromptTimeout(tid);
 
-		td.pendingPermission = PermissionPrompt.init;
+		td.pendingPermission = PendingPermission.init;
 		td.needsAttention = false;
 		host_.persistNeedsAttention(tid, false);
 		td.hasPendingQuestion = false;
@@ -1126,7 +1127,7 @@ public:
 		}
 
 		if ((tid in pendingPermissionPrompts_) !is null
-			&& td.pendingPermission.toolUseId.length > 0)
+			&& td.pendingPermission.prompt.toolUseId.length > 0)
 		{
 			send(toJson(PermissionPromptMessage.of(tid, td.pendingPermission)));
 		}
@@ -1262,7 +1263,7 @@ public:
 			pendingPermissionPrompts_.remove(tid);
 			pendingPermissionInputs_.remove(tid);
 			cancelPermissionPromptTimeout(tid);
-			td.pendingPermission = PermissionPrompt.init;
+			td.pendingPermission = PendingPermission.init;
 		}
 	}
 
@@ -1481,9 +1482,11 @@ private:
 
 		auto td = requireTask(tid,
 			"Permission prompt target must be a live task");
-		td.pendingPermission = prompt;
+		// A zero timeout waits indefinitely.
+		td.pendingPermission = PendingPermission(prompt,
+			timeout > Duration.zero ? Clock.currTime + timeout : SysTime.init);
 
-		host_.sendPermissionPrompt(tid, prompt);
+		host_.sendPermissionPrompt(tid, td.pendingPermission);
 		if (timeout > Duration.zero)
 			permissionPromptTimeouts_[tid] = setTimeout({
 				permissionPromptTimeouts_.remove(tid);
@@ -1885,7 +1888,7 @@ unittest
 		sendAskUserQuestionPrompt: (int tid, JSONFragment questions,
 			string toolUseId) {},
 		clearAskUserQuestionPrompt: (int tid) {},
-		sendPermissionPrompt: (int tid, PermissionPrompt prompt) {},
+		sendPermissionPrompt: (int tid, const PendingPermission pending) {},
 		clearPermissionPrompt: (int tid) {},
 		appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
 		broadcastTaskCreated: (TaskCreatedMessage message) {},
@@ -2176,7 +2179,7 @@ unittest
 				sendAskUserQuestionPrompt: (int tid, JSONFragment questions,
 					string toolUseId) {},
 				clearAskUserQuestionPrompt: (int tid) {},
-				sendPermissionPrompt: (int tid, PermissionPrompt prompt) {},
+				sendPermissionPrompt: (int tid, const PendingPermission pending) {},
 				clearPermissionPrompt: (int tid) {},
 				appendTaskSpawnedEvent: (int parentTid, int childTid,
 					int specIndex) {},
