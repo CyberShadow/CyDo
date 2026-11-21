@@ -37,6 +37,9 @@ workspaces:
   const form = page.locator(".permission-prompt-form");
   await expect(form).toBeVisible({ timeout: responseTimeout(agentType) });
   await expect(page.locator(".permission-prompt-reason")).toHaveCount(0);
+  // It takes the input box's place at the bottom, as AskUserQuestion does.
+  const box = await form.boundingBox();
+  expect(box && box.y + box.height).toBe(page.viewportSize()?.height);
   // Unanswered, it is denied after permission_prompt_timeout (2 min).
   await expect(page.locator(".permission-prompt-timeout")).toContainText(
     /Denied automatically in [12]:\d\d/,

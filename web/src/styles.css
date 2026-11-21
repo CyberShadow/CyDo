@@ -1872,7 +1872,8 @@ body,
 }
 
 .app.has-sidebar .resume-bar,
-.app.has-sidebar .ask-user-form {
+.app.has-sidebar .ask-user-form,
+.app.has-sidebar .permission-prompt-form {
   grid-column: 2;
   grid-row: 5;
 }
@@ -3936,6 +3937,7 @@ pre.extra-field-value {
   .app.has-sidebar .input-box,
   .app.has-sidebar .resume-bar,
   .app.has-sidebar .ask-user-form,
+  .app.has-sidebar .permission-prompt-form,
   .app.has-sidebar .session-loading,
   .app.has-sidebar .session-empty {
     grid-column: 1;
