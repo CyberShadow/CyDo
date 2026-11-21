@@ -26,6 +26,12 @@ enum QuestionAfterAnswer
 	continueBatch,
 	completeAnswererOnIdle,
 	leaveAnswererAlive,
+	/// The answerer serves requests from several askers, and its turns span
+	/// several requests, so its turn end says nothing about any one of them.
+	/// The request ends when the answerer answers it: Answer releases the
+	/// asker at once, and the answerer's status stays with its own turn-end
+	/// handling.
+	endRequestOnAnswer,
 }
 
 struct QuestionRoute
@@ -301,6 +307,25 @@ public:
 		return startQuestionRoute(route, message);
 	}
 
+	/// Ask a task that serves requests from several askers (see
+	/// `QuestionAfterAnswer.endRequestOnAnswer`).
+	Promise!McpResult handleServedRequest(int askerTid, string message, int servingTid)
+	{
+		assert(host_.getTask(askerTid) !is null, "Served request from a missing task");
+		assert(host_.getTask(servingTid) !is null, "Served request to a missing task");
+		assert(askerTid != servingTid, "A task cannot serve its own request");
+		assert(host_.tasksShareWorkspace(askerTid, servingTid),
+			"Served request across workspaces");
+
+		QuestionRoute route;
+		route.askerTid = askerTid;
+		route.answererTid = servingTid;
+		route.delivery = QuestionDelivery.injectedMessage;
+		route.wait = QuestionWait.directPromise;
+		route.afterAnswer = QuestionAfterAnswer.endRequestOnAnswer;
+		return startQuestionRoute(route, message);
+	}
+
 	Promise!McpResult handleAnswer(string callerTidStr, int qid, string message)
 	{
 		int callerTidInt;
@@ -378,6 +403,20 @@ public:
 					"Use Ask(question, " ~ to!string(callerTidInt)
 					~ ") for follow-up questions."));
 				deferOrDeliverAnswer(route, McpResult.structured(answerJson));
+				auto deliveredJson = toJson(AnswerResult("delivered", route.askerTid,
+					qid, null, null, "Answer delivered to asking task."));
+				return resolve(McpResult.structured(deliveredJson));
+			}
+			case QuestionAfterAnswer.endRequestOnAnswer:
+			{
+				auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
+					callerTd.title, message,
+					"Use Ask(question, " ~ to!string(callerTidInt)
+					~ ") for follow-up questions."));
+				reactivateAskerAfterAnswer(route.askerTid);
+				(*questionPromise).fulfill(McpResult.structured(answerJson));
+				host_.broadcastFocusHint(route.answererTid, route.askerTid);
+				clearQuestionRoute(qid);
 				auto deliveredJson = toJson(AnswerResult("delivered", route.askerTid,
 					qid, null, null, "Answer delivered to asking task."));
 				return resolve(McpResult.structured(deliveredJson));
@@ -658,8 +697,8 @@ private:
 			askerTd.notificationBody = "Asking parent: "
 				~ truncateTitle(message, 100);
 		}
-		else if (currentRoute.afterAnswer
-				== QuestionAfterAnswer.leaveAnswererAlive)
+		else if (currentRoute.afterAnswer == QuestionAfterAnswer.leaveAnswererAlive
+				|| currentRoute.afterAnswer == QuestionAfterAnswer.endRequestOnAnswer)
 		{
 			auto askerTd = host_.getTask(currentRoute.askerTid);
 			assert(askerTd !is null);
@@ -1031,5 +1070,161 @@ unittest
 		}
 		batchLoop.fulfill(McpResult("", false));
 		drainPromiseNextTicks();
+	}
+}
+
+// When an answer reaches the asker. In these tests the answerer's turn never
+// ends unless a test runs its idle callbacks: that is what an answerer with
+// background work running looks like here, since its turn-end handling does
+// not drain idle callbacks while the work runs.
+unittest
+{
+	import ae.net.asockets : socketManager;
+	import cydo.domain.tasks.model : BatchSignal;
+	import std.algorithm : canFind;
+
+	void drainPromiseNextTicks()
+	{
+		for (;;)
+		{
+			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
+			if (handlers.length == 0)
+				return;
+			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
+			foreach (handler; handlers)
+				handler();
+		}
+	}
+
+	struct Fixture
+	{
+		TaskData[int] tasks;
+		void delegate()[] idleCallbacks;
+		BatchRegistry batchRegistry;
+		QuestionRouter router;
+	}
+
+	Fixture* makeFixture(int answererParentTid)
+	{
+		auto f = new Fixture;
+		f.tasks[1] = TaskData(1, "local", "/tmp/question-router-test");
+		f.tasks[1].status = TaskStatus.active;
+		f.tasks[2] = TaskData(2, "local", "/tmp/question-router-test");
+		f.tasks[2].parentTid = answererParentTid;
+		f.tasks[2].status = TaskStatus.alive;
+
+		auto host = QuestionRouterHost(
+			getTask: (int tid) => tid in f.tasks,
+			isTaskAlive: (int tid) => (tid in f.tasks) !is null,
+			tasksShareWorkspace: (int aTid, int bTid) => true,
+			taskWorkspaceLabel: (int tid) => "local",
+			systemKeyword: () => "SYSTEM",
+			readPromptFile: (string relativePath, string projectPath,
+				string[string] vars) => "",
+			buildKnownSystemMessageMeta: (KnownSystemMessageKind kind,
+				string subject, string[string] vars, string bodyVar) => "{}",
+			sendTaskMessage: (int tid, const(ContentBlock)[] content,
+				string cydoMeta, string nonce) => resolve(),
+			transitionTask: (int tid, TaskStatus expectedFrom, TaskStatus to,
+				TaskNotificationChange notification) {
+				assert(f.tasks[tid].status == expectedFrom);
+				f.tasks[tid].status = to;
+			},
+			transitionTaskFrom: (int tid, TaskStatus[] expectedFrom,
+				TaskStatus to, TaskNotificationChange notification) {
+				assert(expectedFrom.canFind(f.tasks[tid].status));
+				f.tasks[tid].status = to;
+			},
+			persistResultText: (int tid, string resultText) {},
+			broadcastFocusHint: (int fromTid, int toTid) {},
+			addIdleCallback: (int tid, void delegate() cb) {
+				assert(tid == 2);
+				f.idleCallbacks ~= cb;
+			},
+			reactivateTask: (int tid) => resolve(),
+			hasPendingSubTask: (int tid) => false,
+			registerFollowUpBatchChild: (int parentTid, int childTid,
+				BatchHandle handle) {},
+			cleanupAfterFollowUpAnswerDelivery: (int childTid) {},
+			awaitBatchLoop: (int parentTid, ulong batchId) => new Promise!McpResult,
+			makeInternalBatchError: (string message) => McpResult(message, true),
+		);
+		f.router = new QuestionRouter(host, &f.batchRegistry);
+		return f;
+	}
+
+	// A served request ends at Answer, whatever the answerer's status
+	// (`waiting` when it answers in a turn its background work started).
+	foreach (answererStatus; [TaskStatus.active, TaskStatus.waiting])
+	{
+		auto f = makeFixture(0);
+		McpResult askerResult;
+		bool askerResolved;
+		f.router.handleServedRequest(1, "land this", 2).then((McpResult r) {
+			askerResult = r;
+			askerResolved = true;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(f.tasks[1].status == TaskStatus.waiting);
+		assert(f.tasks[2].status == TaskStatus.active);
+		auto qid = f.router.nextQid_ - 1;
+		assert(f.router.questionRoutes_[qid].delivered);
+
+		f.tasks[2].status = answererStatus;
+		McpResult answererResult;
+		f.router.handleAnswer("2", qid, "landed").then((McpResult r) {
+			answererResult = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+
+		assert(askerResolved);
+		assert(!askerResult.isError);
+		assert(askerResult.text.canFind("landed"));
+		assert(f.tasks[1].status == TaskStatus.active);
+		assert(!answererResult.isError);
+		assert(answererResult.text.canFind("delivered"));
+		assert(f.tasks[2].status == answererStatus);
+		assert(f.idleCallbacks.length == 0);
+		assert(f.router.questionRoutes_.length == 0);
+		assert(f.router.pendingQuestions_.length == 0);
+	}
+
+	// A parent's follow-up to its child is answered when the child goes idle,
+	// not at Answer: the child may still be woken by its background work.
+	{
+		auto f = makeFixture(1);
+		f.router.handleAsk("1", "follow-up", 2).ignoreResult();
+		drainPromiseNextTicks();
+		assert(f.tasks[2].status == TaskStatus.active);
+		auto qid = f.router.nextQid_ - 1;
+
+		BatchHandle batchHandle;
+		size_t batchSlot;
+		assert(f.batchRegistry.findOwnerOfChild(2, batchHandle, batchSlot));
+		Promise!BatchSignal batchEventPromise;
+		string batchError;
+		assert(f.batchRegistry.waitOne(batchHandle, batchEventPromise, batchError));
+		bool childDone;
+		batchEventPromise.then((BatchSignal signal) { childDone = true; }).ignoreResult();
+
+		McpResult answererResult;
+		f.router.handleAnswer("2", qid, "answer").then((McpResult r) {
+			answererResult = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+
+		assert(answererResult.text.canFind("delivered"));
+		assert(!childDone);
+		assert((qid in f.router.pendingQuestions_) !is null);
+		assert(f.tasks[1].status == TaskStatus.waiting);
+		assert(f.tasks[2].status == TaskStatus.active);
+		assert(f.idleCallbacks.length == 1);
+
+		f.idleCallbacks[0]();
+		drainPromiseNextTicks();
+		assert(childDone);
+		assert(f.router.pendingQuestions_.length == 0);
+		assert(f.tasks[1].status == TaskStatus.active);
+		assert(f.tasks[2].status == TaskStatus.completed);
 	}
 }

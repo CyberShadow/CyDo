@@ -860,7 +860,7 @@ public:
 		return host_.integratorForTask(callerTid).then((int integratorTid) {
 			if (integratorTid == 0)
 				return resolve(McpResult("This project has no integrator", true));
-			return questionRouter_.handleAsk(callerTidStr, request, integratorTid);
+			return questionRouter_.handleServedRequest(callerTid, request, integratorTid);
 		}, (Exception e) => resolve(McpResult(e.msg, true)));
 	}
 
