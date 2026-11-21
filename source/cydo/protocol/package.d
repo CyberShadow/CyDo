@@ -332,6 +332,10 @@ struct ItemCompletedEvent
 	@JSONOptional JSONFragment input;
 	@JSONOptional string output;
 	@JSONOptional bool is_error;
+	/// A thinking item that is narration: progress prose the agent wrote for
+	/// the user between tool calls, as opposed to its own reasoning. Only
+	/// known while the agent is live; items loaded from history never set it.
+	@JSONOptional bool is_narration;
 	@JSONOptional JSONFragment extras;
 }
 

@@ -82,6 +82,93 @@ function streamTextResponse(res, text, model = "claude-sonnet-4-20250514") {
   res.end();
 }
 
+// A thinking-block signature carrying the server's block_kind tag. Real
+// signatures are an envelope (field 2) whose plaintext header (field 1)
+// holds block_kind in field 8 ("thinking" or "narration"); Claude Code reads
+// that tag to tell narration (progress prose shown to the user) apart from
+// reasoning. The rest of the envelope is opaque and left out here.
+function thinkingSignature(blockKind) {
+  const bytes = (field, payload) => [field * 8 + 2, payload.length, ...payload];
+  const varint = (field, value) => [field * 8, value];
+  const header = [
+    ...varint(1, 19),
+    ...varint(3, 2),
+    ...varint(7, 1),
+    ...bytes(8, [...Buffer.from(blockKind)]),
+  ];
+  const envelope = [
+    ...varint(1, 4),
+    ...bytes(2, bytes(1, header)),
+    ...varint(3, 1),
+  ];
+  return Buffer.from(envelope).toString("base64");
+}
+
+// Reasoning, then narration, then the answer — the block sequence the API
+// returns when Claude Code asks for narration alongside thinking.
+function streamNarrationResponse(res, reasoning, narration, text, model) {
+  sseEvent(res, "message_start", {
+    type: "message_start",
+    message: {
+      id: nextMsgId(),
+      type: "message",
+      role: "assistant",
+      content: [],
+      model,
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 1 },
+    },
+  });
+  const thinkingBlocks = [
+    { kind: "thinking", text: reasoning },
+    { kind: "narration", text: narration },
+  ];
+  thinkingBlocks.forEach((block, index) => {
+    sseEvent(res, "content_block_start", {
+      type: "content_block_start",
+      index,
+      content_block: { type: "thinking", thinking: "", signature: "" },
+    });
+    sseEvent(res, "content_block_delta", {
+      type: "content_block_delta",
+      index,
+      delta: { type: "thinking_delta", thinking: block.text },
+    });
+    sseEvent(res, "content_block_delta", {
+      type: "content_block_delta",
+      index,
+      delta: {
+        type: "signature_delta",
+        signature: thinkingSignature(block.kind),
+      },
+    });
+    sseEvent(res, "content_block_stop", { type: "content_block_stop", index });
+  });
+  const textIndex = thinkingBlocks.length;
+  sseEvent(res, "content_block_start", {
+    type: "content_block_start",
+    index: textIndex,
+    content_block: { type: "text", text: "" },
+  });
+  sseEvent(res, "content_block_delta", {
+    type: "content_block_delta",
+    index: textIndex,
+    delta: { type: "text_delta", text },
+  });
+  sseEvent(res, "content_block_stop", {
+    type: "content_block_stop",
+    index: textIndex,
+  });
+  sseEvent(res, "message_delta", {
+    type: "message_delta",
+    delta: { stop_reason: "end_turn", stop_sequence: null },
+    usage: { output_tokens: text.length },
+  });
+  sseEvent(res, "message_stop", { type: "message_stop" });
+  res.end();
+}
+
 // A response the model breaks off with a refusal, as the API's safeguards
 // do: stop_reason "refusal" with the refusal's category.
 function streamRefusalResponse(res, text, model) {
@@ -1466,6 +1553,14 @@ function handleMessages(req, res) {
       });
     } else if (intent.type === "text") {
       streamTextResponse(res, intent.text, model);
+    } else if (intent.type === "narration") {
+      streamNarrationResponse(
+        res,
+        intent.reasoning,
+        intent.narration,
+        intent.text,
+        model,
+      );
     } else if (intent.type === "parallel_shell") {
       const toolNames = intent.commands.map(() => "Bash");
       const inputs = intent.commands.map((cmd) => ({

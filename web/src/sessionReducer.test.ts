@@ -1771,6 +1771,47 @@ describe("item denial reducer", () => {
   });
 });
 
+describe("narration reducer", () => {
+  function thinkingBlock(s: TaskState, itemId: string) {
+    return [...s.blocks.values()].find((b) => b.itemId === itemId);
+  }
+
+  it("marks only thinking items completed as narration", () => {
+    let s: TaskState = makeState();
+    for (const [seq, itemId] of [
+      [1, "narration-1"],
+      [2, "reasoning-1"],
+    ] as const) {
+      s = reduceMessage(
+        s,
+        asEvent({
+          type: "item/started",
+          item_id: itemId,
+          item_type: "thinking",
+        }),
+        seq,
+      );
+    }
+    s = reduceMessage(
+      s,
+      asEvent({
+        type: "item/completed",
+        item_id: "narration-1",
+        is_narration: true,
+      }),
+      3,
+    );
+    s = reduceMessage(
+      s,
+      asEvent({ type: "item/completed", item_id: "reasoning-1" }),
+      4,
+    );
+
+    expect(thinkingBlock(s, "narration-1")?.narration).toBe(true);
+    expect(thinkingBlock(s, "reasoning-1")?.narration).toBeUndefined();
+  });
+});
+
 describe("turn retraction reducer", () => {
   it("marks the withdrawn response and shows the agent's notice", () => {
     let s: TaskState = reduceMessage(

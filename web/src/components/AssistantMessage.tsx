@@ -264,15 +264,30 @@ export const AssistantMessage = memo(
           if (block.type === "thinking") {
             return (
               <Fragment key={itemId}>
-                {block.text.trim() === "" ? (
-                  <div
-                    class={`thinking-text thinking-dots${block.completed ? "" : " thinking-dots-active"}`}
-                    aria-label="thinking"
-                    data-testid="thinking-dots"
-                  />
-                ) : (
-                  <Markdown text={block.text} class="thinking-text" />
-                )}
+                <div
+                  class={`thinking-block${block.narration ? " narration" : ""}`}
+                  {...(block.narration
+                    ? { "data-testid": "assistant-narration" }
+                    : {})}
+                >
+                  {block.narration && (
+                    <span
+                      class="meta-badge summary"
+                      title="A summary the agent wrote of its progress, not its reasoning"
+                    >
+                      summary
+                    </span>
+                  )}
+                  {block.text.trim() === "" ? (
+                    <div
+                      class={`thinking-text thinking-dots${block.completed ? "" : " thinking-dots-active"}`}
+                      aria-label="thinking"
+                      data-testid="thinking-dots"
+                    />
+                  ) : (
+                    <Markdown text={block.text} class="thinking-text" />
+                  )}
+                </div>
                 {blockExtraEl}
               </Fragment>
             );

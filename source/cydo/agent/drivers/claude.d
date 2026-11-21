@@ -1464,7 +1464,14 @@ class ClaudeCodeSession : AgentSession
 	// Stateful translation: track active content blocks per index.
 	private string[] activeItemIds_;   // index → item_id for current turn
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
-	private JSONFragment[string] blockExtras_; // item_id → extras from assistant event
+	/// What an assistant frame says about a streamed block, held until the
+	/// block's content_block_stop (the frame arrives just before it).
+	private static struct BlockCompletion
+	{
+		JSONFragment extras;
+		bool isNarration;
+	}
+	private BlockCompletion[string] blockCompletions_; // item_id → from assistant event
 	private AbsTime lineReceiptTs_;    // receipt time captured at start of each live line
 	/// The background tasks (commands, monitors, agents) the CLI reports as
 	/// live, per its latest `background_tasks_changed`.
@@ -2351,8 +2358,11 @@ class ClaudeCodeSession : AgentSession
 						import cydo.protocol : ItemCompletedEvent;
 						ItemCompletedEvent ev;
 						ev.item_id = activeItemIds_[idx];
-						if (auto extras = activeItemIds_[idx] in blockExtras_)
-							ev.extras = *extras;
+						if (auto completion = activeItemIds_[idx] in blockCompletions_)
+						{
+							ev.extras = completion.extras;
+							ev.is_narration = completion.isNarration;
+						}
 						emitEvent(TranslatedEvent(toJson(ev), rawLine));
 					}
 				}
@@ -2368,7 +2378,7 @@ class ClaudeCodeSession : AgentSession
 				emitEvent(TranslatedEvent(toJson(tsev), rawLine));
 				activeItemIds_ = null;
 				activeItemTypes_ = null;
-				blockExtras_ = null;
+				blockCompletions_ = null;
 				return;
 			}
 			case "message_start":
@@ -2414,6 +2424,11 @@ class ClaudeCodeSession : AgentSession
 			@JSONOptional bool isApiErrorMessage;
 			@JSONOptional string uuid;
 			ClaudeMessage message;
+			/// Indexes into message.content of the thinking blocks the server
+			/// tagged as narration. Claude Code decodes the tag from the block
+			/// signature and reports it on live frames only; it is not
+			/// persisted to the session file.
+			@JSONOptional size_t[] narration_block_indexes;
 			@JSONOptional string type;
 			@JSONOptional string session_id;
 			@JSONOptional string sessionId;
@@ -2438,6 +2453,17 @@ class ClaudeCodeSession : AgentSession
 			raw = jsonParse!ClaudeAssistant(rawLine);
 		catch (Exception e)
 		{ tracef("translateAssistantLive: parse error: %s", e.msg); return; }
+
+		// A listed block with no thinking text gets ordinary thinking
+		// treatment (Claude Code documents this for narration_block_indexes).
+		bool isNarration(size_t idx)
+		{
+			import std.algorithm.searching : canFind;
+			import std.string : strip;
+			auto b = &raw.message.content[idx];
+			return raw.narration_block_indexes.canFind(idx)
+				&& b.type == "thinking" && b.thinking.strip().length > 0;
+		}
 
 		if (raw.isApiErrorMessage && raw.parent_tool_use_id.length == 0)
 		{
@@ -2492,6 +2518,7 @@ class ClaudeCodeSession : AgentSession
 					auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
 					compEv.text = text;
 				}
+				compEv.is_narration = isNarration(idx);
 				compEv.extras = extrasToFragment(b._extras);
 				emitEvent(TranslatedEvent(toJson(compEv), rawLine));
 			}
@@ -2533,20 +2560,23 @@ class ClaudeCodeSession : AgentSession
 			catch (Exception) {}
 		}
 
-		// Cache per-block extras so content_block_stop can attach them.
-		foreach (idx, ref b; raw.message.content)
+		// Hold what the frame says about each block for its content_block_stop.
+		// A live frame carries the blocks most recently started on the stream
+		// (in practice one, sent just before that block's stop), so its
+		// content indexes are relative to the frame, not the stream. A frame
+		// with more blocks than were started was not streamed (a synthetic
+		// message), so no stop will come to pick anything up.
+		if (raw.message.content.length <= activeItemIds_.length)
 		{
-			auto frag = extrasToFragment(b._extras);
-			if (frag.json !is null && frag.json.length > 0)
+			auto firstStreamIdx = activeItemIds_.length - raw.message.content.length;
+			foreach (idx, ref b; raw.message.content)
 			{
-				string itemId;
-				if (idx < activeItemIds_.length && activeItemIds_[idx].length > 0)
-					itemId = activeItemIds_[idx];
-				else if (b.type == "tool_use" && b.id.length > 0)
-					itemId = b.id;
-				else
-					itemId = "cc-block-" ~ to!string(idx);
-				blockExtras_[itemId] = frag;
+				BlockCompletion completion;
+				completion.extras = extrasToFragment(b._extras);
+				completion.isNarration = isNarration(idx);
+				auto itemId = activeItemIds_[firstStreamIdx + idx];
+				enforce(itemId !is null, "assistant frame block has no started stream block");
+				blockCompletions_[itemId] = completion;
 			}
 		}
 
@@ -2897,6 +2927,61 @@ unittest
 		&& order[0] == "register:reg-id:/mnt/scratch/proj"
 		&& order[1] == "native:reg-id",
 		"Claude must register the history path before delivering its native ID");
+}
+
+// Live assistant frames carry the block they announce at frame index 0, just
+// before that block's content_block_stop (as Claude Code 2.1.319 streams a
+// reasoning block, a narration block, then text). What the frame says about
+// the block (narration, extras) must land on that stream block's item.
+unittest
+{
+	@JSONPartial static struct CompletedProbe
+	{
+		string type;
+		@JSONOptional string item_id;
+		@JSONOptional bool is_narration;
+		@JSONOptional JSONFragment extras;
+	}
+
+	TranslatedEvent[] events;
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.onOutput = (TranslatedEvent event) { events ~= event; };
+
+	string streamEvent(string event) { return `{"type":"stream_event","event":` ~ event ~ `}`; }
+	void block(int index, string type, string frameBlock, string frameFields)
+	{
+		auto i = to!string(index);
+		session.translateLiveLine(streamEvent(`{"type":"content_block_start","index":` ~ i
+			~ `,"content_block":{"type":"` ~ type ~ `"}}`));
+		session.translateLiveLine(`{"type":"assistant","message":{"content":[` ~ frameBlock ~ `]}`
+			~ frameFields ~ `}`);
+		session.translateLiveLine(streamEvent(`{"type":"content_block_stop","index":` ~ i ~ `}`));
+	}
+
+	session.translateLiveLine(streamEvent(`{"type":"message_start","message":{}}`));
+	block(0, "thinking", `{"type":"thinking","thinking":"private reasoning","signature":"s"}`, ``);
+	block(1, "thinking", `{"type":"thinking","thinking":"Checking the fixture.","signature":"s","fixture_extra":1}`,
+		`,"narration_block_indexes":[0]`);
+	block(2, "thinking", `{"type":"thinking","thinking":"","signature":"s"}`,
+		`,"narration_block_indexes":[0]`);
+	block(3, "text", `{"type":"text","text":"done"}`, ``);
+
+	CompletedProbe[string] completed;
+	foreach (ev; events)
+	{
+		auto probe = jsonParse!CompletedProbe(ev.translated);
+		if (probe.type == "item/completed")
+			completed[probe.item_id] = probe;
+	}
+	assert(completed.length == 4);
+	assert(!completed["cc-block-0"].is_narration);
+	assert(completed["cc-block-0"].extras.json is null);
+	assert(completed["cc-block-1"].is_narration);
+	assert(completed["cc-block-1"].extras.json == `{"fixture_extra":1}`);
+	assert(!completed["cc-block-2"].is_narration,
+		"a listed block without thinking text is ordinary thinking");
+	assert(!completed["cc-block-3"].is_narration);
 }
 
 unittest
@@ -3315,6 +3400,8 @@ private mixin template ClaudeAssistantUnhandledFields()
 {
 	// Live stream only
 	@JSONOptional JSONFragment tool_use_meta;
+	@JSONOptional JSONFragment thinking_duration_ms; // on single-thinking-block frames
+	@JSONOptional string thinking_display;           // the display mode the request asked for
 	@JSONOptional string user_message_uuid;
 	@JSONOptional string[] user_message_uuids;
 	@JSONOptional string agent_id;

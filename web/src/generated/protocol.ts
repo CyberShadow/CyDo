@@ -220,6 +220,7 @@ export interface ItemCompletedEvent {
   input?: unknown;
   output?: string;
   is_error?: boolean;
+  is_narration?: boolean;
   extras?: Record<string, unknown>;
 }
 

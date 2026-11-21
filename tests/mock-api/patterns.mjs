@@ -17,6 +17,15 @@ export function matchPattern(userText) {
     return { type: "text", text: "usage-headers-7d" };
   }
 
+  if (/narration fixture/i.test(userText)) {
+    return {
+      type: "narration",
+      reasoning: "private reasoning about the fixture",
+      narration: "Checking the fixture before answering.",
+      text: "narration-fixture-done",
+    };
+  }
+
   // Suggestion generation — must be checked before other patterns
   // because the prompt contains abbreviated history that may match them.
   // Uses includes() because Copilot prepends <current_datetime>...</current_datetime>

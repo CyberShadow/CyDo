@@ -2463,6 +2463,30 @@ body,
   border: 1px solid rgba(140, 160, 176, 0.3);
 }
 
+/* Consecutive thinking blocks stay distinct, so each has a visible edge. */
+.thinking-block + .thinking-block {
+  margin-top: 8px;
+}
+
+/* The badge rides the narration block's top edge, on the left. */
+.thinking-block.narration {
+  position: relative;
+}
+
+.thinking-block.narration > .meta-badge.summary {
+  position: absolute;
+  top: 0;
+  left: 8px;
+  transform: translateY(-50%);
+  z-index: 1;
+}
+
+.meta-badge.summary {
+  background: rgba(140, 160, 176, 0.12);
+  color: var(--text-dim);
+  border: 1px solid rgba(140, 160, 176, 0.3);
+}
+
 .meta-badge.removed {
   background: rgba(200, 120, 120, 0.12);
   color: var(--text-dim);

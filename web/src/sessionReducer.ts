@@ -1401,6 +1401,7 @@ export function reduceItemCompleted(
 
   const updated: Block = { ...block, completed: true };
   if (event.text !== undefined) updated.text = event.text;
+  if (event.is_narration) updated.narration = true;
   const completedExtras = getExtras(event);
   if (completedExtras) updated.extras = completedExtras;
   if (block.type === "tool_use") {

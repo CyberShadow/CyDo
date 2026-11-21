@@ -220,6 +220,7 @@ interface BlockBase {
   creationOrder: number; // monotonic counter for stable ordering
   result?: ToolResult; // tool result (tool_use only, set by item/result)
   denial?: { by: ItemDenier; reason?: string }; // the agent refused this call unasked (item/denied)
+  narration?: boolean; // thinking only: prose written for the user, not reasoning (live only)
   extras?: Record<string, unknown>;
 }
 
