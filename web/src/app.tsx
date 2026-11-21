@@ -17,6 +17,7 @@ import { Sidebar, flatTaskOrder } from "./components/Sidebar";
 import { DraftSessionView, SessionView } from "./components/SessionView";
 import { SystemBanner } from "./components/SystemBanner";
 import { WelcomePage } from "./components/WelcomePage";
+import { RefreshWorkspacesButton } from "./components/RefreshWorkspacesButton";
 import { SearchPopup } from "./components/SearchPopup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Toast } from "./components/Toast";
@@ -413,7 +414,14 @@ function AppContent() {
   const placeholderContent = activeTaskId?.startsWith("archive") ? (
     <span class="archive-placeholder">Archived tasks</span>
   ) : activeTaskId === "import" ? (
-    <span class="archive-placeholder">Importable sessions</span>
+    <div class="import-placeholder">
+      <span class="archive-placeholder">Importable sessions</span>
+      <RefreshWorkspacesButton
+        onClick={refreshWorkspaces}
+        scanState={scanState}
+        label="Rescan for importable sessions"
+      />
+    </div>
   ) : tasksLoaded && activeTaskId !== null && active === null ? (
     <>
       <span>Task {activeTaskId} not found</span>

@@ -16,9 +16,9 @@
  * All tests are agent-type-agnostic and run only under the "claude" project.
  */
 import { test, expect } from "@playwright/test";
-import { spawn } from "child_process";
+import { execFileSync, spawn } from "child_process";
 import type { ChildProcess } from "child_process";
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { writeTestConfig } from "./test-config";
 
 // ---------------------------------------------------------------------------
@@ -97,6 +97,81 @@ function createWorkDir(suffix: string): { workDir: string; workerHome: string } 
   mkdirSync(`${workerHome}/.config/cydo`, { recursive: true });
   return { workDir, workerHome };
 }
+
+test(
+  "a new real Claude session becomes importable after rescan",
+  { tag: "@claude-only" },
+  async ({ page }) => {
+    const { workDir, workerHome } = createWorkDir("live-real-claude");
+    const projectPath = "/tmp/cydo-test-workspace";
+    const profileRoot = `${workerHome}/.claude`;
+    const projectsDir = `${profileRoot}/projects/${projectPath.replace(/\//g, "-")}`;
+    mkdirSync(profileRoot, { recursive: true });
+    writeFileSync(
+      `${profileRoot}/settings.json`,
+      JSON.stringify({
+        hasCompletedOnboarding: true,
+        theme: "dark",
+        skipDangerousModePermissionPrompt: true,
+        autoUpdates: false,
+      }),
+    );
+    writeTestConfig(
+      `${workerHome}/.config/cydo/config.yaml`,
+      ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") + "\n",
+    );
+
+    function createClaudeSession(marker: string): void {
+      execFileSync(
+        "claude",
+        ["-p", `${marker}: reply with OK`, "--output-format", "json", "--dangerously-skip-permissions"],
+        {
+          cwd: projectPath,
+          env: { ...process.env, HOME: workerHome, CLAUDE_CONFIG_DIR: profileRoot },
+          timeout: 120_000,
+        },
+      );
+      const histories = readdirSync(projectsDir).filter((name) => name.endsWith(".jsonl"));
+      expect(
+        histories.some((name) => readFileSync(`${projectsDir}/${name}`, "utf8").includes(marker)),
+        `Claude must write a session JSONL containing ${marker}`,
+      ).toBe(true);
+    }
+
+    const existingMarker = "claude-before-cydo-starts";
+    const newMarker = "claude-after-cydo-starts";
+    createClaudeSession(existingMarker);
+
+    const proc = spawnBackend(workDir, workerHome);
+    try {
+      await waitForBackend(proc);
+      await page.goto(BACKEND_URL + "/testws/cydo-test-workspace");
+      const sidebar = page.locator(".sidebar");
+      const importGroup = sidebar.locator(".sidebar-item.sidebar-archive-node", {
+        hasText: /Import \(\d+\)/,
+      });
+      const sessionLabel = (marker: string) =>
+        sidebar.locator(".sidebar-item .sidebar-label", {
+          hasText: marker,
+        });
+
+      await expect(importGroup).toHaveText("Import (1)");
+      await importGroup.click();
+      await expect(page).toHaveURL(/\/import/);
+      await expect(sessionLabel(existingMarker)).toBeVisible();
+
+      createClaudeSession(newMarker);
+
+      await expect(sessionLabel(newMarker)).not.toBeVisible();
+      await page.getByRole("button", { name: "Rescan for importable sessions" }).click();
+      await expect(sessionLabel(newMarker)).toBeVisible({ timeout: 20_000 });
+      await expect(importGroup).toHaveText("Import (2)");
+    } finally {
+      await killBackend(proc);
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Test: full import flow

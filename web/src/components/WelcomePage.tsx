@@ -7,6 +7,7 @@ import { computeStatusClass } from "./Sidebar";
 import { isPlainLeftClick, relativeTime } from "../utils";
 import { NoticeBar } from "./NoticeBar";
 import { LogoBanner } from "./LogoBanner";
+import { RefreshWorkspacesButton } from "./RefreshWorkspacesButton";
 
 interface Props {
   workspaces: WorkspaceInfo[];
@@ -490,20 +491,11 @@ export function WelcomePage({
             </button>
           )}
         </div>
-        <button
-          class="sidebar-new-btn refresh-workspaces-btn"
+        <RefreshWorkspacesButton
           onClick={onRefreshWorkspaces}
-          title="Refresh project list"
-          disabled={scanState !== "idle"}
-        >
-          {scanState === "scanning" ? (
-            <span class="refresh-spinner" />
-          ) : (
-            <span class={scanState === "requested" ? "refresh-requested" : ""}>
-              ↻
-            </span>
-          )}
-        </button>
+          scanState={scanState}
+          label="Refresh project list"
+        />
       </div>
       <ActiveSessions
         tasks={tasks}

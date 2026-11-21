@@ -771,6 +771,13 @@ body,
   font-style: italic;
 }
 
+.import-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
 .banner-cost {
   color: var(--text-dim);
 }
