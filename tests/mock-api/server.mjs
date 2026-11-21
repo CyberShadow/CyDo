@@ -5,7 +5,7 @@
 
 import { createServer } from "node:http";
 import { appendFileSync } from "node:fs";
-import { matchPattern } from "./patterns.mjs";
+import { matchPattern, waitForBackgroundCommandsRelease } from "./patterns.mjs";
 
 const PORT = parseInt(process.env.MOCK_API_PORT || "9000", 10);
 let msgCounter = 0;
@@ -955,7 +955,7 @@ function handleResponses(req, res) {
         ).length;
         if (fcOutputCount < 2) {
           oaiStreamFunctionCallResponse(res, "exec_command", {
-            cmd: "sleep 10",
+            cmd: waitForBackgroundCommandsRelease,
             yield_time_ms: 500,
           });
           return;

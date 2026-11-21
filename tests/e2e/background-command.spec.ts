@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from "fs";
+import { existsSync, rmSync, writeFileSync } from "fs";
 import {
   test,
   expect,
@@ -67,31 +67,25 @@ test("multiple background command spinners all disappear after completion", { ta
   page,
   agentType,
 }) => {
+  const releasePath = "/tmp/cydo-test-workspace/background-commands.release";
+  rmSync(releasePath, { force: true });
+  try {
+    await enterSession(page);
+    await sendMessage(page, "run two background commands");
 
-  await enterSession(page);
+    const timeout = responseTimeout(agentType);
+    await expect(page.locator(".tool-call")).toHaveCount(2, { timeout });
+    await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
-  // "run two background commands" triggers two sequential exec_command calls:
-  //   1. exec_command(sleep 2, yield_time_ms=500)  — yields, command continues
-  //   2. exec_command(sleep 3, yield_time_ms=500)  — yields, command continues
-  // After both yields, mock LLM responds with "Done." and the turn completes.
-  // Both sleep commands continue running in the background.
-  await sendMessage(page, "run two background commands");
+    const spinners = page.locator(".tool-icon-spinner");
+    await expect(spinners).toHaveCount(2);
 
-  const timeout = responseTimeout(agentType);
-
-  // Wait for both tool calls to appear.
-  await expect(page.locator(".tool-call")).toHaveCount(2, { timeout });
-
-  // Wait for the turn to end — "Done." text appears.
-  await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
-
-  // Both commands are still running; spinners should be visible.
-  const spinners = page.locator(".tool-icon-spinner");
-  await expect(spinners).toHaveCount(2);
-
-  // Wait for both commands to finish.
-  // sleep 8 finishes ~8s after start, sleep 10 ~10s after start (offset by ~0.5s).
-  await expect(spinners).toHaveCount(0);
+    // Both commands yield while waiting for this file.
+    writeFileSync(releasePath, "");
+    await expect(spinners).toHaveCount(0);
+  } finally {
+    rmSync(releasePath, { force: true });
+  }
 });
 
 // Regression test: late output_delta content after turn/stop is rendered.

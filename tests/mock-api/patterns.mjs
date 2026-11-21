@@ -1,6 +1,9 @@
 // Shared pattern matching module for mock API servers.
 // Imported by server.mjs (Claude/Codex) and copilot-proxy.mjs (Copilot).
 
+export const waitForBackgroundCommandsRelease =
+  "while [ ! -f /tmp/cydo-test-workspace/background-commands.release ]; do sleep 0.1; done";
+
 // Match a user text against known patterns and return a structured intent.
 // Returns one of:
 //   { type: "text", text: string }
@@ -713,7 +716,8 @@ export function matchPattern(userText) {
   // "run two background commands" — two sequential exec_command with yield_time_ms
   // (must come before single "run background command" to avoid substring match)
   match = userText.match(/run two background commands/i);
-  if (match) return { type: "background_shell", command: "sleep 8" };
+  if (match)
+    return { type: "background_shell", command: waitForBackgroundCommandsRelease };
 
   // "run background command <cmd>" — exec_command with short yield_time_ms
   match = userText.match(/run background command (.+)/i);
