@@ -4,6 +4,7 @@ import std.algorithm : filter, startsWith;
 import std.array : array;
 import std.conv : to;
 import std.file : exists, isFile;
+import std.format : format;
 import std.json : parseJSON;
 import std.logger : tracef, warningf;
 import std.path : isAbsolute, relativePath;
@@ -252,15 +253,20 @@ class DiscoveryService
 		runScan_(scanInput).then((DiscoveryScanOutput output) {
 			if (generation != scanGeneration_)
 				return;
-			auto results = output.records;
-			ScannedSessionRecord[] currentResults;
-			foreach (ref result; results)
-				if (scanRecordStillCurrent(result.scanRecord))
-					currentResults ~= result;
-			results = currentResults;
-			bool[string] discoveredKeys;
-			foreach (ref r; results)
-				discoveredKeys[sessionKey(r.scanRecord.key)] = true;
+			ScannedSessionRecord[] results;
+			bool[string] currentByDiscoveredKey;
+			foreach (ref result; output.records)
+			{
+				auto nativeKey = result.scanRecord.key;
+				auto key = sessionKey(nativeKey);
+				assert(key !in currentByDiscoveredKey,
+					format("native session discovery returned duplicate session ID %s for %s/%s",
+						nativeKey.sessionId, to!string(nativeKey.driver), nativeKey.profileRoot));
+				auto current = scanRecordStillCurrent(result.scanRecord);
+				currentByDiscoveredKey[key] = current;
+				if (current)
+					results ~= result;
+			}
 
 			ImportableReconciliationCommit commit;
 			host_.withMutationTransaction({
@@ -277,7 +283,7 @@ class DiscoveryService
 						}
 					}
 					else if (cacheGroup !in output.failedGroupKeys
-						&& key !in discoveredKeys)
+						&& !currentByDiscoveredKey.get(key, false))
 						host_.deleteSessionMetaCacheEntry(row.driverName, row.profileRoot,
 							row.sessionId);
 				}
@@ -550,26 +556,6 @@ private:
 					output.failedGroupKeys[groupKey(group.agent.driver, group.profile.root)] = true;
 					continue;
 				}
-				bool[string] seen;
-				foreach (ref discoveredSession; discovered)
-				{
-					auto nativeKey = NativeSessionKey(group.agent.driver, group.profile.root,
-						discoveredSession.sessionId);
-					auto compositeKey = sessionKey(nativeKey);
-					if (compositeKey in seen)
-					{
-						warningf("native session discovery skipped %s/%s: duplicate session ID %s",
-							to!string(group.agent.driver), group.profile.root,
-							discoveredSession.sessionId);
-						output.failedGroupKeys[groupKey(group.agent.driver,
-							group.profile.root)] = true;
-						break;
-					}
-					seen[compositeKey] = true;
-				}
-				if (groupKey(group.agent.driver, group.profile.root)
-					in output.failedGroupKeys)
-					continue;
 
 				ScannedSessionRecord[] groupResults;
 				bool groupFailed;
@@ -947,7 +933,8 @@ unittest
 unittest
 {
 	import ae.net.asockets : socketManager;
-	import std.file : exists, mkdirRecurse, rmdirRecurse, write;
+	import std.datetime.systime : SysTime;
+	import std.file : exists, mkdirRecurse, rmdirRecurse, setTimes, write;
 	import std.path : buildPath;
 	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 
@@ -961,8 +948,15 @@ unittest
 	auto secondProject = buildPath(root, "projects", "second");
 	mkdirRecurse(firstProject);
 	mkdirRecurse(secondProject);
-	write(buildPath(firstProject, "same-session.jsonl"), "{}");
-	write(buildPath(secondProject, "same-session.jsonl"), "{}");
+	enum sessionId = "same-session";
+	auto oldPath = buildPath(firstProject, sessionId ~ ".jsonl");
+	auto newPath = buildPath(secondProject, sessionId ~ ".jsonl");
+	write(oldPath, "{}");
+	write(newPath, "{}");
+	auto older = SysTime.fromUnixTime(1_000_000);
+	auto newer = SysTime.fromUnixTime(2_000_000);
+	setTimes(oldPath, older, older);
+	setTimes(newPath, newer, newer);
 
 	Agent agent = new ClaudeCodeAgent();
 	auto profile = NativeHistoryProfile(agent.driver, root);
@@ -979,10 +973,10 @@ unittest
 	socketManager.loop();
 
 	assert(completed);
-	assert(output.records.length == 0,
-		"a duplicate native session ID must not produce traversal-order offers");
-	assert(DiscoveryService.groupKey(agent.driver, root) in output.failedGroupKeys,
-		"a duplicate native session ID must fail its exact profile group");
+	assert(output.records.length == 1);
+	assert(output.records[0].scanRecord.key.sessionId == sessionId);
+	assert(output.records[0].scanRecord.discovered.exactHistoryPath == newPath);
+	assert(DiscoveryService.groupKey(agent.driver, root) !in output.failedGroupKeys);
 }
 
 unittest

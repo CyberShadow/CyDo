@@ -226,6 +226,7 @@ class ClaudeCodeAgent : Agent
 			return [];
 
 		DiscoveredSession[] result;
+		size_t[string] sessionIndices;
 		foreach (DirEntry projEntry; dirEntries(projectsDir, SpanMode.shallow))
 		{
 			if (!projEntry.isDir)
@@ -241,7 +242,16 @@ class ClaudeCodeAgent : Agent
 					ds.mtime = fileEntry.timeLastModified.stdTime;
 					ds.projectPath = "";
 					ds.exactHistoryPath = fileEntry.name;
-					result ~= ds;
+					if (auto index = sessionId in sessionIndices)
+					{
+						if (ds.mtime > result[*index].mtime)
+							result[*index] = ds;
+					}
+					else
+					{
+						sessionIndices[sessionId] = result.length;
+						result ~= ds;
+					}
 				}
 			}
 			catch (Exception e)
@@ -400,17 +410,8 @@ class ClaudeCodeAgent : Agent
 		// appear later are registered at their point of creation, so an
 		// absent session cannot trigger repeated scans.
 		string[string] paths;
-		long[string] mtimes;
 		foreach (ref session; enumerateAllSessions(profile))
-		{
-			// The same session ID in two project directories (e.g. a CWD
-			// respelled across sandbox changes): the newest file wins.
-			if (auto mtime = session.sessionId in mtimes)
-				if (*mtime >= session.mtime)
-					continue;
 			paths[session.sessionId] = session.exactHistoryPath;
-			mtimes[session.sessionId] = session.mtime;
-		}
 		scannedHistoryPaths_[profile.root] = paths;
 		if (auto path = sessionId in paths)
 			return *path;
@@ -513,6 +514,7 @@ class ClaudeCodeAgent : Agent
 	// settle; paths learned afterwards arrive via registerHistoryPath.
 	unittest
 	{
+		import std.algorithm : count, find;
 		import std.datetime.systime : SysTime;
 		import std.exception : assertThrown;
 		import std.file : exists, mkdirRecurse, rmdirRecurse, setTimes, write;
@@ -545,6 +547,14 @@ class ClaudeCodeAgent : Agent
 
 		auto agent = new ClaudeCodeAgent();
 		auto profile = NativeHistoryProfile(AgentDriver.claude, root);
+
+		auto sessions = agent.enumerateAllSessions(profile);
+		assert(sessions.count!(session => session.sessionId == idD) == 1);
+		auto duplicate = sessions.find!(session => session.sessionId == idD)[0];
+		assert(duplicate.exactHistoryPath == dupNew);
+		assert(duplicate.mtime == newer.stdTime);
+		assert(sessions.count!(session => session.sessionId == idA
+			&& session.exactHistoryPath == pathA) == 1);
 
 		// 19. the session is found by ID in whichever project directory
 		// holds it, and a duplicated ID resolves to the newest file

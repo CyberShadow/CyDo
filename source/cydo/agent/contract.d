@@ -238,6 +238,8 @@ interface Agent
 	string extractUserText(string line);
 
 	/// Enumerate all persisted sessions for this agent type.
+	/// Each session ID appears at most once per profile. Drivers whose storage
+	/// can hold multiple files for one ID resolve those duplicates themselves.
 	/// Returns lightweight info from directory scanning / DB query only — no content reads.
 	/// Must be safe to call from a background thread (no shared mutable state).
 	DiscoveredSession[] enumerateAllSessions(const ref NativeHistoryProfile profile);
