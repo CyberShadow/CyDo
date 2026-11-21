@@ -236,6 +236,7 @@ struct HistoryStore
 {
 	private ulong generation_;
 	@property ulong generation() const { return generation_; }
+	@property Watermark watermark() const { return watermark_; }
 private:
     DataVec  history_;
     string[] rawSource_;

@@ -16,6 +16,7 @@ import cydo.runtime.config : AgentDriver;
 import cydo.foundation.platform.inotify : RefCountedINotify;
 import cydo.domain.tasks.model : TaskData, Watermark,
 	extractEventFromEnvelope;
+import cydo.workflow.history.jsonl_store : completeJsonlPrefix;
 import cydo.workflow.history.native_history : LiveHistoryContext,
 	LiveHistoryWatchResolution, LiveHistoryWatchResolutionKind, LiveHistoryWatchTarget,
 	TaskHistoryResolution,
@@ -267,13 +268,6 @@ struct JsonlTracker
 		}
 	}
 
-	private static size_t completeJsonlByteCount(string content)
-	{
-		import std.string : lastIndexOf;
-		auto lastNewline = content.lastIndexOf('\n');
-		return lastNewline < 0 ? 0 : lastNewline + 1;
-	}
-
 	void invalidateLineage(int tid)
 	{
 		lineageGeneration[tid]++;
@@ -399,22 +393,24 @@ struct JsonlTracker
 		jsonlPaths[tid] = jsonlPath;
 		if (tid !in jsonlReadPos)
 		{
-			if (tid in boundaryState)
-			{
-				// A live candidate predates attachment, so this lineage must
-				// consume all persisted complete lines.
-				jsonlReadPos[tid] = 0;
-				jsonlLineCount[tid] = 0;
-			}
-			else
-			{
-				// A resumed lineage cannot pair a newly emitted live event with
-				// any pre-existing persisted turn.
-				import std.file : getSize;
-				jsonlReadPos[tid] = getSize(jsonlPath);
-				jsonlLineCount[tid] = 0;
-				boundaryState[tid] = BoundaryReconcileState.init;
-			}
+			import std.file : getSize, read;
+			import std.string : lineSplitter;
+
+			auto context = tid in liveContexts;
+			auto watermark = getTask(tid).history.watermark;
+			// The history store loads complete lines within a snapshot's byte
+			// limit. Leave an unfinished record for the tail to read in full.
+			auto pos = watermark.maxBytes;
+			if (context is null || (context.resuming && !watermark.isDeferred))
+				pos = getSize(jsonlPath);
+			string prefix;
+			if (pos > 0)
+				prefix = completeJsonlPrefix(cast(string) read(jsonlPath, cast(size_t) pos));
+			int lines = 0;
+			foreach (_; prefix.lineSplitter)
+				lines++;
+			jsonlReadPos[tid] = prefix.length;
+			jsonlLineCount[tid] = lines;
 		}
 		if (installWatch && tid !in jsonlWatches)
 		{
@@ -465,10 +461,10 @@ struct JsonlTracker
 		buf.length = cast(size_t)(fileSize - lastPos);
 		auto got = f.rawRead(buf);
 		auto newContent = cast(string) got;
-		auto completeBytes = completeJsonlByteCount(newContent);
+		auto completeContent = completeJsonlPrefix(newContent);
+		auto completeBytes = completeContent.length;
 		if (completeBytes == 0)
 			return;
-		auto completeContent = newContent[0 .. completeBytes];
 		jsonlReadPos[tid] = lastPos + completeContent.length;
 		if (tid !in boundaryState)
 			boundaryState[tid] = BoundaryReconcileState.init;
@@ -601,12 +597,12 @@ struct JsonlTracker
 
 version (unittest)
 private void setTestLiveContext(ref JsonlTracker tracker, int tid,
-	Agent agent)
+	Agent agent, bool resuming = false)
 {
 	import cydo.runtime.launch.types : NativeHistoryProfile;
 
 	tracker.liveContexts[tid] = LiveHistoryContext(agent,
-		NativeHistoryProfile(agent.driver, "/tmp"), "session");
+		NativeHistoryProfile(agent.driver, "/tmp"), "session", resuming);
 }
 
 unittest
@@ -730,11 +726,250 @@ unittest
 	tracker.attachAndCatchUp(1, path, false);
 	assert(resolved == ["line:2"]);
 	tracker.stopJsonlWatch(1);
-	setTestLiveContext(tracker, 1, new CodexAgent());
+	setTestLiveContext(tracker, 1, new CodexAgent(), true);
 	tracker.attachAndCatchUp(1, path, false);
 	assert(tracker.jsonlReadPos[1] > 0);
 	assert(resolved == ["line:2"]);
 	remove(path);
+}
+
+unittest
+{
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import std.file : remove, write;
+
+	auto path = "/tmp/cydo-jsonl-tracker-fresh-claude.jsonl";
+	write(path, `{"type":"queue-operation","operation":"enqueue"}` ~ "\n"
+		~ `{"type":"user","uuid":"first-user","message":{"role":"user","content":"hello"}}` ~ "\n");
+	scope(exit) remove(path);
+
+	TaskData task = TaskData(1, "", "");
+	task.history.reset(Watermark.none());
+	JsonlTracker tracker;
+	tracker.getTask = (int) => &task;
+	tracker.historyGeneration = (int) => task.history.generation;
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+	string[] published;
+	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool publish, ulong) {
+		assert(seq == 4);
+		assert(boundary.kind == HistoryBoundaryKind.user);
+		assert(publish);
+		published ~= boundary.anchor;
+	};
+
+	tracker.attachAndCatchUp(1, path, false);
+	assert(published.length == 0);
+	tracker.noteLiveBoundaryCandidate(1, 4,
+		`{"type":"item/started","item_type":"user_message","uuid":"first-user"}`);
+	assert(published == ["first-user"]);
+}
+
+unittest
+{
+	import cydo.agent.drivers.codex : CodexAgent;
+	import std.file : remove, write;
+
+	auto path = "/tmp/cydo-jsonl-tracker-resumed.jsonl";
+	auto preexisting = `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n"
+		~ `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n";
+	write(path, preexisting);
+	scope(exit) remove(path);
+
+	TaskData task = TaskData(1, "", "");
+	task.history.reset(Watermark.none());
+	JsonlTracker tracker;
+	tracker.getTask = (int) => &task;
+	tracker.historyGeneration = (int) => task.history.generation;
+	setTestLiveContext(tracker, 1, new CodexAgent(), true);
+	tracker.onJsonlLine = (int, string, int) {
+		assert(false, "resumed attachment must not publish pre-existing lines");
+	};
+	tracker.onBoundaryResolved = (int, size_t, HistoryBoundary, bool, ulong) {
+		assert(false, "resumed attachment must not resolve a pre-existing boundary");
+	};
+	tracker.noteLiveBoundaryCandidate(1, 4,
+		`{"type":"item/started","item_type":"user_message","item_id":"live-user"}`);
+
+	tracker.attachAndCatchUp(1, path, false);
+	assert(tracker.jsonlReadPos[1] == preexisting.length);
+	assert(tracker.jsonlLineCount[1] == 2);
+}
+
+unittest
+{
+	import cydo.agent.drivers.codex : CodexAgent;
+	import std.file : getSize, remove, write;
+
+	auto path = "/tmp/cydo-jsonl-tracker-rollback-reattach.jsonl";
+	auto initial = `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n";
+	write(path, initial);
+	scope(exit) remove(path);
+
+	TaskData task = TaskData(1, "", "");
+	task.history.reset(Watermark.none());
+	JsonlTracker tracker;
+	tracker.getTask = (int) => &task;
+	tracker.historyGeneration = (int) => task.history.generation;
+	setTestLiveContext(tracker, 1, new CodexAgent());
+	int invalidations;
+	tracker.onLineageInvalidated = (int tid) {
+		invalidations++;
+		tracker.invalidateLineage(tid);
+		task.history.reset(Watermark.atBytes(getSize(path)));
+	};
+
+	tracker.attachAndCatchUp(1, path, false);
+	File(path, "a").write(`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}` ~ "\n");
+	tracker.processNewJsonlContent(1, path);
+	assert(invalidations == 1);
+
+	setTestLiveContext(tracker, 1, new CodexAgent());
+	tracker.noteLiveBoundaryCandidate(1, 4,
+		`{"type":"item/started","item_type":"user_message","item_id":"after-rollback"}`);
+	tracker.attachAndCatchUp(1, path, false);
+	assert(invalidations == 1);
+}
+
+@("Resumed reload loads the deferred prefix and tails the rest")
+unittest
+{
+	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.workflow.history.jsonl_store : loadTaskHistory;
+	import std.file : remove, write;
+
+	auto path = "/tmp/cydo-jsonl-tracker-reload-watermark.jsonl";
+	auto persisted = `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n\n";
+	auto user = `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
+	write(path, persisted ~ user ~ "\n");
+	scope(exit) remove(path);
+
+	TaskData task = TaskData(1, "", "");
+	task.history.reset(Watermark.atBytes(persisted.length));
+	JsonlTracker tracker;
+	tracker.getTask = (int) => &task;
+	tracker.historyGeneration = (int) => task.history.generation;
+	setTestLiveContext(tracker, 1, new CodexAgent(), true);
+	int[] publishedLines;
+	tracker.onJsonlLine = (int, string line, int lineNum) {
+		assert(line == user);
+		publishedLines ~= lineNum;
+	};
+
+	tracker.attachAndCatchUp(1, path, false);
+	assert(publishedLines == [3]);
+	assert(tracker.jsonlReadPos[1] == persisted.length + user.length + 1);
+	assert(tracker.jsonlLineCount[1] == 3);
+	task.history.load((ulong maxBytes) {
+		auto loaded = loadTaskHistory(1, path, null, maxBytes);
+		assert(loaded.rawSource == [persisted[0 .. $ - 2]]);
+		return loaded;
+	});
+}
+
+@("Resumed attachment tails the whole file when it appears after an unreadable snapshot")
+unittest
+{
+	import cydo.agent.drivers.codex : CodexAgent;
+	import std.file : exists, remove, write;
+
+	auto path = "/tmp/cydo-jsonl-tracker-unreadable-watermark.jsonl";
+	assert(!exists(path));
+	TaskData task = TaskData(1, "", "");
+	task.history.reset(Watermark.unreadable());
+
+	auto first = `{"type":"event_msg","payload":{"type":"task_started"}}`;
+	auto second = `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
+	write(path, first ~ "\n" ~ second ~ "\n");
+	scope(exit) remove(path);
+
+	JsonlTracker tracker;
+	tracker.getTask = (int) => &task;
+	tracker.historyGeneration = (int) => task.history.generation;
+	setTestLiveContext(tracker, 1, new CodexAgent(), true);
+	string[] lines;
+	int[] lineNumbers;
+	tracker.onJsonlLine = (int, string line, int lineNum) {
+		lines ~= line;
+		lineNumbers ~= lineNum;
+	};
+
+	tracker.attachAndCatchUp(1, path, false);
+	assert(lines == [first, second]);
+	assert(lineNumbers == [1, 2]);
+}
+
+version (unittest)
+private void checkSplitRecordAttachment(string path, Watermark watermark,
+	string firstPrefix, string remainingRecords, string[] expectedLines)
+{
+	import cydo.agent.drivers.codex : CodexAgent;
+	import std.file : remove, write;
+
+	write(path, firstPrefix);
+	scope(exit) remove(path);
+	TaskData task = TaskData(1, "", "");
+	task.history.reset(watermark);
+	JsonlTracker tracker;
+	tracker.getTask = (int) => &task;
+	tracker.historyGeneration = (int) => task.history.generation;
+	setTestLiveContext(tracker, 1, new CodexAgent(), true);
+	string[] lines;
+	int[] lineNumbers;
+	tracker.onJsonlLine = (int, string line, int lineNum) {
+		lines ~= line;
+		lineNumbers ~= lineNum;
+	};
+
+	tracker.attachAndCatchUp(1, path, false);
+	assert(lines.length == 0);
+	File(path, "a").write(remainingRecords);
+	tracker.processNewJsonlContent(1, path);
+	assert(lines == expectedLines);
+	assert(lineNumbers == [1, 2]);
+}
+
+@("Resumed attachment reconstructs a record split at attach-time EOF")
+unittest
+{
+	auto prefix = `{"type":"event_msg","payload":`;
+	auto suffix = `{"type":"task_started"}}`;
+	auto second = `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
+	checkSplitRecordAttachment("/tmp/cydo-jsonl-tracker-split-eof.jsonl",
+		Watermark.none(), prefix, suffix ~ "\n" ~ second ~ "\n", [prefix ~ suffix, second]);
+}
+
+@("Resumed attachment reconstructs a record split by a deferred watermark")
+unittest
+{
+	auto prefix = `{"type":"event_msg",`;
+	auto atAttach = prefix ~ `"payload":`;
+	auto suffix = `{"type":"task_started"}}`;
+	auto second = `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
+	checkSplitRecordAttachment("/tmp/cydo-jsonl-tracker-split-watermark.jsonl",
+		Watermark.atBytes(prefix.length), atAttach, suffix ~ "\n" ~ second ~ "\n",
+		[atAttach ~ suffix, second]);
+}
+
+@("Deferred load excludes a record whose newline falls beyond the watermark")
+unittest
+{
+	import cydo.workflow.history.jsonl_store : loadTaskHistory;
+	import std.file : remove, write;
+
+	auto path = "/tmp/cydo-jsonl-tracker-deferred-partial.jsonl";
+	auto first = `{"type":"event_msg","payload":{"type":"task_started"}}`;
+	auto second = `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
+	auto prefix = first ~ "\n" ~ second;
+	write(path, prefix ~ "\n");
+	scope(exit) remove(path);
+
+	TaskData task = TaskData(1, "", "");
+	task.history.reset(Watermark.atBytes(prefix.length));
+	task.history.load((ulong maxBytes) {
+		auto loaded = loadTaskHistory(1, path, null, maxBytes);
+		assert(loaded.rawSource == [first]);
+		return loaded;
+	});
 }
 
 unittest
@@ -1239,14 +1474,14 @@ unittest
 	import cydo.agent.drivers.codex : CodexAgent;
 
 	auto firstNotification = `{"type":"user.message","id":"u"}`;
-	assert(JsonlTracker.completeJsonlByteCount(firstNotification) == 0);
+	assert(completeJsonlPrefix(firstNotification).length == 0);
 	int incompleteLines;
 	foreach (_; firstNotification.lineSplitter)
 		incompleteLines++;
 	assert(incompleteLines == 1);
 
 	auto completedNotification = firstNotification ~ "\n";
-	auto completeBytes = JsonlTracker.completeJsonlByteCount(completedNotification);
+	auto completeBytes = completeJsonlPrefix(completedNotification).length;
 	assert(completeBytes == completedNotification.length);
 	auto completeContent = completedNotification[0 .. completeBytes];
 	int completeLines;
@@ -1256,7 +1491,7 @@ unittest
 
 	auto startup = `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n"
 		~ `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
-	auto startupBytes = JsonlTracker.completeJsonlByteCount(startup);
+	auto startupBytes = completeJsonlPrefix(startup).length;
 	assert(startupBytes > 0 && startupBytes < startup.length);
 	int committedLines;
 	foreach (_; startup[0 .. startupBytes].lineSplitter)

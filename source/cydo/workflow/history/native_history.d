@@ -163,6 +163,7 @@ struct LiveHistoryContext
 	Agent agent;
 	NativeHistoryProfile profile;
 	string sessionId;
+	bool resuming;
 }
 
 enum LiveHistoryWatchResolutionKind

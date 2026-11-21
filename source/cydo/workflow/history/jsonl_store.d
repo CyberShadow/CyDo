@@ -13,25 +13,41 @@ import cydo.agent.contract : InterruptedToolCallRepair;
 import cydo.domain.storage.persistence : LoadedHistory, Persistence, createForkTask, noSourceLine;
 import cydo.workflow.history.native_history : HistoryAccess;
 
+package(cydo) string completeJsonlPrefix(string content)
+{
+	import std.string : lastIndexOf;
+	return content[0 .. content.lastIndexOf('\n') + 1];
+}
+
 /// Load task history from a JSONL file.
 /// Returns events wrapped in file-event envelopes paired with raw source lines.
 /// translateLine is called for each line to allow agent-specific translation.
 /// The delegate receives (line, 1-based lineNum) and returns zero or more translated
 /// event pairs (empty array = skip, one element = normal, two = compaction injection).
-/// maxBytes limits how many bytes of the file are read; ulong.max (default) reads all.
+/// A bounded snapshot ends at the last complete record within maxBytes.
 LoadedHistory loadTaskHistory(int tid, string jsonlPath,
 	TranslatedEvent[] delegate(string, int) translateLine = null,
 	ulong maxBytes = ulong.max)
 {
 	import std.file : exists, read;
-	import std.string : lineSplitter;
 
 	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return LoadedHistory();
 
+	auto content = cast(string) read(jsonlPath, cast(size_t) maxBytes);
+	if (maxBytes != ulong.max)
+		content = completeJsonlPrefix(content);
+	return loadTaskHistoryContent(tid, content, translateLine);
+}
+
+package(cydo) LoadedHistory loadTaskHistoryContent(int tid, string content,
+	TranslatedEvent[] delegate(string, int) translateLine)
+{
+	import std.string : lineSplitter;
+
 	LoadedHistory result;
 	int lineNum = 0;
-	foreach (line; (cast(string) read(jsonlPath, cast(size_t) maxBytes)).lineSplitter)
+	foreach (line; content.lineSplitter)
 	{
 		lineNum++;
 		if (line.length == 0)

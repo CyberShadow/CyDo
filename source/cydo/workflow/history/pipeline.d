@@ -29,7 +29,7 @@ import cydo.domain.tasks.model : QueueOperationProbe, TaskData, TaskHistoryEndMe
 	extractTsFromEnvelope, watermarkFromPath;
 import cydo.workflow.history.native_history : HistoryAccess,
 	TaskHistoryResolution, TaskHistoryResolutionKind;
-import cydo.workflow.history.jsonl_store : loadTaskHistory;
+import cydo.workflow.history.jsonl_store : completeJsonlPrefix, loadTaskHistoryContent;
 
 package(cydo):
 
@@ -184,7 +184,7 @@ class HistoryEventPipeline
 
 			string content;
 			if (jsonlPath.length > 0 && maxBytes > 0 && exists(jsonlPath))
-				content = cast(string) read(jsonlPath, cast(size_t) maxBytes);
+				content = completeJsonlPrefix(cast(string) read(jsonlPath, cast(size_t) maxBytes));
 			auto inactiveLines = ta.inactiveHistoryLines(content);
 			queueOutcomes = null;
 			queueOutcomeTargets = null;
@@ -197,7 +197,7 @@ class HistoryEventPipeline
 			}
 
 			ta.resetHistoryReplay();
-			return loadTaskHistory(tid, jsonlPath, delegate TranslatedEvent[](string line, int lineNum) {
+			return loadTaskHistoryContent(tid, content, delegate TranslatedEvent[](string line, int lineNum) {
 				if (lineNum in inactiveLines)
 					return [];
 				auto confirmations = queueConfirmations(queueOutcomes,
@@ -239,7 +239,7 @@ class HistoryEventPipeline
 				if (ta.isUserMessageLine(line))
 					userMsgFromJsonl++;
 				return stripTransientStatus(ta.translateHistoryLine(line, lineNum));
-			}, maxBytes);
+			});
 		});
 		sw.stop();
 		if (td.history.isLoaded)

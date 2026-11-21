@@ -263,6 +263,7 @@ private struct LiveHistoryBinding
 	Agent agent;
 	NativeHistoryProfile profile;
 	string sessionId;
+	bool resuming;
 }
 
 private enum LaunchOwnership { task, operation }
@@ -466,7 +467,7 @@ class TaskSessionRunner
 		enforce(owner !is null && *owner is (*binding).owner,
 			"Live history watch binding does not match the mapped session owner");
 		auto context = LiveHistoryContext((*binding).agent, (*binding).profile,
-			(*binding).sessionId);
+			(*binding).sessionId, (*binding).resuming);
 		if (auto codex = cast(CodexAgent) (*binding).agent)
 		{
 			auto codexOwner = cast(CodexSession) (*binding).owner;
@@ -808,7 +809,8 @@ public:
 		auto typeDef = currentTaskTypeDef(td);
 		auto launch = prepareTaskSessionLaunch(tid, taskAgent, typeDef);
 		td = requireTask(tid, "Task disappeared before session creation");
-		auto session = taskAgent.createSession(tid, td.agentSessionId,
+		auto resumeSessionId = td.agentSessionId;
+		auto session = taskAgent.createSession(tid, resumeSessionId,
 			launch.processLaunch, launch.sessionConfig);
 		if (auto binding = tid in liveHistoryBindings_)
 		{
@@ -838,7 +840,7 @@ public:
 			enforce(launch.processLaunch.nativeHistoryProfile.driver == taskAgent.driver,
 				"Native session launch profile does not match the launch Agent");
 			liveHistoryBindings_[tid] = LiveHistoryBinding(session, taskAgent,
-				launch.processLaunch.nativeHistoryProfile, sessionId);
+				launch.processLaunch.nativeHistoryProfile, sessionId, resumeSessionId.length > 0);
 			if (!host_.shuttingDown())
 				host_.startJsonlWatch(tid);
 		};
