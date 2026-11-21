@@ -4,6 +4,8 @@ export type TaskDiagnosticSeverity = "info" | "warning" | "error";
 
 export type ItemDenier = "classifier" | "settingsRule" | "backgroundAgent";
 
+export type ItemPermissionStage = "asked" | "answered" | "accepted" | "withdrawn";
+
 export interface ContentBlock {
   type: string;
   text?: string;
@@ -238,6 +240,12 @@ export interface ItemDeniedEvent {
   item_id: string;
   by: ItemDenier;
   reason?: string;
+}
+
+export interface ItemPermissionEvent {
+  type: "item/permission";
+  item_id: string;
+  stage: ItemPermissionStage;
 }
 
 export interface UserMessageConsumedEvent {

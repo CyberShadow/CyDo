@@ -7,6 +7,8 @@ interface Props {
   reason?: string;
   /** When CyDo denies the call unanswered (Unix ms); absent: never. */
   expiresAt?: number;
+  /** Answered: awaiting the agent taking the answer. */
+  sending?: boolean;
   onAllow: () => void;
   onDeny: (message?: string) => void;
 }
@@ -40,6 +42,7 @@ export function PermissionPromptForm({
   input,
   reason,
   expiresAt,
+  sending,
   onAllow,
   onDeny,
 }: Props) {
@@ -47,11 +50,18 @@ export function PermissionPromptForm({
   const [denyReason, setDenyReason] = useState("");
 
   return (
-    <div class="permission-prompt-form">
+    <div class={`permission-prompt-form${sending ? " sending" : ""}`}>
       <div class="permission-prompt-header">
         Permission Request
-        {expiresAt !== undefined && (
-          <PermissionPromptTimeout expiresAt={expiresAt} />
+        {sending ? (
+          <span class="permission-prompt-sending">
+            <span class="permission-prompt-spinner" />
+            Sending…
+          </span>
+        ) : (
+          expiresAt !== undefined && (
+            <PermissionPromptTimeout expiresAt={expiresAt} />
+          )
         )}
       </div>
       <div class="permission-prompt-tool">{toolName}</div>
@@ -70,12 +80,14 @@ export function PermissionPromptForm({
                 setDenyReason((e.target as HTMLTextAreaElement).value);
               }}
               autoFocus
+              disabled={sending}
             />
             <button
               class="permission-deny-btn"
               onClick={() => {
                 onDeny(denyReason || undefined);
               }}
+              disabled={sending}
             >
               Deny
             </button>
@@ -86,11 +98,16 @@ export function PermissionPromptForm({
             onClick={() => {
               setShowDenyReason(true);
             }}
+            disabled={sending}
           >
             Deny
           </button>
         )}
-        <button class="permission-allow-btn" onClick={onAllow}>
+        <button
+          class="permission-allow-btn"
+          onClick={onAllow}
+          disabled={sending}
+        >
           Allow
         </button>
       </div>

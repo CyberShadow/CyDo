@@ -1453,6 +1453,11 @@ class ClaudeCodeSession : AgentSession
 	private void delegate(string toolUseId) permissionRequestWithdrawnHandler_;
 	/// can_use_tool requests the CLI still awaits an answer to: request_id → tool_use_id.
 	private string[string] pendingPermissionRequests_;
+	/// Permission requests (can_use_tool and policy hook_callback) we have
+	/// answered and the CLI has yet to take the answer to:
+	/// request_id → tool_use_id. The CLI echoes each answer it takes (we
+	/// run it with --replay-user-messages).
+	private string[string] answeredPermissionRequests_;
 	/// User messages (by the UUID we sent them with) the CLI has started
 	/// processing and not yet finished, per its `command_lifecycle` reports.
 	/// A message replayed while another is in progress was absorbed into
@@ -1847,8 +1852,9 @@ class ClaudeCodeSession : AgentSession
 		{
 			enforce(envelope.request.callback_id == preToolUseCallbackId,
 				"Claude invoked an unknown hook callback: " ~ envelope.request.callback_id);
-			sendControlResponse(ClaudeControlResponse.success(envelope.request_id,
-				JSONFragment(answerPreToolUseHook(envelope.request.input))));
+			auto input = parsePreToolUseHookInput(envelope.request.input);
+			answerPermissionRequest(envelope.request_id, input.tool_use_id,
+				answerPreToolUseHook(input));
 			return;
 		}
 
@@ -1870,6 +1876,7 @@ class ClaudeCodeSession : AgentSession
 		assert(requestId !in pendingPermissionRequests_,
 			"Claude repeated a pending can_use_tool request_id");
 		pendingPermissionRequests_[requestId] = envelope.request.tool_use_id;
+		emitPermissionStage(envelope.request.tool_use_id, ItemPermissionStage.asked);
 		// With the policy hook answering first, the CLI is left three reasons
 		// to ask: the hook said "ask", the classifier defers to a person, or
 		// one of its own safety checks (dangerous removals, sensitive files,
@@ -1886,26 +1893,55 @@ class ClaudeCodeSession : AgentSession
 			escalation == PermissionEscalation.policyAsk ? null : envelope.request.decision_reason);
 		permissionRequestHandler_(prompt, escalation).then((string decision) {
 			// Withdrawn or process exited while the decision was pending.
-			if (pendingPermissionRequests_.remove(requestId))
-				sendControlResponse(ClaudeControlResponse.success(requestId,
-					JSONFragment(decision)));
+			auto toolUseId = requestId in pendingPermissionRequests_;
+			if (toolUseId is null)
+				return;
+			auto answeredToolUseId = *toolUseId;
+			pendingPermissionRequests_.remove(requestId);
+			answerPermissionRequest(requestId, answeredToolUseId, decision);
 		}).ignoreResult();
+	}
+
+	/// Send our answer to a permission request about `toolUseId`, and await
+	/// the CLI's echo of it (settleControlResponse).
+	private void answerPermissionRequest(string requestId, string toolUseId,
+		string answer)
+	{
+		assert(requestId !in answeredPermissionRequests_,
+			"Claude permission request answered twice");
+		sendControlResponse(ClaudeControlResponse.success(requestId,
+			JSONFragment(answer)));
+		answeredPermissionRequests_[requestId] = toolUseId;
+		emitPermissionStage(toolUseId, ItemPermissionStage.answered);
+	}
+
+	private void emitPermissionStage(string toolUseId, ItemPermissionStage stage,
+		string rawLine = null)
+	{
+		emitEvent(TranslatedEvent(toJson(ItemPermissionEvent("item/permission",
+			toolUseId, stage)), rawLine));
+	}
+
+	@JSONPartial private static struct PreToolUseHookInput
+	{
+		string hook_event_name;
+		string tool_name;
+		string tool_use_id;
+		JSONFragment tool_input;
+	}
+
+	private static PreToolUseHookInput parsePreToolUseHookInput(JSONFragment hookInput)
+	{
+		auto input = jsonParse!PreToolUseHookInput(hookInput.json);
+		enforce(input.hook_event_name == "PreToolUse",
+			"Claude invoked the permission policy hook for " ~ input.hook_event_name);
+		return input;
 	}
 
 	/// The hook output for a PreToolUse `hook_callback`: the policy's ruling,
 	/// or nothing to leave the call to the CLI (and its classifier).
-	private string answerPreToolUseHook(JSONFragment hookInput)
+	private string answerPreToolUseHook(PreToolUseHookInput input)
 	{
-		@JSONPartial static struct Input
-		{
-			string hook_event_name;
-			string tool_name;
-			string tool_use_id;
-			JSONFragment tool_input;
-		}
-		auto input = jsonParse!Input(hookInput.json);
-		enforce(input.hook_event_name == "PreToolUse",
-			"Claude invoked the permission policy hook for " ~ input.hook_event_name);
 		assert(preToolUseHandler_ !is null,
 			"Claude consulted the permission policy hook, but no handler is attached");
 		auto ruling = preToolUseHandler_(ToolPermissionRequest(input.tool_use_id,
@@ -1940,12 +1976,23 @@ class ClaudeCodeSession : AgentSession
 	{
 		@JSONPartial static struct Cancel { string request_id; }
 		auto requestId = jsonParse!Cancel(rawLine).request_id;
+		if (auto answered = requestId in answeredPermissionRequests_)
+		{
+			// The cancellation crossed our answer, which the CLI will not
+			// take (or echo).
+			auto toolUseId = *answered;
+			answeredPermissionRequests_.remove(requestId);
+			emitPermissionStage(toolUseId, ItemPermissionStage.withdrawn, rawLine);
+			return;
+		}
 		auto toolUseId = requestId in pendingPermissionRequests_;
-		// Already answered: the cancellation crossed our response.
+		// Not a permission request: one we refused, the refusal crossing
+		// the cancellation.
 		if (toolUseId is null)
 			return;
 		auto withdrawn = *toolUseId;
 		pendingPermissionRequests_.remove(requestId);
+		emitPermissionStage(withdrawn, ItemPermissionStage.withdrawn, rawLine);
 		permissionRequestWithdrawnHandler_(withdrawn);
 	}
 
@@ -2071,7 +2118,8 @@ class ClaudeCodeSession : AgentSession
 	}
 
 	/// Settle the request a `control_response` answers, if it is one of ours
-	/// awaiting an answer. Returns false for responses nobody awaits (e.g.
+	/// awaiting an answer, or take the CLI's echo of our answer to one of its
+	/// permission requests. Returns false for responses nobody awaits (e.g.
 	/// to fire-and-forget interrupts), which are translated as events.
 	private bool settleControlResponse(string rawLine)
 	{
@@ -2084,6 +2132,15 @@ class ClaudeCodeSession : AgentSession
 		}
 		@JSONPartial static struct Envelope { Body response; }
 		auto answer = jsonParse!Envelope(rawLine).response;
+		if (auto toolUseId = answer.request_id in answeredPermissionRequests_)
+		{
+			enforce(answer.subtype == "success",
+				"Claude echoed a failed answer to its permission request");
+			auto accepted = *toolUseId;
+			answeredPermissionRequests_.remove(answer.request_id);
+			emitPermissionStage(accepted, ItemPermissionStage.accepted, rawLine);
+			return true;
+		}
 		auto promise = answer.request_id in pendingControlRequests_;
 		if (promise is null)
 			return false;
@@ -2805,6 +2862,74 @@ unittest
 	assert(withdrawn == ["toolu_1"]);
 	session.translateLiveLine(`{"type":"control_cancel_request","request_id":"req-1"}`);
 	assert(withdrawn == ["toolu_1"]);
+}
+
+// Each permission request reports its stages: asked (can_use_tool only),
+// answered once we reply, then accepted when the CLI echoes our answer
+// (the echo itself is not forwarded), or withdrawn when the CLI cancels.
+unittest
+{
+	import ae.net.asockets : socketManager;
+
+	void drainNextTicks()
+	{
+		for (;;)
+		{
+			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
+			if (handlers.length == 0)
+				return;
+			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
+			foreach (handler; handlers)
+				handler();
+		}
+	}
+
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	string[] events;
+	session.onOutput = (TranslatedEvent ev) { events ~= ev.translated; };
+	Promise!string[] decisions;
+	session.onToolPermissionRequest = (PermissionPrompt req, PermissionEscalation escalation) {
+		decisions ~= new Promise!string;
+		return decisions[$ - 1];
+	};
+	session.onToolPermissionRequestWithdrawn = (string toolUseId) {};
+	session.onPreToolUse = (ToolPermissionRequest req) => ToolCallRuling(ToolCallDecision.allow);
+	string stage(string toolUseId, string stage_)
+	{
+		return `{"type":"item/permission","item_id":"` ~ toolUseId ~ `","stage":"` ~ stage_ ~ `"}`;
+	}
+	string echo(string requestId)
+	{
+		return `{"type":"control_response","response":{"subtype":"success","request_id":"`
+			~ requestId ~ `","response":{}}}`;
+	}
+
+	session.translateLiveLine(`{"type":"control_request","request_id":"hook-1","request":`
+		~ `{"subtype":"hook_callback","callback_id":"cydo-permission-policy","input":`
+		~ `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"toolu_1",`
+		~ `"tool_input":{}}}}`);
+	assert(events == [stage("toolu_1", "answered")]);
+	session.translateLiveLine(echo("hook-1"));
+	assert(events[1 .. $] == [stage("toolu_1", "accepted")]);
+
+	session.translateLiveLine(`{"type":"control_request","request_id":"req-2","request":`
+		~ `{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"toolu_2","input":{}}}`);
+	assert(events[2 .. $] == [stage("toolu_2", "asked")]);
+	decisions[0].fulfill(`{"behavior":"allow"}`);
+	drainNextTicks();
+	assert(events[3 .. $] == [stage("toolu_2", "answered")]);
+	session.translateLiveLine(echo("req-2"));
+	assert(events[4 .. $] == [stage("toolu_2", "accepted")]);
+
+	session.translateLiveLine(`{"type":"control_request","request_id":"req-3","request":`
+		~ `{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"toolu_3","input":{}}}`);
+	decisions[1].fulfill(`{"behavior":"allow"}`);
+	drainNextTicks();
+	session.translateLiveLine(`{"type":"control_cancel_request","request_id":"req-3"}`);
+	assert(events[5 .. $] == [stage("toolu_3", "asked"), stage("toolu_3", "answered"),
+		stage("toolu_3", "withdrawn")]);
+	assert(session.answeredPermissionRequests_.length == 0);
 }
 
 // The rewind capability is probed once per CLI version: a supporting CLI

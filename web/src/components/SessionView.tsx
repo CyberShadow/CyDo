@@ -7,7 +7,7 @@ import {
   useCallback,
 } from "preact/hooks";
 import { MarkdownQuote } from "../vendor/quote-selection";
-import type { TaskState } from "../types";
+import type { PermissionPromptState, TaskState } from "../types";
 import type { Theme } from "../useTheme";
 import type {
   ImageAttachment,
@@ -68,6 +68,26 @@ interface Props {
   exportMode?: boolean;
   getTaskHref?: (id: string) => string;
   agentUsage?: Record<string, AgentUsageMessage>;
+}
+
+/** The PermissionPrompt answered here, while the agent has yet to take the
+ *  answer: it stops waiting once its tool_use block's permission stage moves
+ *  past "answered", or the call has a result. */
+function permissionAwaitingAgent(
+  task: TaskState,
+): PermissionPromptState | undefined {
+  const submitted = task.submittedPermission;
+  if (!submitted || !task.alive) return undefined;
+  const block = task.blocks.get(
+    task.itemIdMap.get(submitted.toolUseId) ?? submitted.toolUseId,
+  );
+  if (
+    block?.result ||
+    block?.permission === "accepted" ||
+    block?.permission === "withdrawn"
+  )
+    return undefined;
+  return submitted;
 }
 
 function SessionViewInner({
@@ -263,6 +283,8 @@ function SessionViewInner({
       JSON.stringify({ error: "User refused to answer questions" }),
     );
   }, [onAskUserResponse, tid]);
+
+  const sendingPermission = permissionAwaitingAgent(task);
 
   const handlePermissionAllow = useCallback(() => {
     onPermissionPromptResponse(tid, JSON.stringify({ behavior: "allow" }));
@@ -481,10 +503,21 @@ function SessionViewInner({
         </div>
       ) : task.pendingPermission ? (
         <PermissionPromptForm
+          key={task.pendingPermission.toolUseId}
           toolName={task.pendingPermission.toolName}
           input={task.pendingPermission.input}
           reason={task.pendingPermission.reason}
           expiresAt={task.pendingPermission.expiresAt}
+          onAllow={handlePermissionAllow}
+          onDeny={handlePermissionDeny}
+        />
+      ) : sendingPermission ? (
+        <PermissionPromptForm
+          key={sendingPermission.toolUseId}
+          toolName={sendingPermission.toolName}
+          input={sendingPermission.input}
+          reason={sendingPermission.reason}
+          sending
           onAllow={handlePermissionAllow}
           onDeny={handlePermissionDeny}
         />

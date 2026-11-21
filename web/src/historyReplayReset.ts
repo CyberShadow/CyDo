@@ -84,6 +84,7 @@ function resetTaskTimeline(
     serverDraft: undefined,
     pendingAskUser: undefined,
     pendingPermission: undefined,
+    submittedPermission: undefined,
     trackedFiles: new Map(),
     blocks: new Map(),
     itemIdMap: new Map(),
@@ -132,6 +133,7 @@ export function resetTaskForHistoryReplay(
     serverDraft: task.serverDraft,
     pendingAskUser: task.pendingAskUser,
     pendingPermission: task.pendingPermission,
+    submittedPermission: task.submittedPermission,
   };
 }
 

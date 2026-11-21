@@ -37,6 +37,7 @@ import type {
   ItemCompletedEvent,
   ItemResultEvent,
   ItemDeniedEvent,
+  ItemPermissionEvent,
   TurnStopEvent,
   TurnDeltaEvent,
   UserMessageConsumedEvent,
@@ -1450,6 +1451,18 @@ function reduceItemDenied(
   return { ...s, blocks };
 }
 
+function reduceItemPermission(
+  s: SessionState,
+  event: ItemPermissionEvent,
+): SessionState {
+  const blockKey = s.itemIdMap.get(event.item_id) ?? event.item_id;
+  const block = s.blocks.get(blockKey);
+  if (!block) return s;
+  const blocks = new Map(s.blocks);
+  blocks.set(blockKey, { ...block, permission: event.stage });
+  return { ...s, blocks };
+}
+
 export function reduceItemResult(
   s: SessionState,
   event: ItemResultEvent,
@@ -1794,6 +1807,9 @@ export function reduceMessage(
 
     case "item/denied":
       return reduceItemDenied(s, msg);
+
+    case "item/permission":
+      return reduceItemPermission(s, msg);
 
     case "turn/delta":
       return reduceTurnDelta(s, msg, seq);

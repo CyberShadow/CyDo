@@ -3169,10 +3169,14 @@ export function useTaskManager(
   const sendPermissionPromptResponse = useCallback(
     (tid: number, content: string) => {
       connRef.current?.sendPermissionPromptResponse(tid, content);
-      // Optimistically clear the pending permission prompt
       const t = findByTid(tid);
-      if (t) {
-        const updated = { ...t, pendingPermission: null, isProcessing: true };
+      if (t?.pendingPermission) {
+        const updated = {
+          ...t,
+          pendingPermission: null,
+          submittedPermission: t.pendingPermission,
+          isProcessing: true,
+        };
         liveStates.set(t.uuid, updated);
         setTasks((prev) => {
           const next = new Map(prev);

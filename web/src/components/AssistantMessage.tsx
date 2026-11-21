@@ -350,6 +350,7 @@ export const AssistantMessage = memo(
                             | undefined) ?? tryParsePartialJson(block.text))
                     }
                     result={block.completed ? block.result : undefined}
+                    permission={block.permission}
                     onViewFile={onViewFile}
                     spawnedTids={spawnedTidsByItemId?.get(block.itemId)}
                     getTaskHref={getTaskHref}

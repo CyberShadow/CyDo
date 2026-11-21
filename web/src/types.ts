@@ -8,6 +8,7 @@ import type {
   AskUserQuestionItem,
   ModelUsageInfo,
   ItemDenier,
+  ItemPermissionStage,
   TaskDiagnosticEvent,
   TurnEndReason,
 } from "./protocol";
@@ -221,6 +222,7 @@ interface BlockBase {
   result?: ToolResult; // tool result (tool_use only, set by item/result)
   denial?: { by: ItemDenier; reason?: string }; // the agent refused this call unasked (item/denied)
   narration?: boolean; // thinking only: prose written for the user, not reasoning (live only)
+  permission?: ItemPermissionStage; // where the permission decision for this call stands (item/permission)
   extras?: Record<string, unknown>;
 }
 
@@ -284,6 +286,16 @@ export type UndoPending =
       kind: "codex_turns";
       messagesRemoved: number;
     });
+
+export interface PermissionPromptState {
+  toolUseId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  /** Why the agent's own safety checks flag the call, if they do. */
+  reason?: string;
+  /** When CyDo denies the call unanswered (Unix ms); absent: never. */
+  expiresAt?: number;
+}
 
 export interface TaskState {
   uuid: string;
@@ -362,15 +374,10 @@ export interface TaskState {
     questions: AskUserQuestionItem[];
   } | null;
   /** Pending PermissionPrompt from the agent, waiting for Allow/Deny. */
-  pendingPermission?: {
-    toolUseId: string;
-    toolName: string;
-    input: Record<string, unknown>;
-    /** Why the agent's own safety checks flag the call, if they do. */
-    reason?: string;
-    /** When CyDo denies the call unanswered (Unix ms); absent: never. */
-    expiresAt?: number;
-  } | null;
+  pendingPermission?: PermissionPromptState | null;
+  /** The PermissionPrompt last answered here; shown as sending until the
+   *  agent takes the answer (its tool_use block's permission stage). */
+  submittedPermission?: PermissionPromptState;
   /** Files modified by the agent, keyed by absolute file path. */
   trackedFiles: Map<string, TrackedFile>;
   /** Flat block store keyed by unique block key — source of truth for assistant message content. */

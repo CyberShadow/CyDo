@@ -368,6 +368,24 @@ struct ItemDeniedEvent
 	@JSONOptional string reason;  /// the agent's own wording, when it gives one
 }
 
+/// Where the permission decision for a tool call stands between the agent
+/// and CyDo.
+enum ItemPermissionStage : string
+{
+	asked = "asked",          /// the agent awaits CyDo's decision
+	answered = "answered",    /// CyDo sent its decision; the agent has yet to take it
+	accepted = "accepted",    /// the agent took the decision
+	withdrawn = "withdrawn",  /// the agent stopped awaiting the decision
+}
+
+/// item/permission — the permission decision for a tool_use item advanced.
+struct ItemPermissionEvent
+{
+	string type = "item/permission";
+	string item_id;
+	ItemPermissionStage stage;
+}
+
 /// user_message/consumed — the agent's queue confirmed what became of a
 /// previously displayed user message. The message itself is emitted from the
 /// queue enqueue record (the authoritative "user sent this" fact, shown with

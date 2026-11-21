@@ -22,6 +22,7 @@ export type {
   TurnResultEvent,
   TurnEndReason,
   ItemDenier,
+  ItemPermissionStage,
   SessionSummaryEvent,
   SessionCostEvent,
   SessionRateLimitEvent,
@@ -38,6 +39,7 @@ export type {
   ItemCompletedEvent,
   ItemResultEvent,
   ItemDeniedEvent,
+  ItemPermissionEvent,
   TurnStopEvent,
   TurnDeltaEvent,
   UserMessageConsumedEvent,
@@ -68,6 +70,7 @@ import type {
   ItemCompletedEvent,
   ItemResultEvent,
   ItemDeniedEvent,
+  ItemPermissionEvent,
   TurnStopEvent,
   TurnDeltaEvent,
   UserMessageConsumedEvent,
@@ -179,6 +182,7 @@ export type AgnosticEvent =
   | ItemCompletedEvent
   | ItemResultEvent
   | ItemDeniedEvent
+  | ItemPermissionEvent
   | TurnDeltaEvent
   | TurnStopEvent
   | UserMessageConsumedEvent

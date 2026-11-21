@@ -2,6 +2,7 @@ import { h, Fragment, ComponentChildren } from "preact";
 import { memo } from "preact/compat";
 import { useState, useMemo, useEffect, useRef } from "preact/hooks";
 import { marked } from "marked";
+import type { ItemPermissionStage } from "../protocol";
 import type { ToolResult, ToolResultContent } from "../types";
 import { qualifiedToolKey, toolIs } from "../toolIdentity";
 import { sanitizeHtml } from "../sanitize";
@@ -11,6 +12,7 @@ import { Markdown } from "./Markdown";
 import { CodePre, CopyButton } from "./CopyButton";
 import checkIcon from "../icons/check.svg?raw";
 import errorIcon from "../icons/error.svg?raw";
+import questionIcon from "../icons/question.svg?raw";
 import { DiffView, HunkDiffView } from "./diff/DiffView";
 import { DiffWithToggle } from "./diff/DiffWithToggle";
 import {
@@ -242,6 +244,8 @@ interface Props {
   toolUseId?: string;
   input: Record<string, unknown>;
   result?: ToolResult;
+  /** Where the permission decision for this call stands, if reported. */
+  permission?: ItemPermissionStage;
   streaming?: boolean;
   children?: ComponentChildren;
   onViewFile?: (filePath: string) => void;
@@ -3044,6 +3048,7 @@ export const ToolCall = memo(
     toolUseId,
     input,
     result,
+    permission,
     streaming,
     children,
     onViewFile,
@@ -3311,13 +3316,26 @@ export const ToolCall = memo(
                   dangerouslySetInnerHTML={{ __html: checkIcon }}
                 />
               )
+            ) : permission === "asked" ? (
+              <span
+                class="action-icon tool-icon-asked"
+                title="Awaiting a permission decision"
+                dangerouslySetInnerHTML={{ __html: questionIcon }}
+              />
             ) : (
               <svg
-                class="tool-icon-spinner"
+                class={`tool-icon-spinner${
+                  permission === "answered" ? " tool-icon-answered" : ""
+                }`}
                 width="16"
                 height="16"
                 viewBox="0 0 16 16"
               >
+                <title>
+                  {permission === "answered"
+                    ? "Permission decision sent; awaiting the agent"
+                    : "Running"}
+                </title>
                 <circle
                   cx="8"
                   cy="8"
@@ -3597,6 +3615,7 @@ export const ToolCall = memo(
     prev.toolUseId === next.toolUseId &&
     prev.input === next.input &&
     prev.result === next.result &&
+    prev.permission === next.permission &&
     prev.streaming === next.streaming &&
     prev.children === next.children &&
     prev.onViewFile === next.onViewFile,

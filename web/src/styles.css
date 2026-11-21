@@ -1268,6 +1268,14 @@ body,
   display: block;
 }
 
+.tool-icon-spinner.tool-icon-answered {
+  opacity: 0.4;
+}
+
+.tool-icon-asked {
+  color: var(--warn);
+}
+
 .tool-name {
   font-weight: bold;
   font-size: 13px;
@@ -4627,4 +4635,26 @@ pre.extra-field-value {
 }
 .permission-allow-btn:hover {
   background: var(--accent-dim);
+}
+
+.permission-prompt-form.sending > :not(.permission-prompt-header) {
+  opacity: 0.5;
+}
+
+.permission-prompt-sending {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.permission-prompt-spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }

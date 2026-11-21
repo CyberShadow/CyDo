@@ -42,16 +42,23 @@ workspaces:
     /Denied automatically in [12]:\d\d/,
   );
 
+  // The tool call shows it awaits the decision.
+  const toolCall = page.locator(".tool-call", { hasText: "ask-allow-test" });
+  await expect(toolCall.locator(".tool-icon-asked")).toBeVisible();
+
   // Click Allow — the backend sends allow back to Claude, which runs the command.
   await page.locator(".permission-allow-btn").click();
 
-  // Form disappears after response.
+  // Form disappears once Claude takes the answer.
   await expect(form).not.toBeVisible();
 
   // Session completes with "Done." from the mock LLM.
   await expect(assistantText(page, "Done.")).toBeVisible({
     timeout: responseTimeout(agentType),
   });
+  await expect(toolCall.locator(".tool-icon-asked")).toHaveCount(0);
+  // Claude's echoes of CyDo's answers mark the calls, not the transcript.
+  await expect(page.locator(".control-response-message")).toHaveCount(0);
 });
 
 test("permission_policy ask: Deny button blocks the tool call", { tag: "@claude-only" }, async ({
