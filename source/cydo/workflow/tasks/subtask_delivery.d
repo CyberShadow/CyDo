@@ -37,6 +37,7 @@ struct SubtaskResultDeliveryHost
 	bool delegate(int childTid) wasLiveDelivered;
 	void delegate(int childTid) markLiveDelivered;
 	Promise!void delegate(int tid) ensureProcessQueueAlive;
+	bool delegate() shuttingDown;
 	Promise!void delegate(int tid, KnownSystemMessageKind kind, string body) sendKnownSystemMessage;
 	void delegate(int parentTid, int childTid) removeTaskDependency;
 	bool delegate(int tid) taskAlive;
@@ -163,6 +164,9 @@ public:
 
 	Promise!void deliverBatchResults(int parentTid)
 	{
+		if (host_.shuttingDown())
+			return resolve();
+
 		if (host_.getTask(parentTid) is null)
 			return resolve();
 
@@ -276,6 +280,9 @@ private:
 	{
 		import ae.utils.json : toJson;
 
+		if (host_.shuttingDown())
+			return resolve();
+
 		if (host_.getTask(parentTid) is null)
 		{
 			tracef("deliverBatchResults: parent tid=%d not in tasks, skipping", parentTid);
@@ -355,10 +362,11 @@ private:
 	}
 }
 
-unittest
+version (unittest)
 {
 	import ae.net.asockets : socketManager;
 
+private:
 	void drainPromiseNextTicks()
 	{
 		for (;;)
@@ -372,7 +380,10 @@ unittest
 				handler();
 		}
 	}
+}
 
+unittest
+{
 	enum SubmissionFailure
 	{
 		none,
@@ -472,6 +483,7 @@ unittest
 				assert(tid == 1, test.name);
 				return resolve();
 			},
+			shuttingDown: () => false,
 			sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind,
 				string body) {
 				assert(tid == 1, test.name);
@@ -572,6 +584,92 @@ unittest
 
 		assert(deliverySettled && !deliveryRejected, test.name);
 	}
+}
+
+unittest
+{
+	import std.algorithm.searching : canFind, countUntil;
+
+	TaskData[int] tasks;
+	tasks[1] = TaskData(1, "local", "/tmp/cydo-shutdown-delivery");
+	tasks[1].status = TaskStatus.waiting;
+	tasks[2] = TaskData(2, "local", "/tmp/cydo-shutdown-delivery");
+	tasks[2].status = TaskStatus.completed;
+	tasks[2].resultText = "completed before shutdown";
+	tasks[3] = TaskData(3, "local", "/tmp/cydo-shutdown-delivery");
+	tasks[3].status = TaskStatus.failed;
+	tasks[3].resultText = "failed before shutdown";
+
+	bool shutdownInProgress = true;
+	int[] dependencies = [2, 3];
+	size_t queueStarts;
+	string[] sentBodies;
+	auto delivery = new SubtaskResultDelivery(SubtaskResultDeliveryHost(
+		getTask: (int tid) => tid in tasks,
+		outputPath: (const TaskData* task) => "",
+		taskProducesCommitOutput: (string projectPath, string taskType) => false,
+		childTaskIds: (int parentTid) {
+			assert(parentTid == 1);
+			return dependencies;
+		},
+		ensureProcessQueueAlive: (int tid) {
+			assert(tid == 1);
+			queueStarts++;
+			return resolve();
+		},
+		shuttingDown: () => shutdownInProgress,
+		sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind,
+			string body) {
+			assert(tid == 1);
+			assert(kind == KnownSystemMessageKind.subTaskResults);
+			sentBodies ~= body;
+			return resolve();
+		},
+		removeTaskDependency: (int parentTid, int childTid) {
+			assert(parentTid == 1);
+			auto index = dependencies.countUntil(childTid);
+			assert(index >= 0);
+			dependencies = dependencies[0 .. index] ~ dependencies[index + 1 .. $];
+		},
+	));
+
+	bool settled;
+	delivery.deliverBatchFallbackIfReady(1).then(() {
+		settled = true;
+	}).ignoreResult();
+	drainPromiseNextTicks();
+
+	assert(settled);
+	assert(queueStarts == 0, "Fallback started the parent queue during shutdown");
+	assert(sentBodies.length == 0);
+	assert(dependencies == [2, 3]);
+
+	shutdownInProgress = false;
+	settled = false;
+	delivery.deliverBatchFallbackIfReady(1).then(() {
+		settled = true;
+	}).ignoreResult();
+	assert(queueStarts == 1);
+	shutdownInProgress = true;
+	drainPromiseNextTicks();
+
+	assert(settled);
+	assert(sentBodies.length == 0, "Queued batch sent after shutdown began");
+	assert(dependencies == [2, 3]);
+
+	shutdownInProgress = false;
+	settled = false;
+	delivery.deliverBatchFallbackIfReady(1).then(() {
+		settled = true;
+	}).ignoreResult();
+	drainPromiseNextTicks();
+
+	assert(settled);
+	assert(queueStarts == 2);
+	assert(sentBodies.length == 1);
+	assert(sentBodies[0].canFind("completed before shutdown"));
+	assert(sentBodies[0].canFind("failed before shutdown"));
+	assert(dependencies.length == 0);
 }
 
 unittest

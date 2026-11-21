@@ -81,6 +81,7 @@ struct WorkflowToolsHost
 	bool delegate(string projectPath, string taskTypeName) taskProducesCommitOutput;
 	void delegate(int childTid, int parentTid, WorktreeMode mode) setupWorktreeForEdge;
 	Promise!void delegate(int tid) ensureProcessQueueAlive;
+	bool delegate() shuttingDown;
 	Promise!void delegate(int tid, const(ContentBlock)[] content,
 		const(ContentBlock)[] broadcastContent, string cydoMeta,
 		string nonce) sendTaskMessage;
@@ -208,6 +209,7 @@ unittest
 		worktreePath: (const TaskData* td) => buildPath("/tmp", "cydo-task-startup-failure", "tasks", td.tid.to!string, "worktree"),
 		taskProducesCommitOutput: (string projectPath, string taskTypeName) => false,
 		setupWorktreeForEdge: (int childTid, int parentTid, WorktreeMode mode) {},
+		shuttingDown: () => false,
 		ensureProcessQueueAlive: (int tid) => tid == 2 ? reject!void(new Exception("simulated child session startup failure")) : resolve(),
 		sendTaskMessage: (int tid, const(ContentBlock)[] content, const(ContentBlock)[] broadcastContent, string cydoMeta, string nonce) { assert(tid == 3); return resolve(); },
 		emitTaskReload: (int tid, string reason, string excludedUserUuid) {},
@@ -296,6 +298,7 @@ public:
 					liveDeliveredSubTasks_[childTid] = true;
 				},
 				ensureProcessQueueAlive: host_.ensureProcessQueueAlive,
+				shuttingDown: host_.shuttingDown,
 				sendKnownSystemMessage: host_.sendKnownSystemMessage,
 				removeTaskDependency: &removeTaskDependency,
 				taskAlive: host_.taskAlive,
@@ -1855,6 +1858,7 @@ unittest
 				expectedTaskStartHead = execute(["git", "-C", worktree, "rev-parse", "HEAD"]).output.strip;
 			}
 		},
+		shuttingDown: () => false,
 		ensureProcessQueueAlive: (int tid) {
 			launchCalls++;
 			if (tid == 4)
@@ -2111,6 +2115,7 @@ unittest
 				taskProducesCommitOutput: (string projectPath, string taskType) => false,
 				setupWorktreeForEdge: (int childTid, int parentTid,
 					WorktreeMode mode) {},
+				shuttingDown: () => false,
 				ensureProcessQueueAlive: (int tid) {
 					if (tasks[tid].status == TaskStatus.pending)
 						tasks[tid].status = TaskStatus.active;

@@ -433,6 +433,7 @@ class App
 				return typeDef !is null && typeDef.output_type.canFind(OutputType.commit);
 			},
 			setupWorktreeForEdge: &worktreeAllocator.setupForEdge,
+			shuttingDown: () => shuttingDown,
 			ensureProcessQueueAlive: (int tid) {
 				assert((tid in tasks) !is null,
 					format!"Process queue requested for missing task %d"(tid));
