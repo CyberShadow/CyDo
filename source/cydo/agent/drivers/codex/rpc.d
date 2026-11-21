@@ -139,11 +139,14 @@ struct ItemStartedParams
 	{
 		string type;
 		@JSONOptional string id;
+		@JSONOptional string clientId;
+		@JSONOptional Nullable!long startedAtMs;
+		@JSONOptional Nullable!long completedAtMs;
 		@JSONOptional string name;
 		@JSONOptional string text;
 		@JSONOptional string command;
 		@JSONOptional SO action;
-		@JSONOptional SO content; // userMessage items: Array<UserInput>
+		@JSONOptional SO content; // userMessage inputs or reasoning text
 		@JSONOptional string tool;          // mcpToolCall: tool name (e.g. "AskUserQuestion")
 		@JSONOptional string server;        // mcpToolCall: server name (e.g. "cydo")
 		// commandExecution fields (explicit to prevent appearance in _extras):
@@ -169,7 +172,15 @@ struct ItemStartedParams
 		@JSONOptional SO summary;
 		// agentMessage fields:
 		@JSONOptional typeof(null) memoryCitation;
+		@JSONOptional SO moderation;
+		@JSONOptional SO delivery;
+		@JSONOptional SO questions;
 		// TODO: not used yet
+		@JSONOptional string scriptPath;    // commandExecution
+		@JSONOptional string environmentId; // mcpToolCall
+		@JSONOptional SO mcpAppUi;           // mcpToolCall
+		@JSONOptional Nullable!bool readOnlyHint; // mcpToolCall
+		@JSONOptional SO results;           // webSearch
 		@JSONOptional SO pluginId;    // mcpToolCall: plugin providing the MCP server
 		@JSONOptional SO appContext;  // mcpToolCall: app connector metadata
 		@JSONOptional string source;  // commandExecution: agent, userShell, unifiedExec*
@@ -304,6 +315,9 @@ struct ItemCompletedParams
 	static struct Item
 	{
 		@JSONOptional string id;
+		@JSONOptional string clientId;
+		@JSONOptional Nullable!long startedAtMs;
+		@JSONOptional Nullable!long completedAtMs;
 		@JSONOptional bool is_error;
 		@JSONOptional string aggregatedOutput; // commandExecution: stdout+stderr
 		@JSONOptional string status;           // "inProgress", "failed", "completed"
@@ -331,7 +345,15 @@ struct ItemCompletedParams
 		@JSONOptional SO content;
 		// agentMessage fields:
 		@JSONOptional typeof(null) memoryCitation;
+		@JSONOptional SO moderation;
+		@JSONOptional SO delivery;
+		@JSONOptional SO questions;
 		// TODO: not used yet
+		@JSONOptional string scriptPath;    // commandExecution
+		@JSONOptional string environmentId; // mcpToolCall
+		@JSONOptional SO mcpAppUi;           // mcpToolCall
+		@JSONOptional Nullable!bool readOnlyHint; // mcpToolCall
+		@JSONOptional SO results;           // webSearch
 		@JSONOptional SO pluginId;    // mcpToolCall: plugin providing the MCP server
 		@JSONOptional SO appContext;  // mcpToolCall: app connector metadata
 		@JSONOptional string source;  // commandExecution: agent, userShell, unifiedExec*
@@ -942,4 +964,113 @@ struct McpServerConfig
 	string[] args;
 	string[string] env;
 	uint tool_timeout_sec;
+}
+
+unittest
+{
+	// Completed items from the Codex 0.171.0 trace-fidelity-final wire capture.
+	foreach (itemJson; [
+		`{
+			"type":"userMessage",
+			"id":"01a1feae-9e92-7753-9e61-757f909bcc11",
+			"clientId":null,
+			"content":[{"type":"text","text":"reply with \"reasoning-fixture\"","text_elements":[]}],
+			"startedAtMs":1795274219154,
+			"completedAtMs":1795274219154
+		}`,
+		`{
+			"type":"agentMessage",
+			"moderation":null,
+			"id":"msg_mock_00001",
+			"text":"reasoning-fixture",
+			"phase":null,
+			"memoryCitation":null,
+			"delivery":null,
+			"questions":null,
+			"startedAtMs":1795274219214,
+			"completedAtMs":1795274219214
+		}`,
+		`{
+			"type":"commandExecution",
+			"id":"call_mock_00001",
+			"pluginId":null,
+			"scriptPath":null,
+			"command":"/run/current-system/sw/bin/zsh -lc 'printf success-marker'",
+			"cwd":"/mnt/local/moved/home/vladimir/work/.cydo/tasks/39225/trace-fidelity-final",
+			"processId":"95145",
+			"source":"unifiedExecStartup",
+			"status":"completed",
+			"commandActions":[{"type":"unknown","command":"printf success-marker"}],
+			"aggregatedOutput":"success-marker",
+			"exitCode":0,
+			"durationMs":0,
+			"startedAtMs":1795274219348,
+			"completedAtMs":1795274219348
+		}`,
+		`{
+			"type":"contextCompaction",
+			"id":"01a1feae-aa46-7bf2-807f-facdd4b5453b",
+			"startedAtMs":1795274222150,
+			"completedAtMs":1795274222212
+		}`,
+		`{
+			"type":"fileChange",
+			"id":"call_mock_00003",
+			"changes":[{"path":"/mnt/local/moved/home/vladimir/work/.cydo/tasks/39225/trace-fidelity-final/tmp/codex-fileviewer-create.txt","kind":{"type":"add"},"diff":"hello from create fixture\n"}],
+			"status":"completed",
+			"startedAtMs":1795274219664,
+			"completedAtMs":1795274219665
+		}`,
+		`{
+			"type":"mcpToolCall",
+			"id":"call_mock_00004",
+			"server":"cydo",
+			"environmentId":null,
+			"tool":"Task",
+			"status":"completed",
+			"arguments":{"marker":"history-mcp-input"},
+			"appContext":null,
+			"mcpAppUi":null,
+			"pluginId":null,
+			"readOnlyHint":null,
+			"result":{"content":[{"type":"text","text":"fixture success"}],"structuredContent":null,"_meta":null},
+			"error":null,
+			"durationMs":1,
+			"startedAtMs":1795274219803,
+			"completedAtMs":1795274219805
+		}`,
+		`{
+			"type":"reasoning",
+			"id":"rs_history_fixture",
+			"summary":["fixture summary"],
+			"content":["fixture reasoning"],
+			"startedAtMs":1795274219211,
+			"completedAtMs":1795274219212
+		}`,
+		// Schema-derived 0.171.0 webSearch item. No capture was available.
+		`{
+			"type":"webSearch",
+			"id":"search-1",
+			"query":"fixture query",
+			"action":null,
+			"results":[{"title":"Fixture result","url":"https://example.com/"}],
+			"startedAtMs":1795274219154,
+			"completedAtMs":1795274219155
+		}`,
+		// Codex 0.144.1-style item without the newer fields.
+		`{"type":"agentMessage","id":"msg-legacy","text":"fixture reply","phase":null,"memoryCitation":null}`,
+	])
+	{
+		auto paramsJson = `{"threadId":"fixture-thread","turnId":"fixture-turn","item":`
+			~ itemJson ~ "}";
+		auto expectedType = jsonParse!SO(itemJson)["type"].toJson();
+		auto started = jsonParse!ItemStartedParams(paramsJson);
+		assert(toJson(started.item.type) == expectedType, itemJson);
+		assert(started.item.extras.length == 0,
+			"item/started extras for " ~ started.item.type ~ ": " ~ toJson(started.item.extras._data));
+		auto completed = jsonParse!ItemCompletedParams(paramsJson);
+		assert(toJson(completed.item.type) == expectedType, itemJson);
+		assert(completed.item.extras.length == 0,
+			"item/completed extras for " ~ completed.item.type ~ ": " ~ toJson(completed.item.extras._data));
+	}
 }

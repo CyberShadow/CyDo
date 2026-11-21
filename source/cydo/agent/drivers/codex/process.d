@@ -293,27 +293,7 @@ class AppServerProcess
 	private void sendInitialize()
 	{
 		state_ = State.initializing;
-		static struct Capabilities
-		{
-			bool experimentalApi;
-			// Notifications CyDo has no use for: Codex then does not send them.
-			string[] optOutNotificationMethods;
-		}
-		auto capabilities = Capabilities(true, [
-			"mcpServer/startupStatus/updated",
-			"remoteControl/status/changed",
-			// Codex sends this only when a request applies thread settings
-			// (thread/settings/update, or turn/start overrides such as the
-			// sandbox policy CyDo passes on every turn), to echo the
-			// resulting model, effort, cwd, approval and sandbox settings.
-			// CyDo chose those settings itself and is the app-server's only
-			// client, so the echo carries nothing it doesn't already know.
-			"thread/settings/updated",
-		]);
-		sendRequest("initialize", toJson(InitializeParams(
-			InitializeParams.ClientInfo("cydo", "0.1.0"),
-			JSONFragment(toJson(capabilities))
-		))).then((JsonRpcResponse result) {
+		sendRequest("initialize", toJson(makeInitializeParams())).then((JsonRpcResponse result) {
 			releaseStartupGateOnce();
 			sendLogin();
 		});
@@ -387,6 +367,34 @@ class AppServerProcess
 	}
 }
 
+private InitializeParams makeInitializeParams()
+{
+	static struct Capabilities
+	{
+		bool experimentalApi;
+		// Notifications CyDo has no use for: Codex then does not send them.
+		string[] optOutNotificationMethods;
+	}
+	auto capabilities = Capabilities(true, [
+		"mcpServer/startupStatus/updated",
+		"remoteControl/status/changed",
+		// Codex sends this only when a request applies thread settings
+		// (thread/settings/update, or turn/start overrides such as the
+		// sandbox policy CyDo passes on every turn), to echo the
+		// resulting model, effort, cwd, approval and sandbox settings.
+		// CyDo chose those settings itself and is the app-server's only
+		// client, so the echo carries nothing it doesn't already know.
+		"thread/settings/updated",
+		"thread/readState/changed",
+		"turn/moderationMetadata",
+		"thread/reverted",
+	]);
+	return InitializeParams(
+		InitializeParams.ClientInfo("cydo", "0.1.0"),
+		JSONFragment(toJson(capabilities))
+	);
+}
+
 version (unittest) package AppServerProcess makeTestAppServerProcess(
 	IConnection connection)
 {
@@ -394,4 +402,22 @@ version (unittest) package AppServerProcess makeTestAppServerProcess(
 	server.codec = new JsonRpcCodec(connection);
 	server.state_ = AppServerProcess.State.ready;
 	return server;
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	auto params = jsonParse!SO(toJson(makeInitializeParams()));
+	auto methods = jsonParse!(string[])(
+		params["capabilities"]["optOutNotificationMethods"].toJson());
+	foreach (method; [
+		"mcpServer/startupStatus/updated",
+		"remoteControl/status/changed",
+		"thread/settings/updated",
+		"thread/readState/changed",
+		"turn/moderationMetadata",
+		"thread/reverted",
+	])
+		assert(methods.canFind(method), "Missing initialize opt-out: " ~ method);
 }
