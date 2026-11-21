@@ -229,10 +229,6 @@ class CodexAgent : Agent
 				SandboxPathOrigin(SandboxPathOriginKind.agentRequirement, "codex",
 					"Codex npm package root"));
 
-		paths.requireReadVisible(cydoBinaryDir(),
-			SandboxPathOrigin(SandboxPathOriginKind.agentRequirement, "codex",
-				"CyDo binary"));
-
 		// Pass through Codex-required env vars so they survive --clearenv
 		void passthrough(string key)
 		{
@@ -1406,9 +1402,7 @@ unittest
 		"codex test", "pre-existing host access");
 	SandboxPaths ancestorPaths;
 	auto executableParent = dirName(executableDir);
-	auto cydoParent = dirName(cydoDir);
 	ancestorPaths.require(executableParent, PathAccess.rw, origin);
-	ancestorPaths.require(cydoParent, PathAccess.alwaysRw, origin);
 	string[string] ancestorEnv = [
 		"CYDO_CODEX_BIN": executable,
 		"PATH": executableDir,
@@ -1416,8 +1410,6 @@ unittest
 	agent.configureSandbox(ancestorPaths, ancestorEnv);
 	assert(ancestorPaths.exact(executableParent).get.effectiveMode == PathMode.rw);
 	assert(ancestorPaths.exact(executableDir).isNull);
-	assert(ancestorPaths.exact(cydoParent).get.effectiveMode == PathMode.always_rw);
-	assert(ancestorPaths.exact(cydoDir).isNull);
 }
 
 unittest

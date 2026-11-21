@@ -165,6 +165,16 @@ static:
 		runMcpServer();
 	}
 
+	version (linux)
+	{
+		@(`Run a command as the main child of the sandbox init.`)
+		void sandboxInit(immutable(string)[] command)
+		{
+			import cydo.runtime.launch.sandbox_init : runSandboxInit;
+			runSandboxInit(command);
+		}
+	}
+
 	@(`Simulate task type workflow.`)
 	void simulate()
 	{

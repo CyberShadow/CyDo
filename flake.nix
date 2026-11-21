@@ -601,7 +601,7 @@ EOF
           copilot = self.packages.${system}.copilot-cli;
 
           # Fake bwrap that strips sandbox flags and exec's the inner command.
-          # Real bwrap can't run inside Nix's build sandbox.
+          # Keep the browser tests independent of agent sandbox setup.
           fake-bwrap = pkgs.writeShellScript "bwrap" ''
             chdir=""
             clearenv=0
@@ -997,6 +997,12 @@ EOF
               runHook postInstall
             '';
           };
+          sandbox-init = pkgs.runCommand "cydo-sandbox-init-test" {
+            nativeBuildInputs = [ pkgs.bubblewrap pkgs.python3 ];
+          } ''
+            python3 ${./tests/sandbox-init.py} ${cydo}/bin/cydo
+            touch "$out"
+          '';
           tool-descriptions = pkgs.stdenv.mkDerivation {
             pname = "cydo-tool-descriptions";
             version = "0.1.0";

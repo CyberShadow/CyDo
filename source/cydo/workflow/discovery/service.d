@@ -22,7 +22,7 @@ import cydo.foundation.platform.path : bestEffortProjectPathIdentity, canonicalP
 import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 	ResolvedNativeHistoryContext;
 import cydo.runtime.launch.types : NativeHistoryProfile;
-import cydo.runtime.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
+import cydo.runtime.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryPath,
 	resolveSandboxForDiscovery;
 import cydo.domain.tasks.model : ProjectInfo, WorkspaceInfo;
 
@@ -173,7 +173,7 @@ class DiscoveryService
 		foreach (ref ws; config.workspaces)
 		{
 			auto sandbox = resolveSandboxForDiscovery(
-				config.sandbox, ws.sandbox, ws.root, cydoBinaryDir(), ws.name);
+				config.sandbox, ws.sandbox, ws.root, ws.name);
 			auto cmdPrefix = buildCommandPrefix(sandbox, "/");
 			auto isProjectExpr = ws.project_discovery.is_project;
 			auto recurseWhenExpr = ws.project_discovery.recurse_when;

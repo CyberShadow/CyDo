@@ -43,11 +43,6 @@ class ClaudeCodeAgent : Agent
 				SandboxPathOrigin(SandboxPathOriginKind.agentRequirement, "claude",
 					"Claude executable"));
 
-		// Add the cydo binary's directory so the MCP server can be spawned inside the sandbox
-		paths.requireReadVisible(cydoBinaryDir(),
-			SandboxPathOrigin(SandboxPathOriginKind.agentRequirement, "claude",
-				"CyDo binary"));
-
 		if ("PATH" !in env)
 		{
 			auto hostPath = effectiveEnvValue(env, "PATH", "");
@@ -1417,9 +1412,7 @@ unittest
 		"claude test", "pre-existing host access");
 	SandboxPaths ancestorPaths;
 	auto executableParent = dirName(executableDir);
-	auto cydoParent = dirName(cydoDir);
 	ancestorPaths.require(executableParent, PathAccess.rw, origin);
-	ancestorPaths.require(cydoParent, PathAccess.alwaysRw, origin);
 	string[string] ancestorEnv = [
 		"CYDO_CLAUDE_BIN": executable,
 		"PATH": executableDir,
@@ -1427,8 +1420,6 @@ unittest
 	agent.configureSandbox(ancestorPaths, ancestorEnv);
 	assert(ancestorPaths.exact(executableParent).get.effectiveMode == PathMode.rw);
 	assert(ancestorPaths.exact(executableDir).isNull);
-	assert(ancestorPaths.exact(cydoParent).get.effectiveMode == PathMode.always_rw);
-	assert(ancestorPaths.exact(cydoDir).isNull);
 }
 
 /// A tool call the CLI asks the host to allow or deny (`can_use_tool`).

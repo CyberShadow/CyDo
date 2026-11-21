@@ -19,26 +19,9 @@ import cydo.runtime.launch.environment : effectiveChildEnvValue,
 	isolatedChildHomeBaseline, resolveNativeHistoryProfile;
 import cydo.runtime.launch.sandbox_paths : PathAccess, PlannedSandboxSymlink,
 	SandboxPathOrigin, SandboxPathOriginKind;
-import cydo.runtime.launch.sandbox_resolver : planMounts;
+import cydo.runtime.launch.sandbox_resolver : cydoBinaryPath, planMounts;
 import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule,
 	NativeProfileSupportRequirement, ProcessLaunch, ResolvedSandbox;
-
-/// Absolute path to the currently running cydo binary, resolved at
-/// module init to avoid /proc/self/exe returning a "(deleted)" suffix
-/// after the binary is replaced by a rebuild.
-immutable string cydoBinaryPath;
-shared static this()
-{
-	import std.file : thisExePath;
-	cydoBinaryPath = thisExePath();
-}
-
-/// Get the directory containing the cydo binary.
-string cydoBinaryDir()
-{
-	auto path = cydoBinaryPath;
-	return path.length > 0 ? dirName(path) : "";
-}
 
 /// Look up an env value from the prepared launch environment, falling back to
 /// the backend process environment when the sandbox did not override it.
@@ -288,6 +271,8 @@ private string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir,
 
 	// Separator
 	args ~= "--";
+	if (sandbox.isolate_processes)
+		args ~= [cydoBinaryPath, "sandbox-init", "--"];
 
 	return args;
 }
@@ -1323,6 +1308,11 @@ unittest
 	import std.file : exists, mkdirRecurse, remove, rmdirRecurse, write;
 	import std.path : buildPath;
 
+	import cydo.runtime.config : SandboxConfig;
+	import cydo.runtime.launch.sandbox_resolver : cydoBinaryDir, resolveSandbox;
+	import cydo.runtime.launch.sandbox_paths : SandboxPaths;
+	import cydo.runtime.launch.types : AgentSandboxConfig;
+
 	assert(exists("/nix/store"), "renderer /nix mount test requires /nix/store");
 
 	auto root = buildPath("/tmp", "cydo-renderer-nix-mount");
@@ -1371,7 +1361,20 @@ unittest
 	auto configuredArgs = buildCommandPrefix(configured, "", "");
 	assert(rendererSequenceCount(configuredArgs, nixMount) == 1);
 
-	foreach (sandbox; [required, withoutNix, configured])
+	assert(withoutNixArgs[$ - 1] == "--");
+	assert(!withoutNixArgs.canFind("sandbox-init"));
+
+	AgentSandboxConfig agent;
+	agent.configureSandbox = (ref SandboxPaths paths, ref string[string] env) {};
+	auto isolated = resolveSandbox(SandboxConfig.init, SandboxConfig.init,
+		SandboxConfig.init, agent, "");
+	auto isolatedArgs = buildCommandPrefix(isolated, "", "");
+	assert(isolatedArgs.canFind(["--unshare-pid", "--as-pid-1"]));
+	assert(isolatedArgs[$ - 4 .. $] == ["--", cydoBinaryPath, "sandbox-init", "--"]);
+	assert(isolatedArgs.canFind(["--ro-bind", cydoBinaryDir(), cydoBinaryDir()]));
+	assert(isolated.paths.exact(cydoBinaryDir()).get.requirement.get.access == PathAccess.ro);
+
+	foreach (sandbox; [required, withoutNix, configured, isolated])
 		foreach (tempFile; sandbox.tempFiles)
 			if (exists(tempFile))
 				remove(tempFile);

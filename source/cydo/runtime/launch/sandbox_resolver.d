@@ -6,7 +6,7 @@ import std.exception : enforce;
 import std.file : exists, isSymlink, readLink;
 import std.format : format;
 import std.logger : warningf;
-import std.path : expandTilde, isAbsolute, pathSplitter;
+import std.path : dirName, expandTilde, isAbsolute, pathSplitter;
 import std.process : environment, execute;
 import std.string : lastIndexOf, strip;
 
@@ -19,6 +19,23 @@ import cydo.runtime.launch.sandbox_paths : PathAccess, PlannedSandboxMount,
 	PlannedSandboxSymlink, SandboxMountPlan, SandboxPathOrigin, SandboxPathOriginKind,
 	SandboxPaths, SandboxPathView;
 import cydo.runtime.launch.types : AgentSandboxConfig, ResolvedSandbox;
+
+/// Absolute path to the currently running cydo binary, resolved at
+/// module init to avoid /proc/self/exe returning a "(deleted)" suffix
+/// after the binary is replaced by a rebuild.
+immutable string cydoBinaryPath;
+shared static this()
+{
+	import std.file : thisExePath;
+	cydoBinaryPath = thisExePath();
+}
+
+/// Get the directory containing the cydo binary.
+string cydoBinaryDir()
+{
+	auto path = cydoBinaryPath;
+	return path.length > 0 ? dirName(path) : "";
+}
 
 /// Resolve declarations in built-in, global, configured-agent, and workspace
 /// order before applying task read-only and agent requirements.
@@ -63,6 +80,7 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConf
 	// Agent sandbox setup sees the merged config env so binary/path resolution
 	// can honor sandbox.env overrides such as PATH.
 	agent.configureSandbox(result.paths, result.env);
+	requireCydoBinary(result.paths);
 
 	renderResolvedEnv(result.env);
 	resolveGitIdentity(result, agent.gitName, agent.gitEmail,
@@ -74,7 +92,7 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConf
 
 /// Resolve sandbox for project discovery without an agent layer.
 ResolvedSandbox resolveSandboxForDiscovery(SandboxConfig global, SandboxConfig workspace,
-	string wsRoot, string cydoBinDir, string workspaceName)
+	string wsRoot, string workspaceName)
 {
 	ResolvedSandbox result;
 
@@ -89,10 +107,7 @@ ResolvedSandbox resolveSandboxForDiscovery(SandboxConfig global, SandboxConfig w
 		SandboxPathOrigin(SandboxPathOriginKind.workspaceConfig, workspaceName,
 			"sandbox.paths"));
 
-	if (cydoBinDir.length > 0)
-		result.paths.requireReadVisible(cydoBinDir,
-			SandboxPathOrigin(SandboxPathOriginKind.launchRequirement, "discovery",
-				"CyDo binary directory"));
+	requireCydoBinary(result.paths);
 
 	result.paths.applyDiscoveryReadOnly(SandboxPathOrigin(
 		SandboxPathOriginKind.discoveryReadOnly, "discovery", "terminal read-only"));
@@ -104,6 +119,13 @@ ResolvedSandbox resolveSandboxForDiscovery(SandboxConfig global, SandboxConfig w
 	resolveIsolationFlags(result, global, workspace);
 
 	return result;
+}
+
+private void requireCydoBinary(ref SandboxPaths paths)
+{
+	paths.requireReadVisible(cydoBinaryDir(),
+		SandboxPathOrigin(SandboxPathOriginKind.launchRequirement, "sandbox",
+			"CyDo binary directory"));
 }
 
 /// Grant both real Git metadata directories with joined exact access.
@@ -502,7 +524,7 @@ unittest
 	assert(taskSandbox.paths.exact(wsLink).get.effectiveMode == PathMode.tmpfs);
 
 	auto discoverySandbox = resolveSandboxForDiscovery(SandboxConfig.init,
-		workspace, wsRoot, "", "test-workspace");
+		workspace, wsRoot, "test-workspace");
 	// Discovery uses the canonical workspace root (ro) while the configured
 	// symlink spelling keeps its written mode.
 	assert(discoverySandbox.paths.exact(wsRoot).get.effectiveMode == PathMode.ro);
@@ -684,9 +706,9 @@ unittest
 	auto discoveryKey = root;
 	auto discoveryGlobalAlias = root ~ "/.";
 	auto discoveryWorkspaceAlias = root ~ "//.";
-	auto cydoDir = buildPath(root, "bin");
+	auto cydoDir = cydoBinaryDir();
 	auto builtinDiscovery = resolveSandboxForDiscovery(SandboxConfig.init,
-		SandboxConfig.init, discoveryKey, cydoDir, "discovery-workspace");
+		SandboxConfig.init, discoveryKey, "discovery-workspace");
 	auto builtinDiscoveryView = builtinDiscovery.paths.exact(discoveryKey).get;
 	assert(builtinDiscoveryView.effectiveMode == PathMode.ro);
 	assert(builtinDiscoveryView.declaration.get.mode == PathMode.ro);
@@ -700,7 +722,7 @@ unittest
 	SandboxConfig discoveryGlobal;
 	discoveryGlobal.paths[discoveryGlobalAlias] = PathMode.rw;
 	auto globalDiscovery = resolveSandboxForDiscovery(discoveryGlobal, SandboxConfig.init,
-		discoveryKey, cydoDir, "discovery-workspace");
+		discoveryKey, "discovery-workspace");
 	auto globalDiscoveryView = globalDiscovery.paths.exact(discoveryKey).get;
 	assert(globalDiscoveryView.effectiveMode == PathMode.ro);
 	assert(globalDiscoveryView.declaration.get.mode == PathMode.rw);
@@ -714,7 +736,7 @@ unittest
 	SandboxConfig discoveryWorkspace;
 	discoveryWorkspace.paths[discoveryWorkspaceAlias] = PathMode.always_rw;
 	auto discovery = resolveSandboxForDiscovery(discoveryGlobal, discoveryWorkspace,
-		discoveryKey, cydoDir, "discovery-workspace");
+		discoveryKey, "discovery-workspace");
 	auto discoveryView = discovery.paths.exact(discoveryKey).get;
 	assert(discoveryView.effectiveMode == PathMode.ro);
 	assert(discoveryView.declaration.get.mode == PathMode.always_rw);
@@ -724,15 +746,25 @@ unittest
 	assert(discoveryView.declaration.get.origin.detail
 		== "sandbox.paths (" ~ discoveryWorkspaceAlias ~ ")");
 	assert(discovery.paths.exact(agentOnlyPath).isNull);
-	// The writable discovery root already makes the CyDo directory visible, so
-	// requireReadVisible deliberately does not add a redundant exact entry.
-	assert(discovery.paths.exact(cydoDir).isNull);
+	// Check the real executable directory when process isolation is disabled.
+	SandboxConfig discoveryWithoutPidNamespace;
+	discoveryWithoutPidNamespace.isolate_processes = SetInfo!bool(false);
+	auto withoutPidNamespace = resolveSandboxForDiscovery(discoveryWithoutPidNamespace,
+		SandboxConfig.init, discoveryKey, "discovery-workspace");
+	assert(withoutPidNamespace.isolate_filesystem);
+	assert(!withoutPidNamespace.isolate_processes);
+	assert(withoutPidNamespace.paths.exact(cydoDir).get.requirement.get.access == PathAccess.ro);
+
+	discoveryWithoutPidNamespace.paths[dirName(cydoDir)] = PathMode.always_rw;
+	auto ancestorDiscovery = resolveSandboxForDiscovery(discoveryWithoutPidNamespace,
+		SandboxConfig.init, discoveryKey, "discovery-workspace");
+	assert(ancestorDiscovery.paths.exact(dirName(cydoDir)).get.effectiveMode == PathMode.ro);
+	assert(ancestorDiscovery.paths.exact(cydoDir).isNull);
 
 	SandboxConfig maskedWorkspace;
-	maskedWorkspace.paths[root] = PathMode.tmpfs;
+	maskedWorkspace.paths[cydoDir] = PathMode.tmpfs;
 	auto maskedDiscovery = resolveSandboxForDiscovery(SandboxConfig.init,
-		maskedWorkspace, root, cydoDir, "discovery-workspace");
-	assert(maskedDiscovery.paths.exact(root).get.effectiveMode == PathMode.tmpfs);
+		maskedWorkspace, root, "discovery-workspace");
 	assert(maskedDiscovery.paths.exact(cydoDir).get.effectiveMode == PathMode.ro);
 	assert(maskedDiscovery.paths.exact(agentOnlyPath).isNull);
 }
