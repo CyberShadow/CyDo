@@ -4318,7 +4318,11 @@ unittest
 	addTask(7, 6, "main", "");
 
 	auto ws = new SubmissionCaptureWebSocket;
-	scope(exit) app.clientHub.remove(ws);
+	scope(exit)
+	{
+		ws.disconnect("test complete", DisconnectType.requested);
+		app.clientHub.remove(ws);
+	}
 	app.onWebSocketAccepted(ws);
 	foreach (tid; [1, 2, 3, 4, 5, 6, 7])
 		assert(runner.sessionForTaskLookups[tid] == 2,
@@ -4528,6 +4532,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	AgentConfig config;
 	config.driver = typeof(config.driver)(AgentDriver.claude, true);
 	fixture.app.config.agents["work-claude"] = config;
@@ -4667,6 +4672,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	fixture.app.tasks[fixture.tid].agentName = "claude";
 	auto message = testBrowserSubmission(fixture.tid, "browser submission",
 		"browser-nonce");
@@ -4704,9 +4710,11 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	auto td = &fixture.app.tasks[fixture.tid];
 	td.agentName = "test";
 	auto draftSender = new SubmissionCaptureWebSocket;
+	scope(exit) draftSender.disconnect("test complete", DisconnectType.requested);
 	fixture.app.clientHub.add(draftSender);
 	assert(td.draft == "");
 	WsMessage setDraft;
@@ -4873,6 +4881,7 @@ unittest
 		remove(dbPath);
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	fixture.app.config.system_keyword = "SYSTEM";
 	fixture.app.config.workspaces = [WorkspaceConfig(name: "create", root: root)];
 	fixture.app.taskDirTemplate = "{{ workspace_root }}/tasks/{{ tid }}";
@@ -5168,6 +5177,7 @@ unittest
 		remove(dbPath);
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	fixture.app.config.system_keyword = "SYSTEM";
 	fixture.app.config.workspaces = [WorkspaceConfig(name: "test", root: root)];
 	fixture.app.taskDirTemplate = "{{ workspace_root }}/tasks/{{ tid }}";
@@ -5311,6 +5321,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	auto td = &fixture.app.tasks[fixture.tid];
 	td.agentName = "claude";
 
@@ -5374,6 +5385,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	fixture.app.tasks[fixture.tid].agentName = "claude";
 	fixture.app.sendTaskMessage(fixture.tid,
 		[ContentBlock("text", "first local prompt")], null, null,
@@ -5420,6 +5432,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	fixture.app.tasks[fixture.tid].agentName = "test";
 	fixture.app.sendTaskMessage(fixture.tid,
 		[ContentBlock("text", "first app-server prompt")], null, null,
@@ -5461,6 +5474,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	fixture.app.tasks[fixture.tid].agentName = "test";
 	fixture.app.sendTaskMessage(fixture.tid,
 		[ContentBlock("text", "receipt prompt")], null, null,
@@ -5491,6 +5505,7 @@ unittest
 	if (exists(dbPath)) remove(dbPath);
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	auto td = &fixture.app.tasks[fixture.tid];
 	td.agentName = "claude";
 	td.reserveNativeSubmission("local-one", "one", td.history.generation, "one");
@@ -5533,6 +5548,7 @@ unittest
 	if (exists(dbPath)) remove(dbPath);
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	auto splitTid = fixture.app.persistence.createTask();
 	fixture.app.tasks[splitTid] = TaskData(splitTid, "local", "/tmp/cydo-app-submission");
 	fixture.app.tasks[splitTid].taskType = "test";
@@ -5654,6 +5670,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	fixture.app.tasks[fixture.tid].agentName = "claude";
 	fixture.app.sendTaskMessage(fixture.tid,
 		[ContentBlock("text", "old echoed prompt")], null, null,
@@ -6248,7 +6265,11 @@ unittest
 		int* reloadCount;
 		SubmissionCaptureWebSocket socket;
 		auto app = buildFixture(dbPath, tid, reloadCount, socket);
-		scope(exit) app.clientHub.remove(socket);
+		scope(exit)
+		{
+			socket.disconnect("test complete", DisconnectType.requested);
+			app.clientHub.remove(socket);
+		}
 
 		assert(!app.tasks[tid].history.isLoaded);
 		auto historyResolution = app.historyPipeline.ensureHistoryLoadedForExit(tid);
@@ -6272,7 +6293,11 @@ unittest
 		int* reloadCount;
 		SubmissionCaptureWebSocket socket;
 		auto app = buildFixture(dbPath, tid, reloadCount, socket);
-		scope(exit) app.clientHub.remove(socket);
+		scope(exit)
+		{
+			socket.disconnect("test complete", DisconnectType.requested);
+			app.clientHub.remove(socket);
+		}
 		app.tasks[tid].history.reset(Watermark.unreadable());
 		app.tasks[tid].history.load((ulong) => LoadedHistory.init);
 		assert(app.tasks[tid].history.isLoaded);
