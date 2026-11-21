@@ -756,6 +756,7 @@ public:
 
 		sessionConfig.workspace = td.workspace;
 		sessionConfig.workDir = chdir !is null ? chdir : "";
+		sessionConfig.taskDir = tdDir;
 		if (taskAgent.needsBash())
 			sessionConfig.includeTools ~= "Bash";
 		if (sessionConfig.creatableTaskTypes.length > 0)
