@@ -400,43 +400,6 @@ unittest
 	assert(readText(destination.path) == "child-session first\n");
 }
 
-bool writeJsonlPrefix(string sourcePath, string destPath, string afterForkId,
-	bool delegate(string line, int lineNum, string forkId) matchFn)
-{
-	import std.file : exists, mkdirRecurse, readText, write;
-	import std.path : dirName;
-	import std.string : lineSplitter;
-
-	if (sourcePath.length == 0 || !exists(sourcePath))
-		return false;
-
-	string output;
-	bool found = false;
-	int lineNum = 0;
-	foreach (line; readText(sourcePath).lineSplitter)
-	{
-		lineNum++;
-		if (line.length == 0)
-			continue;
-
-		output ~= line ~ "\n";
-		if (matchFn(line, lineNum, afterForkId))
-		{
-			found = true;
-			break;
-		}
-	}
-
-	if (!found)
-		return false;
-
-	auto destDir = dirName(destPath);
-	if (destDir.length > 0)
-		mkdirRecurse(destDir);
-	write(destPath, output);
-	return true;
-}
-
 /// Truncate a task's JSONL file in-place after the given fork ID.
 /// matchFn checks whether a line (at 1-based lineNum) matches the fork ID.
 /// Returns the number of lines removed, or -1 if fork ID not found.

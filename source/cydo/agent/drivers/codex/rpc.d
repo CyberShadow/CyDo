@@ -54,6 +54,7 @@ struct ThreadStartParams
 struct ThreadResumeParams
 {
 	string threadId;
+	bool excludeTurns;
 	@JSONOptional string model;
 	@JSONOptional string cwd;
 	@JSONOptional string approvalPolicy;
@@ -66,7 +67,8 @@ struct ThreadResumeParams
 struct ThreadForkParams
 {
 	string threadId;
-	@JSONOptional string path;
+	@JSONOptional string lastTurnId;
+	bool excludeTurns;
 	@JSONOptional string model;
 	@JSONOptional string cwd;
 	@JSONOptional string approvalPolicy;

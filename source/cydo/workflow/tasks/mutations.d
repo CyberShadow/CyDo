@@ -20,7 +20,7 @@ import cydo.agent.drivers.codex : CodexAgent, CodexSession,
 	NativeUndoExecutionResult, NativeUndoExecutionStatus, NativeUndoPlan,
 	ThreadForkOutcome,
 	countActiveFallbackRecordsFromBoundary;
-import cydo.agent.drivers.codex.rollout : resolveCodexFallbackUndoAnchor;
+import cydo.agent.drivers.codex.rollout : resolveCodexFallbackUndoAnchor, rolloutTurnIdAtLine;
 import cydo.agent.session : AgentSession;
 import cydo.domain.storage.persistence : Persistence, createForkTask;
 import cydo.domain.task_types.definition : TaskTypeDef;
@@ -35,7 +35,7 @@ import cydo.workflow.history.operations : NativeSessionState, HistoryOperation,
 	selectHistoryOperations;
 import cydo.workflow.history.jsonl_store : countLinesAfterForkId,
 	editJsonlMessage, forkTask, HistoryForkDestination, spliceJsonlByLine,
-	truncateJsonl, writeJsonlPrefix;
+	truncateJsonl;
 import cydo.workflow.history.native_history : HistoryAccess,
 	TaskHistoryResolution, TaskHistoryResolutionKind;
 import cydo.workflow.sessions.task_runner : CodexForkSourceOperation,
@@ -211,7 +211,7 @@ class TaskMutationService
 private:
 	TaskMutationServiceHost host_;
 	alias RunLiveCodexUndoBackup = void delegate(MutationReplySocket, int,
-		HistoryAccess, string, CodexSession, void delegate(), void delegate(string));
+		HistoryAccess, CodexSession, void delegate(), void delegate(string));
 	RunLiveCodexUndoBackup runLiveCodexUndoBackup_;
 
 public:
@@ -786,29 +786,6 @@ private:
 	private alias CodexNativeChildMaterialized =
 		void delegate(int childTid, string workspace, string projectPath);
 
-	/// The Codex cold scanner recursively examines only profile.root/sessions.
-	/// Keep the temporary thread/fork input inside the mounted profile root but
-	/// outside that namespace, so it cannot impersonate a rollout during the
-	/// native operation.
-	private string makeCodexForkInputPath(const ref HistoryAccess source)
-	{
-		import std.algorithm : startsWith;
-		import std.path : buildPath, isAbsolute;
-		import std.uuid : randomUUID;
-
-		enforce(source.profile.driver == AgentDriver.codex,
-			"Codex native fork input requires a Codex history profile");
-		auto sessionsRoot = buildPath(source.profile.root, "sessions");
-		enforce(source.path.length > 0 && isAbsolute(source.path)
-			&& source.path.startsWith(sessionsRoot ~ "/"),
-			"Codex native fork source is not inside the captured sessions directory");
-		auto inputPath = buildPath(source.profile.root,
-			".cydo-fork-input-" ~ randomUUID().toString() ~ ".jsonl");
-		enforce(!(inputPath == sessionsRoot || inputPath.startsWith(sessionsRoot ~ "/")),
-			"Codex native fork input must not be cold-scanned as a session");
-		return inputPath;
-	}
-
 	void beginCodexNativeFork(WebSocketAdapter ws, int tid, HistoryAccess source,
 		HistoryBoundary boundary, CodexAgent ca, CodexSession forkOwner,
 		CodexForkSourceOperation operation)
@@ -837,7 +814,8 @@ private:
 		CodexNativeChildMaterialized onMaterialized)
 	{
 		import std.datetime : Clock;
-		import std.file : isFile, remove;
+		import std.conv : to;
+		import std.file : isFile;
 		import std.path : isAbsolute;
 		import std.stdio : File;
 
@@ -850,16 +828,12 @@ private:
 		}
 		assert(forkOwner !is null,
 			"Codex-native fork requires its exact live source owner");
-		enforce(forkAnchor.length > 0,
-			"Codex-native fork requires a source boundary");
 		enforce(childSpec.titleSuffix.length > 0 && childSpec.emptyTitle.length > 0
 			&& childSpec.relationType.length > 0 && childSpec.failurePrefix.length > 0,
 			"Codex-native child requires complete durable child metadata");
 		enforce(onMaterialized !is null,
 			"Codex-native child requires a completion continuation");
 
-		auto sourceAgent = source.agent;
-		auto sourcePath = source.path;
 		auto sourceWorkspace = td.workspace.idup;
 		auto sourceProjectPath = td.projectPath.idup;
 		auto sourceTitle = td.title.idup;
@@ -867,23 +841,10 @@ private:
 		auto sourceTaskType = td.taskType.idup;
 		auto sourceAgentName = td.agentName.idup;
 		auto sourceWorktreeTid = td.worktreeTid;
-		string prefixPath;
 		int childTid = -1;
 		ProcessLaunch childLaunch;
 		bool ownsChildLaunch;
 		bool settled;
-
-		void removePrefix()
-		{
-			try
-			{
-				if (prefixPath.length > 0 && exists(prefixPath))
-					remove(prefixPath);
-			}
-			catch (Exception)
-			{
-			}
-		}
 
 		void cleanupChildLaunch()
 		{
@@ -896,7 +857,6 @@ private:
 		void cleanupFailure()
 		{
 			cleanupChildLaunch();
-			removePrefix();
 			if (childTid >= 0)
 			{
 				host_.removeTask(childTid);
@@ -919,12 +879,12 @@ private:
 
 		try
 		{
-			prefixPath = makeCodexForkInputPath(source);
-			if (!writeJsonlPrefix(sourcePath, prefixPath, forkAnchor,
-				&sourceAgent.forkIdMatchesLine))
+			string lastTurnId;
+			if (forkAnchor.length > 0)
 			{
-				fail("message UUID not found in task history");
-				return;
+				lastTurnId = rolloutTurnIdAtLine(readText(source.path), to!int(forkAnchor[5 .. $]));
+				enforce(lastTurnId.length > 0,
+					"No preceding task_started turn id for " ~ forkAnchor);
 			}
 
 			childTid = createForkTask(*host_.persistence(), tid, "", sourceProjectPath,
@@ -963,7 +923,7 @@ private:
 				"Codex native fork child launch must use the captured source profile");
 
 			auto fork = ca.forkSession(forkOwner, childTid, source.sessionId,
-				prefixPath, childLaunch, launch.sessionConfig);
+				lastTurnId, childLaunch, launch.sessionConfig);
 			fork.then((ThreadForkOutcome outcome) {
 				if (settled)
 					return;
@@ -999,7 +959,6 @@ private:
 
 					outcome.historyLease.release();
 					releasedLease = true;
-					removePrefix();
 					cleanupChildLaunch();
 					if (operation !is null)
 						operation.closeStdin();
@@ -1026,13 +985,11 @@ private:
 	/// can create the durable pre-undo child only through the route-ready
 	/// operation owner and its owner-bound thread/fork lease.
 	void beginCodexJsonlUndoBackup(MutationReplySocket ws, int tid,
-		HistoryAccess source, string lastForkId, void delegate() continueUndo)
+		HistoryAccess source, void delegate() continueUndo)
 	{
 		auto codex = cast(CodexAgent) source.agent;
 		assert(codex !is null && source.profile.driver == AgentDriver.codex,
 			"Codex JSONL undo backup requires Codex history access");
-		enforce(lastForkId.length > 0,
-			"Codex JSONL undo backup requires the last persisted boundary");
 		enforce(continueUndo !is null,
 			"Codex JSONL undo backup requires a truncate continuation");
 
@@ -1052,7 +1009,7 @@ private:
 			childSpec.emptyTitle = "(pre-undo)";
 			childSpec.relationType = "undo-backup";
 			childSpec.failurePrefix = "Undo failed: pre-undo backup";
-			materializeCodexNativeChild(ws, tid, source, lastForkId, codex,
+			materializeCodexNativeChild(ws, tid, source, null, codex,
 				owner, operation, childSpec,
 				(int childTid, string workspace, string projectPath) {
 					host_.broadcastTaskCreated(TaskCreatedMessage("task_created", childTid,
@@ -1069,7 +1026,7 @@ private:
 	}
 
 	void beginLiveCodexJsonlUndoBackup(MutationReplySocket ws, int tid,
-		HistoryAccess source, string lastForkId, CodexSession owner,
+		HistoryAccess source, CodexSession owner,
 		void delegate() continueUndo)
 	{
 		auto codex = cast(CodexAgent) source.agent;
@@ -1079,7 +1036,7 @@ private:
 		childSpec.emptyTitle = "(pre-undo)";
 		childSpec.relationType = "undo-backup";
 		childSpec.failurePrefix = "Undo failed: pre-undo backup";
-		materializeCodexNativeChild(ws, tid, source, lastForkId, codex, owner,
+		materializeCodexNativeChild(ws, tid, source, null, codex, owner,
 			null, childSpec, (int childTid, string workspace, string projectPath) {
 				host_.broadcastTaskCreated(TaskCreatedMessage("task_created", childTid,
 					workspace, projectPath, tid, "undo-backup"));
@@ -1205,19 +1162,11 @@ private:
 		auto ta = access.agent;
 		if (ta.driver == AgentDriver.codex && json.revert_conversation && !backupMaterialized)
 		{
-			import std.file : exists, readText;
+			import std.algorithm : any;
+
 			auto boundaries = exists(access.path)
 				? ta.extractPersistedHistoryBoundaries(readText(access.path)) : null;
-			string lastForkId;
-			foreach_reverse (persisted; boundaries)
-			{
-				if (persisted.kind == PersistedHistoryBoundaryKind.agent_turn)
-				{
-					lastForkId = persisted.anchor;
-					break;
-				}
-			}
-			if (lastForkId.length > 0)
+			if (boundaries.any!(persisted => persisted.kind == PersistedHistoryBoundaryKind.agent_turn))
 			{
 				auto owner = cast(CodexSession) host_.sessionForTask(tid);
 				assert(owner !is null);
@@ -1234,10 +1183,10 @@ private:
 					gateLiveUndoBackup((void delegate() onSuccess,
 						void delegate(string) onFailure) {
 					if (runLiveCodexUndoBackup_ !is null)
-						runLiveCodexUndoBackup_(ws, tid, access, lastForkId, owner,
+						runLiveCodexUndoBackup_(ws, tid, access, owner,
 							onSuccess, onFailure);
 					else
-						beginLiveCodexJsonlUndoBackup(ws, tid, access, lastForkId, owner,
+						beginLiveCodexJsonlUndoBackup(ws, tid, access, owner,
 							onSuccess);
 					}, continueUndo, failUndo);
 				}
@@ -1607,7 +1556,7 @@ private:
 			{
 				if (backupDisposition == UndoBackupDisposition.deadCodexNative)
 				{
-					beginCodexJsonlUndoBackup(ws, tid, access, lastForkId, () {
+					beginCodexJsonlUndoBackup(ws, tid, access, () {
 						finishUndoExecution(ws, tid, json, boundary, access,
 							rewindOutput, onFailure, null, truncationAnchor);
 					});
@@ -1915,7 +1864,7 @@ unittest
 	host.getUndoJsonl = (int) { assert(false); return null; };
 
 	auto service = new TaskMutationService(host,
-		(MutationReplySocket, int, HistoryAccess, string, CodexSession,
+		(MutationReplySocket, int, HistoryAccess, CodexSession,
 			void delegate(), void delegate(string)) { backupCalls++; });
 	void delegate(Data) reply = (Data data) {
 		replies ~= cast(string) data.toGC();

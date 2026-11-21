@@ -126,9 +126,10 @@ test(
     await expect(backup).toBeVisible();
     await backup.click();
     await expect(assistantText(page, "second-reply")).toBeVisible();
+    // The pre-undo backup also preserves the in-flight prompt.
     await expect(
       page.locator(".user-message", { hasText: "stall session" }),
-    ).toHaveCount(0);
+    ).toHaveCount(1);
     await page.locator(`.sidebar-item[data-tid="${tid}"]`).click();
 
     // Verify the session auto-resumed (input box visible).

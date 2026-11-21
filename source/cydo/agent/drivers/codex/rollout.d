@@ -45,6 +45,24 @@ package enum RolloutTopLevelKind
 }
 
 
+/// Return the turn id at a 1-based rollout line, or null if it has no turn.
+string rolloutTurnIdAtLine(string content, int lineNumber)
+{
+	import std.string : lineSplitter;
+
+	string turnId;
+	int currentLine;
+	foreach (line; content.lineSplitter)
+	{
+		auto evidence = parseRolloutLineEvidence(line, ++currentLine);
+		if (evidence.probe.isTaskStarted)
+			turnId = evidence.eventTurnIdValid ? evidence.eventTurnId : null;
+		if (currentLine == lineNumber)
+			return turnId;
+	}
+	return null;
+}
+
 /// Parse `num_turns` from a ThreadRolledBack event_msg JSONL line.
 /// The payload is `{"type":"thread_rolled_back","num_turns":N}`.
 /// Returns 0 if parsing fails.
@@ -1575,4 +1593,34 @@ string extractCommandInput(JSONFragment action)
 	}
 	catch (Exception e)
 	{ tracef("extractBashInput: parse error: %s", e.msg); return `{}`; }
+}
+
+unittest
+{
+	import std.algorithm : filter;
+	import std.array : array;
+
+	// Codex 0.144.1 rollout excerpt with unrelated records and fields omitted.
+	const content = `{"type":"session_meta","payload":{"cli_version":"0.144.1"}}
+{"timestamp":"2026-11-21T15:14:57.959Z","type":"event_msg","payload":{"type":"task_started","turn_id":"01a1feac-c521-7051-be7b-f7934be13a35","started_at":1795274097,"model_context_window":258400,"collaboration_mode_kind":"default"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"reply with \"reasoning-fixture\""}]}}
+{"type":"response_item","payload":{"type":"message","id":"msg_mock_00001","role":"assistant","content":[{"type":"output_text","text":"reasoning-fixture"}]}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"01a1feac-c521-7051-be7b-f7934be13a35"}}
+{"timestamp":"2026-11-21T15:14:58.050Z","type":"event_msg","payload":{"type":"task_started","turn_id":"01a1feac-c580-79c3-8ea3-46e1938d56df","started_at":1795274098,"model_context_window":258400,"collaboration_mode_kind":"default"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"run command printf legacy-marker"}]}}
+{"type":"response_item","payload":{"type":"message","id":"msg_mock_00002","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"01a1feac-c580-79c3-8ea3-46e1938d56df"}}
+`;
+	const firstTurn = "01a1feac-c521-7051-be7b-f7934be13a35";
+	const secondTurn = "01a1feac-c580-79c3-8ea3-46e1938d56df";
+
+	auto assistantBoundaries = extractPersistedHistoryBoundariesImpl(content)
+		.filter!(boundary => boundary.kind == PersistedHistoryBoundaryKind.agent_turn).array;
+	assert(assistantBoundaries.length == 2);
+	assert(assistantBoundaries[0].anchor == "line:4");
+	assert(assistantBoundaries[1].anchor == "line:8");
+	assert(rolloutTurnIdAtLine(content, 1) is null);
+	assert(rolloutTurnIdAtLine(content, 4) == firstTurn);
+	assert(rolloutTurnIdAtLine(content, 8) == secondTurn);
+	assert(rolloutTurnIdAtLine(content, 10) is null);
 }

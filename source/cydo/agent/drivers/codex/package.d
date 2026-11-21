@@ -392,6 +392,7 @@ class CodexAgent : Agent
 			{
 				ThreadResumeParams trp;
 				trp.threadId = resumeSessionId;
+				trp.excludeTurns = true;
 				trp.model = model;
 				trp.cwd = workDir;
 				trp.approvalPolicy = "never";
@@ -435,7 +436,7 @@ class CodexAgent : Agent
 	}
 
 	Promise!ThreadForkOutcome forkSession(CodexSession forkOwner, int childTid,
-		string sourceThreadId, string forkSourcePath, ProcessLaunch childLaunch,
+		string sourceThreadId, string lastTurnId, ProcessLaunch childLaunch,
 		SessionConfig childConfig)
 	{
 		enforce(forkOwner !is null && forkOwner.alive,
@@ -444,30 +445,25 @@ class CodexAgent : Agent
 			"Codex native fork source does not match its parent session");
 		enforce(childLaunch.nativeHistoryProfile.driver == driver,
 			"Codex native fork child launch does not carry a Codex profile");
-		enforce(forkSourcePath.length > 0 && isAbsolute(forkSourcePath),
-			"Codex native fork requires an absolute captured source path");
 		auto outcome = new Promise!ThreadForkOutcome;
-		auto workspace = childConfig.workspace.length > 0 ? childConfig.workspace : "default";
 		auto server = forkOwner.server;
-		auto model = childConfig.model.length > 0 ? childConfig.model : "codex-mini-latest";
-		auto workDir = childLaunch.workDir.length > 0
-			? childLaunch.workDir
-			: (childConfig.workDir.length > 0 ? childConfig.workDir : ".");
-		auto devInstructions = buildDeveloperInstructions();
-		auto configOverride = buildConfigOverride(childTid, childConfig);
-
-		server.onReady(() {
-			ThreadForkParams tfp;
-			tfp.threadId = sourceThreadId;
-			tfp.path = forkSourcePath;
-			tfp.model = model;
-			tfp.cwd = workDir;
+		ThreadForkParams tfp;
+		tfp.threadId = sourceThreadId;
+		tfp.excludeTurns = true;
+		if (lastTurnId.length > 0)
+		{
+			tfp.lastTurnId = lastTurnId;
+			tfp.model = childConfig.model.length > 0 ? childConfig.model : "codex-mini-latest";
+			tfp.cwd = childLaunch.workDir.length > 0
+				? childLaunch.workDir
+				: (childConfig.workDir.length > 0 ? childConfig.workDir : ".");
 			tfp.approvalPolicy = "never";
 			tfp.sandbox = "danger-full-access";
-			if (devInstructions.length > 0)
-				tfp.developerInstructions = devInstructions;
-			tfp.config = JSONFragment(configOverride);
+			tfp.developerInstructions = buildDeveloperInstructions();
+			tfp.config = JSONFragment(buildConfigOverride(childTid, childConfig));
+		}
 
+		server.onReady(() {
 			server.sendRequest("thread/fork", toJson(tfp))
 				.then((JsonRpcResponse resp) {
 					ThreadStartResult result;
@@ -1581,6 +1577,7 @@ unittest
 
 unittest
 {
+	import std.json : parseJSON;
 	import ae.net.asockets : socketManager;
 	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
 
@@ -1632,9 +1629,10 @@ unittest
 	}).ignoreResult();
 
 	auto resumeRequest = connection.takeRequest("thread/resume");
-	auto resumeParams = jsonParse!ThreadResumeParams(toJson(resumeRequest.params));
-	assert(resumeParams.threadId == "source-thread"
-		&& resumeParams.cwd == "/test/source-workdir");
+	auto resumeParams = parseJSON(toJson(resumeRequest.params));
+	assert(resumeParams["threadId"].str == "source-thread"
+		&& resumeParams["excludeTurns"].boolean
+		&& resumeParams["cwd"].str == "/test/source-workdir");
 	connection.respond(resumeRequest, threadResponse("source-thread",
 		"/test/source-profile/sessions/2026/08/source-thread.jsonl"));
 	drainNextTicks();
@@ -1649,11 +1647,13 @@ unittest
 	childConfig.workspace = sourceConfig.workspace;
 	childConfig.model = "test-model";
 	auto fork = agent.forkSession(owner, 72, "source-thread",
-		"/test/source-profile/sessions/fork-source.jsonl", childLaunch, childConfig);
+		"source-turn", childLaunch, childConfig);
 	auto forkRequest = connection.takeRequest("thread/fork");
-	auto forkParams = jsonParse!ThreadForkParams(toJson(forkRequest.params));
-	assert(forkParams.threadId == "source-thread"
-		&& forkParams.path == "/test/source-profile/sessions/fork-source.jsonl");
+	auto forkParams = parseJSON(toJson(forkRequest.params));
+	assert(forkParams["threadId"].str == "source-thread"
+		&& forkParams["lastTurnId"].str == "source-turn"
+		&& forkParams["excludeTurns"].boolean
+		&& "path" !in forkParams.object);
 
 	ThreadForkOutcome outcome;
 	bool forkSettled;
@@ -4957,7 +4957,8 @@ unittest
 
 	ThreadForkParams tfp;
 	tfp.threadId = "thread-parent";
-	tfp.path = "/tmp/fork-source.jsonl";
+	tfp.lastTurnId = "turn-boundary";
+	tfp.excludeTurns = true;
 	tfp.model = "gpt-5.3-codex";
 	tfp.cwd = "/tmp/worktree";
 	tfp.approvalPolicy = "never";
@@ -4966,8 +4967,8 @@ unittest
 	tfp.config = JSONFragment(`{"mcp_servers.cydo":{"command":"cydo"}}`);
 	auto forkJson = toJson(tfp);
 	assert(
-		forkJson == `{"threadId":"thread-parent","path":"/tmp/fork-source.jsonl","model":"gpt-5.3-codex","cwd":"/tmp/worktree","approvalPolicy":"never","sandbox":"danger-full-access","developerInstructions":"dev-instructions","config":{"mcp_servers.cydo":{"command":"cydo"}}}`,
-		"thread/fork payload must preserve the source thread id/path; actual=" ~ forkJson,
+		forkJson == `{"threadId":"thread-parent","lastTurnId":"turn-boundary","excludeTurns":true,"model":"gpt-5.3-codex","cwd":"/tmp/worktree","approvalPolicy":"never","sandbox":"danger-full-access","developerInstructions":"dev-instructions","config":{"mcp_servers.cydo":{"command":"cydo"}}}`,
+		"thread/fork payload must include the source thread and turn boundary; actual=" ~ forkJson,
 	);
 
 	// A direct turn/start carries the browser correlation UUID to Codex.
