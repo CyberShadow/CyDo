@@ -19,7 +19,8 @@ test("permission_policy ask: Allow button approves the tool call", { tag: "@clau
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
-    permission_policy: ask
+    permissions:
+      policy: ask
 `,
   );
 
@@ -60,7 +61,8 @@ test("permission_policy ask: Deny button blocks the tool call", { tag: "@claude-
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
-    permission_policy: ask
+    permissions:
+      policy: ask
 `,
   );
 
@@ -101,8 +103,9 @@ test("permission_policy ask: an unanswered prompt denies the call after the time
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
-    permission_policy: ask
-    permission_prompt_timeout: 1
+    permissions:
+      policy: ask
+      prompt_timeout: 1
 `,
   );
 

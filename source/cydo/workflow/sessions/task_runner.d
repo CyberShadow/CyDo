@@ -179,7 +179,7 @@ struct TaskSessionRunnerHost
 	string delegate(const TaskData* td) effectiveCwd;
 	string delegate(const TaskData* td) worktreePath;
 	CydoConfig* delegate() currentConfig;
-	PermissionSettings delegate(string workspaceName) findWorkspacePermissionSettings;
+	PermissionSettings delegate(string agentName, string workspaceName) permissionSettings;
 	void delegate(string projectPath, string taskType,
 		ToolDescriptionViolation[] violations) reportMcpToolDescriptionLimit;
 	string delegate(int tid) resolveSharedTmpPath;
@@ -779,7 +779,7 @@ public:
 			sessionConfig.allowNativeSubagents = true;
 		sessionConfig.allowScheduledWakeups = interactive;
 
-		sessionConfig.permissions = host_.findWorkspacePermissionSettings(td.workspace);
+		sessionConfig.permissions = host_.permissionSettings(td.agentName, td.workspace);
 
 		RenderedCydoToolsOptions renderedToolOptions;
 		renderedToolOptions.includeBash = taskAgent.needsBash();
@@ -1977,7 +1977,7 @@ version (unittest) private TaskSessionRunner gitMetadataTestRunner(
 		effectiveCwd: (const TaskData* td) => taskCwd,
 		worktreePath: (const TaskData* td) => worktreePath,
 		currentConfig: () => config,
-		findWorkspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
+		permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 		reportMcpToolDescriptionLimit: (string projectPath, string taskType,
 			ToolDescriptionViolation[] violations) {},
 		resolveSharedTmpPath: (int tid) => "",
@@ -2129,7 +2129,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				effectiveCwd: (const TaskData* td) => fixture.linkedCheckout,
 				worktreePath: (const TaskData* td) => "",
 				currentConfig: () => config,
-				findWorkspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
+				permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 				reportMcpToolDescriptionLimit: (string projectPath, string taskType,
 					ToolDescriptionViolation[] violations) {},
 				resolveSharedTmpPath: (int tid) => "",

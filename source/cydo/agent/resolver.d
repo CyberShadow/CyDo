@@ -4,7 +4,8 @@ import std.conv : to;
 
 import cydo.agent.contract : Agent;
 import cydo.agent.drivers.registry : agentRegistry;
-import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig;
+import cydo.domain.policy.permissions : PermissionSettings;
+import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PermissionsConfig;
 
 struct ResolvedAgent
 {
@@ -48,6 +49,47 @@ Agent tryCreateConfiguredAgent(ref CydoConfig config, string agentName)
 	if (!isConfiguredAgentName(config, agentName))
 		return null;
 	return createConfiguredAgent(config, agentName);
+}
+
+/// How tool calls of a task of the configured agent `agentName` in
+/// `workspaceName` (empty = none) are decided: the `permissions` layers of
+/// the global config, the agent entry and the workspace, in that order, as
+/// `resolveSandbox` layers `sandbox`.
+PermissionSettings resolvePermissionSettings(ref CydoConfig config,
+	string agentName, string workspaceName)
+{
+	import core.time : seconds;
+	import std.exception : enforce;
+
+	PermissionsConfig[] layers = [config.permissions,
+		resolveConfiguredAgent(config, agentName).config.permissions];
+	if (workspaceName.length > 0)
+	{
+		bool foundWorkspace;
+		foreach (ref ws; config.workspaces)
+			if (ws.name == workspaceName)
+			{
+				layers ~= ws.permissions;
+				foundWorkspace = true;
+				break;
+			}
+		enforce(foundWorkspace,
+			"Permission settings for a deleted or unknown workspace: " ~ workspaceName);
+	}
+
+	PermissionSettings result;
+	uint promptTimeout = 120;
+	foreach (ref layer; layers)
+	{
+		if (layer.policy.set)
+			result.policy = layer.policy.value;
+		if (layer.auto_mode.set)
+			result.autoMode = layer.auto_mode.value;
+		if (layer.prompt_timeout.set)
+			promptTimeout = layer.prompt_timeout.value;
+	}
+	result.promptTimeout = promptTimeout.seconds;
+	return result;
 }
 
 string effectiveDefaultAgentName(ref CydoConfig config, string workspaceName = "")
@@ -126,4 +168,48 @@ unittest
 	}
 	catch (Exception e)
 		assert(e.msg == "Unknown configured agent: missing");
+}
+
+unittest
+{
+	import core.time : seconds;
+	import configy.attributes : SetInfo;
+	import cydo.runtime.config : WorkspaceConfig;
+
+	CydoConfig config;
+	config.permissions.policy = SetInfo!string("allow");
+	config.permissions.prompt_timeout = SetInfo!uint(30);
+	AgentConfig plain;
+	plain.driver = SetInfo!AgentDriver(AgentDriver.claude);
+	config.agents["claude"] = plain;
+	AgentConfig auto_;
+	auto_.driver = SetInfo!AgentDriver(AgentDriver.claude);
+	auto_.permissions.auto_mode = SetInfo!bool(true);
+	auto_.permissions.policy = SetInfo!string("auto");
+	config.agents["claude-auto"] = auto_;
+	auto ws = WorkspaceConfig("work", "/tmp");
+	ws.permissions.policy = SetInfo!string("ask");
+	config.workspaces = [ws, WorkspaceConfig("bare", "/tmp")];
+
+	// Nothing set anywhere: the defaults.
+	CydoConfig empty;
+	empty.agents["claude"] = plain;
+	auto defaults = resolvePermissionSettings(empty, "claude", "");
+	assert(defaults.policy == "" && !defaults.autoMode && defaults.promptTimeout == 120.seconds);
+
+	// Global only.
+	auto global = resolvePermissionSettings(config, "claude", "bare");
+	assert(global.policy == "allow" && !global.autoMode && global.promptTimeout == 30.seconds);
+
+	// The agent layer replaces what it sets and keeps the rest.
+	auto agent = resolvePermissionSettings(config, "claude-auto", "bare");
+	assert(agent.policy == "auto" && agent.autoMode && agent.promptTimeout == 30.seconds);
+
+	// The workspace layer comes last.
+	auto workspace = resolvePermissionSettings(config, "claude-auto", "work");
+	assert(workspace.policy == "ask" && workspace.autoMode);
+
+	import std.exception : assertThrown;
+	assertThrown!Exception(resolvePermissionSettings(config, "claude", "missing"));
+	assertThrown!Exception(resolvePermissionSettings(config, "missing", "work"));
 }

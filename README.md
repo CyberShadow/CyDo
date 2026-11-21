@@ -307,6 +307,28 @@ agents:
 
 `effort` values are passed to the underlying CLI verbatim, so the accepted values are whatever that CLI accepts.
 
+`sandbox` and `permissions` can be set globally, per agent entry, and per workspace; each layer replaces what it sets, in that order. Several entries can share a driver, so an agent entry is how to give some task types (via their `agent:` field) a different sandbox or permission setup:
+
+```yaml
+permissions:
+  # "allow", "deny", "ask", "auto", or a Djinja expression rendering one of
+  # them (variables: tool_name, input, auto_mode, dangerous). Default:
+  # {{ "ask" if dangerous else ("auto" if auto_mode else "allow") }}
+  policy: ask
+  prompt_timeout: 120   # seconds an unanswered prompt waits before denying; 0 = forever
+
+agents:
+  claude-auto:
+    driver: claude
+    permissions:
+      auto_mode: true   # Claude Code's classifier judges what the policy leaves to "auto"
+    sandbox:
+      isolate_filesystem: false   # no bubblewrap
+      isolate_processes: false
+```
+
+Only the Claude driver consults `permissions` (Codex and Copilot run with their own approvals off), so setting it on an entry of another driver is a config error.
+
 ## Project Status
 
 CyDo is under active development. The current implementation covers phases 1-9 of the [roadmap](docs/VISION.md):

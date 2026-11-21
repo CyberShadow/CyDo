@@ -71,7 +71,8 @@ import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookup
 import cydo.domain.usage.tracker : AgentUsageTracker;
 
 import cydo.agent.resolver : createConfiguredAgent, displayNameForDriver,
-	effectiveDefaultAgentName, isConfiguredAgentName, tryCreateConfiguredAgent;
+	effectiveDefaultAgentName, isConfiguredAgentName, resolvePermissionSettings,
+	tryCreateConfiguredAgent;
 import cydo.agent.contract : Agent;
 import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	HistoryBoundary, ItemStartedEvent, SessionRateLimitEvent, TaskDiagnosticEvent, TaskDiagnosticSeverity,
@@ -538,7 +539,7 @@ class App
 			broadcastTaskCreated: (TaskCreatedMessage message) {
 				clientHub.broadcast(toJson(message));
 			},
-			workspacePermissionSettings: &findWorkspacePermissionSettings,
+			permissionSettings: &findPermissionSettings,
 			onNextTick: (void delegate() cb) {
 				onNextTick(socketManager, cb);
 			},
@@ -624,7 +625,7 @@ class App
 			effectiveCwd: &taskPathResolver.effectiveCwd,
 			worktreePath: &taskPathResolver.worktreePath,
 			currentConfig: () => &config,
-			findWorkspacePermissionSettings: &findWorkspacePermissionSettings,
+			permissionSettings: &findPermissionSettings,
 			reportMcpToolDescriptionLimit: &reportMcpToolDescriptionLimit,
 			resolveSharedTmpPath: &resolveSharedTmpPath,
 			mcpSocketPath: () => transport.mcpSocketPath,
@@ -3115,15 +3116,9 @@ class App
 		return config.default_task_type;
 	}
 
-	private PermissionSettings findWorkspacePermissionSettings(string workspaceName)
+	private PermissionSettings findPermissionSettings(string agentName, string workspaceName)
 	{
-		import core.time : seconds;
-
-		foreach (ref ws; config.workspaces)
-			if (ws.name == workspaceName)
-				return PermissionSettings(ws.permission_policy, ws.auto_mode,
-					ws.permission_prompt_timeout.seconds);
-		return PermissionSettings.init;
+		return resolvePermissionSettings(config, agentName, workspaceName);
 	}
 
 	/// Returns the HEAD SHA of the worktree (or main checkout) that the
@@ -5888,7 +5883,7 @@ unittest
 		effectiveCwd: (const TaskData* td) => app.taskPathResolver.effectiveCwd(td),
 		worktreePath: (const TaskData* td) => app.taskPathResolver.worktreePath(td),
 		currentConfig: () => &app.config,
-		findWorkspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
+		permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 		reportMcpToolDescriptionLimit: (string projectPath, string taskType,
 			ToolDescriptionViolation[] violations) {},
 		resolveSharedTmpPath: (int tid) => buildPath(tmp, "shared-tmp"),
@@ -6095,7 +6090,7 @@ unittest
 		effectiveCwd: (const TaskData* td) => taskPathResolver.effectiveCwd(td),
 		worktreePath: (const TaskData* td) => taskPathResolver.worktreePath(td),
 		currentConfig: () => config,
-		findWorkspacePermissionSettings: (string workspaceName) => PermissionSettings("allow all"),
+		permissionSettings: (string agentName, string workspaceName) => PermissionSettings("allow all"),
 		reportMcpToolDescriptionLimit: (string projectPathValue,
 			string taskTypeValue, ToolDescriptionViolation[] violations) {
 			reportedProjects ~= projectPathValue;

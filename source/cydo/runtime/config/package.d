@@ -78,10 +78,37 @@ struct ModelSpec
 	}
 }
 
+/// How tool calls are decided. Only the Claude driver consults it (Codex
+/// and Copilot run with their approvals off), so an agent entry of another
+/// driver may not set it. Layered like `sandbox`: global, then the agent
+/// entry, then the workspace; a field a later layer sets replaces it.
+struct PermissionsConfig
+{
+	/// "allow", "deny", "ask", "auto", or a Djinja expression rendering one
+	/// of them (variables: tool_name, input, auto_mode, and dangerous: the
+	/// agent's own safety checks flag the call). Unset = `{{ "ask" if
+	/// dangerous else ("auto" if auto_mode else "allow") }}`.
+	@Optional SetInfo!string policy;
+	/// Run Claude Code in auto mode: its classifier judges the tool calls
+	/// the policy answers "auto" for.
+	@Optional SetInfo!bool auto_mode;
+	/// Seconds a permission prompt waits for an answer before it denies the
+	/// call; 0 = indefinitely. Unset = 120, matching Claude Code's own
+	/// prompts.
+	@Optional SetInfo!uint prompt_timeout;
+
+	/// Whether this layer sets anything.
+	bool anySet() const
+	{
+		return policy.set || auto_mode.set || prompt_timeout.set;
+	}
+}
+
 struct AgentConfig
 {
 	@Optional SetInfo!AgentDriver driver;
 	@Optional SandboxConfig sandbox;
+	@Optional PermissionsConfig permissions;
 	@Optional ModelSpec[string] model_aliases;
 	@Optional string display_name;
 }
@@ -100,18 +127,7 @@ struct WorkspaceConfig
 	@Optional SandboxConfig sandbox;
 	@Optional string default_agent;
 	@Optional string default_task_type;
-	/// Permission policy: "allow", "deny", "ask", "auto", or a Djinja
-	/// expression rendering one of them (variables: tool_name, input,
-	/// auto_mode, and dangerous: the agent's own safety checks flag the
-	/// call). Unset = `{{ "ask" if dangerous else ("auto" if auto_mode else
-	/// "allow") }}`.
-	@Optional string permission_policy;
-	/// Run Claude Code in auto mode: its classifier judges the tool calls
-	/// the permission policy answers "auto" for.
-	@Optional bool auto_mode;
-	/// Seconds a permission prompt waits for an answer before it denies the
-	/// call; 0 = indefinitely. The default matches Claude Code's own prompts.
-	@Optional uint permission_prompt_timeout = 120;
+	@Optional PermissionsConfig permissions;
 	@Optional ProjectDiscoveryConfig project_discovery;
 	/// Files of a project's main checkout to link into each task worktree
 	/// of it, as paths relative to the repository root: the untracked files
@@ -126,6 +142,7 @@ struct CydoConfig
 {
 	@Key("name") WorkspaceConfig[] workspaces;
 	@Optional SandboxConfig sandbox;
+	@Optional PermissionsConfig permissions;
 	@Optional string task_dir; /// Global per-task directory template (Djinja)
 	@Optional string default_agent;
 	@Optional string default_task_type;
@@ -147,7 +164,13 @@ struct CydoConfig
 		{
 			auto driver = effectiveDriver(name, ac);
 			// An unresolvable driver is resolveConfig's error to report.
-			if (driver.isNull || driverSupportsEffort(driver.get))
+			if (driver.isNull)
+				continue;
+			if (driver.get != AgentDriver.claude && ac.permissions.anySet)
+				throw new Exception(format(
+					"agents['%s'].permissions: the %s driver does not consult a permission policy",
+					name, driver.get));
+			if (driverSupportsEffort(driver.get))
 				continue;
 			foreach (modelClass, ref spec; ac.model_aliases)
 				if (spec.effort.length > 0)
@@ -424,5 +447,51 @@ version (unittest)
 		auto yaml = workspacesYAML ~ "agents:\n  custom:\n"
 			~ "    model_aliases:\n      large:\n        effort: high\n";
 		parseConfigString!CydoConfig(yaml, "/dev/null");
+	}
+
+	// 14. A permissions block parses at every layer, recording which fields
+	// each layer sets.
+	unittest
+	{
+		auto yaml = "permissions:\n  prompt_timeout: 30\n"
+			~ "agents:\n  claude-auto:\n    driver: claude\n"
+			~ "    permissions:\n      auto_mode: true\n"
+			~ "workspaces:\n  local:\n    root: /tmp\n"
+			~ "    permissions:\n      policy: ask\n";
+		auto config = parseConfigString!CydoConfig(yaml, "/dev/null");
+		assert(config.permissions.prompt_timeout.set);
+		assert(config.permissions.prompt_timeout == 30);
+		assert(!config.permissions.auto_mode.set);
+		auto agent = config.agents["claude-auto"].permissions;
+		assert(agent.auto_mode.set && agent.auto_mode);
+		assert(!agent.policy.set);
+		auto workspace = config.workspaces[0].permissions;
+		assert(workspace.policy.set && workspace.policy == "ask");
+		assert(!workspace.auto_mode.set);
+	}
+
+	// 15. permissions on an agent entry whose driver does not consult them
+	// throws.
+	unittest
+	{
+		auto yaml = workspacesYAML ~ "agents:\n  codex:\n"
+			~ "    permissions:\n      auto_mode: true\n";
+		try
+		{
+			parseConfigString!CydoConfig(yaml, "/dev/null");
+			assert(false, "expected a ConfigException");
+		}
+		catch (Exception e)
+		{
+			assert(e.toString().canFind("agents['codex'].permissions"));
+			assert(e.toString().canFind("does not consult a permission policy"));
+		}
+	}
+
+	// 16. The old flat workspace keys are rejected (configy's strict mode).
+	unittest
+	{
+		auto yaml = "workspaces:\n  local:\n    root: /tmp\n    auto_mode: true\n";
+		assertThrown!Exception(parseConfigString!CydoConfig(yaml, "/dev/null"));
 	}
 }

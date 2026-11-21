@@ -118,7 +118,7 @@ struct WorkflowToolsHost
 		appendTaskSpawnedEvent;
 	void delegate(TaskCreatedMessage message) broadcastTaskCreated;
 
-	PermissionSettings delegate(string workspaceName) workspacePermissionSettings;
+	PermissionSettings delegate(string agentName, string workspaceName) permissionSettings;
 	void delegate(void delegate() cb) onNextTick;
 	void delegate(int tid, string prompt) generateTitle;
 }
@@ -222,7 +222,7 @@ unittest
 		clearAskUserQuestionPrompt: (int tid) {},
 		sendPermissionPrompt: (int tid, PermissionPrompt prompt) {},
 		clearPermissionPrompt: (int tid) {}, appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
-		broadcastTaskCreated: (TaskCreatedMessage message) {}, workspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
+		broadcastTaskCreated: (TaskCreatedMessage message) {}, permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 		onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); }, generateTitle: (int tid, string prompt) {},
 	));
 
@@ -872,7 +872,7 @@ public:
 		PermissionEscalation escalation)
 	{
 		auto td = requireTask(tid, "Tool permission request for a missing task");
-		auto settings = host_.workspacePermissionSettings(td.workspace);
+		auto settings = host_.permissionSettings(td.agentName, td.workspace);
 		final switch (escalation)
 		{
 			case PermissionEscalation.policyAsk:
@@ -907,7 +907,7 @@ public:
 	private ToolCallRuling rulePolicy(TaskData* td, string toolName,
 		JSONFragment input, bool dangerous)
 	{
-		auto settings = host_.workspacePermissionSettings(td.workspace);
+		auto settings = host_.permissionSettings(td.agentName, td.workspace);
 		final switch (evaluatePermissionPolicy(settings.policy, settings.autoMode,
 			toolName, input.json, dangerous))
 		{
@@ -1889,7 +1889,7 @@ unittest
 		clearPermissionPrompt: (int tid) {},
 		appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
 		broadcastTaskCreated: (TaskCreatedMessage message) {},
-		workspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
+		permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 		onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); },
 		generateTitle: (int tid, string prompt) {},
 	));
@@ -2180,7 +2180,7 @@ unittest
 				clearPermissionPrompt: (int tid) {},
 				appendTaskSpawnedEvent: (int parentTid, int childTid,
 					int specIndex) {},
-				workspacePermissionSettings: (string workspaceName) => PermissionSettings.init,
+				permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 				onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); },
 				generateTitle: (int tid, string prompt) {},
 			));

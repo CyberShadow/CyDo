@@ -20,7 +20,8 @@ test("permission_policy djinja expression: allow branch auto-approves matching t
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
-    permission_policy: '{{ "allow" if tool_name == "Bash" else "deny" }}'
+    permissions:
+      policy: '{{ "allow" if tool_name == "Bash" else "deny" }}'
 `,
   );
 
@@ -54,7 +55,8 @@ test("permission_policy djinja expression: deny branch blocks non-matching tools
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
-    permission_policy: '{{ "deny" if tool_name == "Bash" else "allow" }}'
+    permissions:
+      policy: '{{ "deny" if tool_name == "Bash" else "allow" }}'
 `,
   );
 
@@ -89,7 +91,8 @@ test("permission_policy deny literal: all tool calls are blocked", { tag: "@clau
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
-    permission_policy: deny
+    permissions:
+      policy: deny
 `,
   );
 

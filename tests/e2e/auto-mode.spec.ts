@@ -20,10 +20,13 @@ test(
     writeTestConfig(
       "/tmp/playwright-home/.config/cydo/config.yaml",
       `default_agent: claude
+agents:
+  claude:
+    permissions:
+      auto_mode: true
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
-    auto_mode: true
 `,
     );
     await page.waitForTimeout(500);
@@ -103,8 +106,9 @@ test(
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
-    auto_mode: true
-    permission_policy: '{{ "ask" if tool_name == "Bash" else "auto" }}'
+    permissions:
+      auto_mode: true
+      policy: '{{ "ask" if tool_name == "Bash" else "auto" }}'
 `,
     );
     await page.waitForTimeout(500);

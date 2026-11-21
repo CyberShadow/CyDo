@@ -20,7 +20,8 @@ test("permission_policy allow lets tool calls run unasked", { tag: "@claude-only
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
-    permission_policy: allow
+    permissions:
+      policy: allow
 `,
   );
 
