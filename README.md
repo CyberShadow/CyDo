@@ -312,8 +312,10 @@ agents:
 ```yaml
 permissions:
   # "allow", "deny", "ask", "auto", or a Djinja expression rendering one of
-  # them (variables: tool_name, input, auto_mode, dangerous). Default:
-  # {{ "ask" if dangerous else ("auto" if auto_mode else "allow") }}
+  # them (variables: tool_name, input, auto_mode, dangerous, interactive).
+  # `dangerous`: Claude Code's own safety checks want the call confirmed;
+  # `interactive`: the task is one a person works in. Default:
+  # {{ ("ask" if interactive else "deny") if dangerous else ("auto" if auto_mode else "allow") }}
   policy: ask
   prompt_timeout: 120   # seconds an unanswered prompt waits before denying; 0 = forever
 

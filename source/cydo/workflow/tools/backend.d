@@ -701,12 +701,8 @@ public:
 		if (td is null)
 			return resolve(McpResult("Task not found", true));
 
-		auto taskTypes = host_.taskTypesForProject(td.projectPath);
-		auto typeDef = taskTypes.byName(td.taskType);
-		if (typeDef is null
-			|| !taskTypes.isInteractive(
-				host_.entryPointsForProject(td.projectPath),
-				td.taskType))
+		if (host_.taskTypesForProject(td.projectPath).byName(td.taskType) is null
+			|| !isInteractiveTask(td))
 		{
 			return resolve(McpResult(
 				"AskUserQuestion is only available for interactive tasks. "
@@ -889,7 +885,11 @@ public:
 		final switch (ruling.decision)
 		{
 			case ToolCallDecision.deny:
-				return resolve(makePermissionDenyJson(ruling.denyReason));
+				return resolve(makePermissionDenyJson(host_.readPromptFile(
+					"prompts/dangerous_call_denied.md", td.projectPath, [
+						"denial": ruling.denyReason,
+						"reason": prompt.reason,
+					])));
 			case ToolCallDecision.allow:
 				return resolve(makePermissionAllowJson(prompt.input.json));
 			case ToolCallDecision.ask:
@@ -913,7 +913,7 @@ public:
 	{
 		auto settings = host_.permissionSettings(td.agentName, td.workspace);
 		final switch (evaluatePermissionPolicy(settings.policy, settings.autoMode,
-			toolName, input.json, dangerous))
+			toolName, input.json, dangerous, isInteractiveTask(td)))
 		{
 			case "allow":
 				return ToolCallRuling(ToolCallDecision.allow);
@@ -927,6 +927,13 @@ public:
 						"Permission denied: the policy leaves this call to auto mode, which is not enabled for this workspace");
 				return ToolCallRuling(ToolCallDecision.classifier);
 		}
+	}
+
+	/// Whether `td` is of an interactive task type, one a person works in.
+	private bool isInteractiveTask(const TaskData* td)
+	{
+		return host_.taskTypesForProject(td.projectPath).isInteractive(
+			host_.entryPointsForProject(td.projectPath), td.taskType);
 	}
 
 	/// The agent no longer awaits the decision for `toolUseId` (e.g. its turn
@@ -2758,4 +2765,59 @@ unittest
 		childResult.fulfill(McpResult("done", false));
 		assertThrown!AssertError(drainPromiseNextTicks());
 	}
+}
+
+// The CLI's safety checks flag a call: under the default policy a person
+// confirms it in an interactive task, while one nobody watches is denied at
+// once, saying why, instead of waiting out a prompt.
+unittest
+{
+	import ae.net.asockets : socketManager;
+	import std.algorithm.searching : canFind;
+
+	TaskData[int] tasks;
+	tasks[1] = TaskData(1, "local", "/tmp/project");
+	tasks[1].taskType = "conversation";
+	tasks[2] = TaskData(2, "local", "/tmp/project");
+	tasks[2].taskType = "worker";
+
+	TaskTypeDef conversation;
+	conversation.name = "conversation";
+	TaskTypeDef worker;
+	worker.name = "worker";
+	UserEntryPointDef entryPoint;
+	entryPoint.name = "conversation";
+
+	int[] prompted;
+	string[string] promptVars;
+	WorkflowToolsHost host;
+	host.getTask = (int tid) => &tasks[tid];
+	host.taskTypesForProject = (string projectPath) => [conversation, worker];
+	host.entryPointsForProject = (string projectPath) => [entryPoint];
+	host.permissionSettings = (string agentName, string workspaceName) => PermissionSettings.init;
+	host.sendPermissionPrompt = (int tid, const PendingPermission pending) { prompted ~= tid; };
+	host.persistNeedsAttention = (int tid, bool needsAttention) {};
+	host.touchTask = (int tid) {};
+	host.persistLastActive = (int tid, long lastActive) {};
+	host.broadcastTaskUpdate = (int tid) {};
+	host.readPromptFile = (string relativePath, string projectPath, string[string] vars) {
+		assert(relativePath == "prompts/dangerous_call_denied.md");
+		promptVars = vars;
+		return "denied: " ~ vars["reason"];
+	};
+	auto backend = new WorkflowToolsBackend(host);
+
+	auto prompt = PermissionPrompt("toolu_1", "Bash",
+		JSONFragment(`{"command":"rm -rf /"}`), "Dangerous rm operation");
+	string[int] decisions;
+	foreach (tid; [1, 2])
+		backend.decideToolPermission(tid, prompt, PermissionEscalation.safetyCheck)
+			.then((string decision) { decisions[tid] = decision; });
+	socketManager.loop();
+
+	assert(prompted == [1]);
+	assert((1 in decisions) is null);
+	assert(decisions[2].canFind(`"behavior":"deny"`));
+	assert(decisions[2].canFind("denied: Dangerous rm operation"));
+	assert(promptVars["denial"] == "Permission denied by policy");
 }

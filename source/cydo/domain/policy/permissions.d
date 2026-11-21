@@ -103,16 +103,20 @@ struct ToolCallRuling
 	string denyReason; /// for `deny`: shown to the agent
 }
 
-/// The policy of a workspace that configures none.
+/// The policy of a workspace that configures none. A call the agent's
+/// safety checks flag goes to a person, unless the task is not interactive:
+/// nobody is expected to watch it, so the call is denied rather than left
+/// waiting out the prompt timeout.
 enum defaultPermissionPolicy =
-	`{{ "ask" if dangerous else ("auto" if auto_mode else "allow") }}`;
+	`{{ ("ask" if interactive else "deny") if dangerous else ("auto" if auto_mode else "allow") }}`;
 
 /// Evaluate a permission policy for one tool call. Returns "allow", "deny",
 /// "ask", or "auto" (leave it to the auto mode classifier). `dangerous`:
 /// the agent's own safety checks flag the call (e.g. a recursive delete of
-/// a system directory) and want it confirmed.
+/// a system directory) and want it confirmed. `interactive`: the task is of
+/// an interactive type, one a person works in.
 string evaluatePermissionPolicy(string policy, bool autoMode, string toolName,
-	string inputJson, bool dangerous)
+	string inputJson, bool dangerous, bool interactive)
 {
 	if (policy.length == 0)
 		policy = defaultPermissionPolicy;
@@ -133,6 +137,7 @@ string evaluatePermissionPolicy(string policy, bool autoMode, string toolName,
 		ctx["input"] = jsonToUniNode(inputJson);
 		ctx["auto_mode"] = UniNode(autoMode);
 		ctx["dangerous"] = UniNode(dangerous);
+		ctx["interactive"] = UniNode(interactive);
 
 		string result = renderer.render(UniNode(ctx)).strip();
 
@@ -156,17 +161,22 @@ private bool isPermissionDecision(string value)
 
 unittest
 {
-	assert(evaluatePermissionPolicy("", false, "Bash", `{}`, false) == "allow");
-	assert(evaluatePermissionPolicy("", true, "Bash", `{}`, false) == "auto");
-	assert(evaluatePermissionPolicy("", false, "Bash", `{}`, true) == "ask");
-	assert(evaluatePermissionPolicy("auto", false, "Bash", `{}`, false) == "auto");
+	// Arguments: policy, auto_mode, tool_name, input, dangerous, interactive.
+	assert(evaluatePermissionPolicy("", false, "Bash", `{}`, false, true) == "allow");
+	assert(evaluatePermissionPolicy("", true, "Bash", `{}`, false, true) == "auto");
+	assert(evaluatePermissionPolicy("", false, "Bash", `{}`, true, true) == "ask");
+	assert(evaluatePermissionPolicy("", false, "Bash", `{}`, false, false) == "allow");
+	assert(evaluatePermissionPolicy("", false, "Bash", `{}`, true, false) == "deny");
+	assert(evaluatePermissionPolicy("auto", false, "Bash", `{}`, false, true) == "auto");
 	// A plain decision covers dangerous calls too.
-	assert(evaluatePermissionPolicy("allow", false, "Bash", `{}`, true) == "allow");
+	assert(evaluatePermissionPolicy("allow", false, "Bash", `{}`, true, false) == "allow");
 	enum policy = `{{ "ask" if tool_name == "Bash" else ("auto" if auto_mode else "allow") }}`;
-	assert(evaluatePermissionPolicy(policy, true, "Bash", `{}`, false) == "ask");
-	assert(evaluatePermissionPolicy(policy, true, "Read", `{}`, false) == "auto");
-	assert(evaluatePermissionPolicy(policy, false, "Read", `{}`, false) == "allow");
+	assert(evaluatePermissionPolicy(policy, true, "Bash", `{}`, false, true) == "ask");
+	assert(evaluatePermissionPolicy(policy, true, "Read", `{}`, false, true) == "auto");
+	assert(evaluatePermissionPolicy(policy, false, "Read", `{}`, false, true) == "allow");
 	enum rejectDangerous = `{{ "deny" if dangerous else "allow" }}`;
-	assert(evaluatePermissionPolicy(rejectDangerous, false, "Bash", `{}`, true) == "deny");
-	assert(evaluatePermissionPolicy(rejectDangerous, false, "Bash", `{}`, false) == "allow");
+	assert(evaluatePermissionPolicy(rejectDangerous, false, "Bash", `{}`, true, true) == "deny");
+	assert(evaluatePermissionPolicy(rejectDangerous, false, "Bash", `{}`, false, true) == "allow");
+	enum askUnattended = `{{ "ask" if dangerous else "allow" }}`;
+	assert(evaluatePermissionPolicy(askUnattended, false, "Bash", `{}`, true, false) == "ask");
 }

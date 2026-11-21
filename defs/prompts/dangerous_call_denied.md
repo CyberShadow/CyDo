@@ -1,0 +1,1 @@
+{{denial}}. Claude Code wants a person to confirm this call ({{reason}}), and the workspace's permission policy denies it instead of asking one, as it does by default in tasks nobody is expected to watch. Do not work around the denial; if the call is needed, say so in your result.
