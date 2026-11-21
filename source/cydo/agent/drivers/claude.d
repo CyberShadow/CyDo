@@ -3782,6 +3782,8 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 			return translateExit(rawLine);
 		case "queue-operation":
 			return null; // consumed — handled by broadcastTask / stateful replay closure
+		case "tool_progress":
+			return null; // The frontend already shows the tool as running.
 		case "progress":
 		case "file-history-snapshot":
 			return null; // not used by frontend
@@ -3805,6 +3807,14 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 			import cydo.protocol : makeUnrecognizedEvent;
 			return makeUnrecognizedEvent("unknown event type: " ~ probe.type);
 	}
+}
+
+unittest
+{
+	enum heartbeat = `{"type":"tool_progress","tool_use_id":"toolu_mock_00002-heartbeat-0",`
+		~ `"tool_name":"mcp__cydo__Ask","parent_tool_use_id":"toolu_mock_00002",`
+		~ `"elapsed_time_seconds":30,"heartbeat":true,"session_id":"s","uuid":"u"}`;
+	assert(translateClaudeEvent(heartbeat, "claude") == TranslatedEvent.init);
 }
 
 /// Translate system events by mapping subtype to the agnostic type string.
