@@ -92,6 +92,25 @@ struct ThreadReadParams
 }
 
 @RPCFlatten @JSONPartial
+struct ThreadTurnsListParams
+{
+	string threadId;
+	string itemsView;
+	string sortDirection;
+	uint limit;
+	@JSONOptional string cursor;
+}
+
+@RPCFlatten @JSONPartial
+struct ThreadItemsListParams
+{
+	string threadId;
+	string sortDirection;
+	uint limit;
+	@JSONOptional string cursor;
+}
+
+@RPCFlatten @JSONPartial
 struct TurnStartInput
 {
 	string type;
@@ -132,65 +151,64 @@ struct TurnInterruptParams
 
 // ---- Incoming notification params (Codex → CyDo) ----
 
+/// One item of a Codex thread. item/started, item/completed and the
+/// thread/items/list pages all carry this object.
+@JSONPartial
+struct ThreadItem
+{
+	string type;
+	string id;
+	@JSONOptional string clientId;
+	@JSONOptional Nullable!long startedAtMs;
+	@JSONOptional Nullable!long completedAtMs;
+	@JSONOptional string name;
+	@JSONOptional string text;             // agentMessage, plan
+	@JSONOptional SO content;              // userMessage inputs or reasoning text
+	@JSONOptional string phase;            // agentMessage
+	@JSONOptional SO memoryCitation;       // agentMessage
+	@JSONOptional SO moderation;           // agentMessage
+	@JSONOptional SO delivery;             // agentMessage
+	@JSONOptional SO questions;            // agentMessage
+	@JSONOptional SO summary;              // reasoning
+	// commandExecution:
+	@JSONOptional string command;
+	@JSONOptional string cwd;
+	@JSONOptional string status;           // also fileChange, mcpToolCall
+	@JSONOptional string processId;
+	@JSONOptional Nullable!int exitCode;   // null while the command is running
+	@JSONOptional Nullable!int durationMs; // also mcpToolCall; null while running
+	@JSONOptional SO commandActions;
+	@JSONOptional string aggregatedOutput; // stdout+stderr; null while running
+	@JSONOptional string scriptPath;
+	@JSONOptional string source;           // agent, userShell, unifiedExec*
+	// fileChange:
+	@JSONOptional SO changes;
+	// mcpToolCall:
+	@JSONOptional string tool;
+	@JSONOptional string server;
+	@JSONName("arguments") @JSONOptional SO arguments_;
+	@JSONOptional SO result;               // null until the call completes
+	@JSONOptional SO error;                // null until the call completes
+	@JSONOptional string environmentId;
+	@JSONOptional SO mcpAppUi;
+	@JSONOptional Nullable!bool readOnlyHint;
+	@JSONOptional SO pluginId;             // also commandExecution
+	@JSONOptional SO appContext;
+	// webSearch:
+	@JSONOptional SO query;
+	@JSONOptional SO action;
+	@JSONOptional SO results;
+	// internal Codex metadata:
+	@JSONName("_creationOrder") @JSONOptional int _creationOrder;
+	JSONExtras extras;
+}
+
 @RPCFlatten @JSONPartial
 struct ItemStartedParams
 {
 	string threadId;
 	@JSONOptional string turnId;
-	static struct Item
-	{
-		string type;
-		@JSONOptional string id;
-		@JSONOptional string clientId;
-		@JSONOptional Nullable!long startedAtMs;
-		@JSONOptional Nullable!long completedAtMs;
-		@JSONOptional string name;
-		@JSONOptional string text;
-		@JSONOptional string command;
-		@JSONOptional SO action;
-		@JSONOptional SO content; // userMessage inputs or reasoning text
-		@JSONOptional string tool;          // mcpToolCall: tool name (e.g. "AskUserQuestion")
-		@JSONOptional string server;        // mcpToolCall: server name (e.g. "cydo")
-		// commandExecution fields (explicit to prevent appearance in _extras):
-		@JSONOptional string cwd;
-		@JSONOptional string status;
-		@JSONOptional string processId;
-		@JSONOptional Nullable!int exitCode;  // null while command is running
-		@JSONOptional Nullable!int durationMs; // null while command is running
-		@JSONOptional SO commandActions;
-		@JSONOptional string aggregatedOutput; // commandExecution: stdout+stderr (null while running)
-		// fileChange fields:
-		@JSONOptional SO changes;
-		// mcpToolCall fields:
-		@JSONName("arguments") @JSONOptional SO arguments_;
-		// webSearch fields:
-		@JSONOptional SO query;
-		// agentMessage fields:
-		@JSONOptional string phase;
-		// mcpToolCall pending-result fields (null until item/completed):
-		@JSONOptional SO result;
-		@JSONOptional SO error;
-		// reasoning fields (declared to prevent leaking into _extras):
-		@JSONOptional SO summary;
-		// agentMessage fields:
-		@JSONOptional typeof(null) memoryCitation;
-		@JSONOptional SO moderation;
-		@JSONOptional SO delivery;
-		@JSONOptional SO questions;
-		// TODO: not used yet
-		@JSONOptional string scriptPath;    // commandExecution
-		@JSONOptional string environmentId; // mcpToolCall
-		@JSONOptional SO mcpAppUi;           // mcpToolCall
-		@JSONOptional Nullable!bool readOnlyHint; // mcpToolCall
-		@JSONOptional SO results;           // webSearch
-		@JSONOptional SO pluginId;    // mcpToolCall: plugin providing the MCP server
-		@JSONOptional SO appContext;  // mcpToolCall: app connector metadata
-		@JSONOptional string source;  // commandExecution: agent, userShell, unifiedExec*
-		// internal Codex metadata:
-		@JSONName("_creationOrder") @JSONOptional int _creationOrder;
-		JSONExtras extras;
-	}
-	Item item;
+	ThreadItem item;
 }
 
 @RPCFlatten @JSONPartial
@@ -224,19 +242,23 @@ struct TurnRef
 	string id;
 }
 
+/// A turn as carried by turn/completed and by the thread/turns/list pages.
 @JSONPartial
-struct CompletedTurn
+struct Turn
 {
-	@JSONOptional string id;
-	@JSONOptional string status;
-	@JSONOptional SO error; // TurnError {message, codexErrorInfo, additionalDetails}; null unless status is "failed"
+	string id;
+	string status;                    // "completed", "interrupted", "failed", "inProgress"
+	@JSONOptional SO error;           // TurnError {message, codexErrorInfo, additionalDetails}; null unless failed
+	@JSONOptional Nullable!long startedAt;   // Unix seconds
+	@JSONOptional Nullable!long completedAt; // Unix seconds
+	@JSONOptional Nullable!long durationMs;
 }
 
 @RPCFlatten @JSONPartial
 struct TurnCompletedParams
 {
 	string threadId;
-	@JSONOptional CompletedTurn turn;
+	Turn turn;
 }
 
 @RPCFlatten @JSONPartial
@@ -314,56 +336,7 @@ struct TokenUsageBreakdown
 struct ItemCompletedParams
 {
 	string threadId;
-	static struct Item
-	{
-		@JSONOptional string id;
-		@JSONOptional string clientId;
-		@JSONOptional Nullable!long startedAtMs;
-		@JSONOptional Nullable!long completedAtMs;
-		@JSONOptional bool is_error;
-		@JSONOptional string aggregatedOutput; // commandExecution: stdout+stderr
-		@JSONOptional string status;           // "inProgress", "failed", "completed"
-		@JSONOptional int exitCode;            // process exit code
-		@JSONOptional int durationMs;          // execution duration in ms
-		@JSONOptional string command;          // original command string
-		@JSONOptional string cwd;              // working directory
-		@JSONOptional string type;             // item type (e.g. "commandExecution")
-		@JSONOptional SO query;            // webSearch: search query
-		@JSONOptional SO action;           // webSearch: {type, query, queries}
-		@JSONOptional string processId;        // process ID for commandExecution
-		@JSONOptional SO commandActions;   // commandExecution actions log
-		@JSONOptional SO result;           // mcpToolCall/webSearch result payload
-		@JSONOptional SO changes;          // fileChange: array of file changes
-		// agentMessage fields:
-		@JSONOptional string text;
-		@JSONOptional string phase;
-		// mcpToolCall fields (repeated from item/started for completed items):
-		@JSONOptional string server;
-		@JSONOptional string tool;
-		@JSONName("arguments") @JSONOptional SO arguments_;
-		@JSONOptional SO error;
-		// reasoning fields (declared to prevent leaking into _extras):
-		@JSONOptional SO summary;
-		@JSONOptional SO content;
-		// agentMessage fields:
-		@JSONOptional typeof(null) memoryCitation;
-		@JSONOptional SO moderation;
-		@JSONOptional SO delivery;
-		@JSONOptional SO questions;
-		// TODO: not used yet
-		@JSONOptional string scriptPath;    // commandExecution
-		@JSONOptional string environmentId; // mcpToolCall
-		@JSONOptional SO mcpAppUi;           // mcpToolCall
-		@JSONOptional Nullable!bool readOnlyHint; // mcpToolCall
-		@JSONOptional SO results;           // webSearch
-		@JSONOptional SO pluginId;    // mcpToolCall: plugin providing the MCP server
-		@JSONOptional SO appContext;  // mcpToolCall: app connector metadata
-		@JSONOptional string source;  // commandExecution: agent, userShell, unifiedExec*
-		// internal Codex metadata:
-		@JSONName("_creationOrder") @JSONOptional int _creationOrder;
-		JSONExtras extras;                     // remaining unknown fields
-	}
-	@JSONOptional Item item;
+	ThreadItem item;
 }
 
 // ---- Response result types ----
@@ -392,6 +365,52 @@ struct ApprovalDecision
 	string decision;
 }
 
+// ---- Thread history pages ----
+
+/// The thread object of a thread/read result with includeTurns false.
+@JSONPartial
+struct ThreadMetadata
+{
+	string id;
+	string historyMode;              // "paginated" or "legacy"
+	@JSONOptional string path;       // current rollout file
+	string cwd;
+	string cliVersion;
+	@JSONOptional string model;
+	string modelProvider;
+	string preview;
+	@JSONOptional string forkedFromId;
+}
+
+@JSONPartial
+struct ThreadMetadataResult
+{
+	ThreadMetadata thread;
+}
+
+/// One page of thread/turns/list.
+@JSONPartial
+struct ThreadTurnsListResult
+{
+	Turn[] data;
+	@JSONOptional string nextCursor; // null on the last page
+}
+
+@JSONPartial
+struct ThreadItemEntry
+{
+	string turnId;
+	ThreadItem item;
+}
+
+/// One page of thread/items/list.
+@JSONPartial
+struct ThreadItemsListResult
+{
+	ThreadItemEntry[] data;
+	@JSONOptional string nextCursor; // null on the last page
+}
+
 // ---- Materialized thread ledger results ----
 
 @JSONPartial
@@ -412,7 +431,7 @@ struct UserInput
 }
 
 @JSONPartial
-private struct ThreadItemWire
+private struct LedgerThreadItemWire
 {
 	string type;
 	@JSONOptional string id;
@@ -427,7 +446,7 @@ private struct ThreadItemWire
 /// A materialized thread item. Unknown item types remain represented by their
 /// provider string; only user-message content is projected into UserInput.
 @JSONPartial
-struct ThreadItem
+struct LedgerThreadItem
 {
 	string type;
 	@JSONOptional string id;
@@ -438,10 +457,10 @@ struct ThreadItem
 	@JSONOptional SO memoryCitation;
 	JSONExtras extras;
 
-	static ThreadItem fromJSON(SO raw)
+	static LedgerThreadItem fromJSON(SO raw)
 	{
-		auto wire = raw.deserializeTo!ThreadItemWire;
-		ThreadItem result;
+		auto wire = raw.deserializeTo!LedgerThreadItemWire;
+		LedgerThreadItem result;
 		result.type = wire.type;
 		result.id = wire.id;
 		result.clientId = wire.clientId;
@@ -456,10 +475,10 @@ struct ThreadItem
 }
 
 @JSONPartial
-struct Turn
+struct LedgerTurn
 {
 	string id;
-	ThreadItem[] items;
+	LedgerThreadItem[] items;
 	string itemsView;
 	string status;
 	SO error;
@@ -470,21 +489,21 @@ struct Turn
 }
 
 @JSONPartial
-struct Thread
+struct LedgerThread
 {
 	string id;
 	ThreadStatus status;
-	Turn[] turns;
+	LedgerTurn[] turns;
 	JSONExtras extras;
 }
 
 @JSONPartial
 private struct ThreadResultWire
 {
-	Thread thread;
+	LedgerThread thread;
 }
 
-private void decodeThreadResult(SO raw, ref Thread thread, ref SO rawThread,
+private void decodeThreadResult(SO raw, ref LedgerThread thread, ref SO rawThread,
 	ref SO[] rawTurns)
 {
 	if (raw.type != SO.Type.object || !("thread" in raw)
@@ -504,7 +523,7 @@ private void decodeThreadResult(SO raw, ref Thread thread, ref SO rawThread,
 /// Result of thread/read, with a typed turn vector and its exact raw sidecar.
 struct ThreadReadResult
 {
-	Thread thread;
+	LedgerThread thread;
 	SO rawThread;
 	SO[] rawTurns;
 
@@ -525,7 +544,7 @@ struct ThreadReadResult
 /// exact raw sidecar.
 struct ThreadRollbackResult
 {
-	Thread thread;
+	LedgerThread thread;
 	SO rawThread;
 	SO[] rawTurns;
 
@@ -1049,30 +1068,99 @@ unittest
 			"startedAtMs":1795274219211,
 			"completedAtMs":1795274219212
 		}`,
-		// Schema-derived 0.171.0 webSearch item. No capture was available.
+		// From the web-search e2e capture.
 		`{
 			"type":"webSearch",
-			"id":"search-1",
-			"query":"fixture query",
-			"action":null,
-			"results":[{"title":"Fixture result","url":"https://example.com/"}],
-			"startedAtMs":1795274219154,
-			"completedAtMs":1795274219155
+			"id":"ws_mock_call_mock_00001",
+			"query":"dagster incremental pipelines",
+			"action":{"type":"search","query":"dagster incremental pipelines","queries":["dagster incremental pipelines"]},
+			"results":null,
+			"startedAtMs":1795287089896,
+			"completedAtMs":1795287089897
+		}`,
+		// Schema-derived (MemoryCitation): no capture has a memory citation.
+		`{
+			"type":"agentMessage",
+			"id":"msg-cited",
+			"text":"fixture reply",
+			"phase":null,
+			"memoryCitation":{"entries":[{"path":"MEMORY.md","lineStart":1,"lineEnd":2,"note":"fixture"}],"threadIds":["thread-1"]}
 		}`,
 		// Codex 0.144.1-style item without the newer fields.
 		`{"type":"agentMessage","id":"msg-legacy","text":"fixture reply","phase":null,"memoryCitation":null}`,
 	])
 	{
-		auto paramsJson = `{"threadId":"fixture-thread","turnId":"fixture-turn","item":`
-			~ itemJson ~ "}";
-		auto expectedType = jsonParse!SO(itemJson)["type"].toJson();
-		auto started = jsonParse!ItemStartedParams(paramsJson);
-		assert(toJson(started.item.type) == expectedType, itemJson);
-		assert(started.item.extras.length == 0,
-			"item/started extras for " ~ started.item.type ~ ": " ~ toJson(started.item.extras._data));
-		auto completed = jsonParse!ItemCompletedParams(paramsJson);
-		assert(toJson(completed.item.type) == expectedType, itemJson);
-		assert(completed.item.extras.length == 0,
-			"item/completed extras for " ~ completed.item.type ~ ": " ~ toJson(completed.item.extras._data));
+		// item/started, item/completed and thread/items/list carry one object.
+		static assert(is(typeof(ItemStartedParams.item) == ThreadItem)
+			&& is(typeof(ItemCompletedParams.item) == ThreadItem)
+			&& is(typeof(ThreadItemEntry.item) == ThreadItem));
+		auto item = jsonParse!ThreadItem(itemJson);
+		auto raw = jsonParse!SO(itemJson);
+		assert(toJson(item.type) == raw["type"].toJson() && toJson(item.id) == raw["id"].toJson(),
+			itemJson);
+		assert(item.extras.length == 0,
+			"extras for " ~ item.type ~ ": " ~ toJson(item.extras._data));
 	}
+}
+
+unittest
+{
+	// The history requests, with the parameter names of the 0.171.0 captures
+	// (rpc-examples.json, cold-large ids 2-10).
+	assert(toJson(ThreadReadParams("thread-1", false))
+		== `{"threadId":"thread-1","includeTurns":false}`);
+	assert(toJson(ThreadTurnsListParams("thread-1", "summary", "asc", 100))
+		== `{"threadId":"thread-1","itemsView":"summary","sortDirection":"asc","limit":100}`);
+	assert(toJson(ThreadTurnsListParams("thread-1", "summary", "asc", 100, "cursor-1"))
+		== `{"threadId":"thread-1","itemsView":"summary","sortDirection":"asc","limit":100,"cursor":"cursor-1"}`);
+	assert(toJson(ThreadItemsListParams("thread-1", "asc", 100))
+		== `{"threadId":"thread-1","sortDirection":"asc","limit":100}`);
+	assert(toJson(ThreadItemsListParams("thread-1", "asc", 100, "cursor-1"))
+		== `{"threadId":"thread-1","sortDirection":"asc","limit":100,"cursor":"cursor-1"}`);
+}
+
+unittest
+{
+	import cydo.agent.drivers.codex.thread_items_fixtures;
+
+	// thread/read {includeTurns: false}
+	auto thread = jsonParse!ThreadMetadataResult(nineTurnThreadRead).thread;
+	assert(thread.id == "01a1feae-9e4c-7d83-a43c-dbd595e0221d" && thread.historyMode == "paginated"
+		&& thread.path == "/mnt/local/moved/home/vladimir/work/.cydo/tasks/39247/rerun-e8"
+			~ "/home/sessions/2026/11/21/rollout-2026-11-21T15-17-02-"
+			~ "01a1feae-9e4c-7d83-a43c-dbd595e0221d_01a1feae-abdf-7350-a0a8-cb08309b191a.jsonl"
+		&& thread.cwd == "/mnt/local/moved/home/vladimir/work/.cydo/tasks/39225/trace-fidelity-final"
+		&& thread.cliVersion == "0.171.0" && thread.model == "gpt-5.4"
+		&& thread.modelProvider == "cydo-mock" && thread.preview == `reply with "reasoning-fixture"`
+		&& thread.forkedFromId is null);
+
+	// thread/turns/list
+	auto turns = jsonParse!ThreadTurnsListResult(nineTurnTurnsPage);
+	assert(turns.data.length == 9 && turns.nextCursor is null);
+	auto compaction = turns.data[0];
+	assert(compaction.id == "01a1feae-aa3e-70c1-b080-0d550c0682cf" && compaction.status == "completed"
+		&& compaction.error.type == SO.Type.null_ && compaction.startedAt.get == 1795274222
+		&& compaction.completedAt.get == 1795274222 && compaction.durationMs.get == 73);
+	assert(turns.data[1].status == "interrupted");
+	auto failed = turns.data[3];
+	assert(failed.status == "failed" && failed.error["codexErrorInfo"].toJson() == `"usageLimitExceeded"`);
+
+	// thread/items/list
+	auto items = jsonParse!ThreadItemsListResult(nineTurnItemsPage);
+	assert(items.data.length == 22 && items.nextCursor is null);
+	assert(items.data[0].turnId == "01a1feae-9e5b-7430-b501-883bafb074dd"
+		&& items.data[0].item.type == "userMessage"
+		&& items.data[0].item.id == "01a1feae-9e92-7753-9e61-757f909bcc11");
+	assert(items.data[4].turnId == "01a1feae-9ed9-74d0-bb3f-8f0c3874ed42"
+		&& items.data[4].item.type == "commandExecution" && items.data[4].item.exitCode.get == 0
+		&& items.data[4].item.aggregatedOutput == "success-marker");
+	foreach (ref entry; items.data)
+		assert(entry.item.extras.length == 0, toJson(entry.item.extras._data));
+
+	// A page that is not the last one names the next. Schema-derived: every
+	// captured page of the nine-turn thread is its last.
+	assert(jsonParse!ThreadItemsListResult(`{"data":[],"nextCursor":"cursor-2","backwardsCursor":null}`)
+		.nextCursor == "cursor-2");
+	assert(jsonParse!ThreadTurnsListResult(`{"data":[],"nextCursor":"cursor-2","backwardsCursor":null}`)
+		.nextCursor == "cursor-2");
 }

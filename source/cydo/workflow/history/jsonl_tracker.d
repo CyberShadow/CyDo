@@ -788,13 +788,13 @@ unittest
 		resolved ~= boundary.anchor ~ ":" ~ to!string(seq);
 	};
 	tracker.noteLiveBoundaryCandidate(1, 4,
-		`{"type":"item/started","item_type":"user_message","item_id":"codex-user-0"}`,
+		`{"type":"item/started","item_type":"user_message","item_id":"01a1feae-9e92-7753-9e61-757f909bcc11"}`,
 		null, 0, true);
 	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
 		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("line:18",
 			PersistedHistoryBoundaryKind.user, null), 18, false, 0);
 	tracker.noteLiveBoundaryCandidate(1, 11,
-		`{"type":"item/started","item_type":"user_message","item_id":"codex-user-1"}`);
+		`{"type":"item/started","item_type":"user_message","item_id":"01a1feae-9ee3-7df0-b7d2-92928ed204c5"}`);
 	assert(resolved == ["line:18:11"]);
 }
 
@@ -810,10 +810,10 @@ unittest
 		resolved ~= boundary.anchor ~ ":" ~ to!string(seq);
 	};
 	tracker.noteLiveBoundaryCandidate(1, 4,
-		`{"type":"item/started","item_type":"user_message","item_id":"codex-user-0"}`,
+		`{"type":"item/started","item_type":"user_message","item_id":"01a1feae-9e92-7753-9e61-757f909bcc11"}`,
 		null, 0, true);
 	tracker.noteLiveBoundaryCandidate(1, 11,
-		`{"type":"item/started","item_type":"user_message","item_id":"codex-user-1"}`);
+		`{"type":"item/started","item_type":"user_message","item_id":"01a1feae-9ee3-7df0-b7d2-92928ed204c5"}`);
 	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
 		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("line:18",
 			PersistedHistoryBoundaryKind.user, null), 18, false, 0);

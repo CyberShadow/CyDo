@@ -35,8 +35,9 @@ public import cydo.agent.drivers.codex.process : AppServerProcess;
 public import cydo.agent.drivers.codex.native_undo;
 public import cydo.agent.drivers.codex.rollout;
 public import cydo.agent.drivers.codex.rpc;
+public import cydo.agent.drivers.codex.thread_items;
 import cydo.protocol : ContentBlock, HistoryBoundary, HistoryBoundaryKind,
-	ProcessStderrEvent, SessionCompactedEvent, TranslatedEvent, extrasToFragment;
+	ProcessStderrEvent, TranslatedEvent;
 import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork, MessageSource;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
@@ -2866,7 +2867,6 @@ class CodexSession : AgentSession
 	// Active item tracking for item/delta routing.
 	private string activeItemId_;              // most recently started item (for delta routing)
 	private string[string] activeItemTypes_;   // itemId → itemType for all active items
-	private int itemCounter_;                  // monotonic counter for generating item IDs
 	private string lastResultText_;             // last completed text content, for turn/result
 
 	private string sessionId;
@@ -3850,148 +3850,65 @@ class CodexSession : AgentSession
 
 	package void handleItemStarted(ItemStartedParams params, string rawNotification)
 	{
-		import cydo.protocol : ItemStartedEvent;
 		if (params.turnId.length > 0)
 			activeTurnId_ = params.turnId;
 
 		auto item = params.item;
 
-		ItemStartedEvent ev;
-
 		if (item.type == "userMessage")
 		{
-			// Echo user message as item/started type=user_message.
-			if (item.content && outputHandler_)
-			{
-				ev.item_type = "user_message";
-				// Extract text from content array: [{type:"input_text",text:"..."}]
-				@JSONPartial
-				static struct InputTextItem { @JSONOptional string text; }
-				string userText;
-				try
-				{
-					auto items = jsonParse!(InputTextItem[])(toJson(item.content));
-					foreach (ref i; items)
-						userText ~= i.text;
-				}
-				catch (Exception) {}
-				if (userText.length == 0)
-					userText = item.text;
-				ev.item_id = "codex-user-" ~ to!string(itemCounter_++);
-				ContentBlock cb;
-				cb.type = "text";
-				cb.text = userText;
-				ev.content = [cb];
-				assert(expectedEchoMessages_.length > 0,
-					"Codex native user echo has no expected submission");
-				auto submission = expectedEchoMessages_[0];
-				assert(userText == submission.text,
-					"Codex native user echo text does not match expected submission");
-				ev.correlation_id = submission.correlationId;
-				auto translated = TranslatedEvent(toJson(ev), rawNotification,
-					AbsTime.init, 0, submission.isContextBootstrap);
-				if (submission.accepted)
-				{
-					expectedEchoMessages_ = expectedEchoMessages_[1 .. $];
-					emitAcceptedUserEcho(submission, translated);
-				}
-				else
-				{
-					assert(!submission.hasGatedUserEcho,
-						"Codex submission received multiple native user echoes");
-					submission.gatedUserEcho = translated;
-					submission.hasGatedUserEcho = true;
-				}
+			// Echo of a submitted message: emitted once the submission is accepted.
+			if (outputHandler_ is null)
 				return;
+			string[] unrecognized;
+			auto ev = userMessageEvent(item, unrecognized);
+			foreach (event; unrecognized)
+				outputHandler_(TranslatedEvent(event, rawNotification));
+			assert(expectedEchoMessages_.length > 0,
+				"Codex native user echo has no expected submission");
+			auto submission = expectedEchoMessages_[0];
+			assert(userMessageText(item) == submission.text,
+				"Codex native user echo text does not match expected submission");
+			ev.correlation_id = submission.correlationId;
+			auto translated = TranslatedEvent(toJson(ev), rawNotification,
+				AbsTime.init, 0, submission.isContextBootstrap);
+			if (submission.accepted)
+			{
+				expectedEchoMessages_ = expectedEchoMessages_[1 .. $];
+				emitAcceptedUserEcho(submission, translated);
+			}
+			else
+			{
+				assert(!submission.hasGatedUserEcho,
+					"Codex submission received multiple native user echoes");
+				submission.gatedUserEcho = translated;
+				submission.hasGatedUserEcho = true;
 			}
 			return;
 		}
 
-		// Assign item ID: use native id if available, else generate one.
-		auto itemId = item.id.length > 0 ? item.id : "codex-item-" ~ to!string(itemCounter_++);
-		activeItemId_ = itemId;
+		activeItemId_ = item.id;
 
-		switch (item.type)
+		if (item.type == "contextCompaction")
 		{
-			case "agentMessage":
-				activeItemTypes_[itemId] = "text";
-				ev.item_type = "text";
-				// Reset + capture text for result extraction. Text may arrive
-				// fully formed here (no deltas) or be empty with deltas following.
-				lastResultText_ = item.text;
-				break;
-			case "reasoning":
-				activeItemTypes_[itemId] = "thinking";
-				ev.item_type = "thinking";
-				break;
-			case "commandExecution":
-				activeItemTypes_[itemId] = "tool_use";
-				ev.item_type = "tool_use";
-				ev.name = "commandExecution";
-				string cmdInput = extractCommandExecutionInput(
-					item.commandActions ? JSONFragment(toJson(item.commandActions)) : JSONFragment.init,
-					item.action ? JSONFragment(toJson(item.action)) : JSONFragment.init,
-					item.command);
-				if (cmdInput.length > 0 && cmdInput != `{}`)
-					ev.input = JSONFragment(cmdInput);
-				break;
-			case "fileChange":
-				activeItemTypes_[itemId] = "tool_use";
-				ev.item_type = "tool_use";
-				ev.name = "fileChange";
-				// Include changes directly so the frontend can show the File Viewer button
-				// without relying on _raw (which is stripped before broadcast).
-				if (item.changes)
-					ev.input = JSONFragment(`{"changes":` ~ toJson(item.changes) ~ `}`);
-				break;
-			case "mcpToolCall":
-				activeItemTypes_[itemId] = "tool_use";
-				ev.item_type = "tool_use";
-				if (item.tool.length > 0)
-				{
-					ev.name = item.tool;
-					if (item.server.length > 0)
-					{
-						ev.tool_server = item.server;
-						ev.tool_source = "mcp";
-					}
-				}
-				else
-					ev.name = item.name.length > 0 ? item.name : "unknown";
-				if (item.arguments_)
-					ev.input = JSONFragment(toJson(item.arguments_));
-				break;
-			case "webSearch":
-				activeItemTypes_[itemId] = "tool_use";
-				ev.item_type = "tool_use";
-				ev.name = "webSearch";
-				if (item.query)
-					ev.input = JSONFragment(`{"query":` ~ toJson(item.query) ~ `}`);
-				break;
-			case "contextCompaction":
-				activeItemTypes_[itemId] = "contextCompaction";
-				import cydo.protocol : SessionStatusEvent;
-				SessionStatusEvent statusEv;
-				statusEv.status = "Compacting context...";
-				if (outputHandler_)
-					outputHandler_(TranslatedEvent(toJson(statusEv), rawNotification));
-				return;  // Emit session/status instead of item/started
-			default:
-				activeItemTypes_[itemId] = "text";
-				ev.item_type = "text";
-				break;
+			// The compaction itself is reported when the item completes;
+			// until then, show that it is running.
+			activeItemTypes_[item.id] = "contextCompaction";
+			import cydo.protocol : SessionStatusEvent;
+			SessionStatusEvent statusEv;
+			statusEv.status = "Compacting context...";
+			if (outputHandler_)
+				outputHandler_(TranslatedEvent(toJson(statusEv), rawNotification));
+			return;
 		}
+
+		auto ev = itemStartedEvent(item);
+		activeItemTypes_[item.id] = ev.item_type;
+		// Reset + capture text for result extraction. Text may arrive
+		// fully formed here (no deltas) or be empty with deltas following.
+		if (item.type == "agentMessage")
+			lastResultText_ = item.text;
 		hadItemsSinceLastStop_ = true;
-
-		ev.item_id = itemId;
-
-		// If item/started already contains text (e.g. during history replay),
-		// include it directly in the event.
-		if (item.text.length > 0)
-			ev.text = item.text;
-
-		// Forward Codex extras (processId, status, cwd, commandActions, etc.) to extras.
-		ev.extras = extrasToFragment(item.extras);
 
 		if (outputHandler_)
 			outputHandler_(TranslatedEvent(toJson(ev), rawNotification));
@@ -4038,231 +3955,31 @@ class CodexSession : AgentSession
 
 	package void handleItemCompleted(ItemCompletedParams params, string rawNotification)
 	{
-		// Determine which item completed: prefer explicit ID from params.
-		string itemId = (params.item.id.length > 0) ? params.item.id : activeItemId_;
-		if (itemId.length == 0)
-			return;
+		auto item = params.item;
 
-		// Look up item type from map.
-		auto pType = itemId in activeItemTypes_;
+		// Only items this session saw start are tracked; a user message is not.
+		auto pType = item.id in activeItemTypes_;
 		if (pType is null)
-			return; // unknown item, skip
-		string itemType = *pType;
-
-		if (itemType == "contextCompaction")
-		{
-			// Codex 0.139 reports compaction as an item instead of sending the
-			// older thread/compacted notification.  Clear the transient status
-			// and emit CyDo's durable compact-boundary event.
-			import cydo.protocol : SessionStatusEvent;
-			SessionStatusEvent clearEv;
-			if (outputHandler_)
-			{
-				outputHandler_(TranslatedEvent(toJson(clearEv), rawNotification));
-				outputHandler_(TranslatedEvent(toJson(SessionCompactedEvent()), rawNotification));
-			}
-			activeItemTypes_.remove(itemId);
-			if (activeItemId_ == itemId)
-				activeItemId_ = null;
 			return;
-		}
-
-		import cydo.protocol : ItemCompletedEvent, ItemResultEvent;
-		ItemCompletedEvent ev;
-		ev.item_id = itemId;
-		ev.is_error = params.item.is_error;
-		// Derive is_error from Codex status field (Codex uses "failed" instead of is_error).
-		if (!ev.is_error && params.item.status == "failed")
-			ev.is_error = true;
-
-		if (itemType == "tool_use" && params.item.aggregatedOutput.length > 0)
-			ev.output = params.item.aggregatedOutput;
-
-		// Forward remaining Codex extras (processId, commandActions, type, etc.) to extras.
-		ev.extras = extrasToFragment(params.item.extras);
-
-		// For webSearch items, propagate the completed query into the input field
-		// so the frontend subtitle updates from the empty started-query to the real query.
-		if (params.item.type == "webSearch" && params.item.query)
-			ev.input = JSONFragment(`{"query":` ~ toJson(params.item.query) ~ `}`);
 
 		if (outputHandler_)
-			outputHandler_(TranslatedEvent(toJson(ev), rawNotification));
-
-		// Emit item/result for tool_use items so the frontend can display the output.
-		// item/result must come AFTER item/completed so the tool_use block is
-		// already in content[] when reduceItemResult searches for it.
-		if (itemType == "tool_use" && outputHandler_)
 		{
-			ItemResultEvent resEv;
-			resEv.item_id = itemId;
-			resEv.is_error = ev.is_error;
-			string toolErrorMessage;
-			if (resEv.is_error && params.item.error)
+			if (*pType == "contextCompaction")
 			{
-				@JSONPartial
-				static struct ItemErrorPayload
-				{
-					@JSONOptional string message;
-				}
-
-				try
-				{
-					toolErrorMessage = jsonParse!ItemErrorPayload(toJson(params.item.error)).message;
-				}
-				catch (Exception) {}
-
-				if (toolErrorMessage.length == 0)
-				{
-					try
-					{
-						toolErrorMessage = jsonParse!string(toJson(params.item.error));
-					}
-					catch (Exception) {}
-				}
+				// Clear the transient status before the durable compact boundary.
+				import cydo.protocol : SessionStatusEvent;
+				outputHandler_(TranslatedEvent(toJson(SessionStatusEvent()), rawNotification));
+				foreach (event; compactionEvents(item))
+					outputHandler_(TranslatedEvent(event, rawNotification));
 			}
-
-			// Item type is now an explicit field.
-			string itemTypeName = params.item.type;
-
-			if (params.item.aggregatedOutput.length > 0)
-				resEv.content = JSONFragment(`[{"type":"text","text":` ~ toJson(params.item.aggregatedOutput) ~ `}]`);
 			else
-			{
-				@JSONPartial
-				static struct ResultPayload
-				{
-					@JSONOptional JSONFragment content;
-					@JSONName("structuredContent") @JSONOptional JSONFragment structuredContent;
-				}
-
-				bool hasResultContent = false;
-				if (params.item.result)
-				{
-					try
-					{
-						auto payload = jsonParse!ResultPayload(toJson(params.item.result));
-						if (payload.content.json !is null)
-						{
-							resEv.content = payload.content;
-							hasResultContent = true;
-						}
-						if (payload.structuredContent.json !is null)
-							resEv.tool_result = payload.structuredContent;
-					}
-					catch (Exception) {}
-				}
-
-				if (!hasResultContent)
-				{
-					if (itemTypeName == "webSearch")
-					{
-						// Pass Codex web search data as structured tool_result for the frontend
-						// to interpret. Set content to empty text (required field).
-						if (toolErrorMessage.length > 0)
-							resEv.content = JSONFragment(`[{"type":"text","text":` ~ toJson(toolErrorMessage) ~ `}]`);
-						else
-							resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
-
-						import std.array : appender;
-						auto tr = appender!string;
-						tr ~= `{`;
-
-						// Include the main query
-						if (params.item.query)
-							tr ~= `"query":` ~ toJson(params.item.query);
-
-						// Include the queries array from action
-						if (params.item.action)
-						{
-							@JSONPartial
-							static struct WebSearchAction
-							{
-								@JSONOptional JSONFragment queries;  // preserve raw JSON
-							}
-							try
-							{
-								auto act = jsonParse!WebSearchAction(toJson(params.item.action));
-								if (act.queries.json !is null)
-								{
-									if (params.item.query)
-										tr ~= `,`;
-									tr ~= `"queries":` ~ act.queries.json;
-								}
-							}
-							catch (Exception) {}
-						}
-
-						tr ~= `}`;
-						resEv.tool_result = JSONFragment(tr.data);
-					}
-					else if (toolErrorMessage.length > 0)
-						resEv.content = JSONFragment(`[{"type":"text","text":` ~ toJson(toolErrorMessage) ~ `}]`);
-					else
-						resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
-				}
-			}
-
-			// Build structured tool_result for commandExecution items.
-			// Surfaces exitCode, status, durationMs, command, cwd for frontend rendering.
-			if (itemTypeName == "commandExecution")
-			{
-				import std.array : appender;
-				auto tr = appender!string;
-				tr ~= `{`;
-				bool trFirst = true;
-				if (params.item.status.length > 0)
-				{
-					tr ~= `"status":` ~ toJson(params.item.status);
-					trFirst = false;
-				}
-				// Always include exitCode for commandExecution items.
-				{
-					if (!trFirst) tr ~= `,`;
-					tr ~= `"exitCode":` ~ to!string(params.item.exitCode);
-					trFirst = false;
-				}
-				if (params.item.durationMs > 0)
-				{
-					if (!trFirst) tr ~= `,`;
-					tr ~= `"durationMs":` ~ to!string(params.item.durationMs);
-					trFirst = false;
-				}
-				if (params.item.command.length > 0)
-				{
-					if (!trFirst) tr ~= `,`;
-					tr ~= `"command":` ~ toJson(params.item.command);
-					trFirst = false;
-				}
-				if (params.item.cwd.length > 0)
-				{
-					if (!trFirst) tr ~= `,`;
-					tr ~= `"cwd":` ~ toJson(params.item.cwd);
-					trFirst = false;
-				}
-				if (params.item.processId.length > 0)
-				{
-					if (!trFirst) tr ~= `,`;
-					tr ~= `"processId":` ~ toJson(params.item.processId);
-					trFirst = false;
-				}
-				if (params.item.commandActions)
-				{
-					if (!trFirst) tr ~= `,`;
-					tr ~= `"commandActions":` ~ toJson(params.item.commandActions);
-					trFirst = false;
-				}
-				tr ~= `}`;
-				if (!trFirst)
-					resEv.tool_result = JSONFragment(tr.data);
-			}
-
-			outputHandler_(TranslatedEvent(toJson(resEv), rawNotification));
+				foreach (event; itemCompletedEvents(item))
+					outputHandler_(TranslatedEvent(event, rawNotification));
 		}
 
 		// Remove from tracking.
-		activeItemTypes_.remove(itemId);
-		if (activeItemId_ == itemId)
+		activeItemTypes_.remove(item.id);
+		if (activeItemId_ == item.id)
 			activeItemId_ = null;
 	}
 
@@ -4287,30 +4004,8 @@ class CodexSession : AgentSession
 
 		// 2. turn/result — always emitted
 		if (outputHandler_)
-		{
-			import cydo.agent.drivers.codex.app_server : extractCodexErrorMessage;
-			import cydo.protocol : TurnEndReason, TurnResultEvent, UsageInfo;
-			TurnResultEvent tre;
-			tre.num_turns = 1;
-			tre.usage = UsageInfo(0, 0);
-			tre.result = lastResultText_;
-			if (params.turn.status == "failed")
-			{
-				auto message = extractCodexErrorMessage(params.turn.error);
-				if (message.length == 0)
-					message = "Unknown error";
-				tre.subtype = "error";
-				tre.is_error = true;
-				tre.errors = [message];
-				tre.result = lastResultText_.length > 0
-					? lastResultText_ ~ "\n\n" ~ message : message;
-			}
-			else
-				tre.subtype = "success";
-			if (params.turn.status == "interrupted")
-				tre.end_reason = TurnEndReason.interrupted;
-			outputHandler_(TranslatedEvent(toJson(tre), rawNotification));
-		}
+			outputHandler_(TranslatedEvent(
+				toJson(turnResultEvent(params.turn, lastResultText_)), rawNotification));
 		lastResultText_ = null;
 		drainPendingMessages();
 	}
@@ -4646,75 +4341,6 @@ unittest
 	auto overridesWithEffort = buildConfigOverride(1, withEffort);
 	assert(overridesWithEffort.indexOf(`"model_reasoning_effort":"high"`) >= 0,
 		"Codex config must carry model_reasoning_effort; actual=" ~ overridesWithEffort);
-}
-
-/// Extract display-level command input from a live Codex commandExecution item.
-string extractCommandExecutionInput(JSONFragment commandActions, JSONFragment action, string command)
-{
-	import cydo.protocol : CommandInput;
-
-	string actionType;
-	auto actionCommand = extractCommandActionsCommand(commandActions, actionType);
-	if (command.length > 0)
-	{
-		if (actionType == "unknown" && actionCommand.length > 0)
-			return toJson(CommandInput(actionCommand, ""));
-		return toJson(CommandInput(command, ""));
-	}
-
-	if (actionCommand.length > 0)
-		return toJson(CommandInput(actionCommand, ""));
-
-	auto fromAction = extractCommandInput(action);
-	if (fromAction.length > 0 && fromAction != `{}`)
-		return fromAction;
-
-	return `{}`;
-}
-
-/// Extract a fallback command from Codex commandActions when no executed command
-/// field is available.
-string extractCommandActionsInput(JSONFragment commandActions)
-{
-	auto command = extractCommandActionsCommand(commandActions);
-	if (command.length == 0)
-		return `{}`;
-
-	import cydo.protocol : CommandInput;
-	return toJson(CommandInput(command, ""));
-}
-
-/// Extract a single user-level command from Codex commandActions.
-string extractCommandActionsCommand(JSONFragment commandActions)
-{
-	string actionType;
-	return extractCommandActionsCommand(commandActions, actionType);
-}
-
-/// Extract a single user-level command and its action type from Codex commandActions.
-string extractCommandActionsCommand(JSONFragment commandActions, out string actionType)
-{
-	if (commandActions.json is null || commandActions.json.length == 0)
-		return "";
-
-	@JSONPartial
-	static struct CommandAction
-	{
-		@JSONOptional string type;
-		@JSONOptional string command;
-	}
-
-	try
-	{
-		auto actions = jsonParse!(CommandAction[])(commandActions.json);
-		if (actions.length != 1 || actions[0].command.length == 0)
-			return "";
-		actionType = actions[0].type;
-		return actions[0].command;
-	}
-	catch (Exception e)
-	{ tracef("extractCommandActionsInput: parse error: %s", e.msg); }
-	return "";
 }
 
 unittest
@@ -5195,7 +4821,7 @@ unittest
 		`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thread-ask","turnId":"turn-ask","item":{"id":"mcp-call-ask","type":"mcpToolCall","server":"cydo","tool":"AskUserQuestion","arguments":{"questions":[{"header":"Test","question":"Do you agree?","options":[{"label":"Yes","description":"Confirm"},{"label":"No","description":"Deny"}],"multiSelect":false}]}}}}`;
 
 	enum completedPayload =
-		`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread-ask","item":{"id":"mcp-call-ask","result":{"content":[{"type":"text","text":"User has answered your questions: \"Do you agree?\"=\"Yes\"."}]}}}}`;
+		`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread-ask","item":{"id":"mcp-call-ask","type":"mcpToolCall","result":{"content":[{"type":"text","text":"User has answered your questions: \"Do you agree?\"=\"Yes\"."}]}}}}`;
 
 	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
 	string[] emitted;
@@ -5834,4 +5460,224 @@ unittest
 			&& structured.summary == "structured-success",
 		"expected structuredContent to populate tool_result while preserving text content",
 	);
+}
+
+/// The text each content item ends up displayed with, by item id, as the
+/// frontend builds it (reduceItemStarted, reduceItemDelta and
+/// reduceItemCompleted in web/src/sessionReducer.ts): the text the item
+/// started with, then its text and thinking deltas, replaced by the text of
+/// its item/completed if that has one.
+version (unittest) private string[string] finalItemTexts(TranslatedEvent[] events)
+{
+	@JSONPartial static struct Probe
+	{
+		string type;
+		@JSONOptional string item_id;
+		@JSONOptional string item_type;
+		@JSONOptional string text;
+	}
+
+	string[string] texts;
+	foreach (ref event; events)
+	{
+		import cydo.protocol : ItemDeltaEvent;
+
+		auto probe = jsonParse!Probe(event.translated);
+		if (probe.type == "item/started" && probe.item_type != "user_message")
+			texts[probe.item_id] = probe.text;
+		else if (probe.type == "item/delta")
+		{
+			auto delta = jsonParse!ItemDeltaEvent(event.translated);
+			if (delta.delta_type == "text_delta" || delta.delta_type == "thinking_delta")
+				texts[delta.item_id] ~= delta.content;
+		}
+		else if (probe.type == "item/completed" && probe.text !is null)
+			texts[probe.item_id] = probe.text;
+	}
+	return texts;
+}
+
+// Reasoning reads the same live and replayed, however its text arrives.
+unittest
+{
+	import std.string : lineSplitter;
+	import cydo.agent.drivers.codex.thread_items_fixtures : reasoningItemEntry,
+		reasoningLiveNotifications;
+
+	@JSONPartial struct Notification { string method; JSONFragment params; }
+
+	// `deltas`: the summary deltas to deliver between the item's start and end.
+	string liveText(string[] deltas)
+	{
+		auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+		TranslatedEvent[] live;
+		session.onOutput((TranslatedEvent event) { live ~= event; });
+		foreach (line; reasoningLiveNotifications.lineSplitter)
+		{
+			auto notification = jsonParse!Notification(line);
+			if (notification.method == "item/started")
+			{
+				session.handleItemStarted(
+					jsonParse!ItemStartedParams(notification.params.json), line);
+				foreach (delta; deltas)
+					session.handleDelta(DeltaParams("thread", "rs_stitch_fixture", "turn", delta),
+						"thinking_delta", "delta");
+			}
+			else
+			{
+				assert(notification.method == "item/completed");
+				session.handleItemCompleted(
+					jsonParse!ItemCompletedParams(notification.params.json), line);
+			}
+		}
+		return finalItemTexts(live)["rs_stitch_fixture"];
+	}
+
+	auto entry = jsonParse!ThreadItemEntry(reasoningItemEntry);
+	TranslatedEvent[] replay;
+	replay ~= TranslatedEvent(toJson(itemStartedEvent(entry.item)), null);
+	foreach (event; itemCompletedEvents(entry.item))
+		replay ~= TranslatedEvent(event, null);
+	auto replayText = finalItemTexts(replay)["rs_stitch_fixture"];
+	assert(replayText == "reason before shell");
+
+	// As captured: Codex had the whole summary when the item started and
+	// sent no deltas.
+	assert(liveText(null) == replayText);
+	// Not captured: the same summary also streamed as deltas. It is shown once.
+	assert(liveText(["reason before", " shell"]) == replayText);
+}
+
+// A thread's history read from Codex translates to the events the session
+// that ran the thread emitted for it.
+unittest
+{
+	import std.json : JSONValue, parseJSON;
+	import std.string : lineSplitter;
+	import cydo.agent.drivers.codex.thread_items_fixtures : nineTurnItemsPage,
+		nineTurnLiveNotifications, nineTurnTurnsPage;
+
+	void drainPromiseNextTicks()
+	{
+		for (;;)
+		{
+			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
+			if (handlers.length == 0)
+				return;
+			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
+			foreach (handler; handlers)
+				handler();
+		}
+	}
+
+	// What the two sides legitimately do not share is taken out of both:
+	// - session/init: a session reports its own when it starts the thread;
+	// - session/status: shown only while a compaction runs;
+	// - how an item's text arrives: a session's item starts empty and
+	//   grows by deltas, a history item is complete. Each item is given the
+	//   text it ends up with (see `finalItemTexts`);
+	// - every turn/stop but a turn's last: a session stops after each model
+	//   response, which the history does not record. Token usage likewise;
+	// - history boundaries: sessions do not yet emit the turn-id anchors.
+	JSONValue[] comparable(TranslatedEvent[] events)
+	{
+		auto texts = finalItemTexts(events);
+		JSONValue[] result;
+		size_t turnStart;
+		foreach (ref event; events)
+		{
+			auto json = parseJSON(event.translated);
+			auto type = json["type"].str;
+			if (type == "session/init" || type == "session/status" || type == "item/delta")
+				continue;
+			if (type == "item/started" && json["item_type"].str != "user_message")
+				json["text"] = texts[json["item_id"].str];
+			if (type == "item/completed")
+				json.object.remove("text");
+			if (type == "turn/stop")
+				json.object.remove("usage");
+			json.object.remove("history_boundary");
+			if (type == "turn/result")
+			{
+				// Keep the turn's last turn/stop only.
+				JSONValue[] turn;
+				ptrdiff_t lastStop = -1;
+				foreach (i, ref turnEvent; result[turnStart .. $])
+					if (turnEvent["type"].str == "turn/stop")
+						lastStop = i;
+				foreach (i, ref turnEvent; result[turnStart .. $])
+					if (turnEvent["type"].str != "turn/stop" || i == lastStop)
+						turn ~= turnEvent;
+				result = result[0 .. turnStart] ~ turn;
+				turnStart = result.length + 1;
+			}
+			result ~= json;
+		}
+		return result;
+	}
+
+	@JSONPartial struct Notification { string method; JSONFragment params; }
+
+	auto thread = fixtureThread();
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	session.model = thread.model;
+	TranslatedEvent[] live;
+	session.onOutput((TranslatedEvent event) { live ~= event; });
+	foreach (line; nineTurnLiveNotifications.lineSplitter)
+	{
+		auto notification = jsonParse!Notification(line);
+		auto params = notification.params.json;
+		switch (notification.method)
+		{
+			case "turn/started":
+				// As accepting the turn's turn/start does.
+				session.turnInProgress = true;
+				session.handleTurnStarted(jsonParse!TurnStartedParams(params).turn);
+				break;
+			case "item/started":
+				auto started = jsonParse!ItemStartedParams(params);
+				if (started.item.type == "userMessage")
+				{
+					// The submission this message echoes, already accepted.
+					auto text = userMessageText(started.item);
+					auto submission = new CodexSession.PendingMessage(
+						[ContentBlock("text", text)], text, null, false);
+					submission.accepted = true;
+					submission.settled = true;
+					session.expectedEchoMessages_ ~= submission;
+				}
+				session.handleItemStarted(started, line);
+				drainPromiseNextTicks();
+				break;
+			case "item/agentMessage/delta":
+				session.handleDelta(jsonParse!DeltaParams(params), "text_delta", line);
+				break;
+			case "item/completed":
+				session.handleItemCompleted(jsonParse!ItemCompletedParams(params), line);
+				break;
+			case "thread/tokenUsage/updated":
+				session.handleTokenUsageUpdated(jsonParse!TokenUsageUpdatedParams(params), line);
+				break;
+			case "turn/completed":
+				session.handleTurnCompleted(jsonParse!TurnCompletedParams(params), line);
+				break;
+			default:
+				assert(false, notification.method);
+		}
+	}
+
+	auto replay = translateThreadHistory(thread, ascendingTurns(nineTurnTurnsPage),
+		pageItems(nineTurnItemsPage));
+
+	auto liveEvents = comparable(live);
+	auto replayEvents = comparable(replay);
+	// 22 items in 9 turns: 9 user messages, a compaction and 12 content
+	// items, 5 of them tools with a result; 6 turns stop.
+	assert(replayEvents.length == 9 + 1 + 12 * 2 + 5 + 6 + 9);
+	foreach (i; 0 .. replayEvents.length)
+		assert(i < liveEvents.length && liveEvents[i] == replayEvents[i],
+			"event " ~ to!string(i) ~ ":\nlive   "
+			~ (i < liveEvents.length ? liveEvents[i].toString() : "(none)")
+			~ "\nreplay " ~ replayEvents[i].toString());
+	assert(liveEvents.length == replayEvents.length);
 }

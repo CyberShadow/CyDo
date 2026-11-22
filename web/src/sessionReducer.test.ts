@@ -521,7 +521,7 @@ describe("history boundary replacement", () => {
           rawSource: {
             type: "item/started",
             item_type: "user_message",
-            item_id: "codex-user-1",
+            item_id: "01a1feae-9ee3-7df0-b7d2-92928ed204c5",
           },
         },
       ],

@@ -16,9 +16,9 @@ import cydo.protocol : HistoryBoundary, HistoryBoundaryKind;
 struct NativeUndoPlan
 {
 	uint numTurns;
-	Turn[] preTurns;
+	LedgerTurn[] preTurns;
 	SO[] preRawTurns;
-	Turn[] retainedPrefix;
+	LedgerTurn[] retainedPrefix;
 	SO[] retainedRawPrefix;
 	size_t targetLedgerIndex;
 	string targetTurnId;
@@ -152,13 +152,13 @@ private bool hasExtras(const ref JSONExtras extras)
 	return extras.length != 0;
 }
 
-private bool isFullView(const ref Turn turn, SO raw)
+private bool isFullView(const ref LedgerTurn turn, SO raw)
 {
 	string view;
 	return turn.itemsView == "full" && rawString(raw, "itemsView", view) && view == "full";
 }
 
-private bool validThreadStatus(const ref Thread thread, SO rawThread)
+private bool validThreadStatus(const ref LedgerThread thread, SO rawThread)
 {
 	if (rawThread.type != SO.Type.object || !rawHasField(rawThread, "status"))
 		return false;
@@ -231,7 +231,7 @@ private bool isExactRawUserEvent(const ref RolloutLineEvidence event,
 	return event.nativeActive && isExactNativeUserEvent(event, response);
 }
 
-private bool validRawUserItem(SO rawItem, const ref ThreadItem item,
+private bool validRawUserItem(SO rawItem, const ref LedgerThreadItem item,
 	const ref RolloutLineEvidence response, const ref RolloutLineEvidence event,
 	bool modern)
 {
@@ -269,7 +269,7 @@ private bool validRawUserItem(SO rawItem, const ref ThreadItem item,
 	return !rawHasField(rawItem, "clientId") && item.clientId.length == 0;
 }
 
-private bool validRawAgentItem(SO rawItem, const ref ThreadItem item,
+private bool validRawAgentItem(SO rawItem, const ref LedgerThreadItem item,
 	const ref RolloutLineEvidence assistant,
 	const ref RolloutLineEvidence agentEvent)
 {
@@ -463,7 +463,7 @@ private int findContextCompactedEvent(const ref RolloutScan scan,
 /// malformed, future, residual, and unclaimed raw data cannot disappear while
 /// typed materialization happens to look like a simple suffix.
 private bool validClosedRawSuffix(const ref RolloutScan scan,
-	const ref RawSubmission[] submissions, const ref Turn[] turns,
+	const ref RawSubmission[] submissions, const ref LedgerTurn[] turns,
 	size_t targetIndex)
 {
 	if (targetIndex >= turns.length)
@@ -605,7 +605,7 @@ private bool isExactLeadingNativeSessionMeta(const ref RolloutLineEvidence line)
 /// The latter is system context, not a native turn; raw data within a proven
 /// prefix range remains preserved rather than re-admitted by this unit.
 private bool hasOnlyOpaqueRetainedPrefixNativeEvidence(const ref RolloutScan scan,
-	const ref Turn[] turns, size_t targetIndex)
+	const ref LedgerTurn[] turns, size_t targetIndex)
 {
 	if (targetIndex >= turns.length)
 		return false;
@@ -675,7 +675,7 @@ private bool hasOnlyOpaqueRetainedPrefixNativeEvidence(const ref RolloutScan sca
 }
 
 private bool validCompletedSimple(const ref RolloutScan scan,
-	const ref RawSubmission submission, const ref Turn[] turns,
+	const ref RawSubmission submission, const ref LedgerTurn[] turns,
 	ref SO[] rawTurns)
 {
 	auto response = scan.lines[submission.responseIndex];
@@ -719,7 +719,7 @@ private bool validCompletedSimple(const ref RolloutScan scan,
 }
 
 private bool validCompletedCompaction(const ref RolloutScan scan, size_t turnIndex,
-	const ref Turn[] turns, ref SO[] rawTurns, size_t simpleCount)
+	const ref LedgerTurn[] turns, ref SO[] rawTurns, size_t simpleCount)
 {
 	if (simpleCount == 0)
 		return false;
@@ -804,7 +804,7 @@ private bool isExactV1AbortWrapper(const ref RolloutLineEvidence line)
 }
 
 private bool validInterruptedFinal(const ref RolloutScan scan,
-	const ref RawSubmission submission, const ref Turn[] turns,
+	const ref RawSubmission submission, const ref LedgerTurn[] turns,
 	ref SO[] rawTurns)
 {
 	if (!submission.modern)
@@ -859,7 +859,7 @@ private bool validInterruptedFinal(const ref RolloutScan scan,
 	return true;
 }
 
-private int findTurnForModernClient(const ref Turn[] turns, string clientId)
+private int findTurnForModernClient(const ref LedgerTurn[] turns, string clientId)
 {
 	int result = -1;
 	foreach (turnIndex, ref turn; turns)
@@ -874,7 +874,7 @@ private int findTurnForModernClient(const ref Turn[] turns, string clientId)
 	return result;
 }
 
-private int findTurnById(const ref Turn[] turns, string turnId)
+private int findTurnById(const ref LedgerTurn[] turns, string turnId)
 {
 	foreach (i, ref turn; turns)
 		if (turn.id == turnId)
@@ -930,9 +930,9 @@ private UserInput[] cloneUserInputs(UserInput[] inputs)
 	return result;
 }
 
-private ThreadItem cloneThreadItem(ThreadItem item)
+private LedgerThreadItem cloneThreadItem(LedgerThreadItem item)
 {
-	ThreadItem result;
+	LedgerThreadItem result;
 	result.type = item.type;
 	result.id = item.id;
 	result.clientId = item.clientId;
@@ -944,20 +944,20 @@ private ThreadItem cloneThreadItem(ThreadItem item)
 	return result;
 }
 
-private ThreadItem[] cloneThreadItems(ThreadItem[] items)
+private LedgerThreadItem[] cloneThreadItems(LedgerThreadItem[] items)
 {
 	if (items is null)
 		return null;
-	ThreadItem[] result;
+	LedgerThreadItem[] result;
 	result.length = items.length;
 	foreach (i, item; items)
 		result[i] = cloneThreadItem(item);
 	return result;
 }
 
-private Turn cloneTurn(Turn turn)
+private LedgerTurn cloneTurn(LedgerTurn turn)
 {
-	Turn result;
+	LedgerTurn result;
 	result.id = turn.id;
 	result.items = cloneThreadItems(turn.items);
 	result.itemsView = turn.itemsView;
@@ -970,11 +970,11 @@ private Turn cloneTurn(Turn turn)
 	return result;
 }
 
-package Turn[] cloneTurns(Turn[] turns)
+package LedgerTurn[] cloneTurns(LedgerTurn[] turns)
 {
 	if (turns is null)
 		return null;
-	Turn[] result;
+	LedgerTurn[] result;
 	result.length = turns.length;
 	foreach (i, turn; turns)
 		result[i] = cloneTurn(turn);
@@ -1042,7 +1042,7 @@ private bool sameUserInputs(const ref UserInput[] left, const ref UserInput[] ri
 	return true;
 }
 
-private bool sameThreadItem(const ref ThreadItem left, const ref ThreadItem right)
+private bool sameThreadItem(const ref LedgerThreadItem left, const ref LedgerThreadItem right)
 {
 	return left.type == right.type && left.id == right.id && left.clientId == right.clientId
 		&& sameUserInputs(left.content, right.content) && left.text == right.text
@@ -1050,7 +1050,7 @@ private bool sameThreadItem(const ref ThreadItem left, const ref ThreadItem righ
 		&& sameExtras(left.extras, right.extras);
 }
 
-private bool sameThreadItems(const ref ThreadItem[] left, const ref ThreadItem[] right)
+private bool sameThreadItems(const ref LedgerThreadItem[] left, const ref LedgerThreadItem[] right)
 {
 	if (left.length != right.length)
 		return false;
@@ -1060,7 +1060,7 @@ private bool sameThreadItems(const ref ThreadItem[] left, const ref ThreadItem[]
 	return true;
 }
 
-private bool sameNativeUndoTurn(const ref Turn left, const ref Turn right)
+private bool sameNativeUndoTurn(const ref LedgerTurn left, const ref LedgerTurn right)
 {
 	return left.id == right.id && sameThreadItems(left.items, right.items)
 		&& left.itemsView == right.itemsView && left.status == right.status
@@ -1071,7 +1071,7 @@ private bool sameNativeUndoTurn(const ref Turn left, const ref Turn right)
 		&& sameExtras(left.extras, right.extras);
 }
 
-private bool sameNativeUndoTurns(const ref Turn[] left, const ref Turn[] right)
+private bool sameNativeUndoTurns(const ref LedgerTurn[] left, const ref LedgerTurn[] right)
 {
 	if (left.length != right.length)
 		return false;
