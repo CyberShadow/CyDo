@@ -1,28 +1,216 @@
 module cydo.cli.initialize;
 
 import configy.read : parseConfigString;
+import ae.sys.file : openFile;
+import cydo.cli.init_detection : DetectedWorkspace, detectInitWorkspaces;
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef,
 	OutputType, SingletonAudience, SingletonDef, TaskTypeDef, TaskTypesFile,
 	UserEntryPointDef, WorktreeMode,
 	byName, loadTaskTypes;
-import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig,
+import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, loadConfig,
 	GitIdentityConfig, ModelSpecFields, PathMode, PermissionsConfig,
 	ProjectDiscoveryConfig, SandboxConfig, WorkspaceConfig;
+import cydo.runtime.config.paths : configDir, configPath, userTaskTypesPath;
 import dyaml.loader : Loader;
 import dyaml.node : Node;
 
 import std.algorithm : canFind, count, sort, startsWith;
 import std.array : array, join;
 import std.conv : to;
-import std.exception : enforce;
-import std.file : exists, mkdirRecurse, rmdirRecurse, write;
-import std.path : buildPath;
+import std.exception : assertThrown, enforce;
+import std.file : FileException, SpanMode, dirEntries, exists, isDir, isSymlink,
+	mkdirRecurse, read, readLink, remove, rmdirRecurse, symlink, write;
+import std.path : baseName, buildPath;
 import std.process : environment;
+import std.stdio : File, writeln;
 import std.string : indexOf, lineSplitter, strip;
 import std.traits : EnumMembers, FieldNameTuple;
 
+import core.stdc.errno : ENOENT;
+import object : Throwable;
+
 enum string configTemplate = import("config.yaml");
 enum string taskTypesTemplate = import("task-types.yaml");
+
+private enum beginMarker = "## cydo-init: detected-settings begin";
+private enum endMarker = "## cydo-init: detected-settings end";
+
+private string quoteYamlScalar(string value)
+{
+	import std.array : appender;
+	import std.format : formattedWrite;
+
+	auto quoted = appender!string();
+	quoted.put('"');
+	foreach (dchar c; value)
+	{
+		if (c == '"' || c == '\\')
+		{
+			quoted.put('\\');
+			quoted.put(c);
+		}
+		else if (c < 0x20 || (c >= 0x7F && c <= 0x9F))
+			quoted.formattedWrite("\\x%02X", cast(uint) c);
+		else if (c == 0x2028 || c == 0x2029 || c == 0xFEFF
+			|| c == 0xFFFE || c == 0xFFFF)
+			quoted.formattedWrite("\\u%04X", cast(uint) c);
+		else
+			quoted.put(c);
+	}
+	quoted.put('"');
+	return quoted.data;
+}
+
+/// Render the authored configuration with the selected workspace roots.
+string renderInitConfig(DetectedWorkspace[] workspaces, string source = configTemplate)
+{
+	auto begin = source.indexOf(beginMarker);
+	auto end = source.indexOf(endMarker);
+	enforce(source.length > 0 && source[$ - 1] == '\n'
+		&& begin >= 0 && end >= 0 && begin < end,
+		"config template must contain one ordered detected-settings marker pair");
+	enforce(source.count(beginMarker) == 1 && source.count(endMarker) == 1,
+		"config template must contain exactly one detected-settings marker pair");
+	enforce((begin == 0 || source[begin - 1] == '\n')
+		&& begin + beginMarker.length < source.length
+		&& source[begin + beginMarker.length] == '\n'
+		&& (end == 0 || source[end - 1] == '\n')
+		&& end + endMarker.length < source.length
+		&& source[end + endMarker.length] == '\n',
+		"config template markers must each occupy one complete line");
+	auto contentStart = begin + beginMarker.length;
+	string settings;
+	if (workspaces.length == 0)
+		settings = "\nworkspaces: {}\n";
+	else
+	{
+		settings = "\nworkspaces:\n";
+		foreach (workspace; workspaces)
+			settings ~= "  " ~ quoteYamlScalar(workspace.name) ~ ":\n"
+				~ "    root: " ~ quoteYamlScalar(workspace.root) ~ "\n";
+	}
+	return source[0 .. contentStart] ~ settings ~ source[end .. $];
+}
+
+alias InitRenderer = string delegate(DetectedWorkspace[] workspaces);
+
+private void validateInitDocuments(string renderedConfig)
+{
+	parseConfigString!CydoConfig(renderedConfig, "generated config.yaml");
+	parseConfigString!TaskTypesFile(taskTypesTemplate, "embedded task-types.yaml");
+}
+
+private void ensureUnoccupied(string path)
+{
+	if (exists(path))
+		enforce(false, "configuration target already exists: " ~ path);
+	try
+	{
+		if (isSymlink(path))
+			enforce(false, "configuration target already exists: " ~ path);
+	}
+	catch (FileException e)
+	{
+		if (e.errno == ENOENT)
+			return;
+		throw e;
+	}
+}
+
+alias InitContentWriter = void delegate(ref File file, string contents);
+
+private void writeFileContents(ref File file, string contents)
+{
+	file.write(contents);
+}
+
+private void writeNewFile(string path, string contents,
+	InitContentWriter contentWriter, ref string[] created)
+{
+	if (contentWriter is null)
+		contentWriter = (ref File file, string text) { writeFileContents(file, text); };
+	auto file = openFile(path, "wxb");
+	created ~= path;
+	contentWriter(file, contents);
+	file.close();
+}
+
+private void removeCreatedFiles(string[] created, Exception original)
+{
+	Throwable cleanupErrors;
+	foreach (path; created)
+		try remove(path);
+		catch (Exception e) cleanupErrors = Throwable.chainTogether(cleanupErrors, e);
+	if (cleanupErrors !is null)
+		original.next = Throwable.chainTogether(original.next, cleanupErrors);
+}
+
+/// Validate and install the canonical user configuration file pair.
+void installInitConfiguration(DetectedWorkspace[] workspaces)
+{
+	installInitConfiguration(workspaces,
+		null, null);
+}
+
+/// Test seams for an induced exclusive-write or rendering failure.
+void installInitConfiguration(DetectedWorkspace[] workspaces,
+	InitContentWriter contentWriter = null, InitRenderer renderer = null)
+{
+	if (renderer is null)
+		renderer = (DetectedWorkspace[] selected) { return renderInitConfig(selected); };
+	auto renderedConfig = renderer(workspaces);
+	validateInitDocuments(renderedConfig);
+
+	auto mainPath = configPath();
+	auto taskTypesPath = userTaskTypesPath();
+	ensureUnoccupied(mainPath);
+	ensureUnoccupied(taskTypesPath);
+	if (exists(configDir()))
+		enforce(isDir(configDir()), "configuration directory is not a directory: " ~ configDir());
+	else
+		mkdirRecurse(configDir());
+
+	string[] created;
+	try
+	{
+		writeNewFile(mainPath, renderedConfig, contentWriter, created);
+		writeNewFile(taskTypesPath, taskTypesTemplate, contentWriter, created);
+	}
+	catch (Exception e)
+	{
+		removeCreatedFiles(created, e);
+		throw e;
+	}
+}
+
+private void reportInitConfiguration(DetectedWorkspace[] workspaces,
+	void delegate(string) output)
+{
+	output("Installed " ~ quoteYamlScalar(configPath()));
+	output("Installed " ~ quoteYamlScalar(userTaskTypesPath()));
+	output("Restart CyDo if init created its config directory while CyDo was running.");
+	if (workspaces.length == 0)
+		output("No workspaces were detected; the HOME local fallback applies.");
+	else
+		foreach (workspace; workspaces)
+			output("Detected " ~ quoteYamlScalar(workspace.name) ~ " "
+				~ quoteYamlScalar(workspace.root));
+}
+
+/// Detect and install the initial user configuration without starting the app.
+void initializeUserConfiguration()
+{
+	auto workspaces = detectInitWorkspaces();
+	initializeUserConfiguration(workspaces, (string line) { writeln(line); });
+}
+
+/// Test seam that keeps initialization independent of history and server startup.
+void initializeUserConfiguration(DetectedWorkspace[] workspaces,
+	void delegate(string) output)
+{
+	installInitConfiguration(workspaces);
+	reportInitConfiguration(workspaces, output);
+}
 
 private struct TemplateExamples
 {
@@ -567,4 +755,291 @@ private void resetInitializeTestDir(string path)
 	if (exists(path))
 		rmdirRecurse(path);
 	mkdirRecurse(path);
+}
+
+unittest
+{
+	auto empty = renderInitConfig([]);
+	assert(empty == configTemplate);
+	enum syntax = " # : \" \\ \\n";
+	enum lineBreaks = "\r\n\u0085\u2028\u2029";
+	enum controls = "\x00\t\x1F\x7F\u0080\u0084\u0086\u009F";
+	enum unicode = "\u2603\uFEFF\uFFFE\uFFFF\U0001F680";
+	auto workspaces = [
+		DetectedWorkspace("name" ~ syntax ~ lineBreaks ~ unicode,
+			"/root" ~ syntax ~ unicode ~ lineBreaks),
+		DetectedWorkspace("second" ~ controls, "/second root" ~ controls),
+	];
+	auto rendered = renderInitConfig(workspaces);
+	auto begin = rendered.indexOf(beginMarker);
+	auto end = rendered.indexOf(endMarker);
+	assert(rendered[0 .. begin + beginMarker.length] ==
+		configTemplate[0 .. configTemplate.indexOf(beginMarker) + beginMarker.length]);
+	assert(rendered[end .. $] == configTemplate[configTemplate.indexOf(endMarker) .. $]);
+	assert(rendered[$ - 1] == '\n');
+	auto parsed = parseConfigString!CydoConfig(rendered, "rendered.yaml");
+	assert(parsed.workspaces.length == workspaces.length);
+	foreach (i, workspace; workspaces)
+	{
+		assert(parsed.workspaces[i].name == workspace.name);
+		assert(parsed.workspaces[i].root == workspace.root);
+	}
+	assertThrown!Exception(renderInitConfig([], "workspaces: {}\n"));
+	assertThrown!Exception(renderInitConfig([], beginMarker ~ "\n" ~ beginMarker ~ "\n" ~ endMarker ~ "\n"));
+	assertThrown!Exception(renderInitConfig([], endMarker ~ "\n" ~ beginMarker ~ "\n"));
+	assertThrown!Exception(renderInitConfig([], beginMarker ~ "\n" ~ endMarker ~ "\n" ~ endMarker ~ "\n"));
+	assertThrown!Exception(renderInitConfig([], "x " ~ beginMarker ~ "\n" ~ endMarker ~ "\n"));
+	assertThrown!Exception(renderInitConfig([], beginMarker ~ " suffix\n" ~ endMarker ~ "\n"));
+	assertThrown!Exception(renderInitConfig([], beginMarker ~ "\n" ~ endMarker ~ " suffix\n"));
+}
+
+unittest
+{
+	auto root = buildPath("/tmp", "cydo-init-install");
+	resetInitializeTestDir(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+	auto oldHome = environment.get("HOME", "");
+	auto hadHome = "HOME" in environment;
+	scope (exit) { if (hadHome) environment["HOME"] = oldHome; else environment.remove("HOME"); }
+	environment["HOME"] = root;
+	auto workspaceRoot = buildPath(root, "workspace");
+	mkdirRecurse(workspaceRoot);
+	auto workspaces = [DetectedWorkspace("workspace", workspaceRoot)];
+	installInitConfiguration(workspaces);
+	auto mainPath = configPath();
+	auto taskPath = userTaskTypesPath();
+	assert(exists(mainPath) && exists(taskPath));
+	string[] entries;
+	foreach (entry; dirEntries(configDir(), SpanMode.shallow))
+		entries ~= baseName(entry.name);
+	entries.sort;
+	assert(entries == ["config.yaml", "task-types.yaml"]);
+	auto installedMain = cast(string) read(mainPath);
+	auto installedTask = cast(string) read(taskPath);
+	assert(installedMain[$ - 1] == '\n' && installedMain[$ - 2] != '\n');
+	assert(installedTask[$ - 1] == '\n' && installedTask[$ - 2] != '\n');
+	parseConfigString!CydoConfig(installedMain, mainPath);
+	parseConfigString!TaskTypesFile(installedTask, taskPath);
+	auto installedBegin = installedMain.indexOf(beginMarker);
+	auto installedEnd = installedMain.indexOf(endMarker);
+	auto templateBegin = configTemplate.indexOf(beginMarker);
+	auto templateEnd = configTemplate.indexOf(endMarker);
+	assert(installedMain[0 .. installedBegin + beginMarker.length]
+		== configTemplate[0 .. templateBegin + beginMarker.length]);
+	assert(installedMain[installedEnd .. $] == configTemplate[templateEnd .. $]);
+	assert(installedTask == taskTypesTemplate);
+	auto loaded = loadConfig();
+	assert(loaded.workspaces.length == 1 && loaded.workspaces[0].name == "workspace");
+	assert(loaded.workspaces[0].root == workspaceRoot);
+	auto originalMain = read(mainPath).idup;
+	auto originalTask = read(taskPath).idup;
+	bool caught;
+	try installInitConfiguration(workspaces);
+	catch (Exception e)
+	{
+		caught = true;
+		assert(e.msg.canFind(mainPath));
+	}
+	assert(caught);
+	assert(read(mainPath).idup == originalMain && read(taskPath).idup == originalTask);
+}
+
+unittest
+{
+	auto root = buildPath("/tmp", "cydo-init-install-rollback");
+	resetInitializeTestDir(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+	auto oldHome = environment.get("HOME", "");
+	auto hadHome = "HOME" in environment;
+	scope (exit) { if (hadHome) environment["HOME"] = oldHome; else environment.remove("HOME"); }
+	environment["HOME"] = root;
+	mkdirRecurse(configDir());
+	auto sibling = buildPath(configDir(), "existing");
+	write(sibling, "preserve");
+	int writes;
+	assertThrown!Exception(installInitConfiguration([], (ref File file, string contents) {
+		++writes;
+		if (writes == 2) throw new Exception("induced second write failure");
+		file.write(contents);
+	}));
+	assert(!exists(configPath()) && !exists(userTaskTypesPath()));
+	assert(read(sibling).idup == "preserve");
+}
+
+unittest // A first partial write is tracked at exclusive open and rolled back.
+{
+	auto root = buildPath("/tmp", "cydo-init-first-write-failure");
+	resetInitializeTestDir(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+	auto oldHome = environment.get("HOME", ""); auto hadHome = "HOME" in environment;
+	scope (exit) { if (hadHome) environment["HOME"] = oldHome; else environment.remove("HOME"); }
+	environment["HOME"] = root;
+	auto original = new Exception("first write failure");
+	Exception caught;
+	try installInitConfiguration([], (ref File file, string contents) { file.write("partial"); throw original; });
+	catch (Exception e) caught = e;
+	assert(caught is original && !exists(configPath()) && !exists(userTaskTypesPath()));
+}
+
+unittest // A foreign second target created after preflight survives exclusive-open failure.
+{
+	auto root = buildPath("/tmp", "cydo-init-exclusive-race");
+	resetInitializeTestDir(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+	auto oldHome = environment.get("HOME", ""); auto hadHome = "HOME" in environment;
+	scope (exit) { if (hadHome) environment["HOME"] = oldHome; else environment.remove("HOME"); }
+	environment["HOME"] = root; mkdirRecurse(configDir());
+	auto sibling = buildPath(configDir(), "sibling"); write(sibling, "keep");
+	int writes; Exception caught;
+	try installInitConfiguration([], (ref File file, string contents) {
+		++writes; file.write(contents); if (writes == 1) write(userTaskTypesPath(), "foreign");
+	}); catch (Exception e) caught = e;
+	assert(writes == 1 && caught !is null && caught.msg.canFind(userTaskTypesPath()));
+	assert(!exists(configPath()) && read(userTaskTypesPath).idup == "foreign" && read(sibling).idup == "keep");
+}
+
+unittest // Cleanup failures remain secondary and do not stop later cleanup attempts.
+{
+	auto root = buildPath("/tmp", "cydo-init-cleanup-failure");
+	resetInitializeTestDir(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+	auto oldHome = environment.get("HOME", ""); auto hadHome = "HOME" in environment;
+	scope (exit) { if (hadHome) environment["HOME"] = oldHome; else environment.remove("HOME"); }
+	environment["HOME"] = root; mkdirRecurse(configDir());
+	auto sibling = buildPath(configDir(), "sibling"); write(sibling, "keep");
+	auto original = new Exception("original failure"); auto prior = new Exception("prior failure"); original.next = prior;
+	int writes; Exception caught;
+	try installInitConfiguration([], (ref File file, string contents) {
+		++writes; file.write(contents);
+		if (writes == 2) { remove(configPath()); mkdirRecurse(configPath()); write(buildPath(configPath(), "child"), "x"); throw original; }
+	}); catch (Exception e) caught = e;
+	assert(caught is original && caught.next is prior && caught.next.next !is null
+		&& caught.next.next.msg.canFind(configPath()));
+	assert(isDir(configPath()) && exists(buildPath(configPath(), "child"))
+		&& !exists(userTaskTypesPath()) && read(sibling).idup == "keep");
+}
+
+unittest // An absent pair is vacant; a dangling symlink is still occupied.
+{
+	auto root = buildPath("/tmp", "cydo-init-install-occupancy");
+	resetInitializeTestDir(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+	auto oldHome = environment.get("HOME", ""); auto hadHome = "HOME" in environment;
+	scope (exit) { if (hadHome) environment["HOME"] = oldHome; else environment.remove("HOME"); }
+	environment["HOME"] = root;
+	installInitConfiguration([]);
+	assert(exists(configPath()) && exists(userTaskTypesPath()));
+	remove(configPath()); remove(userTaskTypesPath());
+	symlink(buildPath(root, "missing"), configPath());
+	Exception failure;
+	try installInitConfiguration([]);
+	catch (Exception e) failure = e;
+	assert(failure !is null && failure.msg.canFind(configPath()));
+	assert(isSymlink(configPath()) && !exists(userTaskTypesPath()));
+}
+
+unittest // Generated documents use only detected workspaces and real loader fixups.
+{
+	auto root = buildPath("/tmp", "cydo-init-loader-fixups");
+	resetInitializeTestDir(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+	auto oldHome = environment.get("HOME", ""); auto hadHome = "HOME" in environment;
+	scope (exit) { if (hadHome) environment["HOME"] = oldHome; else environment.remove("HOME"); }
+	environment["HOME"] = root;
+	installInitConfiguration([]);
+	auto empty = loadConfig();
+	assert(empty.workspaces == [WorkspaceConfig("local", root)]);
+	remove(configPath()); remove(userTaskTypesPath());
+	auto specialCharacters = " # : \" \\ \n\u2603";
+	assert(specialCharacters.canFind("\n") && specialCharacters.canFind("☃"));
+	auto specialRoot = buildPath(root, "root" ~ specialCharacters);
+	mkdirRecurse(specialRoot);
+	auto special = DetectedWorkspace("name" ~ specialCharacters, specialRoot);
+	installInitConfiguration([special]);
+	auto loaded = loadConfig();
+	assert(loaded.workspaces.length == 1 && loaded.workspaces[0].name == special.name
+		&& loaded.workspaces[0].root == special.root);
+	auto generated = parseConfigString!CydoConfig(cast(string) read(configPath), "generated.yaml");
+	assert(!generated.sandbox.isolate_filesystem.set && generated.default_agent == ""
+		&& generated.task_dir == "" && generated.agents.length == 0);
+}
+
+unittest // Target collisions are preflighted without changing either entry.
+{
+	auto root = buildPath("/tmp", "cydo-init-all-collisions");
+	resetInitializeTestDir(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+	auto oldHome = environment.get("HOME", ""); auto hadHome = "HOME" in environment;
+	scope (exit) { if (hadHome) environment["HOME"] = oldHome; else environment.remove("HOME"); }
+	environment["HOME"] = root; mkdirRecurse(configDir());
+	foreach (target; [configPath(), userTaskTypesPath()]) foreach (kind; 0 .. 4)
+	{
+		if (kind == 0) write(target, "file");
+		else if (kind == 1) mkdirRecurse(target);
+		else if (kind == 2) { auto linked = buildPath(root, "linked" ~ target.baseName); write(linked, "x"); symlink(linked, target); }
+		else symlink(buildPath(root, "missing" ~ target.baseName), target);
+		bool caught;
+		try installInitConfiguration([]);
+		catch (Exception e) { caught = true; assert(e.msg.canFind(target)); }
+		assert(caught);
+		assert(!exists(target == configPath() ? userTaskTypesPath() : configPath()));
+		if (kind == 0) assert(read(target).idup == "file");
+		else if (kind == 1) assert(isDir(target) && !isSymlink(target));
+		else if (kind == 2) assert(isSymlink(target)
+			&& readLink(target) == buildPath(root, "linked" ~ target.baseName));
+		else assert(isSymlink(target)
+			&& readLink(target) == buildPath(root, "missing" ~ target.baseName));
+		if (kind == 1) rmdirRecurse(target); else remove(target);
+	}
+}
+
+unittest // Existing config directories may be real or symlinked directories only.
+{
+	auto root = buildPath("/tmp", "cydo-init-config-dir");
+	resetInitializeTestDir(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+	auto oldHome = environment.get("HOME", ""); auto hadHome = "HOME" in environment;
+	scope (exit) { if (hadHome) environment["HOME"] = oldHome; else environment.remove("HOME"); }
+	environment["HOME"] = root; mkdirRecurse(configDir()); installInitConfiguration([]);
+	remove(configPath()); remove(userTaskTypesPath()); rmdirRecurse(configDir());
+	auto actual = buildPath(root, "actual"); mkdirRecurse(actual); symlink(actual, configDir()); installInitConfiguration([]);
+	remove(configPath()); remove(userTaskTypesPath()); remove(configDir());
+	write(configDir(), "not a directory"); assertThrown!Exception(installInitConfiguration([])); remove(configDir());
+	symlink(buildPath(root, "missing"), configDir()); assertThrown!Exception(installInitConfiguration([]));
+}
+
+unittest // Validation happens before creating the parent, and output is complete and ordered.
+{
+	auto root = buildPath("/tmp", "cydo-init-validation-output");
+	resetInitializeTestDir(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+	auto oldHome = environment.get("HOME", ""); auto hadHome = "HOME" in environment;
+	scope (exit)
+	{
+		if (hadHome) environment["HOME"] = oldHome; else environment.remove("HOME");
+	}
+	environment["HOME"] = root;
+	bool caught;
+	try installInitConfiguration([], null,
+		(DetectedWorkspace[] selected) { return "workspaces: [malformed\n"; });
+	catch (Exception) caught = true;
+	assert(caught);
+	assert(!exists(configDir()));
+	string output;
+	initializeUserConfiguration([], (string line) { output ~= line ~ "\n"; });
+	assert(output == "Installed " ~ quoteYamlScalar(configPath()) ~ "\nInstalled "
+		~ quoteYamlScalar(userTaskTypesPath())
+		~ "\nRestart CyDo if init created its config directory while CyDo was running."
+		~ "\nNo workspaces were detected; the HOME local fallback applies.\n");
+	assert(output[$ - 1] == '\n');
+	remove(configPath()); remove(userTaskTypesPath());
+	output = "";
+	auto workspaces = [DetectedWorkspace("first\u0085\u2028\u2029", "/one\u0085\u2028\u2029"),
+		DetectedWorkspace("second", "/two")];
+	initializeUserConfiguration(workspaces, (string line) { output ~= line ~ "\n"; });
+	assert(output == "Installed " ~ quoteYamlScalar(configPath()) ~ "\nInstalled "
+		~ quoteYamlScalar(userTaskTypesPath())
+		~ "\nRestart CyDo if init created its config directory while CyDo was running."
+		~ "\nDetected \"first\\x85\\u2028\\u2029\" \"/one\\x85\\u2028\\u2029\""
+		~ "\nDetected \"second\" \"/two\"\n");
 }
