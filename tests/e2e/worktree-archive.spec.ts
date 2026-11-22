@@ -18,6 +18,7 @@ test("archive and unarchive a spike task's worktree", { tag: "@no-codex" }, asyn
 
   const taskCreatedEvents: Array<{ tid: number; relation_type: string }> = [];
   const taskUpdatedEvents: Array<{ tid: number; alive: boolean }> = [];
+  const returnFocusSources = new Set<number>();
 
   page.on("websocket", (ws) => {
     ws.on("framereceived", (event) => {
@@ -33,6 +34,8 @@ test("archive and unarchive a spike task's worktree", { tag: "@no-codex" }, asyn
             tid: data.task.tid,
             alive: data.task.alive,
           });
+        } else if (data.type === "focus_hint" && data.to_tid === 1) {
+          returnFocusSources.add(data.from_tid);
         }
       } catch {
         /* ignore non-JSON frames */
@@ -68,8 +71,9 @@ test("archive and unarchive a spike task's worktree", { tag: "@no-codex" }, asyn
     expect(completed).toBeTruthy();
   }).toPass();
 
-  // 4. Wait for auto-navigation away from the spike (process/exit handler fires).
-  await page.waitForURL((url) => !url.pathname.endsWith(`/task/${spikeTid}`));
+  // 4. Wait for batch settlement to return focus to the parent.
+  await expect.poll(() => returnFocusSources.has(spikeTid)).toBe(true);
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible();
 
   // 5. Navigate to the spike task and wait for the Archive button (task is inactive).
   await expect(async () => {

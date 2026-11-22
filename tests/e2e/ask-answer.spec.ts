@@ -412,7 +412,7 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   ).toBeVisible();
 
   // L137's Task call drifts focus to the child. Wait for the corrective
-  // focus_hint(child → parent) from recording the child’s batch result
+  // focus_hint(child → parent) from delivery of the batch result
   // before sending the follow-up Ask, otherwise its sendMessage
   // may click the child's textarea, which gets hidden mid-action when
   // focus returns to parent.
@@ -845,6 +845,20 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
   // The first available question wakes the parent's Task call.
   await sendMessage(page, "call mixed batch research");
 
+  // Capture the qid from child B's observed question result.
+  const questionResult = await waitForTaskResultItem(
+    observedTaskResults,
+    (item) =>
+      item["status"] === "question" &&
+      item["tid"] === 3 &&
+      item["message"] === "what approach should I use?",
+  );
+  const capturedQid = questionResult["qid"] as number;
+
+  // The batch is still open while child B waits for an answer.
+  await page.locator('.sidebar-item[data-tid="1"]').click();
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible();
+
   // Wait for child B's question to appear in parent's result.
   await expect(
     page
@@ -863,16 +877,6 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
       .last(),
   ).toBeVisible();
 
-  // Capture the qid from child B's observed question result.
-  const questionResult = await waitForTaskResultItem(
-    observedTaskResults,
-    (item) =>
-      item["status"] === "question" &&
-      item["tid"] === 3 &&
-      item["message"] === "what approach should I use?",
-  );
-  const capturedQid = questionResult["qid"] as number;
-
   // Parent answers child B using the observed qid.
   await sendMessage(page, `call answer ${capturedQid} use approach A`);
 
@@ -885,6 +889,7 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
     observedTaskResults,
     (item) => item["status"] === "success" && item["tid"] === 3,
   );
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible();
   const finalSpecs = page
     .locator(
       '[style*="display: contents"] .message-list .tool-result-container',
@@ -1242,32 +1247,19 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
   // Answer the first child using the observed qid.
   await sendMessage(page, `call answer ${firstQid} answer one`);
 
-  // L513's Answer call drifts focus to the answered child (intended UX —
-  // the user follows the answered child's continued work). When the
-  // backend records the child’s batch result, it emits a
-  // focus_hint(child → parent).
-  // Wait for that hint to land before asserting on parent's view and
-  // before the next sendMessage, otherwise selectors may match the
-  // child's view and the next sendMessage's click may resolve to a
-  // child textarea that gets hidden mid-action by the wrapper flip.
-  await expect(
-    page.locator('.sidebar-item[data-tid="1"].active'),
-  ).toBeVisible();
-
   await waitForTaskResultItem(
     observedTaskResults,
     (item) =>
       item["status"] === "delivered" && item["qid"] === firstQid,
   );
 
-  // The inciting focus_hint(parent → firstChild) from the first answer may not
-  // have arrived yet when the pre-step-3 wait fired. By the time we reach here,
-  // the autonomous round-trip (inciting hint → child works → corrective hint →
-  // parent active) must have completed. Wait explicitly so sendMessage resolves
-  // :visible.first() against parent's textarea.
+  // The first Answer focuses its child. The batch is still open, so
+  // select the parent to answer the other child.
   await expect(
-    page.locator('.sidebar-item[data-tid="1"].active'),
+    page.locator(`.sidebar-item[data-tid="${firstQuestion["tid"]}"].active`),
   ).toBeVisible();
+  await page.locator('.sidebar-item[data-tid="1"]').click();
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible();
 
   // Answer the second child using the observed qid.
   await sendMessage(page, `call answer ${secondQid} answer two`);
@@ -1280,6 +1272,7 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
     observedTaskResults,
     (item) => item["status"] === "success" && item["tid"] === secondChildTid,
   );
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible();
 });
 
 test("Ask/Answer: Ask to active sub-task delivers follow-up message", async ({
@@ -1630,7 +1623,7 @@ test("Ask/Answer: answer reaches the parent's Ask", async ({
   ).toBeVisible();
 
   // L713's Task call drifts focus to the child. Wait for the corrective
-  // focus_hint(child → parent) from recording the child’s batch result
+  // focus_hint(child → parent) from delivery of the batch result
   // before sending the follow-up Ask, otherwise its sendMessage
   // may click the child's textarea, which gets hidden mid-action when
   // focus returns to parent.

@@ -268,11 +268,13 @@ private:
 		if ((tid in mailboxes_) is null) mailboxes_[tid] = Mailbox.init;
 		return mailboxes_[tid];
 	}
+	enum QuestionState { open, answered, failed, cancelled }
+
 	struct QuestionRecord
 	{
 		int qid, askerTid, answererTid;
 		string text, answer;
-		bool answered, cancelled;
+		QuestionState state;
 	}
 	QuestionRecord[int] questions_;
 	int nextQid_ = 1;
@@ -829,13 +831,22 @@ public:
 		auto answerer = host_.getTask(answererTid);
 		if (answerer is null) return resolve(McpResult("Task not found", true));
 		auto q = qid in questions_;
-		if (q is null || q.answererTid != answererTid || q.answered)
-			return resolve(McpResult("Unknown question ID: " ~ to!string(qid), true));
-		if (q.cancelled)
+		auto unknown = McpResult("Unknown question ID: " ~ to!string(qid), true);
+		if (q is null || q.answererTid != answererTid)
+			return resolve(unknown);
+		final switch (q.state)
+		{
+		case QuestionState.open:
+			if (hasEvent(answererTid, MailboxEvent.Kind.question, qid))
+				return resolve(unknown);
+			break;
+		case QuestionState.answered:
+		case QuestionState.failed:
+			return resolve(unknown);
+		case QuestionState.cancelled:
 			return resolve(McpResult(format!"Question %s was cancelled: the asking task has ended"(qid), true));
-		if (hasEvent(answererTid, MailboxEvent.Kind.question, qid))
-			return resolve(McpResult("Unknown question ID: " ~ to!string(qid), true));
-		q.answered = true;
+		}
+		q.state = QuestionState.answered;
 		q.answer = message;
 		mailbox(q.askerTid).push(MailboxEvent(MailboxEvent.Kind.answer, 0, qid));
 		pump(q.askerTid);
@@ -846,8 +857,7 @@ public:
 				pendingOwnQuestion = true;
 		bool owesPresentedQuestion;
 		foreach (id, ref candidate; questions_)
-			if (candidate.answererTid == answererTid && !candidate.answered
-				&& !candidate.cancelled
+			if (candidate.answererTid == answererTid && candidate.state == QuestionState.open
 				&& !hasEvent(answererTid, MailboxEvent.Kind.question, id))
 				owesPresentedQuestion = true;
 		if ((batchRegistry_.hasBatches(answererTid) || pendingOwnQuestion)
@@ -986,8 +996,11 @@ public:
 			makePermissionDenyJson("Permission request withdrawn by the agent"));
 	}
 
-	void onToolCallDelivered(string callerTidStr)
+	void onToolCallDelivered(string callerTidStr, McpResult result)
 	{
+		if (result.settleDelivery !is null)
+			result.settleDelivery(true);
+
 		import std.conv : to;
 
 		int tid;
@@ -1000,15 +1013,16 @@ public:
 		if (td is null)
 			return;
 
-		commitDelivered(tid);
-
 		if (td.status == TaskStatus.waiting)
 			host_.transitionTask(tid, TaskStatus.waiting, TaskStatus.active,
 				TaskNotificationChange.preserve);
 	}
 
-	void onMcpDeliveryFailed(string callerTidStr)
+	void onMcpDeliveryFailed(string callerTidStr, McpResult result)
 	{
+		if (result.settleDelivery !is null)
+			result.settleDelivery(false);
+
 		import std.conv : to;
 
 		int tid;
@@ -1019,7 +1033,6 @@ public:
 
 		if (host_.getTask(tid) is null)
 			return;
-		rebuildMailbox(tid);
 		if (host_.shuttingDown() || pump(tid) || batchRegistry_.hasBatches(tid))
 			return;
 
@@ -1232,11 +1245,8 @@ public:
 		host_.sendTaskMessage(tid, [ContentBlock("text", reminder)],
 			null, askReminderMeta, null).except((Exception e) {
 			auto pending = qid in questions_;
-			if (pending is null || pending.answered)
-				return;
-			if (auto askerTid = failQuestion(qid,
-				"Failed to submit sub-task answer reminder: " ~ e.msg))
-				pump(askerTid);
+			if (pending !is null && pending.state == QuestionState.open)
+				pump(failQuestion(qid, "Failed to submit sub-task answer reminder: " ~ e.msg));
 		}).ignoreResult();
 	}
 
@@ -1257,10 +1267,8 @@ public:
 		if (!batchRegistry_.findOwnerOfChild(tid, handle, slot))
 			return batchRegistry_.isRecorded(tid);
 		auto result = subtaskResultDelivery_.taskResult(tid);
-		auto batchDone = batchRegistry_.recordChildDone(handle, slot, tid,
-			McpResult.structured(toJson(result), result.status == "error"));
-		host_.broadcastFocusHint(tid, handle.parentTid);
-		if (batchDone)
+		if (batchRegistry_.recordChildDone(handle, slot, tid,
+			McpResult.structured(toJson(result), result.status == "error")))
 		{
 			mailbox(handle.parentTid).push(MailboxEvent(
 				MailboxEvent.Kind.batch, handle.batchId));
@@ -1334,33 +1342,10 @@ public:
 
 	void onTaskTerminal(int tid)
 	{
-		int[] removeQids;
-		foreach (qid, ref q; questions_)
-		{
-			if (q.askerTid == tid)
-			{
-				if (q.answered)
-				{
-					mailbox(tid).remove((in MailboxEvent e) =>
-						e.kind == MailboxEvent.Kind.answer && e.qid == qid);
-					removeQids ~= qid;
-				}
-				else
-				{
-					if (mailbox(q.answererTid).remove((in MailboxEvent e) =>
-						e.kind == MailboxEvent.Kind.question && e.qid == qid))
-						removeQids ~= qid;
-					else
-						q.cancelled = true;
-				}
-			}
-		}
-		foreach (qid; removeQids) questions_.remove(qid);
+		cleanUpAskedQuestions(tid);
 		auto askers = failQuestionsForAnswerer(tid, "Session ended while waiting for Ask response");
 		mailbox(tid).release(new Exception(
 			"Session ended while waiting for Ask response"));
-		mailboxes_.remove(tid);
-		rebuildMailbox(tid);
 		foreach (askerTid; askers)
 			pump(askerTid);
 		pump(tid);
@@ -1484,6 +1469,54 @@ private:
 		taskDeps_.remove(childTid);
 	}
 
+	void cleanUpAskedQuestions(int tid)
+	{
+		int[] removeQids, failedQids;
+		foreach (qid, ref q; questions_)
+		{
+			if (q.askerTid != tid)
+				continue;
+			final switch (q.state)
+			{
+			case QuestionState.open:
+				if (removeQuestionEvent(q.answererTid, MailboxEvent.Kind.question, qid))
+					removeQids ~= qid;
+				else
+				{
+					q.state = QuestionState.cancelled;
+				}
+				break;
+			case QuestionState.answered:
+				removeQuestionEvent(tid, MailboxEvent.Kind.answer, qid);
+				removeQids ~= qid;
+				break;
+			case QuestionState.failed:
+				removeQuestionEvent(tid, MailboxEvent.Kind.failed, qid);
+				failedQids ~= qid;
+				break;
+			case QuestionState.cancelled:
+				break;
+			}
+		}
+		foreach (qid; removeQids) questions_.remove(qid);
+		foreach (qid; failedQids) questions_.remove(qid);
+	}
+
+	bool removeQuestionEvent(int tid, MailboxEvent.Kind kind, int qid)
+	{
+		return mailbox(tid).remove((in MailboxEvent e) => e.kind == kind && e.qid == qid);
+	}
+
+	int failQuestion(int qid, string notice)
+	{
+		auto q = qid in questions_;
+		assert(q !is null && q.state == QuestionState.open);
+		removeQuestionEvent(q.answererTid, MailboxEvent.Kind.question, qid);
+		q.state = QuestionState.failed;
+		mailbox(q.askerTid).push(MailboxEvent(MailboxEvent.Kind.failed, 0, qid, notice, q.answererTid));
+		return q.askerTid;
+	}
+
 	McpResult makeInternalBatchError(string message)
 	{
 		errorf("batch router error: %s", message);
@@ -1518,95 +1551,102 @@ private:
 	{
 		int earliest = int.max;
 		foreach (qid, q; questions_)
-			if (q.answererTid == tid && !q.answered && !q.cancelled
+			if (q.answererTid == tid && q.state == QuestionState.open
 				&& !hasEvent(tid, MailboxEvent.Kind.question, qid)
 				&& qid < earliest)
 				earliest = qid;
 		return earliest == int.max ? 0 : earliest;
 	}
 
-	void commitDelivered(int tid)
+	bool deliverable(int tid, in MailboxEvent event)
 	{
-		foreach (handle; batchRegistry_.batchesFor(tid))
+		auto q = event.qid in questions_;
+		final switch (event.kind)
 		{
-			if (!batchRegistry_.complete(handle)
-				|| hasEvent(tid, MailboxEvent.Kind.batch, 0, handle.batchId))
-				continue;
-			foreach (childTid; batchRegistry_.children(handle))
-				removeTaskDependency(tid, childTid);
-			string error;
-			assert(batchRegistry_.remove(handle, error));
+		case MailboxEvent.Kind.batch:
+			return batchRegistry_.exists(BatchHandle(tid, event.batchId));
+		case MailboxEvent.Kind.question:
+			return q !is null && q.state == QuestionState.open;
+		case MailboxEvent.Kind.answer:
+			return q !is null && q.state == QuestionState.answered;
+		case MailboxEvent.Kind.failed:
+			return q !is null && q.state == QuestionState.failed;
 		}
-		int[] delivered;
-		foreach (qid, q; questions_)
-			if (q.askerTid == tid && q.answered
-				&& !hasEvent(tid, MailboxEvent.Kind.answer, qid))
-				delivered ~= qid;
-		foreach (qid; delivered)
-			questions_.remove(qid);
+	}
+
+	void delegate(bool) deliveryAttempt(int tid, MailboxEvent[] taken)
+	{
+		int[][ulong] batchChildren;
+		foreach (event; taken)
+			if (event.kind == MailboxEvent.Kind.batch)
+				batchChildren[event.batchId] = batchRegistry_.children(BatchHandle(tid, event.batchId));
+
+		return (bool delivered) {
+			assert(taken.length, "Mailbox delivery attempt already settled");
+			auto events = taken;
+			taken = null;
+			if (delivered)
+			{
+				foreach (event; events)
+				{
+					final switch (event.kind)
+					{
+					case MailboxEvent.Kind.batch:
+						auto handle = BatchHandle(tid, event.batchId);
+						foreach (childTid; batchChildren[event.batchId])
+						{
+							host_.broadcastFocusHint(childTid, tid);
+							removeTaskDependency(tid, childTid);
+						}
+						string error;
+						auto removed = batchRegistry_.remove(handle, error);
+						assert(removed, error);
+						break;
+					case MailboxEvent.Kind.answer:
+						questions_.remove(event.qid);
+						break;
+					case MailboxEvent.Kind.failed:
+						host_.broadcastFocusHint(event.answererTid, tid);
+						questions_.remove(event.qid);
+						break;
+					case MailboxEvent.Kind.question:
+						break;
+					}
+				}
+			}
+			else
+			{
+				import std.algorithm : filter;
+				import std.array : array;
+				auto pending = events.filter!(e => deliverable(tid, e)).array;
+				if (pending.length)
+					mailbox(tid).putBack(pending);
+			}
+		};
 	}
 
 	int[] failQuestionsForAnswerer(int tid, string reason)
 	{
-		int[] removeQids;
+		int[] askers, removeQids;
 		foreach (qid, ref q; questions_)
-			if (q.answererTid == tid && (!q.answered || q.cancelled))
-				removeQids ~= qid;
-		int[] askers;
-		foreach (qid; removeQids)
-			if (auto askerTid = failQuestion(qid, format!"Question %d: %s"(qid, reason)))
-				askers ~= askerTid;
-		return askers;
-	}
-
-	int failQuestion(int qid, string error)
-	{
-		auto q = questions_[qid];
-		questions_.remove(qid);
-		if (q.cancelled)
-			return 0;
-		mailbox(q.askerTid).push(MailboxEvent(MailboxEvent.Kind.failed, 0, qid, error));
-		host_.broadcastFocusHint(q.answererTid, q.askerTid);
-		return q.askerTid;
-	}
-
-	void rebuildMailbox(int tid, MailboxEvent[] drained = null)
-	{
-		import std.algorithm : sort;
-		auto m = &mailbox(tid);
-		auto held = drained ~ m.events;
-		m.events = null;
-		MailboxEvent[] pending;
-		int[] questionIds, answerIds;
-		foreach (qid, q; questions_)
 		{
-			if (q.answererTid == tid && !q.answered && !q.cancelled)
-				questionIds ~= qid;
-			if (q.askerTid == tid && q.answered)
-				answerIds ~= qid;
+			if (q.answererTid != tid)
+				continue;
+			final switch (q.state)
+			{
+			case QuestionState.open:
+				askers ~= failQuestion(qid, format!"Question %d: %s"(qid, reason));
+				break;
+			case QuestionState.cancelled:
+				removeQids ~= qid;
+				break;
+			case QuestionState.answered:
+			case QuestionState.failed:
+				break;
+			}
 		}
-		questionIds.sort();
-		answerIds.sort();
-		foreach (qid; questionIds)
-			pending ~= MailboxEvent(MailboxEvent.Kind.question, 0, qid);
-		foreach (qid; answerIds)
-			pending ~= MailboxEvent(MailboxEvent.Kind.answer, 0, qid);
-		auto handles = batchRegistry_.batchesFor(tid);
-		handles.sort!((a, b) => a.batchId < b.batchId)();
-		foreach (handle; handles)
-			if (batchRegistry_.complete(handle))
-				pending ~= MailboxEvent(MailboxEvent.Kind.batch, handle.batchId);
-
-		// Keep the known FIFO order and drop entries invalidated during delivery.
-		bool[MailboxEvent] remaining;
-		foreach (event; pending)
-			remaining[event] = true;
-		foreach (event; held)
-			if (event.kind == MailboxEvent.Kind.failed || remaining.remove(event))
-				m.push(event);
-		foreach (event; pending)
-			if (event in remaining)
-				m.push(event);
+		foreach (qid; removeQids) questions_.remove(qid);
+		return askers;
 	}
 
 public:
@@ -1633,7 +1673,7 @@ public:
 			td.isProcessing = false;
 			host_.broadcastTaskUpdate(tid);
 		}
-		MailboxEvent[] drained;
+		void delegate(bool) settleDelivery;
 		void deliveryFailed(Exception e)
 		{
 			bool shuttingDown = host_.shuttingDown();
@@ -1641,7 +1681,8 @@ public:
 			int[] askers;
 			if (!shuttingDown && terminal)
 				askers = failQuestionsForAnswerer(tid, e.msg);
-			rebuildMailbox(tid, drained);
+			if (settleDelivery !is null)
+				settleDelivery(false);
 			releaseClaim();
 			if (shuttingDown)
 				return;
@@ -1661,13 +1702,15 @@ public:
 				releaseClaim();
 				return resolve();
 			}
-			drained = mailbox(tid).events;
+			auto drained = mailbox(tid).events;
 			mailbox(tid).events = null;
+			settleDelivery = deliveryAttempt(tid, drained);
 			ContentBlock[] blocks;
 			string[] nonces;
 			string firstMeta;
 			foreach (event; drained)
 			{
+				assert(deliverable(tid, event));
 				KnownSystemMessageKind kind;
 				string body, subject, meta, nonce;
 				final switch (event.kind)
@@ -1684,8 +1727,7 @@ public:
 					nonce = "batch:" ~ event.batchId.to!string;
 					break;
 				case MailboxEvent.Kind.question:
-					auto q = event.qid in questions_;
-					assert(q !is null);
+					auto q = questions_[event.qid];
 					bool followUp = wasTerminal && td.parentTid == q.askerTid;
 					kind = followUp ? KnownSystemMessageKind.followUpFromParent
 						: KnownSystemMessageKind.questionFromTask;
@@ -1702,8 +1744,7 @@ public:
 					host_.broadcastFocusHint(q.askerTid, tid);
 					break;
 				case MailboxEvent.Kind.answer:
-					auto q = event.qid in questions_;
-					assert(q !is null && q.answered);
+					auto q = questions_[event.qid];
 					kind = KnownSystemMessageKind.subTaskResults;
 					subject = "Answer to your question " ~ q.qid.to!string;
 					body = subject ~ "\n" ~ toJson(AnswerResult("answered",
@@ -1729,7 +1770,7 @@ public:
 			}
 			return host_.sendPreparedKnownSystemMessage(tid, blocks,
 				firstMeta, nonces.join(";")).then(() {
-				commitDelivered(tid);
+				settleDelivery(true);
 			});
 		}).except(&deliveryFailed).ignoreResult();
 		catch (Exception e)
@@ -1753,7 +1794,7 @@ private:
 				case MailboxEvent.Kind.question:
 				{
 					auto q = ev.qid in questions_;
-					assert(q !is null);
+					assert(q !is null && q.state != QuestionState.failed);
 					auto asker = host_.getTask(q.askerTid);
 					result = McpResult.structured(toJson(QuestionResult("question",
 						q.askerTid, q.qid, asker is null ? null : asker.title, q.text)));
@@ -1761,8 +1802,8 @@ private:
 				}
 				case MailboxEvent.Kind.answer:
 				{
-					auto q = ev.qid in questions_;
-					assert(q !is null && q.answered);
+					assert(deliverable(tid, ev));
+					auto q = questions_[ev.qid];
 					auto answerer = host_.getTask(q.answererTid);
 					result = McpResult.structured(toJson(AnswerResult("answered",
 						q.answererTid, q.qid, answerer is null ? null : answerer.title,
@@ -1773,6 +1814,7 @@ private:
 					result = McpResult(ev.error, true);
 					break;
 			}
+			result.settleDelivery = deliveryAttempt(tid, [ev]);
 			return result;
 		});
 	}
@@ -1819,7 +1861,7 @@ private:
 	{
 		int earliest = int.max;
 		foreach (id, q; questions_)
-			if (q.answererTid == tid && !q.answered && !q.cancelled
+			if (q.answererTid == tid && q.state == QuestionState.open
 				&& !hasEvent(tid, MailboxEvent.Kind.question, id)
 				&& host_.getTask(q.askerTid) !is null
 				&& id < earliest)
@@ -2342,6 +2384,8 @@ unittest
 		}
 	}
 
+	alias QuestionState = WorkflowToolsBackend.QuestionState;
+
 	final class BatchInvariantFixture
 	{
 		TaskData[int] tasks;
@@ -2438,8 +2482,8 @@ unittest
 				taskWorkspaceLabel: (int tid) => "local",
 				systemKeyword: () => "SYSTEM",
 				readPromptFile: (string relativePath, string projectPath,
-					string[string] vars) => relativePath == "prompts/sub_task_waiting_for_answer.md"
-					? vars["question"] : vars["message"],
+					string[string] vars) => vars[relativePath == "prompts/sub_task_waiting_for_answer.md"
+						? "question" : "message"],
 				buildKnownSystemMessageMeta: (KnownSystemMessageKind kind,
 					string subject, string[string] vars,
 					string bodyVar) => "{}",
@@ -2582,7 +2626,7 @@ unittest
 		assert(!requested.isError && requested.text.jsonParse!AnswerResult.message == "landed");
 		assert(!delivered.isError && delivered.text.jsonParse!AnswerResult.status == "delivered");
 		assert(f.focusHints[$ - 1] == [2, 1]);
-		b.onToolCallDelivered("1");
+		b.onToolCallDelivered("1", requested);
 		assert(f.tasks[1].status == TaskStatus.active && b.questions_.length == 0);
 		assert(f.tasks[2].status == status && f.tasks[2].isProcessing);
 	}
@@ -2694,15 +2738,66 @@ unittest
 		assert(!b.pump(2));
 	}
 
-	// Completing or failing a live batch slot emits one hint, even if the
-	// runner subsequently tries to record the same terminal child.
+	// A partial mixed batch emits no hint. Reject the first delivery
+	// attempt and verify the retry emits exactly one hint per child.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		f.tasks[1].isProcessing = true;
+		auto b = f.makeBackend();
+		McpResult outcome, retry;
+		b.registerBatchAndAwait("1", [LaunchedTask(2), LaunchedTask(3)]).then((McpResult r) {
+			outcome = r;
+		}).ignoreResult();
+		assert(b.finalizeCompletedSubTask(2));
+		drainPromiseNextTicks();
+		assert(f.focusHints.length == 0 && outcome.settleDelivery is null);
+		f.tasks[3].status = TaskStatus.failed;
+		assert(b.recordChildTerminal(3));
+		drainPromiseNextTicks();
+		assert(outcome.isError && f.focusHints.length == 0);
+		b.onMcpDeliveryFailed("1", outcome);
+		assert(f.focusHints.length == 0);
+		b.awaitEvent(1).then((McpResult r) { retry = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(outcome.text == retry.text);
+		b.onToolCallDelivered("1", retry);
+		assert(f.focusHints == [[2, 1], [3, 1]]);
+	}
+
+	// The parent can become terminal between sending the failure result
+	// and running the deferred delivery callback.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		McpResult outcome;
+		b.handleAsk("1", "question", 2).then((McpResult r) {
+			outcome = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		f.tasks[2].status = TaskStatus.failed;
+		b.onTaskTerminal(2);
+		drainPromiseNextTicks();
+		assert(outcome.isError && outcome.settleDelivery !is null);
+		f.tasks[1].status = TaskStatus.completed;
+		b.onTaskTerminal(1);
+		b.onToolCallDelivered("1", outcome);
+		assert(f.focusHints == [[1, 2], [2, 1]],
+			"Accepted failed Ask loses return hint if its asker ends before settlement");
+	}
+
+	// Settling a completed or failed batch emits one hint, even if the
+	// runner tries to record the same terminal child before delivery.
 	foreach (failed; [false, true])
 	{
 		auto f = new BatchInvariantFixture;
 		auto b = f.makeBackend();
-		BatchHandle handle;
-		string error;
-		assert(b.batchRegistry_.create(1, [2], handle, error));
+		McpResult outcome;
+		b.registerBatchAndAwait("1", [LaunchedTask(2)]).then((McpResult r) {
+			outcome = r;
+		}).ignoreResult();
 		if (failed)
 		{
 			f.tasks[2].status = TaskStatus.failed;
@@ -2710,8 +2805,10 @@ unittest
 		}
 		else
 			assert(b.finalizeCompletedSubTask(2));
-		assert(f.focusHints == [[2, 1]]);
 		assert(b.recordChildTerminal(2));
+		drainPromiseNextTicks();
+		assert(f.focusHints.length == 0 && outcome.isError == failed);
+		b.onToolCallDelivered("1", outcome);
 		assert(f.focusHints == [[2, 1]]);
 	}
 
@@ -2734,7 +2831,7 @@ unittest
 		drainPromiseNextTicks();
 		assert(!batchResult.isError
 			&& batchResult.text.jsonParse!BatchResultEnvelope.tasks.length == 1);
-		b.onToolCallDelivered("1");
+		b.onToolCallDelivered("1", batchResult);
 		assert(!b.hasLiveBatchOwner(2) && !b.hasTaskDependency(2));
 
 		auto firstFollowUpHint = f.focusHints.length;
@@ -2774,6 +2871,8 @@ unittest
 			},
 		));
 		drainPromiseNextTicks();
+		if (!answer)
+			b.onToolCallDelivered("1", askResult);
 		assert(f.focusHints[firstFollowUpHint .. $].filter!(hint => hint == [2, 1]).array == [[2, 1]]);
 		if (!answer)
 			assert(askResult.isError
@@ -3018,7 +3117,7 @@ unittest
 		f.tasks[1].status = TaskStatus.failed;
 		b.onTaskTerminal(1);
 		assert((qid in b.questions_) !is null);
-		assert(b.questions_[qid].cancelled);
+		assert(b.questions_[qid].state == QuestionState.cancelled);
 		auto sendCalls = f.sendCalls;
 		f.tasks[2].status = TaskStatus.failed;
 		b.onTaskTerminal(2);
@@ -3067,7 +3166,7 @@ unittest
 		assert(f.sendCalls == 1 && b.mailbox(2).empty);
 		f.tasks[1].status = TaskStatus.failed;
 		b.onTaskTerminal(1);
-		assert(b.questions_[1].cancelled);
+		assert(b.questions_[1].state == QuestionState.cancelled);
 		f.preparedSendGate.reject(new Exception("send failed"));
 		drainPromiseNextTicks();
 		assert(b.questions_.length == 0);
@@ -3096,6 +3195,7 @@ unittest
 		drainPromiseNextTicks();
 		assert(failure.isError && failure.text.canFind("injected answer-reminder rejection"));
 		assert(!b.hasPendingChildQuestion(1));
+		b.onToolCallDelivered("2", failure);
 		assert(f.focusHints == [[2, 1], [1, 2]],
 			format!"reminder failure delivered to asker, focus hints were %s"(f.focusHints));
 	}
@@ -3113,6 +3213,7 @@ unittest
 		f.wakeGate.reject(new Exception("wake failed"));
 		drainPromiseNextTicks();
 		assert(failed.isError && failed.text.canFind("wake failed"));
+		b.onToolCallDelivered("1", failed);
 		assert(b.questions_.length == 0 && b.mailbox(1).empty);
 	}
 
@@ -3161,6 +3262,8 @@ unittest
 		assert(second.length == 1 && second[0].isError
 			&& second[0].text.canFind("wake failed"));
 		assert(f.sendCalls == 0);
+		b.onToolCallDelivered("1", first[0]);
+		b.onToolCallDelivered("3", second[0]);
 		assert(b.questions_.length == 0);
 		assert(b.mailbox(1).empty && !b.mailbox(1).hasWaiter);
 		assert(b.mailbox(3).empty && !b.mailbox(3).hasWaiter);
@@ -3169,7 +3272,7 @@ unittest
 		assert(b.mailbox(2).events[0].batchId == handle.batchId);
 	}
 
-	// A target ending during send fails the drained asks and rebuilds the batch once.
+	// A target ending during send fails the drained asks and puts back the batch once.
 	{
 		auto f = new BatchInvariantFixture;
 		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
@@ -3210,6 +3313,8 @@ unittest
 			&& first[0].text.canFind("Session ended"));
 		assert(second.length == 1 && second[0].isError
 			&& second[0].text.canFind("Session ended"));
+		b.onToolCallDelivered("1", first[0]);
+		b.onToolCallDelivered("3", second[0]);
 		assert(b.questions_.length == 0);
 		assert(b.mailbox(1).empty && !b.mailbox(1).hasWaiter);
 		assert(b.mailbox(3).empty && !b.mailbox(3).hasWaiter);
@@ -3239,10 +3344,88 @@ unittest
 		drainPromiseNextTicks();
 		assert(first.isError && second.isError);
 		assert(first.text.canFind("Question 1") && second.text.canFind("Question 2"));
+		b.onToolCallDelivered("3", first);
+		b.onToolCallDelivered("4", second);
 		assert(b.questions_.length == 0);
 	}
 
-	// An unconfirmed batch is rebuilt after MCP transport failure.
+	// A rejected MCP result remains first when a later question arrives.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		auto b = f.makeBackend();
+		BatchHandle handle;
+		string error;
+		assert(b.batchRegistry_.create(1, [2], handle, error), error);
+		f.tasks[2].resultText = "older batch";
+		assert(b.finalizeCompletedSubTask(2));
+		auto older = b.mailbox(1).events[0];
+		McpResult first;
+		b.awaitEvent(1).then((McpResult r) { first = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(first.text.canFind("older batch") && b.mailbox(1).empty);
+		b.handleAsk("3", "newer question", 1).ignoreResult();
+		auto newer = b.mailbox(1).events[0];
+		assert(newer.kind == MailboxEvent.Kind.question);
+		f.shuttingDown = true;
+		b.onMcpDeliveryFailed("1", first);
+		assert(b.mailbox(1).events == [older, newer],
+			"Rejected MCP delivery reordered FIFO: " ~
+			format!"expected %s then %s, got %s"(older, newer, b.mailbox(1).events));
+	}
+
+	// A transport failure must not requeue an already confirmed question.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].isProcessing = true;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		auto b = f.makeBackend();
+		b.handleAsk("1", "already presented", 2).ignoreResult();
+		McpResult result;
+		auto first = b.mailbox(2).events[0];
+		b.awaitEvent(2).then((McpResult r) { result = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		b.onToolCallDelivered("2", result);
+		assert(b.presentedQuestionFor(2) == first.qid);
+		b.handleAsk("3", "current carrier", 2).ignoreResult();
+		auto second = b.mailbox(2).events[0];
+		b.awaitEvent(2).then((McpResult r) { result = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		f.shuttingDown = true;
+		b.onMcpDeliveryFailed("2", result);
+		assert(b.mailbox(2).events == [second],
+			format!"MCP rejection replayed a confirmed question: %s"(b.mailbox(2).events));
+	}
+
+	// A rejected prepared delivery must not replay an accepted question.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		auto b = f.makeBackend();
+		b.handleAsk("1", "accepted question", 2).ignoreResult();
+		drainPromiseNextTicks();
+		assert(f.acceptedPreparedTids == [2] && b.mailbox(2).empty);
+		auto acceptedQid = b.presentedQuestionFor(2);
+		assert(acceptedQid > 0);
+		f.tasks[2].isProcessing = false;
+		f.preparedSendGate = new Promise!void;
+		b.handleAsk("3", "rejected question", 2).ignoreResult();
+		auto expected = b.mailbox(2).events.dup;
+		assert(expected.length == 1 && expected[0].qid != acceptedQid);
+		drainPromiseNextTicks();
+		assert(b.mailbox(2).empty && f.sentTids == [2, 2]);
+		f.shuttingDown = true;
+		f.preparedSendGate.reject(new Exception("shutdown during submission"));
+		drainPromiseNextTicks();
+		assert(b.mailbox(2).events == expected,
+			format!"Prepared rejection replayed a confirmed question: %s"(b.mailbox(2).events));
+	}
+
+	// An unconfirmed batch is put back after MCP transport failure.
 	{
 		auto f = new BatchInvariantFixture;
 		f.tasks[1].isProcessing = true;
@@ -3256,14 +3439,171 @@ unittest
 		b.awaitEvent(1).then((McpResult r) { first = r; }).ignoreResult();
 		drainPromiseNextTicks();
 		f.shuttingDown = true;
-		b.onMcpDeliveryFailed("1");
+		b.onMcpDeliveryFailed("1", first);
 		assert(b.mailbox(1).events.length == 1 && f.wakeCalls == 0);
 		f.shuttingDown = false;
 		b.awaitEvent(1).then((McpResult r) { second = r; }).ignoreResult();
 		drainPromiseNextTicks();
 		assert(first.text == second.text && b.mailbox(1).empty);
-		b.onToolCallDelivered("1");
+		b.onToolCallDelivered("1", second);
 		assert(!b.batchRegistry_.hasBatches(1));
+	}
+
+	// Each in-flight carrier settles only the batch it returned.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		auto b = f.makeBackend();
+		BatchHandle firstBatch, secondBatch;
+		string error;
+		assert(b.batchRegistry_.create(1, [2], firstBatch, error), error);
+		assert(b.batchRegistry_.create(1, [3], secondBatch, error), error);
+		f.tasks[2].resultText = "first batch result";
+		f.tasks[3].resultText = "second batch result";
+		assert(b.finalizeCompletedSubTask(2));
+		assert(b.finalizeCompletedSubTask(3));
+
+		McpResult first, second, retry;
+		b.awaitEvent(1).then((McpResult r) { first = r; }).ignoreResult();
+		b.awaitEvent(1).then((McpResult r) { second = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(first.text.canFind("first batch result"));
+		assert(second.text.canFind("second batch result"));
+		assert(b.mailbox(1).empty);
+
+		b.onToolCallDelivered("1", first);
+		assert(!b.batchRegistry_.exists(firstBatch));
+		assert(b.batchRegistry_.exists(secondBatch));
+		f.shuttingDown = true;
+		b.onMcpDeliveryFailed("1", second);
+		f.shuttingDown = false;
+		b.awaitEvent(1).then((McpResult r) { retry = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(retry.text == second.text);
+		b.onToolCallDelivered("1", retry);
+		assert(b.mailbox(1).empty && !b.batchRegistry_.exists(secondBatch));
+	}
+
+	// An error notice survives a rejected carrier result.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		McpResult first, retry;
+		b.handleAsk("1", "question", 2).then((McpResult r) {
+			first = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		f.tasks[2].status = TaskStatus.failed;
+		b.onTaskTerminal(2);
+		drainPromiseNextTicks();
+		assert(first.isError && first.text.canFind("Session ended"));
+
+		f.shuttingDown = true;
+		b.onMcpDeliveryFailed("1", first);
+		f.shuttingDown = false;
+		b.awaitEvent(1).then((McpResult r) { retry = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(retry.isError && retry.text == first.text);
+		b.onToolCallDelivered("1", retry);
+		assert(b.mailbox(1).empty);
+	}
+
+	// A rejected carrier does not requeue a question cancelled in flight.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		b.handleAsk("1", "question", 2).ignoreResult();
+		McpResult question;
+		b.awaitEvent(2).then((McpResult r) { question = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(question.text.jsonParse!QuestionResult.message == "question");
+		assert(b.mailbox(2).empty);
+
+		f.tasks[1].status = TaskStatus.failed;
+		b.onTaskTerminal(1);
+		f.shuttingDown = true;
+		b.onMcpDeliveryFailed("2", question);
+		assert(b.mailbox(2).empty);
+	}
+
+	// An answer held by a failing carrier is obsolete after its asker ends.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		auto b = f.makeBackend();
+		b.questions_[1] = WorkflowToolsBackend.QuestionRecord(1, 1, 2, "asked", "answered", QuestionState.answered);
+		b.mailbox(1).push(MailboxEvent(MailboxEvent.Kind.answer, 0, 1));
+		McpResult result;
+		b.awaitEvent(1).then((McpResult r) { result = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(result.text.canFind("answered") && b.mailbox(1).empty);
+		f.shuttingDown = true;
+		f.tasks[1].status = TaskStatus.failed;
+		b.onTaskTerminal(1);
+		assert(b.questions_.length == 0);
+		b.onMcpDeliveryFailed("1", result);
+		assert(b.mailbox(1).empty, "Put-back restored an answer with no owning record");
+	}
+
+	// An existing waiter receives an older event directly on put-back.
+	{
+		auto f = new BatchInvariantFixture;
+		auto b = f.makeBackend();
+		f.shuttingDown = true;
+		b.questions_[1] = WorkflowToolsBackend.QuestionRecord(1, 1, 2, "older", null, QuestionState.failed);
+		b.questions_[2] = WorkflowToolsBackend.QuestionRecord(2, 1, 2, "newer", null, QuestionState.failed);
+		auto front = MailboxEvent(MailboxEvent.Kind.failed, 0, 1, "older");
+		auto back = MailboxEvent(MailboxEvent.Kind.failed, 0, 2, "newer");
+		McpResult result;
+		b.awaitEvent(1).then((McpResult r) { result = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(b.mailbox(1).hasWaiter);
+		b.deliveryAttempt(1, [front, back])(false);
+		drainPromiseNextTicks();
+		assert(result.text == "older", "Put-back did not wake an existing carrier");
+		assert(!b.mailbox(1).hasWaiter && b.mailbox(1).events == [back]);
+		b.onToolCallDelivered("1", result);
+	}
+
+	// A carrier result can be settled only once.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		b.handleAsk("1", "question", 2).ignoreResult();
+		McpResult question;
+		b.awaitEvent(2).then((McpResult r) { question = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(question.text.jsonParse!QuestionResult.message == "question");
+		b.onToolCallDelivered("2", question);
+		f.shuttingDown = true;
+		assertThrown!AssertError(b.onMcpDeliveryFailed("2", question));
+		assert(b.mailbox(2).empty);
+	}
+
+	// An exception during settlement still consumes the attempt.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		auto b = f.makeBackend();
+		BatchHandle handle;
+		string error;
+		assert(b.batchRegistry_.create(1, [2], handle, error), error);
+		f.tasks[2].resultText = "accepted batch";
+		assert(b.finalizeCompletedSubTask(2));
+		McpResult result;
+		b.awaitEvent(1).then((McpResult r) { result = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		b.host_.persistRemoveTaskDep = (int, int) {
+			throw new Exception("dependency removal failed");
+		};
+		assertThrown!Exception(b.onToolCallDelivered("1", result));
+		assertThrown!AssertError(b.onMcpDeliveryFailed("1", result));
+		assert(b.mailbox(1).empty);
 	}
 
 	// A terminal target that cannot be re-woken fails the question back to
@@ -3290,11 +3630,128 @@ unittest
 		assert(b.pump(1));
 		drainPromiseNextTicks();
 		assert(askResult.isError && askResult.text.canFind("wake failed"));
+		b.onToolCallDelivered("3", askResult);
 		assert(b.questions_.length == 0);
 		assert(b.mailbox(1).events.length == 1);
 		assert(b.mailbox(1).events[0].kind == MailboxEvent.Kind.batch);
 		assert(!f.tasks[1].isProcessing);
 	}
+	void addThirdTask(BatchInvariantFixture f)
+	{
+		f.tasks[3] = TaskData(3, "local", f.tasks[1].projectPath);
+		f.tasks[3].status = TaskStatus.active;
+		f.tasks[3].isProcessing = true;
+	}
+
+	McpResult present(WorkflowToolsBackend b, int tid)
+	{
+		import std.conv : to;
+		McpResult result;
+		b.awaitEvent(tid).then((McpResult r) { result = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(!result.isError && result.text.length, "Expected a presented question");
+		b.onToolCallDelivered(tid.to!string, result);
+		return result;
+	}
+
+	void rejectedFailure(bool revive)
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		McpResult failure;
+		b.handleAsk("1", "question", 2).then((McpResult r) { failure = r; }).ignoreResult();
+		f.tasks[2].status = TaskStatus.failed;
+		b.onTaskTerminal(2);
+		drainPromiseNextTicks();
+		assert(failure.isError && failure.text.canFind("Session ended"));
+		f.tasks[1].status = TaskStatus.failed;
+		b.onTaskTerminal(1);
+		if (revive)
+		{
+			f.tasks[1].status = TaskStatus.active;
+			f.tasks[1].isProcessing = true;
+		}
+		b.onMcpDeliveryFailed("1", failure);
+		assert(b.mailbox(1).empty, "Rejected carrier restored the retired failure");
+		drainPromiseNextTicks();
+		assert(f.wakeCalls == 0 && f.sentTids.length == 0);
+		assert(b.questions_.length == 0);
+	}
+
+	void heldFailure()
+	{
+		auto f = new BatchInvariantFixture;
+		addThirdTask(f);
+		f.tasks[1].isProcessing = true;
+		auto b = f.makeBackend();
+		BatchHandle handle;
+		string error;
+		assert(b.batchRegistry_.create(1, [2], handle, error), error);
+		McpResult batch;
+		b.handleAsk("1", "question", 3).then((McpResult r) { batch = r; }).ignoreResult();
+		assert(b.finalizeCompletedSubTask(2));
+		drainPromiseNextTicks();
+		assert(batch.structuredContent && !batch.isError);
+		b.onToolCallDelivered("1", batch);
+		f.tasks[3].status = TaskStatus.failed;
+		b.onTaskTerminal(3);
+		assert(!b.mailbox(1).hasWaiter && b.mailbox(1).events.length == 1);
+		assert(b.mailbox(1).events[0].kind == MailboxEvent.Kind.failed);
+		f.tasks[1].status = TaskStatus.failed;
+		f.tasks[1].isProcessing = false;
+		b.onTaskTerminal(1);
+		drainPromiseNextTicks();
+		assert(b.mailbox(1).empty);
+		assert(f.wakeCalls == 0 && f.sentTids.length == 0, "Failure woke the terminal asker");
+		assert(b.questions_.length == 0);
+	}
+
+	void rejectedReminder(bool answered)
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		McpResult response;
+		b.handleAsk("2", "question", -1).then((McpResult r) { response = r; }).ignoreResult();
+		auto question = present(b, 1).text.jsonParse!QuestionResult;
+		f.sendFailure = "reminder rejected";
+		b.sendPendingChildAnswerReminder(1);
+		assert(f.sendCalls == 1);
+		if (answered)
+			b.handleAnswer("1", question.qid, "actual answer").ignoreResult();
+		else
+		{
+			f.tasks[2].status = TaskStatus.failed;
+			f.tasks[2].isProcessing = false;
+			b.onTaskTerminal(2);
+		}
+		drainPromiseNextTicks();
+		if (answered)
+		{
+			assert(!response.isError && response.text.length);
+			assert(response.text.jsonParse!AnswerResult.message == "actual answer");
+			assert(b.mailbox(2).empty, "Reminder failure followed the answer");
+			b.onToolCallDelivered("2", response);
+		}
+		else
+		{
+			assert(b.mailbox(2).empty);
+			assert(f.wakeCalls == 0, "Reminder failure woke the terminal asker");
+			McpResult late;
+			b.handleAnswer("1", question.qid, "late").then((McpResult r) { late = r; }).ignoreResult();
+			drainPromiseNextTicks();
+			assert(late.isError && late.text.canFind("was cancelled"));
+		}
+	}
+
+	rejectedFailure(false);
+	heldFailure();
+	rejectedFailure(true);
+	rejectedReminder(false);
+	rejectedReminder(true);
+
 }
 
 // The CLI's safety checks flag a call: under the default policy a person

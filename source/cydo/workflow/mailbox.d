@@ -11,6 +11,7 @@ struct MailboxEvent
 	ulong batchId;
 	int qid;
 	string error;
+	int answererTid;
 }
 
 struct Mailbox
@@ -28,6 +29,16 @@ struct Mailbox
 		}
 		else
 			events ~= event;
+	}
+
+	void putBack(MailboxEvent[] taken)
+	{
+		while (taken.length && hasWaiter)
+		{
+			push(taken[0]);
+			taken = taken[1 .. $];
+		}
+		events = taken ~ events;
 	}
 
 	Promise!MailboxEvent take()

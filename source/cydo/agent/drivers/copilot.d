@@ -104,8 +104,8 @@ class CopilotAgent : Agent
 	private string lastMcpConfigPath_;
 	// Tool dispatch callback — set externally (e.g., by App) before creating sessions.
 	package(cydo) ToolDispatchFn toolDispatch_;
-	package(cydo) void delegate(string) onToolResultDelivered_;
-	package(cydo) void delegate(string) onToolResultDeliveryFailed_;
+	package(cydo) void delegate(string, McpResult) onToolResultDelivered_;
+	package(cydo) void delegate(string, McpResult) onToolResultDeliveryFailed_;
 	void configureSandbox(ref SandboxPaths paths, ref string[string] env)
 	{
 		import std.process : environment;
@@ -997,8 +997,8 @@ unittest
 private CopilotSession attachSession(SdkProcess server, int tid,
 	string sessionId, string resumeSessionId, string model, string workDir,
 	string[] cmdPrefix, ToolDispatchFn toolDispatch,
-	void delegate(string) onToolResultDelivered,
-	void delegate(string) onToolResultDeliveryFailed, SessionConfig config)
+	void delegate(string, McpResult) onToolResultDelivered,
+	void delegate(string, McpResult) onToolResultDeliveryFailed, SessionConfig config)
 {
 	auto session = new CopilotSession(server, tid, sessionId, model, workDir,
 		cmdPrefix, toolDispatch, config.agentName);
@@ -1076,8 +1076,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private bool gracefulShutdown_; // true after closeStdin() — handleExit reports 0
 	private bool forcedStop_;       // true after stop() — handleExit always reports 1
 	private ToolDispatchFn toolDispatch_;
-	private void delegate(string) onToolResultDelivered_;
-	private void delegate(string) onToolResultDeliveryFailed_;
+	private void delegate(string, McpResult) onToolResultDelivered_;
+	private void delegate(string, McpResult) onToolResultDeliveryFailed_;
 
 	// Streaming state: item tracking for item-based protocol.
 	private int nextItemIndex;
@@ -1575,22 +1575,25 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			toolName = toolName[5 .. $];
 
 		auto result = new Promise!SdkToolCallResult;
-		toolDispatch_(toolName, to!string(tid), JSONFragment(params.arguments.toJson()))
-		.then((McpResult mcpResult) {
+		void finish(McpResult reply)
+		{
 			result.fulfill(SdkToolCallResult(SdkToolResult(
-				mcpResult.text,
-				mcpResult.isError ? "failure" : "success")));
+				reply.text, reply.isError ? "failure" : "success")));
 			onNextTick(socketManager, {
+				if ((!alive_ || server.dead) && reply.settleDelivery !is null)
+				{
+					reply.settleDelivery(false);
+					reply.settleDelivery = null;
+				}
 				if (onToolResultDelivered_ !is null)
-					onToolResultDelivered_(to!string(tid));
+					onToolResultDelivered_(to!string(tid), reply);
 			});
-		}, (Exception e) {
-			result.fulfill(SdkToolCallResult(SdkToolResult(e.msg, "failure")));
-			onNextTick(socketManager, {
-				if (onToolResultDelivered_ !is null)
-					onToolResultDelivered_(to!string(tid));
-			});
-		});
+		}
+		toolDispatch_(toolName, to!string(tid), JSONFragment(params.arguments.toJson()))
+			.then(&finish, (Exception e) { finish(McpResult(e.msg, true)); })
+			.except((Exception e) {
+				onNextTick(socketManager, () { throw e; });
+			}).ignoreResult();
 		return result;
 	}
 
@@ -1687,7 +1690,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			if (!alive_ || server.dead)
 			{
 				if (onToolResultDeliveryFailed_ !is null)
-					onToolResultDeliveryFailed_(to!string(tid));
+					onToolResultDeliveryFailed_(to!string(tid), mcpResult);
 				return;
 			}
 			HandlePendingToolCallParams tcp;
@@ -1699,39 +1702,46 @@ class CopilotSession : AgentSession, SdkSessionHandler
 					if (response.isError)
 					{
 						if (onToolResultDeliveryFailed_ !is null)
-							onToolResultDeliveryFailed_(to!string(tid));
+							onToolResultDeliveryFailed_(to!string(tid), mcpResult);
 					}
 					else if (onToolResultDelivered_ !is null)
-						onToolResultDelivered_(to!string(tid));
+						onToolResultDelivered_(to!string(tid), mcpResult);
 				}, (Exception) {
 					if (onToolResultDeliveryFailed_ !is null)
-						onToolResultDeliveryFailed_(to!string(tid));
+						onToolResultDeliveryFailed_(to!string(tid), mcpResult);
+				}).except((Exception e) {
+					onNextTick(socketManager, () { throw e; });
 				}).ignoreResult();
 		}, (Exception e) {
+			auto reply = McpResult(e.msg, true);
 			if (!alive_ || server.dead)
 			{
 				if (onToolResultDeliveryFailed_ !is null)
-					onToolResultDeliveryFailed_(to!string(tid));
+					onToolResultDeliveryFailed_(to!string(tid), reply);
 				return;
 			}
 			HandlePendingToolCallError tcpe;
 			tcpe.sessionId = sessionId;
 			tcpe.requestId = req.requestId;
-			tcpe.error     = e.msg;
+			tcpe.error     = reply.text;
 			server.sendRequest("session.tools.handlePendingToolCall", toJson(tcpe))
 				.then((JsonRpcResponse response) {
 					if (response.isError)
 					{
 						if (onToolResultDeliveryFailed_ !is null)
-							onToolResultDeliveryFailed_(to!string(tid));
+							onToolResultDeliveryFailed_(to!string(tid), reply);
 					}
 					else if (onToolResultDelivered_ !is null)
-						onToolResultDelivered_(to!string(tid));
+						onToolResultDelivered_(to!string(tid), reply);
 				}, (Exception) {
 					if (onToolResultDeliveryFailed_ !is null)
-						onToolResultDeliveryFailed_(to!string(tid));
+						onToolResultDeliveryFailed_(to!string(tid), reply);
+				}).except((Exception e) {
+					onNextTick(socketManager, () { throw e; });
 				}).ignoreResult();
-		});
+		}).except((Exception e) {
+			onNextTick(socketManager, () { throw e; });
+		}).ignoreResult();
 	}
 
 	/// Handle permission.requested session event (protocol v3).
@@ -2479,6 +2489,43 @@ unittest
 		assert(outcome.rejectionMessage.length > 0);
 		if (expectedMessage.length > 0)
 			assert(outcome.rejectionMessage == expectedMessage);
+	}
+
+	foreach (rejectDispatch; [false, true])
+	{
+		auto connection = new TestCopilotConnection;
+		auto server = makeTestSdkProcess(connection);
+		auto dispatch = new Promise!McpResult;
+		auto session = new CopilotSession(server, 7, "legacy-exit",
+			"test-model", "/test/workdir", null,
+			(string tool, string tid, JSONFragment args) => dispatch);
+		server.registerSession("legacy-exit", session);
+
+		int delivered, failed, settlements;
+		session.onToolResultDelivered_ = (string tid, McpResult reply) {
+			assert(tid == "7" && reply.isError == rejectDispatch);
+			assert(reply.text == (rejectDispatch ? "dispatch rejected" : "mailbox event"));
+			if (reply.settleDelivery !is null)
+				reply.settleDelivery(true);
+			delivered++;
+		};
+		session.onToolResultDeliveryFailed_ = (string tid, McpResult reply) {
+			failed++;
+		};
+		SdkToolCallRequest request;
+		request.toolName = "cydo-Ask";
+		request.arguments = jsonParse!(typeof(request.arguments))("{}");
+		session.handleToolCall(request).ignoreResult();
+		drainPromiseNextTicks();
+		server.shutdown();
+		if (rejectDispatch)
+			dispatch.reject(new Exception("dispatch rejected"));
+		else
+			dispatch.fulfill(McpResult("mailbox event", false, JSONFragment.init,
+				(bool accepted) { assert(!accepted); settlements++; }));
+		drainPromiseNextTicks();
+		assert(delivered == 1 && failed == 0);
+		assert(settlements == (rejectDispatch ? 0 : 1));
 	}
 
 	// The create owner leaves a production sendMessage promise pending until

@@ -59,8 +59,8 @@ struct McpCallbacks
 {
 	Promise!McpResult delegate(string tool, string tid, JSONFragment args) dispatchTool;
 	bool delegate(string tid) interruptForPendingContinuation;
-	void delegate(string tid) onDeliveryFailed;
-	void delegate(string tid) onDelivered;
+	void delegate(string tid, McpResult result) onDeliveryFailed;
+	void delegate(string tid, McpResult result) onDelivered;
 }
 
 alias RawSourceReady = void delegate(RawSourceLookupResult);
@@ -331,15 +331,15 @@ class TransportAdapter
 			return;
 		}
 
-		void finishDelivery(bool delivered)
+		void finishDelivery(McpResult result, bool delivered)
 		{
 			assert(!deliveryFinalized);
 			deliveryFinalized = true;
 			onNextTick(socketManager, () {
 				if (delivered)
-					mcpCallbacks_.onDelivered(call.tid);
+					mcpCallbacks_.onDelivered(call.tid, result);
 				else
-					mcpCallbacks_.onDeliveryFailed(call.tid);
+					mcpCallbacks_.onDeliveryFailed(call.tid, result);
 			});
 		}
 
@@ -351,27 +351,48 @@ class TransportAdapter
 				result.structuredContent,
 			));
 			conn.sendResponse(response.serveData(resultJson));
-			finishDelivery(true);
+		}
+
+		void discardResult(McpResult result)
+		{
+			if (result.settleDelivery !is null)
+				onNextTick(socketManager, () { result.settleDelivery(false); });
+		}
+
+		void sendTransportError(Exception e)
+		{
+			warningf("dispatchTool: unhandled error: %s", e.msg);
+			auto reply = McpResult("Internal MCP transport error", true);
+			bool connected = conn.connected;
+			if (connected)
+				sendResult(reply);
+			finishDelivery(reply, connected);
 		}
 
 		mcpCallbacks_.dispatchTool(call.tool, call.tid, call.args).then((McpResult result) {
 			if (!conn.connected)
 			{
-				finishDelivery(false);
+				finishDelivery(result, false);
 				return;
 			}
-			if (mcpCallbacks_.interruptForPendingContinuation(call.tid))
-				return;
-
-			sendResult(result);
-		}).except((Exception e) {
-			warningf("dispatchTool: unhandled error: %s", e.msg);
-			if (!conn.connected)
+			try
 			{
-				finishDelivery(false);
+				if (mcpCallbacks_.interruptForPendingContinuation(call.tid))
+				{
+					discardResult(result);
+					return;
+				}
+				sendResult(result);
+			}
+			catch (Exception e)
+			{
+				discardResult(result);
+				sendTransportError(e);
 				return;
 			}
-			sendResult(McpResult("Internal MCP transport error", true));
+			finishDelivery(result, true);
+		}, &sendTransportError).except((Exception e) {
+			onNextTick(socketManager, () { throw e; });
 		}).ignoreResult();
 	}
 }
@@ -422,6 +443,7 @@ version (unittest) private void assertMcpDispatchFailureIsTerminal(bool throwInF
 
 	int deliveryFailedCalls;
 	int deliveredCalls;
+	bool[] settlements;
 	auto adapter = new TransportAdapter(
 		"",
 		WebSocketCallbacks.init,
@@ -430,7 +452,8 @@ version (unittest) private void assertMcpDispatchFailureIsTerminal(bool throwInF
 			dispatchTool: (string tool, string tid, JSONFragment args) {
 				auto promise = new Promise!McpResult;
 				if (throwInFulfillment)
-					promise.fulfill(McpResult("unused", false));
+					promise.fulfill(McpResult("unused", false, JSONFragment.init,
+						(bool delivered) { settlements ~= delivered; }));
 				else
 					promise.reject(new Exception("simulated dispatch rejection"));
 				return promise;
@@ -440,10 +463,14 @@ version (unittest) private void assertMcpDispatchFailureIsTerminal(bool throwInF
 					throw new Exception("simulated fulfillment callback failure");
 				return false;
 			},
-			onDeliveryFailed: (string) {
+			onDeliveryFailed: (string, McpResult result) {
+				if (result.settleDelivery !is null)
+					result.settleDelivery(false);
 				deliveryFailedCalls++;
 			},
-			onDelivered: (string) {
+			onDelivered: (string, McpResult result) {
+				if (result.settleDelivery !is null)
+					result.settleDelivery(true);
 				deliveredCalls++;
 			},
 		),
@@ -476,6 +503,8 @@ version (unittest) private void assertMcpDispatchFailureIsTerminal(bool throwInF
 	assert(result.content[0].text == "Internal MCP transport error");
 	assert(deliveredCalls == 1);
 	assert(deliveryFailedCalls == 0);
+	if (throwInFulfillment)
+		assert(settlements == [false], "The original result must settle once as undelivered");
 }
 
 version (unittest) private void assertMcpDisconnectedClientFailsDelivery()
@@ -504,11 +533,11 @@ version (unittest) private void assertMcpDisconnectedClientFailsDelivery()
 		McpCallbacks(
 			dispatchTool: (string tool, string tid, JSONFragment args) => dispatchPromise,
 			interruptForPendingContinuation: (string) => false,
-			onDeliveryFailed: (string) {
+			onDeliveryFailed: (string, McpResult result) {
 				deliveryFailedCalls++;
 				server.close();
 			},
-			onDelivered: (string) {
+			onDelivered: (string, McpResult result) {
 				deliveredCalls++;
 			},
 		),
@@ -549,6 +578,7 @@ version (unittest) private void assertMcpContinuationInterruptionDoesNotRespond(
 		if (exists(socketPath))
 			remove(socketPath);
 
+	int failedSettlements;
 	int deliveryFailedCalls;
 	int deliveredCalls;
 	auto adapter = new TransportAdapter(
@@ -558,14 +588,18 @@ version (unittest) private void assertMcpContinuationInterruptionDoesNotRespond(
 		McpCallbacks(
 			dispatchTool: (string tool, string tid, JSONFragment args) {
 				auto promise = new Promise!McpResult;
-				promise.fulfill(McpResult("unused", false));
+				promise.fulfill(McpResult("unused", false, JSONFragment.init, (bool delivered) {
+					assert(!delivered);
+					failedSettlements++;
+				}));
 				return promise;
 			},
 			interruptForPendingContinuation: (string) => true,
-			onDeliveryFailed: (string) {
+			onDeliveryFailed: (string, McpResult result) {
 				deliveryFailedCalls++;
+				result.settleDelivery(false);
 			},
-			onDelivered: (string) {
+			onDelivered: (string, McpResult result) {
 				deliveredCalls++;
 			},
 		),
@@ -586,6 +620,7 @@ version (unittest) private void assertMcpContinuationInterruptionDoesNotRespond(
 
 	assert(observedResponse is null);
 	assert(disconnectReason == "Time-out");
+	assert(failedSettlements == 1);
 	assert(deliveryFailedCalls == 0);
 	assert(deliveredCalls == 0);
 }
@@ -627,11 +662,11 @@ version (unittest) private void assertMcpCleanupFailureEscapes(
 		McpCallbacks(
 			dispatchTool: (string tool, string tid, JSONFragment args) => dispatchPromise,
 			interruptForPendingContinuation: (string) => false,
-			onDeliveryFailed: (string) {
+			onDeliveryFailed: (string, McpResult result) {
 				deliveryFailedCalls++;
 				throwFromCleanup();
 			},
-			onDelivered: (string) {
+			onDelivered: (string, McpResult result) {
 				deliveredCalls++;
 				throwFromCleanup();
 			},

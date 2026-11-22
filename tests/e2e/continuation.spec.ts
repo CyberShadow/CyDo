@@ -550,6 +550,7 @@ test("handoff replay rebuilds known system message metadata", async ({
   agentType,
 }) => {
   const taskCreatedEvents: Array<{ tid: number; relation_type?: string }> = [];
+  const returnFocusSources = new Set<number>();
   page.on("websocket", (ws) => {
     ws.on("framereceived", (event) => {
       try {
@@ -559,6 +560,8 @@ test("handoff replay rebuilds known system message metadata", async ({
             tid: data.tid,
             relation_type: data.relation_type,
           });
+        } else if (data.type === "focus_hint" && data.to_tid === 1) {
+          returnFocusSources.add(data.from_tid);
         }
       } catch {
         /* ignore non-JSON frames */
@@ -585,15 +588,20 @@ test("handoff replay rebuilds known system message metadata", async ({
     (e) => e.relation_type === "continuation",
   )!.tid;
 
-  // Wait for the continuation to finish before navigating to it. Recording
-  // its batch result sends a focus_hint back to the batch owner. Clicking
-  // earlier can switch the view mid-assertion.
   await expect(
     page.locator(
       `.sidebar-item[data-tid="${continuationTid}"] .task-type-icon.completed, ` +
         `.sidebar-item[data-tid="${continuationTid}"] .task-type-icon.resumable`,
     ),
   ).toBeVisible({ timeout });
+
+  // Settlement returns focus to the batch owner after the terminal snapshot.
+  await expect
+    .poll(() => returnFocusSources.has(continuationTid), { timeout })
+    .toBe(true);
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible({
+    timeout,
+  });
 
   await page.locator(`.sidebar-item[data-tid="${continuationTid}"]`).click();
   await expect(

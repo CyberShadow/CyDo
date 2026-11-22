@@ -27,6 +27,8 @@ struct McpResult
 	bool isError;
 	JSONFragment structuredContent; /// Optional structured JSON; must equal text when present.
 
+	package(cydo) void delegate(bool delivered) settleDelivery;
+
 	/// Construct a result with structured content. Sets text = json string
 	/// so that content[0].text and structuredContent are identical per MCP spec.
 	static McpResult structured(string json, bool isError = false)

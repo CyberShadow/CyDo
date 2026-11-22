@@ -286,11 +286,11 @@ class App
 			McpCallbacks(
 				dispatchTool: &dispatchTool,
 				interruptForPendingContinuation: &interruptForPendingContinuation,
-				onDeliveryFailed: (string callerTid) {
-					workflowTools.onMcpDeliveryFailed(callerTid);
+				onDeliveryFailed: (string callerTid, McpResult result) {
+					workflowTools.onMcpDeliveryFailed(callerTid, result);
 				},
-				onDelivered: (string callerTid) {
-					workflowTools.onToolCallDelivered(callerTid);
+				onDelivered: (string callerTid, McpResult result) {
+					workflowTools.onToolCallDelivered(callerTid, result);
 				},
 			),
 		);
@@ -2768,10 +2768,10 @@ class App
 			{
 				ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
 					dispatchTool(tool, callerTid, args);
-				ca.onToolResultDelivered_ = (string callerTid) =>
-					workflowTools.onToolCallDelivered(callerTid);
-				ca.onToolResultDeliveryFailed_ = (string callerTid) =>
-					workflowTools.onMcpDeliveryFailed(callerTid);
+				ca.onToolResultDelivered_ = (string callerTid, McpResult result) =>
+					workflowTools.onToolCallDelivered(callerTid, result);
+				ca.onToolResultDeliveryFailed_ = (string callerTid, McpResult result) =>
+					workflowTools.onMcpDeliveryFailed(callerTid, result);
 			}
 		}
 		return a;
