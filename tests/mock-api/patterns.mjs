@@ -514,7 +514,7 @@ export function matchPattern(userText) {
     return {
       type: "background_shell",
       command:
-        "rm -f /tmp/cydo-test-workspace/waiting-background-resume.fifo && mkfifo /tmp/cydo-test-workspace/waiting-background-resume.fifo && read release < /tmp/cydo-test-workspace/waiting-background-resume.fifo && rm -f /tmp/cydo-test-workspace/waiting-background-resume.fifo && echo waiting-background-released",
+        "mkfifo /tmp/cydo-test-workspace/waiting-background-resume.fifo && read release < /tmp/cydo-test-workspace/waiting-background-resume.fifo && echo waiting-background-released",
     };
 
   // "spawn task <prompt>" → Claude's built-in Task tool (triggers native sub-agent)
