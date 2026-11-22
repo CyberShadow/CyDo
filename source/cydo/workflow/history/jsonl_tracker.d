@@ -482,7 +482,8 @@ struct JsonlTracker
 		jsonlLineCount[tid] = lineOffset + newLines;
 
 		import std.algorithm : canFind;
-		bool hasRollback = completeContent.canFind(`"thread_rolled_back"`);
+		bool hasRollback = context.agent.driver == AgentDriver.codex
+			&& completeContent.canFind(`"thread_rolled_back"`);
 		if (hasRollback)
 		{
 			onLineageInvalidated(tid);
@@ -1645,4 +1646,24 @@ unittest
 		`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`;
 	auto skipped = computeRollbackSkipLines(jsonl);
 	assert(4 in skipped && 5 in skipped);
+}
+
+@("Claude transcript payloads cannot trigger Codex rollback invalidation")
+unittest
+{
+	import std.file : remove, write;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	enum path = "/tmp/cydo-tracker-claude-rollback-payload.jsonl";
+	write(path, `{"type":"assistant","apiBlockIndex":0,"message":{"id":"X","content":[{"type":"tool_use","input":{"type":"thread_rolled_back"}}]}}` ~ "\n");
+	scope(exit) remove(path);
+
+	TaskData task = TaskData(1, "", "");
+	task.history.reset(Watermark.none());
+	JsonlTracker tracker;
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+	tracker.getTask = (int) => &task;
+	tracker.historyGeneration = (int) => task.history.generation;
+	tracker.onLineageInvalidated = (int) { assert(false, "Claude tool input is not a Codex rollback"); };
+	tracker.processNewJsonlContent(1, path);
 }
