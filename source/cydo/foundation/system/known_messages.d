@@ -290,6 +290,17 @@ bool tryKnownSystemMessageMatch(string subject, out KnownSystemMessageMatch matc
 		match.label = subject;
 		return true;
 	}
+	enum answerPrefix = "Answer to your question ";
+	if (subject.startsWith(answerPrefix))
+	{
+		int qid;
+		if (!tryParseStrictPositiveInt(subject[answerPrefix.length .. $], qid) || qid <= 0)
+			return false;
+		match.kind = KnownSystemMessageKind.subTaskResults;
+		match.label = subject;
+		match.qid = Nullable!int(qid);
+		return true;
+	}
 	if (subject == systemMessageSubject(KnownSystemMessageKind.subTaskResults))
 	{
 		match.kind = KnownSystemMessageKind.subTaskResults;
@@ -351,6 +362,18 @@ unittest
 	assert(match.kind == KnownSystemMessageKind.diskCleanupRequest);
 	assert(match.label == subject);
 	assert(!tryKnownSystemMessageMatch(subject ~ " extra", match));
+}
+
+unittest
+{
+	KnownSystemMessageMatch match;
+	auto subject = "Answer to your question 42";
+	assert(tryKnownSystemMessageMatch(subject, match));
+	assert(match.kind == KnownSystemMessageKind.subTaskResults);
+	assert(match.label == subject);
+	assert(match.qid.get == 42);
+	assert(!tryKnownSystemMessageMatch("Answer to your question 0", match));
+	assert(!tryKnownSystemMessageMatch("Answer to your question 42 more", match));
 }
 
 unittest
