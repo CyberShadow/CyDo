@@ -283,9 +283,12 @@ function expectPlaceholderFrame(html: string): void {
 describe("server command errors", () => {
   let container: HTMLDivElement | null = null;
 
-  afterEach(() => {
+  afterEach(async () => {
     if (!container) return;
-    render(null, container);
+    const root = container;
+    await act(() => {
+      render(null, root);
+    });
     container.remove();
     container = null;
   });
@@ -1371,9 +1374,12 @@ describe("missing numeric tasks", () => {
 describe("completion-aware task loading", () => {
   let container: HTMLDivElement | null = null;
 
-  afterEach(() => {
+  afterEach(async () => {
     if (!container) return;
-    render(null, container);
+    const root = container;
+    await act(() => {
+      render(null, root);
+    });
     container.remove();
     container = null;
   });
