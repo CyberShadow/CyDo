@@ -33,38 +33,37 @@ test("codex stderr view source keeps tabs and shows abstract stderr payload", { 
   await sendMessage(page, "codex filechange update fixture");
 
   const timeout = responseTimeout(agentType);
-  const stderrMessage = page.locator(".stderr-message").last();
+  const diagnostic = "OutputTextDelta without active item";
+  const stderrMessage = page.locator(".stderr-message", { hasText: diagnostic });
   await expect(stderrMessage).toBeVisible({ timeout });
-  await expect(page.locator(".stderr-message")).toHaveCount(1, { timeout });
   await expect(stderrMessage).toContainText("ERROR", { timeout });
 
   const stderrWrapper = page
     .locator(".message-wrapper")
-    .filter({ has: stderrMessage })
-    .last();
+    .filter({ has: stderrMessage });
   await stderrWrapper.hover();
   const viewSourceBtn = stderrWrapper.locator(".view-source-btn");
   await expect(viewSourceBtn).toBeVisible();
   await viewSourceBtn.click();
 
-  const sourceView = page.locator(".source-view").last();
+  const sourceView = page.locator(".source-view");
   await expect(sourceView).toBeVisible();
 
-  // Expand the first (and likely only) event in the list
-  const firstEvent = sourceView.locator(".source-event-header").first();
-  await expect(firstEvent).toBeVisible();
-  await firstEvent.click();
-
-  // Both tabs should be visible inside the expanded event
-  await expect(
-    sourceView.locator(".source-tab", { hasText: "Raw" }),
-  ).toBeVisible();
-  const abstractTab = sourceView.locator(".source-tab", {
-    hasText: "Abstract",
+  for (const header of await sourceView.locator(".source-event-header").all()) {
+    await header.click();
+  }
+  const stderrEvent = sourceView.locator(".source-event", {
+    hasText: diagnostic,
+  });
+  await expect(stderrEvent.getByRole("button", { name: "Raw", exact: true }))
+    .toBeVisible();
+  const abstractTab = stderrEvent.getByRole("button", {
+    name: "Abstract",
+    exact: true,
   });
   await expect(abstractTab).toBeVisible();
   await abstractTab.click();
 
-  await expect(sourceView).toContainText('"type": "process/stderr"');
-  await expect(sourceView).toContainText('"text":');
+  await expect(stderrEvent).toContainText('"type": "process/stderr"');
+  await expect(stderrEvent).toContainText('"text":');
 });
