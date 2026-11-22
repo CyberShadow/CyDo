@@ -461,7 +461,9 @@ describe("MessageList parse-error rendering", () => {
     expect(html).toContain("<summary>Details</summary>");
   });
 
-  it("hides unknown system subtype parse errors outside dev mode", () => {
+  it("hides unrecognized agent data outside dev mode", () => {
+    const headline =
+      "Unrecognized agent data: unknown system subtype: future_system";
     const parseError: DisplayMessage = {
       id: "msg-1",
       type: "system",
@@ -469,7 +471,7 @@ describe("MessageList parse-error rendering", () => {
       content: [
         {
           type: "text",
-          text: 'Unknown system subtype: thinking_tokens\n{"type":"system","subtype":"thinking_tokens"}',
+          text: headline,
         },
       ],
     };
@@ -499,8 +501,8 @@ describe("MessageList parse-error rendering", () => {
       </DevModeContext.Provider>,
     );
 
-    expect(normalHtml).not.toContain("Unknown system subtype: thinking_tokens");
-    expect(devHtml).toContain("Unknown system subtype: thinking_tokens");
+    expect(normalHtml).not.toContain(headline);
+    expect(devHtml).toContain(headline);
   });
 });
 

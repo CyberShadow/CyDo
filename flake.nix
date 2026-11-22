@@ -976,6 +976,7 @@ EOF
             # catalog compiled into this binary; a unit test reads the catalog
             # back out of it and fails when a version bump changes it.
             CYDO_TEST_CODEX_BIN = "${codex}/bin/codex";
+            CYDO_TEST_CLAUDE_BIN = "${pkgs.claude-code}/bin/claude";
 
             # Provide git identity so worktree unit tests can create commits.
             GIT_AUTHOR_NAME = "CyDo Test";
@@ -1158,6 +1159,7 @@ EOF
             # catalog compiled into this binary; a unit test reads the catalog
             # back out of it, so `nix develop -ic dub test` needs it too.
             CYDO_TEST_CODEX_BIN = "${self.packages.${system}.codex-cli}/bin/codex";
+            CYDO_TEST_CLAUDE_BIN = "${pkgs.claude-code}/bin/claude";
           };
         });
     };

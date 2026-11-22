@@ -704,11 +704,7 @@ const MessageView = memo(
             .map((b) => b.text)
             .join("\n");
           const [headline = "Protocol parse error", ...rest] = text.split("\n");
-          if (
-            !devMode &&
-            (headline.startsWith("Unrecognized agent data") ||
-              headline.startsWith("Unknown system subtype"))
-          ) {
+          if (!devMode && headline.startsWith("Unrecognized agent data")) {
             break;
           }
           const details = rest.join("\n").trim();

@@ -3935,26 +3935,62 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 			return translateExit(rawLine);
 		case "queue-operation":
 			return null; // consumed — handled by broadcastTask / stateful replay closure
+		// Ignored stdout messages.
+		case "active_goal":
+		case "auth_status":
+		case "autocompact_state":
+		case "conversation_reset":
+		case "keep_alive":
+		case "prompt_suggestion":
 		case "tool_progress":
-			return null; // The frontend already shows the tool as running.
-		case "progress":
-		case "file-history-snapshot":
-			return null; // not used by frontend
-		// TODO: session file rows not used yet
-		case "atis-latch":
-		case "last-prompt":
-		case "attachment":
+		case "tool_use_summary":
+		case "transcript_mirror":
+			return null;
+		// Ignored session-file rows.
+		case "agent-color":
+		case "agent-name":
+		case "agent-setting":
+		case "ai-title":
 		case "api-request":
 		case "api-request-blob":
+		case "api-request-resumed":
 		case "api-request-shape":
-		case "tools-used":
-		case "mode":
-		case "file-history-delta":
-		case "session-owner":
-		case "ai-title":
-		case "permission-mode":
-		case "agent-name":
+		case "artifact-autoreact-ledger":
+		case "artifact-comment-monitor":
+		case "atis-latch":
+		case "attachment":
+		case "attribution-snapshot":
+		case "bridge-session":
+		case "content-replacement":
 		case "continued-in":
+		case "custom-title":
+		case "data-flow-incomplete":
+		case "data-flow-records":
+		case "derived-from":
+		case "dev-mods":
+		case "ended-by-model":
+		case "file-history-delta":
+		case "file-history-snapshot":
+		case "fork-context-ref":
+		case "frame-link":
+		case "history-suppression":
+		case "host-row":
+		case "hybrid-organization":
+		case "isolation-latch":
+		case "last-prompt":
+		case "memory-mode":
+		case "mode":
+		case "observer-ref":
+		case "permission-mode":
+		case "pr-link":
+		case "progress":
+		case "relocated":
+		case "repl-mode":
+		case "resume-head-vouch":
+		case "session-owner":
+		case "tag":
+		case "tools-used":
+		case "worktree-state":
 			return null;
 		default:
 			import cydo.protocol : makeUnrecognizedEvent;
@@ -4002,14 +4038,86 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 		// Consumed by the live session (ClaudeCodeSession.backgroundWork).
 		case "background_tasks_changed":
 			return null;
-		// TODO: system events not used yet
-		case "post_turn_summary":
+		case "stop_hook_summary":
+			return rawLine; // Rendered by the frontend's system reducer.
+		// Ignored stdout and session-file subtypes.
+		case "agents_killed":
+		case "api_error":
 		case "away_summary":
-		case "permission_retry":
+		case "bridge_state":
+		case "bridge_status":
+		case "cloud_session_delta":
+		case "cloud_session_status":
+		case "code_change_published":
+		case "commands_changed":
+		case "control_request_progress":
+		case "dev_intent":
+		case "elicitation_complete":
+		case "feedback_draft_queued":
+		case "file_attachments_missing":
+		case "file_snapshot":
+		case "files_persisted":
+		case "hook_progress":
+		case "hook_response":
+		case "hook_started":
 		case "informational":
+		case "inherited_asks_settled":
+		case "instruction_size_warning":
+		case "late_allow_not_run":
+		case "local_command":
+		case "local_command_output":
+		case "memory_recall":
+		case "memory_saved":
+		case "mirror_error":
+		case "notification":
+		case "peer_message_hold":
+		case "per_turn_effort_changed":
+		case "permission_check_status":
+		case "permission_retry":
+		case "plugin_install":
+		case "post_turn_summary":
+		case "rewind_stand_in":
+		case "scheduled_task_fire":
+		case "session_metadata":
+		case "session_state_changed":
+		case "session_title_changed":
+		case "session_writes_lost":
+		case "shell_cwd":
+		case "task_list_statuses":
+		case "task_progress":
+		case "task_summary":
+		case "thinking":
+		case "thinking_tokens":
+		case "tool_host_result":
+		case "turn_duration":
+		case "turn_handoff_available":
+		case "turn_preempted":
+		case "ui_focus":
+		case "ui_invalidate":
+		case "ui_log":
+		case "ui_notify":
+		case "ui_notify_cancel":
+		case "ui_panes":
+		case "ui_placed":
+		case "ui_scroll":
+		case "ui_status":
+		case "ui_toast":
+		case "upgrade_relay_marker":
+		case "vcs_state_changed":
+		case "worker_shutting_down":
+			return null;
+		// Remote-runner activity, remote checkpoints and transient UI rows
+		// stay outside CyDo's local stream and history. Classify their literals
+		// so the binary coverage check can probe every system constructor.
+		case "checkpoint_done":
+		case "placed":
+		case "start_folder":
+		case "turn_began_before_init":
+		case "turn_starting":
 			return null;
 		default:
-			return rawLine; // unknown subtypes pass through
+			import cydo.protocol : makeUnrecognizedEvent;
+			return makeUnrecognizedEvent("unknown system subtype: " ~ subtype);
 	}
 }
 
@@ -4944,4 +5052,391 @@ unittest
 	auto nativeSubagents = disallowedTools(true, true);
 	assert(!nativeSubagents.canFind("Task") && !nativeSubagents.canFind("SendMessage"));
 	assert(nativeSubagents.canFind("TaskCreate") && nativeSubagents.canFind("ExitWorktree"));
+}
+
+unittest
+{
+	import std.algorithm.searching : countUntil, startsWith;
+	import std.algorithm.sorting : sort;
+	import std.file : exists;
+	import std.mmfile : MmFile;
+	import std.path : buildPath;
+	import std.process : environment;
+	import std.regex : matchAll, matchFirst, regex;
+	import std.string : join, split;
+
+	string claudeBinary()
+	{
+		auto configured = environment.get("CYDO_TEST_CLAUDE_BIN", "");
+		if (configured.length > 0)
+			return configured;
+		foreach (dir; environment.get("PATH", "").split(':'))
+			if (dir.length > 0 && exists(buildPath(dir, "claude")))
+				return buildPath(dir, "claude");
+		return null;
+	}
+
+	auto binary = claudeBinary();
+	assert(binary !is null && exists(binary),
+		"the pinned Claude binary is required to verify event coverage;"
+		~ " set CYDO_TEST_CLAUDE_BIN or put claude on PATH");
+	scope mapped = new MmFile(binary);
+	auto image = cast(const(ubyte)[]) mapped[];
+
+	size_t locate(string anchor)
+	{
+		auto offset = image.countUntil(cast(const(ubyte)[]) anchor);
+		assert(offset >= 0, "missing Claude binary anchor: " ~ anchor);
+		return cast(size_t) offset;
+	}
+
+	// The image can contain invalid UTF-8. Match JS punctuation and ASCII
+	// identifiers in a small window around each byte-level anchor.
+	string ascii(size_t start, size_t end)
+	{
+		auto window = new char[end - start];
+		foreach (i, byte_; image[start .. end])
+			window[i] = byte_ < 128 ? cast(char) byte_ : ' ';
+		return cast(string) window;
+	}
+
+	enum stdoutDescription = `]).describe("Everything the CLI writes to its output stream (stdout in stream-json mode): exactly one StdoutMessage per line`;
+	auto stdoutAnchor = locate(stdoutDescription);
+	auto heartbeat = locate(`("tool_progress")`);
+	enum schemaRadius = 300_000;
+	auto schemas = ascii(heartbeat - schemaRadius, stdoutAnchor + schemaRadius);
+	enum ident = `[A-Za-z_$][\w$]*`;
+	enum eventName = `[\w-]+`;
+	auto eventNameShape = regex(`^` ~ eventName ~ `$`);
+	bool validEventName(string name)
+	{
+		auto match = name.matchFirst(eventNameShape);
+		return !match.empty && match[0].length == name.length;
+	}
+	auto definition = regex(`(?:^|[^\w$])(` ~ ident ~ `)=` ~ ident ~ `\(\(\)=>`);
+	string[][string] definitions;
+	foreach (capture; schemas.matchAll(definition))
+		definitions[capture[1]] ~= capture.post;
+
+	auto objectSchema = regex(`^(?:(` ~ ident ~ `)\(\)\.extend|` ~ ident ~ `)\(\{`);
+	auto unionSchema = regex(`^` ~ ident ~ `\(\[((?:` ~ ident ~ `\(\),)*`
+		~ ident ~ `\(\))\]\)`);
+	auto memberCall = regex(`(` ~ ident ~ `)\(\)`);
+	auto literal = regex(`^` ~ ident ~ `\("(` ~ eventName ~ `)"\)$`);
+	auto stringEnum = regex(`^` ~ ident ~ `\(\[((?:"` ~ eventName ~ `",)*"`
+		~ eventName ~ `")\]\)$`);
+	auto quotedName = regex(`"(` ~ eventName ~ `)"`);
+	auto property = regex(`^(?:"(` ~ ident ~ `)"|(` ~ ident ~ `)):(.+)$`);
+	enum quoted = `(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60)`;
+	auto token = regex(quoted ~ `|[()\[\]{},]|[^"'\x60()\[\]{},]+`);
+	auto schemaEnd = regex(`^(?:\.describe\(` ~ quoted ~ `\))?\)`);
+
+	string stdoutRoot;
+	foreach (name, bodies; definitions)
+		foreach (body; bodies)
+		{
+			auto members = body.matchFirst(unionSchema);
+			if (!members.empty && members.post.startsWith(stdoutDescription[2 .. $]))
+			{
+				assert(stdoutRoot is null, "ambiguous Claude StdoutMessage schema");
+				stdoutRoot = name;
+			}
+		}
+	assert(stdoutRoot !is null, "unrecognized Claude StdoutMessage union");
+
+	bool[string] stdoutTypes, stdoutSystem;
+	struct Discriminators
+	{
+		string type;
+		string subtype;
+	}
+
+	Discriminators readObject(string member, string body, size_t depth)
+	{
+		assert(depth < 10, "cyclic Claude stdout object schema: " ~ member);
+		auto object = body.matchFirst(objectSchema);
+		assert(!object.empty, "unrecognized Claude stdout object schema: " ~ member);
+		// Walk all top-level fields, including extension overrides. The
+		// schema values use calls, arrays, object literals and quoted strings.
+		auto fields = object.post;
+		string type, subtype;
+		void readField(string field)
+		{
+			auto parsed = field.matchFirst(property);
+			assert(!parsed.empty, "unrecognized Claude stdout schema field in " ~ member ~ ": " ~ field);
+			auto key = parsed[1].length ? parsed[1] : parsed[2];
+			if (key == "type")
+			{
+				assert(type is null, "duplicate type in Claude stdout schema: " ~ member);
+				type = parsed[3];
+			}
+			if (key == "subtype")
+			{
+				assert(subtype is null, "duplicate subtype in Claude stdout schema: " ~ member);
+				subtype = parsed[3];
+			}
+		}
+		char[] closers = ['}'];
+		size_t start, cursor;
+		foreach (match; fields.matchAll(token))
+		{
+			auto value = match[0];
+			assert(value.ptr == fields.ptr + cursor,
+				"unrecognized Claude stdout schema token: " ~ member);
+			if (value.length == 1)
+				switch (value[0])
+				{
+					case '(': closers ~= ')'; break;
+					case '[': closers ~= ']'; break;
+					case '{': closers ~= '}'; break;
+					case ')', ']', '}':
+						assert(closers[$ - 1] == value[0],
+							"unbalanced Claude stdout schema field: " ~ member);
+						closers.length--;
+						break;
+					case ',':
+						if (closers.length == 1)
+						{
+							readField(fields[start .. cursor]);
+							start = cursor + 1;
+						}
+						break;
+					default: break;
+				}
+			if (!closers.length)
+				break;
+			cursor += value.length;
+		}
+		assert(!closers.length && fields[cursor + 1 .. $].startsWith(")")
+			&& !fields[cursor + 2 .. $].matchFirst(schemaEnd).empty,
+			"unrecognized Claude stdout object schema suffix: " ~ member);
+		if (cursor || start)
+			readField(fields[start .. cursor]);
+
+		Discriminators result;
+		auto base = object[1];
+		if (base.length && (type is null || subtype is null))
+		{
+			auto bodies = definitions.get(base, null);
+			assert(bodies.length == 1, "missing or ambiguous Claude stdout base schema: " ~ base);
+			result = readObject(base, bodies[0], depth + 1);
+		}
+		if (type !is null)
+			result.type = type;
+		if (subtype !is null)
+			result.subtype = subtype;
+		return result;
+	}
+
+	void resolve(string member, size_t depth = 0)
+	{
+		assert(depth < 10, "cyclic Claude stdout schema: " ~ member);
+		auto bodies = definitions.get(member, null);
+		assert(bodies.length == 1, "missing or ambiguous Claude stdout schema: " ~ member);
+		auto body = bodies[0];
+
+		auto members = body.matchFirst(unionSchema);
+		if (!members.empty)
+		{
+			assert(!members.post.matchFirst(schemaEnd).empty,
+				"unrecognized Claude stdout union suffix: " ~ member);
+			foreach (call; members[1].matchAll(memberCall))
+				resolve(call[1], depth + 1);
+			return;
+		}
+		auto discriminators = readObject(member, body, 0);
+		auto type = discriminators.type.matchFirst(literal);
+		assert(!type.empty, "Claude stdout schema has no literal type: " ~ member);
+		stdoutTypes[type[1]] = true;
+		if (type[1] == "system")
+		{
+			auto subtype = discriminators.subtype.matchFirst(literal);
+			if (!subtype.empty)
+				stdoutSystem[subtype[1]] = true;
+			else
+			{
+				auto alternatives = discriminators.subtype.matchFirst(stringEnum);
+				assert(!alternatives.empty, "Claude stdout system schema has no literal subtype: " ~ member);
+				foreach (name; alternatives[1].matchAll(quotedName))
+					stdoutSystem[name[1]] = true;
+			}
+		}
+	}
+	resolve(stdoutRoot);
+	assert(stdoutTypes.length >= 19 && stdoutSystem.length >= 54,
+		"too few distinct entries in the Claude StdoutMessage union");
+
+	// Constructors can sit outside the stdout schema. The literal spelling
+	// identifies the subtype independently of the constructor's other fields.
+	enum systemPrefix = `{type:"system",subtype:"`;
+	bool[string] literalSystem;
+	for (size_t cursor; cursor < image.length;)
+	{
+		auto offset = image[cursor .. $].countUntil(cast(const(ubyte)[]) systemPrefix);
+		if (offset < 0)
+			break;
+		cursor += cast(size_t) offset + systemPrefix.length;
+		auto end = image[cursor .. $].countUntil(cast(ubyte) '"');
+		assert(end >= 0, "unterminated Claude system subtype literal");
+		auto name = ascii(cursor, cursor + end);
+		assert(validEventName(name), "invalid Claude system subtype literal: " ~ name);
+		literalSystem[name] = true;
+		cursor += end + 1;
+	}
+	assert(literalSystem.length >= 74, "too few distinct Claude system subtype literals");
+
+	bool[string] historyRows;
+	size_t readPolicyTable(size_t anchor, size_t minimumKeys)
+	{
+		auto start = anchor;
+		while (image[start] != '{')
+			--start;
+		auto end = image[anchor .. $].countUntil(cast(ubyte) '}');
+		assert(end >= 0, "unterminated Claude history row policy table");
+		auto field = regex(`^(?:"(` ~ eventName ~ `)"|(` ~ ident ~ `)):"` ~ eventName ~ `"$`);
+		bool[string] keys;
+		foreach (entry; ascii(start + 1, anchor + end).split(','))
+		{
+			auto pair = entry.matchFirst(field);
+			assert(!pair.empty, "invalid field in Claude history row policy table: " ~ entry);
+			auto key = pair[1].length ? pair[1] : pair[2];
+			assert(validEventName(key),
+				"invalid key in Claude history row policy table: " ~ key);
+			assert(key !in keys, "duplicate key in Claude history row policy table: " ~ key);
+			keys[key] = true;
+		}
+		assert(keys.length >= minimumKeys, "too few distinct keys in a Claude history row policy table");
+		foreach (key; keys.keys)
+			historyRows[key] = true;
+		return start;
+	}
+	readPolicyTable(locate(`{user:"transcript",assistant:"transcript"`), 43);
+	readPolicyTable(locate(`"file-history-snapshot":"always"`), 43);
+
+	// Follow the spread in the replay list to the map built from the base table.
+	auto repeatPolicy = locate(`]].sort(([`) + 1;
+	auto replayStart = repeatPolicy - 1_024;
+	auto replay = ascii(replayStart, repeatPolicy);
+	auto appended = replay.matchFirst(regex(`\(\[\.\.\.(` ~ ident ~ `),([^;]+)$`));
+	assert(!appended.empty, "missing appended Claude history replay policies");
+	auto base = appended.pre.matchFirst(regex(`\},(` ~ ident ~ `)=new Map\(Object\.entries\((`
+		~ ident ~ `)\)\);`));
+	assert(!base.empty && base[1] == appended[1], "missing Claude history replay base map");
+	auto tableStart = readPolicyTable(replayStart + base.pre.length, 43);
+	auto assignment = base[2] ~ "=";
+	assert(ascii(tableStart - assignment.length, tableStart) == assignment,
+		"Claude history replay base map does not reference the preceding policy table");
+	auto pairs = jsonParse!(string[][])("[" ~ appended[2] ~ "]");
+	assert(pairs.length > 0, "missing repeated row in Claude history replay policy");
+	foreach (pair; pairs)
+	{
+		assert(pair.length == 2 && pair[1] == "repeat",
+			"unrecognized Claude history replay policy pair");
+		auto key = pair[0];
+		assert(validEventName(key), "invalid key in Claude history replay policy pair: " ~ key);
+		historyRows[key] = true;
+	}
+
+	@JSONPartial static struct EventProbe
+	{
+		string type;
+		@JSONOptional string reason;
+	}
+
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	ClaudeCodeSession.rewindSupportByVersion_["event-coverage-fixture"] = false;
+	scope(exit) ClaudeCodeSession.rewindSupportByVersion_.remove("event-coverage-fixture");
+	session.onToolPermissionRequest = (PermissionPrompt req, PermissionEscalation escalation) => new Promise!string;
+	session.onToolPermissionRequestWithdrawn = (string toolUseId) {};
+	string[] missing;
+	string eventLine(string type, string subtype)
+	{
+		// init and background_tasks_changed have live side effects that
+		// require these fields even when checking classification alone.
+		switch (type)
+		{
+			case "control_request":
+				return `{"type":"control_request","request_id":"fixture","request":{"subtype":"can_use_tool",`
+					~ `"tool_name":"Bash","tool_use_id":"toolu_fixture","input":{}}}`;
+			case "control_cancel_request":
+				return `{"type":"control_cancel_request","request_id":"fixture"}`;
+			case "control_response":
+				return `{"type":"control_response","response":{"subtype":"success","request_id":"fixture","response":{}}}`;
+			default:
+				break;
+		}
+		return `{"type":"` ~ type ~ `","subtype":"` ~ subtype
+			~ `","session_id":"fixture","claude_code_version":"event-coverage-fixture","tasks":[]}`;
+	}
+
+	void checkOutput(string origin, string label, TranslatedEvent output)
+	{
+		auto event = jsonParse!EventProbe(output.translated);
+		// Handled parsers may reject required fields absent from the probe.
+		if (event.type == "agent/unrecognized"
+			&& event.reason.startsWith("unknown event type: ", "unknown system subtype: "))
+			missing ~= origin ~ " " ~ label;
+	}
+
+	void checkStdout(string type, string subtype = "")
+	{
+		session.onOutput = (TranslatedEvent output) {
+			checkOutput("stdout", subtype.length ? type ~ "/" ~ subtype : type, output);
+		};
+		session.translateLiveLine(eventLine(type, subtype));
+	}
+
+	void checkHistory(string type, string subtype = "")
+	{
+		foreach (output; translateClaudeHistoryEvent(eventLine(type, subtype)))
+			checkOutput("history", subtype.length ? type ~ "/" ~ subtype : type, output);
+	}
+
+	foreach (type; stdoutTypes.keys)
+		if (type != "system")
+			checkStdout(type);
+	foreach (subtype; stdoutSystem.keys)
+		if (subtype !in literalSystem)
+			checkStdout("system", subtype);
+	foreach (type; historyRows.keys)
+		if (type != "system")
+			checkHistory(type);
+	foreach (subtype; literalSystem.keys)
+	{
+		checkStdout("system", subtype);
+		checkHistory("system", subtype);
+	}
+
+	assert(missing.length == 0,
+		"unclassified Claude events in " ~ binary ~ ":\n" ~ missing.sort().release.join("\n"));
+}
+
+unittest
+{
+	// The frontend's legacy system reducer renders this raw hook summary.
+	enum line = `{"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[{"command":"hook","durationMs":15}],`
+		~ `"hookErrors":[],"preventedContinuation":false,"hasOutput":false}`;
+	auto translated = translateClaudeHistoryEvent(line);
+	assert(translated.length == 1 && translated[0].translated == line);
+}
+
+unittest
+{
+	foreach (subtype; ["api_error", "turn_duration", "task_progress", "thinking_tokens"])
+	{
+		auto line = `{"type":"system","subtype":"` ~ subtype ~ `"}`;
+		assert(translateClaudeHistoryEvent(line).length == 0);
+	}
+}
+
+unittest
+{
+	import cydo.protocol : makeUnrecognizedEvent;
+
+	auto translated = translateClaudeHistoryEvent(
+		`{"type":"system","subtype":"cydo-test-unknown-system-subtype"}`);
+	assert(translated.length == 1);
+	assert(translated[0].translated
+		== makeUnrecognizedEvent("unknown system subtype: cydo-test-unknown-system-subtype"));
 }

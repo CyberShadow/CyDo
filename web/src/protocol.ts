@@ -123,24 +123,6 @@ export interface UserContentBlock {
   [key: string]: unknown;
 }
 
-// JSONL-only system events (no corresponding D struct)
-export interface SystemApiErrorMessage {
-  type: "system";
-  subtype: "api_error";
-  level?: string;
-  retryInMs?: number;
-  retryAttempt?: number;
-  maxRetries?: number;
-  [key: string]: unknown;
-}
-
-export interface SystemTurnDurationMessage {
-  type: "system";
-  subtype: "turn_duration";
-  durationMs: number;
-  [key: string]: unknown;
-}
-
 export interface SystemStopHookSummaryMessage {
   type: "system";
   subtype: "stop_hook_summary";
@@ -166,8 +148,6 @@ export type AgnosticEvent =
   | SessionMetadataEvent
   | SessionStatusEvent
   | SessionCompactedEvent
-  | SystemApiErrorMessage
-  | SystemTurnDurationMessage
   | SystemStopHookSummaryMessage
   | TaskStartedEvent
   | TaskNotificationEvent

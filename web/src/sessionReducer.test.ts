@@ -862,26 +862,6 @@ describe("queue history reducer", () => {
   });
 });
 
-describe("system event suppression", () => {
-  it("ignores thinking_tokens system events without adding parse errors", () => {
-    const s = makeState();
-    const next = reduceMessage(
-      s,
-      asEvent({
-        type: "system",
-        subtype: "thinking_tokens",
-        estimated_tokens: 5559,
-        estimated_tokens_delta: 3594,
-        uuid: "uuid-1",
-        session_id: "sid-1",
-      }),
-    );
-
-    expect(next).toBe(s);
-    expect(next.messages).toHaveLength(0);
-  });
-});
-
 describe("tracked file edits", () => {
   it("tracks every included Claude Bash edit-diff hunk at result time", () => {
     const started = reduceMessage(

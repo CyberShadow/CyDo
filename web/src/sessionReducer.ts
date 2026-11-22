@@ -1764,31 +1764,8 @@ export function reduceMessage(
     case "task/updated":
       return reduceTaskUpdated(s, msg);
 
-    case "system": {
-      const sysMsg = msg as Record<string, unknown>;
-      if (sysMsg.subtype === "stop_hook_summary") {
-        return reduceStopHookSummary(
-          s,
-          sysMsg as unknown as Parameters<typeof reduceStopHookSummary>[1],
-          seq,
-        );
-      }
-      if (
-        sysMsg.subtype === "api_error" ||
-        sysMsg.subtype === "turn_duration" ||
-        sysMsg.subtype === "task_progress" ||
-        sysMsg.subtype === "thinking_tokens"
-      )
-        return s;
-      return reduceParseError(
-        s,
-        "Unknown system subtype",
-        String(sysMsg.subtype),
-        msg,
-        true,
-        seq,
-      );
-    }
+    case "system":
+      return reduceStopHookSummary(s, msg, seq);
 
     case "item/started":
       return reduceItemStarted(s, msg, seq, ts);
