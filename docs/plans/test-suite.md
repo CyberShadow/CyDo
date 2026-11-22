@@ -2,7 +2,7 @@
 
 ## Goal
 
-**`nix flake check`** is the single command that signals "all tests pass." It should be run after every unit of work and before committing. All test infrastructure — mock servers, service startup, Playwright execution — lives inside Nix check derivations so that `nix flake check` is self-contained and reproducible.
+**`nix flake check`** is the single command that signals "all tests pass." The integrator runs it on every tree it lands, so the tip of master always passes it; other work runs the checks relevant to its change (see AGENTS.md). All test infrastructure — mock servers, service startup, Playwright execution — lives inside Nix check derivations so that `nix flake check` is self-contained and reproducible.
 
 ## Architecture Overview
 

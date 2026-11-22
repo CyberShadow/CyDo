@@ -247,7 +247,7 @@ Task type definitions are customizable and extensible with per-project or global
 # Enter the dev shell (provides D compiler, Node.js 22, npm, etc.)
 nix develop
 
-# One-time: enable pre-commit hooks
+# One-time: gate updates of master on nix flake check
 git config core.hooksPath .githooks
 
 # Build and run the backend (serves on http://localhost:3940)

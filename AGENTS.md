@@ -11,7 +11,7 @@ Use `nix develop -ic` to prefix commands, or enter `nix develop` interactively.
 
 **One-time setup:**
 ```bash
-git config core.hooksPath .githooks   # Enable pre-commit checks
+git config core.hooksPath .githooks   # Gate updates of master on nix flake check
 ```
 
 **Build & run:**
@@ -30,21 +30,39 @@ nix build         # Build the full application
 **Testing:**
 ```bash
 nix flake check   # Run all tests — the single "all tests pass" command
+nix eval .#checks.x86_64-linux --apply builtins.attrNames   # List individual checks
+nix build -L .#checks.x86_64-linux.{unittests,typecheck}    # Run selected checks
 nix develop -ic env -C tests playwright ...        # Invoke Playwright directly
 ```
 
-**`nix flake check` is the mandatory gate before handing any work to the user.**
-This applies after every unit of work — not just `git commit`, but also
-`git commit --amend`, `git rebase`, or any other operation that changes the
-tree. No work is considered complete until the full suite passes.
+Besides the e2e tests, the checks are `unittests`, `frontend-unit-tests`,
+`typecheck`, `lint`, `lint-css`, `format`, `protocol-types-fresh`,
+`tool-descriptions` and `sandbox-init`. Each e2e test is its own check, named
+`e2e-<project>-<spec>-L<line>` (`<project>` is `claude`, `codex`, `copilot`
+or `failure`), so a spec or a single test can be run on its own. Checks build
+from the git-tracked tree: `git add` new files before running them.
 
+**Testing policy:**
+
+- **The tip of master must always pass `nix flake check`.** Only the integrator
+  lands work on master, and it runs the full `nix flake check` on the exact
+  tree it lands. It sends work back when the checks fail. The
+  `reference-transaction` hook in `.githooks` rejects any update of master
+  to a commit whose checks have not all been built.
+- **Everyone else runs the checks relevant to their change**, not the full
+  suite: the unit tests, typecheck and linters for the code they touched, and
+  the e2e specs that exercise the affected area. Use judgment — a protocol or
+  driver change can affect e2e tests in every agent project, so run those
+  too. Do not submit work you know to be broken.
+- **Every commit on master should be green**, so that history stays
+  bisectable. When a test failure is traced to a commit in your branch, fold
+  the fix into that commit (`git commit --fixup=<commit>` then
+  `git rebase --autosquash`) instead of adding a separate "fix tests" commit
+  on top. The same applies to work sent back by the integrator.
 - If a test fails and the failure looks flaky (non-deterministic, unrelated to
-  your changes), retry with `nix --option keep-going true flake check`.
-  If it fails consistently, treat it as a real regression and fix it before
-  proceeding.
-- **`--no-verify` is BANNED.** Never use it to bypass the pre-commit hook or
-  any other check. The `nix flake check` gate is non-negotiable.
-- Do not skip or substitute with partial checks.
+  the change), retry it. If it fails consistently, treat it as a real
+  regression. For the full suite, retry with
+  `nix --option keep-going true flake check`.
 
 **Formatting:**
 ```bash
