@@ -33,8 +33,7 @@ import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 	UnavailableHistoryKind, resolveNativeHistoryContext;
 import cydo.agent.drivers.claude : ClaudeCodeSession, ToolPermissionRequest;
 import cydo.agent.drivers.codex : CodexAgent, CodexForkSourceOwner, CodexSession;
-import cydo.domain.tasks.model : NativeUndoState, PendingContinuation, ProcessState, TaskData, TaskStatus,
-	WaitingTaskDependencyState;
+import cydo.domain.tasks.model : NativeUndoState, PendingContinuation, ProcessState, TaskData, TaskStatus;
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
@@ -201,7 +200,7 @@ struct TaskSessionRunnerHost
 	void delegate(int tid) onTaskTurnCompletedAlive;
 	bool delegate(int tid) pump;
 	bool delegate(int tid) hasLiveBatchOwner;
-	bool delegate(int tid) hasTaskDependency;
+	bool delegate(int tid) hasBatchChild;
 	bool delegate(int tid) hasPendingChildQuestion;
 	void delegate(int tid) sendPendingChildAnswerReminder;
 	void delegate(int tid, const(BackgroundWork)[] running) sendBackgroundWorkReminder;
@@ -209,9 +208,6 @@ struct TaskSessionRunnerHost
 	Promise!DiskEvaluation delegate(int tid) evaluateDiskUsage;
 	bool delegate(int tid) finalizeCompletedSubTask;
 	bool delegate(int tid) recordChildTerminal;
-	int delegate(int childTid) parentTaskForChild;
-	Promise!void delegate(int tid) deliverWaitingParentResultsIfReady;
-	Promise!void delegate(int parentTid) deliverBatchResults;
 	void delegate(int tid) failPendingAskUserQuestionOnExit;
 	void delegate(int tid) failPendingPermissionPromptOnExit;
 	/// Decide a Claude `can_use_tool` request (policy or user prompt);
@@ -255,10 +251,9 @@ struct TaskSessionRunnerHost
 		finalReconcileJsonlIfPresent;
 	void delegate(int tid) stopJsonlWatch;
 	void delegate(int tid) broadcastHistoryOperations;
-	Promise!void delegate(int tid) sendSystemRestartNudge;
-	void delegate() loadPersistedTaskDeps;
+	Promise!void delegate(int tid, bool retryToolCall) sendSystemRestartNudge;
 	int[] delegate() snapshotTaskIds;
-	WaitingTaskDependencyState delegate(int parentTid) waitingTaskDependencyState;
+	bool delegate(int tid) hasRestoredWork;
 	bool delegate() shuttingDown;
 	TaskTypeCatalog taskTypeCatalog;
 }
@@ -394,7 +389,7 @@ class TaskSessionRunner
 			&& task.processQueue.oldState == ProcessState.Dead
 			&& task.processQueue.newState == ProcessState.Dead
 			&& task.processQueue.goalState != ProcessState.Alive
-			&& (host_.hasLiveBatchOwner(tid) || host_.hasTaskDependency(tid));
+			&& host_.hasBatchChild(tid);
 	}
 
 	private void failDiskGateEvaluation(int tid, Exception e,
@@ -410,9 +405,7 @@ class TaskSessionRunner
 			TaskNotificationChange.preserve);
 		auto diagnostic = host_.appendTaskDiagnostic(tid, subject, e.msg);
 		host_.broadcastAppendedTaskEvent(tid, diagnostic);
-		if (!host_.recordChildTerminal(tid))
-			observeWaitingParentDeliveryAttempt(tid,
-				host_.deliverWaitingParentResultsIfReady(tid));
+		host_.recordChildTerminal(tid);
 		host_.emitTaskReload(tid);
 	}
 
@@ -435,10 +428,6 @@ class TaskSessionRunner
 			if (current.status != TaskStatus.completed)
 				deliveredPendingSubTask = host_.recordChildTerminal(tid);
 		}
-
-		if (!deliveredPendingSubTask)
-			observeWaitingParentDeliveryAttempt(tid,
-				host_.deliverWaitingParentResultsIfReady(tid));
 
 		if (!reloadEmitted)
 			host_.emitTaskReload(tid);
@@ -1081,9 +1070,8 @@ public:
 			}
 
 			bool hasOnYield = taskHasOnYield(current);
-			bool consumerWaiting = host_.hasLiveBatchOwner(tid)
-				|| current.pendingContinuation !is null
-				|| host_.hasTaskDependency(tid) || hasOnYield;
+			bool consumerWaiting = host_.hasBatchChild(tid)
+				|| current.pendingContinuation !is null || hasOnYield;
 			if (consumerWaiting)
 			{
 				bool hasPendingChildQuestion = current.pendingContinuation is null
@@ -1301,9 +1289,7 @@ public:
 					[TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
 						TaskStatus.waiting], TaskStatus.failed,
 					TaskNotificationChange.preserve);
-				if (!host_.recordChildTerminal(tid))
-					observeWaitingParentDeliveryAttempt(tid,
-						host_.deliverWaitingParentResultsIfReady(tid));
+				host_.recordChildTerminal(tid);
 				return;
 			}
 
@@ -1321,7 +1307,7 @@ public:
 				return;
 			}
 
-			bool consumerWaiting = host_.hasLiveBatchOwner(tid) || host_.hasTaskDependency(tid);
+			bool consumerWaiting = host_.hasBatchChild(tid);
 			if (cleanExit && consumerWaiting && !current.lastTurnFailed)
 			{
 				auto finding = checkYieldGates(current.naggedYieldGates,
@@ -1457,9 +1443,7 @@ public:
 				auto translated = host_.appendTaskDiagnostic(
 					tid, "Failed to resume session", buildLaunchFailureBody(tid, e));
 				host_.broadcastAppendedTaskEvent(tid, translated);
-				if (!host_.recordChildTerminal(tid))
-					observeWaitingParentDeliveryAttempt(tid,
-						host_.deliverWaitingParentResultsIfReady(tid));
+				host_.recordChildTerminal(tid);
 				return reject!ProcessState(e);
 			}
 			return resolve(ProcessState.Alive);
@@ -1476,8 +1460,6 @@ public:
 
 	void resumeInFlightTasks()
 	{
-		host_.loadPersistedTaskDeps();
-
 		int[] toResume;
 		foreach (tid; host_.snapshotTaskIds())
 		{
@@ -1503,35 +1485,19 @@ public:
 			infof("Resuming session %d/%d (tid=%d, agent=%s, status=%s)",
 				i + 1, toResume.length, tid, td.agentName, status);
 
-			if (status == "waiting")
-			{
-				final switch (host_.waitingTaskDependencyState(tid))
-				{
-				case WaitingTaskDependencyState.noChildren:
-					tracef("resumeInFlightTasks: tid=%d waiting, no children — resuming with restart nudge",
-						tid);
-					resumeActiveTask(tid);
-					break;
-				case WaitingTaskDependencyState.allChildrenTerminal:
-					tracef("resumeInFlightTasks: tid=%d waiting, all children terminal — resuming with batch delivery",
-						tid);
-					resumeAndDeliverResults(tid);
-					break;
-				case WaitingTaskDependencyState.hasNonTerminalChildren:
-					tracef("resumeInFlightTasks: tid=%d waiting, nonterminal children — resuming without message",
-						tid);
-					resumeWaitingTask(tid);
-					break;
-				}
-			}
-			else if (status == "active")
-			{
-				resumeActiveTask(tid);
-			}
-			else if (status == "alive")
-			{
+			// Retry advice applies only before a wait is recorded. An active
+			// task can owe restored results after another event released its
+			// carrier. Capture the restored-work decision before resuming.
+			// Before batch registration, already-active children have no
+			// batch destination. A child whose first prompt was never
+			// accepted starts fresh and receives the restart nudge.
+			bool restoredWork = (status == TaskStatus.active || status == TaskStatus.waiting)
+				&& host_.hasRestoredWork(tid);
+			if (status == TaskStatus.active
+				|| (status == TaskStatus.waiting && !restoredWork))
+				resumeActiveTask(tid, !restoredWork);
+			else
 				resumeTask(tid).ignoreResult();
-			}
 		}
 	}
 
@@ -1548,22 +1514,10 @@ public:
 		});
 	}
 
-	void resumeAndDeliverResults(int tid)
+	void resumeActiveTask(int tid, bool retryToolCall)
 	{
 		observeRecoveryAttempt(tid, resumeTask(tid).then(() {
-			return host_.deliverBatchResults(tid);
-		}));
-	}
-
-	void resumeWaitingTask(int tid)
-	{
-		resumeTask(tid).ignoreResult();
-	}
-
-	void resumeActiveTask(int tid)
-	{
-		observeRecoveryAttempt(tid, resumeTask(tid).then(() {
-			return host_.sendSystemRestartNudge(tid);
+			return host_.sendSystemRestartNudge(tid, retryToolCall);
 		}));
 	}
 
@@ -1606,16 +1560,6 @@ private:
 				TaskNotificationChange.preserve);
 		else if (processingChanged)
 			host_.publishTaskSnapshot(tid);
-	}
-
-	void observeWaitingParentDeliveryAttempt(int childTid, Promise!void attempt)
-	{
-		requireTask(childTid,
-			"Completed child task must exist while observing recovered delivery");
-		auto ownerTid = host_.parentTaskForChild(childTid);
-		if (ownerTid <= 0)
-			ownerTid = childTid;
-		observeRecoveryAttempt(ownerTid, attempt);
 	}
 
 	void observeRecoveryAttempt(int tid, Promise!void attempt)
@@ -1763,89 +1707,6 @@ private:
 		return buildLaunchFailureBody(tid,
 			e.classinfo.name ~ ": " ~ e.msg);
 	}
-}
-
-unittest
-{
-	import ae.net.asockets : socketManager;
-
-	void drainRecoveryNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager,
-				"nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
-
-	enum dependencyOwnerTid = 1;
-	enum handoffPredecessorTid = 2;
-	enum handoffSuccessorTid = 3;
-	TaskData[int] tasks;
-	foreach (tid; [dependencyOwnerTid, handoffPredecessorTid, handoffSuccessorTid])
-		tasks[tid] = TaskData(tid, "local", "/tmp/cydo-handoff-recovery-owner");
-	tasks[dependencyOwnerTid].status = TaskStatus.waiting;
-	tasks[dependencyOwnerTid].resultText = "existing failed result";
-	tasks[handoffPredecessorTid].status = TaskStatus.completed;
-	tasks[handoffSuccessorTid].status = TaskStatus.completed;
-	tasks[handoffSuccessorTid].parentTid = handoffPredecessorTid;
-
-	int[int] persistedDependencyOwners;
-	int[int] runtimeDependencyOwners;
-	persistedDependencyOwners[handoffSuccessorTid] = dependencyOwnerTid;
-	runtimeDependencyOwners[handoffSuccessorTid] = dependencyOwnerTid;
-	int ownerLookups;
-	int transitionCalls;
-	int resultWrites;
-	int diagnosticCalls;
-	auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
-		getTask: (int tid) {
-			auto task = tid in tasks;
-			return task is null ? null : &tasks[tid];
-		},
-		parentTaskForChild: (int childTid) {
-			ownerLookups++;
-			assert(childTid == handoffSuccessorTid);
-			auto persistedOwner = childTid in persistedDependencyOwners;
-			auto runtimeOwner = childTid in runtimeDependencyOwners;
-			assert(persistedOwner !is null && runtimeOwner !is null);
-			assert(*persistedOwner == dependencyOwnerTid
-				&& *runtimeOwner == dependencyOwnerTid);
-			return *runtimeOwner;
-		},
-		transitionTaskFrom: (int tid, TaskStatus[] expectedFrom, TaskStatus to,
-			TaskNotificationChange notification) { transitionCalls++; },
-		persistResultText: (int tid, string resultText) { resultWrites++; },
-		appendTaskDiagnostic: (int tid, string subject, string body) {
-			diagnosticCalls++;
-			return "";
-		},
-	));
-
-	Promise!void recoveredDeliveryAttempt()
-	{
-		assert(tasks[dependencyOwnerTid].status == TaskStatus.waiting);
-		tasks[dependencyOwnerTid].status = TaskStatus.failed;
-		return reject!void(new Exception(
-			"simulated recovered delivery activation failure"));
-	}
-
-	runner.observeWaitingParentDeliveryAttempt(handoffSuccessorTid,
-		recoveredDeliveryAttempt());
-	drainRecoveryNextTicks();
-
-	assert(ownerLookups == 1);
-	assert(tasks[dependencyOwnerTid].status == TaskStatus.failed
-		&& tasks[dependencyOwnerTid].resultText == "existing failed result");
-	assert(tasks[handoffPredecessorTid].status == TaskStatus.completed);
-	assert(tasks[handoffSuccessorTid].status == TaskStatus.completed
-		&& tasks[handoffSuccessorTid].parentTid == handoffPredecessorTid);
-	assert(transitionCalls == 0 && resultWrites == 0 && diagnosticCalls == 0);
 }
 
 // Codex announces a call to a CyDo tool in its output and makes the call over
@@ -2382,7 +2243,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				publishTaskSnapshot: (int tid) {},
 				pump: (int tid) => false,
 				hasLiveBatchOwner: (int tid) => false,
-				hasTaskDependency: (int tid) => false,
+				hasBatchChild: (int tid) => false,
 				hasPendingChildQuestion: (int tid) => false,
 				touchAndPersistLastActive: (int tid) {},
 					ensureHistoryLoadedForExit: (int tid) => Nullable!TaskHistoryResolution.init,
@@ -2398,8 +2259,6 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				withdrawToolPermissionPrompt: (int tid, string toolUseId) {},
 				cancelExitBackgroundWork: (int tid) {},
 				resetHistoryWatermarkAfterExit: (int tid) => false,
-				parentTaskForChild: (int childTid) => 0,
-				deliverWaitingParentResultsIfReady: (int tid) => resolve(),
 				persistResultText: (int tid, string resultText) {},
 				transitionTask: (int tid, TaskStatus expectedFrom, TaskStatus to,
 					TaskNotificationChange notification) {
@@ -2927,6 +2786,7 @@ version (unittest) private final class YieldGateTestSession : AgentSession
 {
 	void delegate(TranslatedEvent) outputCallback;
 	void delegate(int) exitCallback;
+	bool stdinClosed;
 
 	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content,
 		string correlationId = null, bool isContextBootstrap = false,
@@ -2940,7 +2800,7 @@ version (unittest) private final class YieldGateTestSession : AgentSession
 	void interrupt() {}
 	void sigint() {}
 	void stop() {}
-	void closeStdin() {}
+	void closeStdin() { stdinClosed = true; }
 	@property bool canStopAfterCloseStdin() const { return false; }
 	void killAfterTimeout(Duration timeout) {}
 	@property void onNativeSessionStarted(void delegate(string) callback) {}
@@ -2982,13 +2842,17 @@ version (unittest) private void assertYieldGateRunnerCase(
 	string staleMode = null, bool rejectScan = false,
 	bool bothNagged = false, bool diskFirstThenMissing = false,
 	bool laterHigh = false, bool laterMissing = false,
-	bool diskRetryFails = false)
+	bool diskRetryFails = false, bool heldEventAtIdle = false)
 {
+	import ae.net.asockets : onNextTick, socketManager;
 	import ae.utils.statequeue : StateQueue;
+	import std.algorithm.searching : canFind;
 	import std.conv : to;
 	import configy.attributes : SetInfo;
 	import cydo.domain.tasks.yield_gate : YieldGate;
 	import cydo.domain.storage.persistence : Persistence;
+	import cydo.foundation.system.known_messages : KnownSystemMessageKind;
+	import cydo.workflow.tools.backend : WorkflowToolsBackend, WorkflowToolsHost;
 	import cydo.runtime.config : AgentConfig, WorkspaceConfig;
 
 	withGitMetadataLaunchFixture("cydo-yield-gate-" ~ caseName,
@@ -3039,6 +2903,7 @@ version (unittest) private void assertYieldGateRunnerCase(
 			auto pendingScan = deferredScan ? new Promise!DiskEvaluation : null;
 			DiskEvaluation diskEvaluation;
 			diskEvaluation.usage.totalBytes = highDisk ? 10_485_760 : 0;
+			WorkflowToolsBackend backend;
 			auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
 				getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
 				taskDir: (const TaskData* td) => buildPath(fixture.root, "tasks", "task"),
@@ -3064,9 +2929,12 @@ version (unittest) private void assertYieldGateRunnerCase(
 				},
 				broadcastAppendedTaskEvent: (int tid, string event) {},
 				publishTaskSnapshot: (int tid) {},
-				hasLiveBatchOwner: (int tid) => consumerWaiting,
-				hasTaskDependency: (int tid) => false,
-				hasPendingChildQuestion: (int tid) => false,
+				hasLiveBatchOwner: (int tid) =>
+					backend is null ? consumerWaiting : backend.hasLiveBatchOwner(tid),
+				hasBatchChild: (int tid) =>
+					backend is null ? consumerWaiting : backend.hasBatchChild(tid),
+				hasPendingChildQuestion: (int tid) =>
+					backend !is null && backend.hasPendingChildQuestion(tid),
 				checkOutputGate: (int tid) {
 					checks++;
 					return YieldGateFinding(YieldGate.outputs,
@@ -3087,11 +2955,9 @@ version (unittest) private void assertYieldGateRunnerCase(
 					failedDeliveries++;
 					return true;
 				},
-				parentTaskForChild: (int tid) => 0,
-				deliverWaitingParentResultsIfReady: (int tid) => resolve(),
 				failPendingAskUserQuestionOnExit: (int tid) {},
 				failPendingPermissionPromptOnExit: (int tid) {},
-				pump: (int tid) => false,
+				pump: (int tid) => backend !is null && backend.pump(tid),
 				cancelExitBackgroundWork: (int tid) {},
 				resetHistoryWatermarkAfterExit: (int tid) => false,
 				touchAndPersistLastActive: (int tid) {},
@@ -3107,6 +2973,8 @@ version (unittest) private void assertYieldGateRunnerCase(
 					tasks[tid].naggedYieldGates = mask;
 				},
 				requestYieldGateRetry: (int tid, YieldGateFinding finding) {
+					if (heldEventAtIdle)
+						assert(deliveries == 0 && failedDeliveries == 0);
 					if (finding.gate == YieldGate.outputs)
 						assert(finding.detail == "missing report");
 					else
@@ -3135,7 +3003,87 @@ version (unittest) private void assertYieldGateRunnerCase(
 				taskTypeCatalog: catalog,
 			));
 
+			if (heldEventAtIdle)
+			{
+				assert(persistence.createTask("local", fixture.linkedCheckout) == 2);
+				persistence.setParentTid(1, 2);
+				persistence.setRelationType(1, "subtask");
+				tasks[2] = TaskData(2, "local", fixture.linkedCheckout);
+				tasks[2].status = TaskStatus.active;
+				tasks[1].parentTid = 2;
+				tasks[1].relationType = "subtask";
+			}
+
 			runner.spawnTaskSession(1);
+			if (heldEventAtIdle)
+			{
+				enum answer = "I verified the report format.";
+				persistence.addTaskDep(2, 1, 1, 0);
+				auto qid = persistence.insertQuestion(1, 2, "What did you verify?");
+				persistence.answerQuestion(qid, answer);
+
+				int wakeRequests;
+				string[] preparedAnswers;
+				backend = new WorkflowToolsBackend(WorkflowToolsHost(
+					getTask: (int tid) => tid in tasks,
+					shuttingDown: () => false,
+					loadTaskDeps: &persistence.loadTaskDeps,
+					loadQuestions: &persistence.loadQuestions,
+					persistRemoveTaskBatch: &persistence.removeTaskBatch,
+					persistDeleteQuestion: &persistence.deleteQuestion,
+					ensureProcessQueueAlive: (int tid) {
+						assert(tid == 1);
+						wakeRequests++;
+						return tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {});
+					},
+					systemKeyword: () => "SYSTEM",
+					buildKnownSystemMessageMeta: (KnownSystemMessageKind kind,
+						string subject, string[string] vars, string bodyVar) => "{}",
+					sendPreparedKnownSystemMessage: (int tid, const(ContentBlock)[] blocks,
+						string meta, string nonce) {
+						assert(tid == 1 && blocks.length == 1);
+						assert(nonce == "answer:" ~ qid.to!string);
+						preparedAnswers ~= blocks[0].text;
+						return resolve();
+					},
+					onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); },
+				));
+				tasks[1].processQueue.setGoal(ProcessState.Alive).ignoreResult();
+				tasks[1].isProcessing = true;
+				backend.rebuildWaits();
+				assert(backend.hasLiveBatchOwner(1) && backend.hasBatchChild(1));
+				assert(backend.hasRestoredWork(1));
+				backend.pumpRestoredMailboxes();
+				socketManager.loop();
+				assert(wakeRequests == 0 && preparedAnswers.length == 0);
+				assert(persistence.loadQuestions().length == 1);
+
+				auto session = agent.session;
+				session.result();
+				assert(wakeRequests == 1, "idle must wake the session for the held answer");
+				assert(!session.stdinClosed, "idle must leave the session open for delivery");
+				socketManager.loop();
+				assert(preparedAnswers.length == 1 && preparedAnswers[0].canFind(answer),
+					"idle must deliver the held answer");
+				assert(persistence.loadQuestions().length == 0);
+				assert(backend.hasLiveBatchOwner(1) && backend.hasBatchChild(1));
+				assert(checks == 0 && retries == 0 && scans == 0);
+				assert(deliveries == 0 && failedDeliveries == 0);
+				assert(tasks[1].status == TaskStatus.active);
+
+				assert(!backend.hasRestoredWork(1));
+				session.result();
+				assert(session.stdinClosed, "idle with an empty mailbox must initiate a clean exit");
+				assert(checks == 0 && retries == 0 && scans == 0);
+				assert(deliveries == 0 && failedDeliveries == 0);
+
+				session.exit(0);
+				socketManager.loop();
+				assert(checks == 1 && retries == 1 && scans == 0 && diskRetries == 0);
+				assert(tasks[1].naggedYieldGates.contains(YieldGate.outputs));
+				assert(deliveries == 0 && failedDeliveries == 0);
+				return;
+			}
 			if (continuation)
 				tasks[1].pendingContinuation = new PendingContinuation;
 			if (consumerWaiting)
@@ -3360,6 +3308,13 @@ version (unittest) private void assertYieldGateRunnerCase(
 
 unittest
 {
+	assertYieldGateRunnerCase("held-event-at-idle", false, false, false, 0,
+		false, false, false, false, false, false, null, false, false, false,
+		false, false, false, true);
+}
+
+unittest
+{
 	assertYieldGateRunnerCase("missing", false, true, false, 0, false, false, true);
 	assertYieldGateRunnerCase("retry-fails", false, true, false, 0, false, false, true, true);
 	assertYieldGateRunnerCase("present", true, true, false, 0, false, false, false);
@@ -3495,15 +3450,13 @@ unittest
 	finishFollowUpSession(&child, TaskSessionRunnerHost(
 		getTask: (int tid) => tid == 2 ? &child : null,
 		hasLiveBatchOwner: (int tid) => false,
-		hasTaskDependency: (int tid) => false,
+		hasBatchChild: (int tid) => false,
 		hasPendingChildQuestion: (int tid) => false,
-		parentTaskForChild: (int tid) => 0,
 		recordChildTerminal: (int tid) {
 			assert(tid == 2);
 			recordCalls++;
 			return false;
 		},
-		deliverWaitingParentResultsIfReady: (int tid) => resolve(),
 		transitionTaskFrom: (int tid, TaskStatus[] from, TaskStatus to,
 			TaskNotificationChange notification) {
 			assert(tid == 2 && from.canFind(child.status));
@@ -3610,7 +3563,7 @@ unittest
 		publishTaskSnapshot = (int tid) {};
 		broadcastTask = (int tid, TranslatedEvent event) {};
 		hasLiveBatchOwner = (int tid) => false;
-		hasTaskDependency = (int tid) => true;
+		hasBatchChild = (int tid) => true;
 		checkOutputGate = (int tid) => YieldGateFinding(YieldGate.outputs, null);
 		hasPendingChildQuestion = (int tid) => false;
 		pump = (int tid) => false;
@@ -3631,7 +3584,6 @@ unittest
 		transitionTaskFrom = (int tid, TaskStatus[] expectedFrom, TaskStatus status,
 			TaskNotificationChange notification) { task.status = status; };
 		recordChildTerminal = (int tid) => true;
-		deliverWaitingParentResultsIfReady = (int tid) => resolve();
 		emitTaskReload = (int tid) {};
 	}
 	task.processQueue = new StateQueue!ProcessState(runner.makeProcessQueueSF(1),

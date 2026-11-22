@@ -197,11 +197,6 @@ struct Persistence
 		db.stmt!"INSERT INTO task_deps (parent_tid, child_tid, batch_id, ordinal) VALUES (?, ?, ?, ?)".exec(parentTid, childTid, batchId, ordinal);
 	}
 
-	void removeTaskDep(int parentTid, int childTid)
-	{
-		db.stmt!"DELETE FROM task_deps WHERE parent_tid = ? AND child_tid = ?".exec(parentTid, childTid);
-	}
-
 	void removeTaskBatch(ulong batchId)
 	{
 		db.stmt!"DELETE FROM task_deps WHERE batch_id = ?".exec(batchId);

@@ -58,6 +58,13 @@ public:
 			seen[childTid] = true;
 		}
 		auto batchId = cast(ulong) childTids[0];
+		handle = rebuild(parentTid, batchId, childTids);
+		error = null;
+		return true;
+	}
+
+	BatchHandle rebuild(int parentTid, ulong batchId, int[] childTids)
+	{
 		assert((batchId in batches_) is null, "duplicate batch ID");
 		BatchState batch;
 		batch.parentTid = parentTid;
@@ -67,9 +74,7 @@ public:
 		batches_[batchId] = batch;
 		foreach (childTid; childTids)
 			ownerByChild_[childTid] = batchId;
-		handle = BatchHandle(parentTid, batchId);
-		error = null;
-		return true;
+		return BatchHandle(parentTid, batchId);
 	}
 
 	bool exists(BatchHandle handle) const
@@ -116,6 +121,11 @@ public:
 		return batch.complete;
 	}
 
+	bool hasChild(int childTid) const
+	{
+		return (childTid in ownerByChild_) !is null;
+	}
+
 	bool isRecorded(int childTid) const
 	{
 		auto id = childTid in ownerByChild_;
@@ -127,14 +137,6 @@ public:
 		assert(0, "batch owner has no child slot");
 	}
 
-	McpResult[] envelope(BatchHandle handle) const
-	{
-		auto batch = handle.batchId in batches_;
-		assert(batch !is null && batch.parentTid == handle.parentTid);
-		assert(batch.complete);
-		return batch.results.dup;
-	}
-
 	int[] children(BatchHandle handle) const
 	{
 		auto batch = handle.batchId in batches_;
@@ -142,13 +144,12 @@ public:
 		return batch.childTids.dup;
 	}
 
-	BatchHandle[] batchesFor(int parentTid) const
+	McpResult[] envelope(BatchHandle handle) const
 	{
-		BatchHandle[] handles;
-		foreach (id, batch; batches_)
-			if (batch.parentTid == parentTid)
-				handles ~= BatchHandle(parentTid, id);
-		return handles;
+		auto batch = handle.batchId in batches_;
+		assert(batch !is null && batch.parentTid == handle.parentTid);
+		assert(batch.complete);
+		return batch.results.dup;
 	}
 
 	bool complete(BatchHandle handle) const
@@ -205,4 +206,24 @@ unittest
 	assert(registry.remove(handle, error));
 	assert(!registry.isRecorded(3));
 	assert(!registry.hasBatches(1));
+}
+
+unittest
+{
+	BatchRegistry registry;
+	// A handoff can make the first child's tid differ from the batch id.
+	auto handle = registry.rebuild(1, 2, [9, 3]);
+	assert(handle.batchId == 2);
+	assert(!registry.recordChildDone(handle, 0, 9, McpResult("A", false)));
+	assert(!registry.complete(handle));
+
+	BatchHandle owner;
+	size_t slot;
+	assert(registry.findOwnerOfChild(3, owner, slot));
+	assert(owner == handle && slot == 1);
+	assert(registry.recordChildDone(owner, slot, 3, McpResult("B", false)));
+
+	auto results = registry.envelope(handle);
+	assert(results.length == 2);
+	assert(results[0].text == "A" && results[1].text == "B");
 }

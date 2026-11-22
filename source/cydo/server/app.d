@@ -507,10 +507,10 @@ class App
 				string cydoMeta, string nonce) =>
 				sendPreparedKnownSystemMessage(tid, blocks, cydoMeta, nonce),
 			persistAddTaskDep: &persistence.addTaskDep,
-			persistRemoveTaskDep: &persistence.removeTaskDep,
 			persistReplaceTaskDepChild: &persistence.replaceTaskDepChild,
 			persistRemoveTaskBatch: &persistence.removeTaskBatch,
 			loadTaskDeps: &persistence.loadTaskDeps,
+			loadQuestions: &persistence.loadQuestions,
 			persistInsertQuestion: &persistence.insertQuestion,
 			persistAnswerQuestion: &persistence.answerQuestion,
 			persistCancelQuestion: &persistence.cancelQuestion,
@@ -663,16 +663,13 @@ class App
 			sendBackgroundWorkReminder: &sendBackgroundWorkReminder,
 			pump: &workflowTools.pump,
 			hasLiveBatchOwner: &workflowTools.hasLiveBatchOwner,
-			hasTaskDependency: &workflowTools.hasTaskDependency,
+			hasBatchChild: &workflowTools.hasBatchChild,
 			hasPendingChildQuestion: &workflowTools.hasPendingChildQuestion,
 			sendPendingChildAnswerReminder: &workflowTools.sendPendingChildAnswerReminder,
 			checkOutputGate: &checkOutputGate,
 			evaluateDiskUsage: (int tid) => measureDiskUsageAsync(diskScanInput(tid)),
 			finalizeCompletedSubTask: &workflowTools.finalizeCompletedSubTask,
 			recordChildTerminal: &workflowTools.recordChildTerminal,
-			parentTaskForChild: &workflowTools.parentTaskForChild,
-			deliverWaitingParentResultsIfReady: &workflowTools.deliverWaitingParentResultsIfReady,
-			deliverBatchResults: &workflowTools.deliverBatchResults,
 			failPendingAskUserQuestionOnExit: &workflowTools.failPendingAskUserQuestionOnExit,
 			failPendingPermissionPromptOnExit: &workflowTools.failPendingPermissionPromptOnExit,
 			decideToolPermission: &workflowTools.decideToolPermission,
@@ -715,9 +712,8 @@ class App
 				clientHub.sendToSubscribed(tid, Data(toJson(message).representation));
 			},
 			sendSystemRestartNudge: &workflowTools.sendSystemRestartNudge,
-			loadPersistedTaskDeps: &workflowTools.loadPersistedTaskDeps,
 			snapshotTaskIds: &snapshotTaskIdsForResume,
-			waitingTaskDependencyState: &workflowTools.waitingTaskDependencyState,
+			hasRestoredWork: &workflowTools.hasRestoredWork,
 			shuttingDown: () => shuttingDown,
 			taskTypeCatalog: taskTypeCatalog,
 		));
@@ -1905,7 +1901,7 @@ class App
 				catch (Exception e)
 					warningf("Error generating suggestions: %s", e.msg);
 
-				return workflowTools.deliverBatchFallbackIfReady(tid);
+				workflowTools.pump(tid);
 			}).except((Exception e) {
 				auto current = tid in tasks;
 				assert(current !is null,
@@ -3096,8 +3092,7 @@ class App
 					? "Failed to request missing outputs" : "Failed to request disk cleanup",
 				e.msg);
 			broadcastAppendedTaskEvent(tid, translated);
-			if (!workflowTools.recordChildTerminal(tid))
-				workflowTools.deliverWaitingParentResultsIfReady(tid).ignoreResult();
+			workflowTools.recordChildTerminal(tid);
 			broadcastTaskUpdate(tid);
 		}).ignoreResult();
 	}
@@ -3311,7 +3306,9 @@ class App
 
 	private void resumeInFlightTasks()
 	{
+		workflowTools.rebuildWaits();
 		taskSessionRunner.resumeInFlightTasks();
+		workflowTools.pumpRestoredMailboxes();
 	}
 
 	private Promise!void resumeTask(int tid)
@@ -3338,24 +3335,6 @@ class App
 		if (!exists(path))
 			mkdirRecurse(path);
 		return path;
-	}
-
-	private void resumeAndDeliverResults(int tid)
-	{
-		taskSessionRunner.resumeAndDeliverResults(tid);
-	}
-
-	private void resumeWaitingTask(int tid)
-	{
-		taskSessionRunner.resumeWaitingTask(tid);
-	}
-
-	/// Resume an "active" task and send it a system nudge once alive.
-	/// Using a helper function (rather than an inline lambda in a foreach) avoids
-	/// the D closure-capture bug where all loop iterations share the same `tid`.
-	private void resumeActiveTask(int tid)
-	{
-		taskSessionRunner.resumeActiveTask(tid);
 	}
 
 	/// Broadcast a task reload boundary and invalidate in-flight derived work.
@@ -5296,11 +5275,9 @@ unittest
 		},
 		pump: (int tid) => false,
 		hasLiveBatchOwner: (int tid) => false,
-		hasTaskDependency: (int tid) => false,
+		hasBatchChild: (int tid) => false,
 		hasPendingChildQuestion: (int tid) => false,
-		parentTaskForChild: (int childTid) => 0,
 		recordChildTerminal: (int tid) => false,
-		deliverWaitingParentResultsIfReady: (int tid) => resolve(),
 		failPendingAskUserQuestionOnExit: (int tid) {},
 		failPendingPermissionPromptOnExit: (int tid) {},
 		decideToolPermission: delegate Promise!string(int tid, PermissionPrompt prompt,

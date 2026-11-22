@@ -9,7 +9,7 @@ import { spawn, execSync, execFileSync } from "child_process";
 import type { ChildProcess } from "child_process";
 import type { Locator, Page } from "@playwright/test";
 import { mkdirSync, rmSync, symlinkSync, cpSync, writeFileSync } from "fs";
-import { assistantText, killBackend, sendMessage } from "./fixtures";
+import { assistantText, enterSession, killBackend, sendMessage } from "./fixtures";
 
 // ---------------------------------------------------------------------------
 // Custom fixture
@@ -224,6 +224,21 @@ async function openRunningChildTask(
   return row;
 }
 
+async function expectPersistedCompletion(dbPath: string, tid: number) {
+  await expect
+    .poll(
+      () =>
+        execFileSync("sqlite3", [
+          dbPath,
+          `SELECT status FROM tasks WHERE tid = ${tid}`,
+        ])
+          .toString()
+          .trim(),
+      { timeout: 540_000 },
+    )
+    .toBe("completed");
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -401,8 +416,8 @@ test(
     await expect(page.locator('.sidebar-item[data-tid="2"]')).toBeVisible();
     await page.locator('.sidebar-item[data-tid="1"]').click();
 
-    // A new parent-to-child Ask is accepted and blocks the parent. The child
-    // should receive it, call Answer, and return this fixture response.
+    // The child resumes silently with its original Ask still outstanding.
+    // A new parent-to-child Ask reaches it as an ordinary task question.
     const updateStart = parentTaskUpdates.length;
     await sendMessage(page, "call ask 2 restart-follow-up");
     await expect
@@ -603,18 +618,7 @@ test("waiting parent retains pre-restart completed child in batch results", { ta
   const completedFastChild = sidebarTaskByLabel(page, "Fast child");
   const fastTid = Number(await completedFastChild.getAttribute("data-tid"));
   const dbPath = `${restartableBackend.workDir}/data/cydo/cydo.db`;
-  await expect
-    .poll(
-      () =>
-        execFileSync("sqlite3", [
-          dbPath,
-          `SELECT status FROM tasks WHERE tid = ${fastTid}`,
-        ])
-          .toString()
-          .trim(),
-      { timeout: 540_000 },
-    )
-    .toBe("completed");
+  await expectPersistedCompletion(dbPath, fastTid);
   const fastChildRow = await openSidebarTaskByLabel(page, "Fast child");
   await expect(
     fastChildRow.locator(
@@ -650,12 +654,113 @@ test("waiting parent retains pre-restart completed child in batch results", { ta
   );
 });
 
+test("restart restores a partial batch and outstanding questions", { tag: "@claude-only" }, async ({
+  page,
+  restartableBackend,
+}) => {
+  const task = (tid: number) => page.locator(`.sidebar-item[data-tid="${tid}"]`);
+  const messages = page.locator(".message-list:visible");
+
+  await enterSession(page);
+  await sendMessage(page, 'reply with "restart-parent-ready"');
+  await expect(assistantText(page, "restart-parent-ready")).toBeVisible();
+
+  await enterSession(page);
+  await sendMessage(page, 'reply with "restart-answerer-ready"');
+  await expect(assistantText(page, "restart-answerer-ready")).toBeVisible();
+
+  await enterSession(page);
+  await sendMessage(page, "call ask 1 restart-unanswered-question");
+  await task(1).click();
+  await expect(task(1)).toHaveClass(/active/);
+  const parentUrl = page.url();
+  const question = messages.locator(".system-user-message", {
+    hasText: "restart-unanswered-question",
+  });
+  await expect(question).toHaveCount(1);
+  await expect(task(1).locator(".task-type-icon.alive")).toBeVisible();
+
+  await sendMessage(page, "call partial-restart-batch-with-ask");
+  const waitingChild = sidebarTaskByLabel(page, "Waiting child");
+  const fastChild = sidebarTaskByLabel(page, "Fast child");
+  await expect(waitingChild.locator(".task-type-icon.waiting")).toBeVisible();
+  await expect(
+    fastChild.locator(".task-type-icon.completed, .task-type-icon.resumable"),
+  ).toBeVisible();
+  await expect(task(1).locator(".task-type-icon.waiting")).toBeVisible();
+  const waitingTid = Number(await waitingChild.getAttribute("data-tid"));
+  const fastTid = Number(await fastChild.getAttribute("data-tid"));
+
+  await waitingChild.click();
+  await expect(waitingChild).toHaveClass(/active/);
+  const waitingChildUrl = page.url();
+  await task(2).click();
+  await expect(
+    messages.locator(".system-user-message", {
+      hasText: "restart-answer-pending",
+    }),
+  ).toBeVisible();
+
+  // Pin the crash window between Answer write-through and delivery settlement.
+  // The D unittest covers write-through, and Claude created both questions.
+  const dbPath = `${restartableBackend.workDir}/data/cydo/cydo.db`;
+  await expectPersistedCompletion(dbPath, fastTid);
+  await restartableBackend.stop();
+  let answeredQid: string;
+  try {
+    answeredQid = execSync(
+      `sqlite3 "${dbPath}" "UPDATE questions SET answer = 'restart-recorded-answer'
+     WHERE asker_tid = ${waitingTid} AND text = 'restart-answer-pending'
+       AND answer IS NULL AND cancelled = 0 RETURNING qid;"`,
+      { encoding: "utf8" },
+    ).trim();
+    expect(answeredQid).toMatch(/^\d+$/);
+  } finally {
+    await restartableBackend.start();
+  }
+
+  await page.goto(parentUrl);
+  // The original presentation remains in history, with one new system message.
+  await expect(question).toHaveCount(2);
+  const batch = messages.locator(".result-divider.system-user-message", {
+    hasText: "Sub-task results",
+  });
+  await expect(batch).toHaveCount(1);
+  await batch.click();
+  const batchBody = messages
+    .locator(".system-user-expanded", { hasText: "Sub-task results" })
+    .locator(".system-user-pre");
+  await expect(batchBody).toContainText("first-child-done");
+  await expect
+    .poll(async () =>
+      Array.from(
+        ((await batchBody.textContent()) ?? "").matchAll(/"tid"\s*:\s*(\d+)/g),
+        (match) => Number(match[1]),
+      ),
+    )
+    .toEqual([waitingTid, fastTid]);
+  await expect(
+    messages.locator(".system-user-message", { hasText: "Restart nudge" }),
+  ).toHaveCount(0);
+
+  // Completed batch children are hidden by default after restart.
+  await page.goto(waitingChildUrl);
+  const answer = messages.locator(".result-divider.system-user-message", {
+    hasText: `Answer to your question ${answeredQid}`,
+  });
+  await expect(answer).toHaveCount(1);
+  await answer.click();
+  await expect(
+    messages.locator(".system-user-expanded .system-user-pre"),
+  ).toContainText("restart-recorded-answer");
+});
+
 test("waiting parent with completed children gets results after restart", async ({
   page,
   restartableBackend,
 }) => {
-  // This test exercises the resumeAndDeliverResults path: parent is "waiting",
-  // all children are "completed", but task_deps rows still exist.
+  // The parent is "waiting" and all children are "completed", with a batch
+  // still awaiting delivery.
   //
   // Strategy: create a simple task (which gets an agent_session_id), then
   // manipulate the DB to simulate the race condition: set parent to "waiting",
@@ -690,8 +795,7 @@ test("waiting parent with completed children gets results after restart", async 
       `INSERT OR IGNORE INTO task_deps (parent_tid, child_tid, batch_id, ordinal) VALUES (1, 2, 2, 0);"`,
   );
 
-  // Start fresh — the backend should find parent="waiting" with child="completed"
-  // and trigger resumeAndDeliverResults.
+  // Start fresh so mailbox delivery can send the reconstructed batch.
   await restartableBackend.start();
 
   // Reload and navigate to the parent task.
@@ -701,8 +805,7 @@ test("waiting parent with completed children gets results after restart", async 
     .locator(".sidebar-item .sidebar-label", { hasText: "parent-ready" })
     .click();
 
-  // The parent should receive the [SYSTEM: Session resumed] message with
-  // task_results and respond with "Done." (mock API handles [SYSTEM: messages).
+  // The parent processes the recovered system messages and responds.
   await expect(assistantText(page, "Done.")).toBeVisible();
 });
 

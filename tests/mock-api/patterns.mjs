@@ -123,13 +123,16 @@ export function matchPattern(userText) {
         input: { qid: parseInt(m[1]), message: `landed-${m[2]}` },
       };
     m = userText.match(
-      /\[SYSTEM: Question from task \d+ \(qid=(\d+)\)\][\s\S]*non-direct question/,
+      /\[SYSTEM: Question from task \d+ \(qid=(\d+)\)\][\s\S]*(non-direct question|restart-follow-up)/,
     );
     if (m)
       return {
         type: "tool_call",
         name: "mcp__cydo__Answer",
-        input: { qid: parseInt(m[1]), message: "non-direct-answer" },
+        input: {
+          qid: parseInt(m[1]),
+          message: m[2] === "restart-follow-up" ? "follow-up-answered" : "non-direct-answer",
+        },
       };
     // A parent Ask queued while the child's restart-recovery turn is still
     // running is delivered at turn end in the ordinary form (the child is not
@@ -490,7 +493,7 @@ export function matchPattern(userText) {
   // "call partial-restart-batch" → two children with staggered completion:
   //   - child A completes quickly before the backend restart
   //   - child B is still running at restart time and completes after recovery
-  if (/call partial-restart-batch/i.test(userText))
+  if (/call partial-restart-batch(?!-with-ask)/i.test(userText))
     return {
       type: "tool_call",
       name: "mcp__cydo__Task",
@@ -515,6 +518,28 @@ export function matchPattern(userText) {
       type: "background_shell",
       command:
         "mkfifo /tmp/cydo-test-workspace/waiting-background-resume.fifo && read release < /tmp/cydo-test-workspace/waiting-background-resume.fifo && echo waiting-background-released",
+    };
+
+
+  // The first requested child waits in Ask while the second completes.
+  if (/call partial-restart-batch-with-ask/i.test(userText))
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: {
+        tasks: [
+          {
+            task_type: "research",
+            prompt: "call ask 2 restart-answer-pending",
+            description: "Waiting child",
+          },
+          {
+            task_type: "research",
+            prompt: 'reply with "first-child-done"',
+            description: "Fast child",
+          },
+        ],
+      },
     };
 
   // "spawn task <prompt>" → Claude's built-in Task tool (triggers native sub-agent)
