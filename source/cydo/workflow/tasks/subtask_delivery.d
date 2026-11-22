@@ -43,6 +43,7 @@ struct SubtaskResultDeliveryHost
 	void delegate(int tid, string resultText) persistResultText;
 	int delegate(int childTid) parentTaskForChild;
 	int[] delegate(int parentTid) childTaskIds;
+	void delegate(int fromTid, int toTid) broadcastFocusHint;
 	Promise!void delegate(int tid) ensureProcessQueueAlive;
 	bool delegate() shuttingDown;
 	Promise!void delegate(int tid, KnownSystemMessageKind kind, string body) sendKnownSystemMessage;
@@ -70,7 +71,6 @@ public:
 		if (parentTid <= 0)
 			return resolve();
 
-
 		auto td = requireTask(tid, "Completed child task must exist while delivering parent fallback results");
 		tracef("onExit Branch B: child tid=%d (status=%s) finished, parent tid=%d",
 			tid, td.status, parentTid);
@@ -81,6 +81,7 @@ public:
 			return resolve();
 		}
 
+		host_.broadcastFocusHint(tid, parentTid);
 		foreach (childTid; host_.childTaskIds(parentTid))
 		{
 			auto child = host_.getTask(childTid);

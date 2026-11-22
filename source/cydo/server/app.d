@@ -679,8 +679,6 @@ class App
 				clientHub.unsubscribeAll(tid);
 			},
 			touchAndPersistLastActive: &touchAndPersistLastActive,
-			findAliveAncestor: &findAliveAncestor,
-			broadcastFocusHint: &broadcastFocusHint,
 			transitionTask: &transitionTask,
 			transitionTaskFrom: &transitionTask,
 			persistResultText: (int tid, string resultText) {
@@ -3741,23 +3739,6 @@ class App
 		ws.send(Data(toJson(FocusHintMessage("focus_hint", fromTid, toTid)).representation));
 	}
 
-	/// Find the first alive ancestor of a task, walking up through dead parents.
-	/// Returns -1 if no ancestor is found.
-	private int findAliveAncestor(int tid)
-	{
-		if (tid !in tasks || tasks[tid].parentTid == 0)
-			return -1;
-		int targetTid = tasks[tid].parentTid;
-		while (targetTid in tasks)
-		{
-			auto target = &tasks[targetTid];
-			if (target.parentTid == 0 || taskAlive(targetTid))
-				break;
-			targetTid = target.parentTid;
-		}
-		return (targetTid in tasks) ? targetTid : -1;
-	}
-
 	private void handleRequestTaskTypesMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		if (json.project_path.length == 0)
@@ -5279,8 +5260,6 @@ unittest
 		cancelExitBackgroundWork: (int tid) {},
 		resetHistoryWatermarkAfterExit: (int tid) => false,
 		touchAndPersistLastActive: (int tid) {},
-		findAliveAncestor: (int tid) => -1,
-		broadcastFocusHint: (int fromTid, int toTid) {},
 		transitionTask: (int tid, TaskStatus expectedFrom, TaskStatus to,
 			TaskNotificationChange notification) {
 			fixture.app.taskLifecycle.transitionTask(tid, expectedFrom, to,

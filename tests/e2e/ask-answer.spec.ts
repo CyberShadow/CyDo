@@ -412,8 +412,8 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   ).toBeVisible();
 
   // L137's Task call drifts focus to the child. Wait for the corrective
-  // focus_hint(child → parent) to land (child completes its turn and
-  // exits) before sending the follow-up Ask, otherwise its sendMessage
+  // focus_hint(child → parent) from recording the child’s batch result
+  // before sending the follow-up Ask, otherwise its sendMessage
   // may click the child's textarea, which gets hidden mid-action when
   // focus returns to parent.
   await expect(
@@ -1244,8 +1244,8 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
 
   // L513's Answer call drifts focus to the answered child (intended UX —
   // the user follows the answered child's continued work). When the
-  // child's turn completes and its agent process exits, the backend
-  // emits a corrective focus_hint(child → parent) (source/cydo/app.d:5372).
+  // backend records the child’s batch result, it emits a
+  // focus_hint(child → parent).
   // Wait for that hint to land before asserting on parent's view and
   // before the next sendMessage, otherwise selectors may match the
   // child's view and the next sendMessage's click may resolve to a
@@ -1630,8 +1630,8 @@ test("Ask/Answer: answer reaches the parent's Ask", async ({
   ).toBeVisible();
 
   // L713's Task call drifts focus to the child. Wait for the corrective
-  // focus_hint(child → parent) to land (child completes its turn and
-  // exits) before sending the follow-up Ask, otherwise its sendMessage
+  // focus_hint(child → parent) from recording the child’s batch result
+  // before sending the follow-up Ask, otherwise its sendMessage
   // may click the child's textarea, which gets hidden mid-action when
   // focus returns to parent.
   await expect(
@@ -1680,8 +1680,8 @@ test(
         .last(),
     ).toBeVisible();
 
-    // Wait for the corrective focus_hint (child → parent) to land before
-    // sending the follow-up Ask (see the deferred-delivery test above).
+    // Wait for the batch result’s focus_hint (child → parent) before
+    // sending the follow-up Ask.
     await expect(
       page.locator('.sidebar-item[data-tid="1"].active'),
     ).toBeVisible();

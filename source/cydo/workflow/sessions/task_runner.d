@@ -230,8 +230,6 @@ struct TaskSessionRunnerHost
 	bool delegate(int tid) resetHistoryWatermarkAfterExit; /// ditto
 	void delegate(int tid) unsubscribeTaskHistorySubscribers;
 	void delegate(int tid) touchAndPersistLastActive;
-	int delegate(int tid) findAliveAncestor;
-	void delegate(int fromTid, int toTid) broadcastFocusHint;
 	void delegate(int tid, TaskStatus expectedFrom, TaskStatus to,
 		TaskNotificationChange notification) transitionTask;
 	void delegate(int tid, TaskStatus[] expectedFrom, TaskStatus to,
@@ -460,12 +458,6 @@ class TaskSessionRunner
 		if (current is null)
 			return;
 
-		if (current.relationType != "fork")
-		{
-			auto ancestor = host_.findAliveAncestor(tid);
-			if (ancestor >= 0)
-				host_.broadcastFocusHint(tid, ancestor);
-		}
 		if (!deliveredPendingSubTask && statusWasAlreadyTarget)
 			host_.publishTaskSnapshot(tid);
 	}
@@ -1279,12 +1271,6 @@ public:
 					[TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
 						TaskStatus.waiting], TaskStatus.failed,
 					TaskNotificationChange.preserve);
-				if (current.relationType != "fork")
-				{
-					auto ancestor = host_.findAliveAncestor(tid);
-					if (ancestor >= 0)
-						host_.broadcastFocusHint(tid, ancestor);
-				}
 				if (!host_.recordChildTerminal(tid))
 					observeWaitingParentDeliveryAttempt(tid,
 						host_.deliverWaitingParentResultsIfReady(tid));
@@ -2365,7 +2351,6 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 					tasks[tid].status = to;
 				},
 				emitTaskReload: (int tid) {},
-				findAliveAncestor: (int tid) => -1,
 				shuttingDown: () => false,
 				taskTypeCatalog: catalog,
 			));
@@ -3050,7 +3035,6 @@ version (unittest) private void assertYieldGateRunnerCase(
 				cancelExitBackgroundWork: (int tid) {},
 				resetHistoryWatermarkAfterExit: (int tid) => false,
 				touchAndPersistLastActive: (int tid) {},
-				findAliveAncestor: (int tid) => -1,
 				transitionTask: (int tid, TaskStatus from, TaskStatus to,
 					TaskNotificationChange change) { tasks[tid].status = to; },
 				transitionTaskFrom: (int tid, TaskStatus[] from, TaskStatus to,
@@ -3370,4 +3354,101 @@ unittest
 	assertYieldGateRunnerCase("disk-retry-submission-failure", true, true, false, 0,
 		false, false, false, false, true, true, null, false,
 		false, false, false, false, true);
+}
+
+/// Avoid process-launch setup while retaining TaskSessionRunner's production
+/// session callback wiring and exit handling.
+version (unittest) private final class FollowUpExitRunner : TaskSessionRunner
+{
+	this(TaskSessionRunnerHost host)
+	{
+		super(host);
+	}
+
+	override TaskSessionLaunch prepareTaskSessionLaunch(int tid, Agent taskAgent,
+		TaskTypeDef* typeDef)
+	{
+		return TaskSessionLaunch.init;
+	}
+}
+
+// Drive the production completion and exit handlers with a controllable session.
+version (unittest) void finishFollowUpSession(TaskData* child, TaskSessionRunnerHost host)
+{
+	import ae.net.asockets : socketManager;
+	import ae.utils.statequeue : StateQueue;
+
+	withGitMetadataLaunchFixture("cydo-follow-up-exit",
+		(GitMetadataLaunchFixture fixture) {
+			host.taskTypeCatalog = gitMetadataTaskCatalog(fixture,
+				"task_types:\n  runner:\n    model_class: large\n");
+			auto agent = new YieldGateTestAgent;
+			host.agentForTask = (int tid) => cast(Agent) agent;
+			host.tryAgentForTask = host.agentForTask;
+			host.clearLastActive = (int tid) {};
+			host.broadcastTask = (int tid, TranslatedEvent event) {};
+			host.publishTaskSnapshot = (int tid) {};
+			host.failPendingAskUserQuestionOnExit = (int tid) {};
+			host.failPendingPermissionPromptOnExit = (int tid) {};
+			host.cancelExitBackgroundWork = (int tid) {};
+			host.resetHistoryWatermarkAfterExit = (int tid) => false;
+			host.touchAndPersistLastActive = (int tid) {};
+			host.persistResultText = (int tid, string resultText) {};
+			host.emitTaskReload = (int tid) {};
+			host.ensureHistoryLoadedForExit = (int tid) => Nullable!TaskHistoryResolution.init;
+			host.finalReconcileJsonlIfPresent = (int tid, Nullable!TaskHistoryResolution resolution) {};
+			host.stopJsonlWatch = (int tid) {};
+			host.shuttingDown = () => false;
+			host.startJsonlWatch = (int tid) {};
+			host.broadcastHistoryOperations = (int tid) {};
+			host.pump = (int tid) => false;
+
+			assert(child.status == TaskStatus.active);
+			auto originalProjectPath = child.projectPath;
+			child.projectPath = fixture.linkedCheckout;
+			scope(exit) child.projectPath = originalProjectPath;
+			child.processQueue = new StateQueue!ProcessState(
+				(ProcessState state) => resolve(state), ProcessState.Alive);
+			auto runner = new FollowUpExitRunner(host);
+			runner.spawnTaskSession(child.tid);
+			agent.session.result();
+			assert(child.status == TaskStatus.completed);
+			assert(child.processQueue.goalState == ProcessState.Dead);
+			agent.session.exit(0);
+			socketManager.loop();
+			assert(child.status == TaskStatus.completed);
+			assert(runner.sessionForTask(child.tid) is null);
+		});
+}
+
+@("completed follow-up session exit records terminal state and removes the session")
+unittest
+{
+	import std.algorithm : canFind;
+
+	auto child = TaskData(2, "local", "");
+	child.taskType = "runner";
+	child.parentTid = 1;
+	child.relationType = "subtask";
+	child.status = TaskStatus.active;
+	int recordCalls;
+	finishFollowUpSession(&child, TaskSessionRunnerHost(
+		getTask: (int tid) => tid == 2 ? &child : null,
+		hasLiveBatchOwner: (int tid) => false,
+		hasTaskDependency: (int tid) => false,
+		hasPendingChildQuestion: (int tid) => false,
+		parentTaskForChild: (int tid) => 0,
+		recordChildTerminal: (int tid) {
+			assert(tid == 2);
+			recordCalls++;
+			return false;
+		},
+		deliverWaitingParentResultsIfReady: (int tid) => resolve(),
+		transitionTaskFrom: (int tid, TaskStatus[] from, TaskStatus to,
+			TaskNotificationChange notification) {
+			assert(tid == 2 && from.canFind(child.status));
+			child.status = to;
+		},
+	));
+	assert(recordCalls == 1);
 }
