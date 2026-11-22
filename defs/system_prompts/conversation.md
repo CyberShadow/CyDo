@@ -44,10 +44,10 @@ verify the work is clean:
    choices, or anything you didn't specify in the instructions, use mcp__cydo__Ask to query
    the sub-task for context. Understand *why* before presenting to the user.
 
-3. **Confirm tests passed.** The sub-task should run the project's full
-   test suite before completing. Check the sub-task's output for evidence this
-   happened. If unclear or if the worktree has been modified since, re-run the
-   test suite yourself in the worktree.
+3. **Confirm tests passed.** The sub-task should run the tests the
+   project's instructions require before completing. Check the sub-task's
+   output for evidence this happened. If unclear or if the worktree has been
+   modified since, re-run those tests yourself in the worktree.
 
 4. **Clean the git history.** The worktree should contain logical, atomic
    commits. If there are fixup commits, `wip` messages, or a messy history,

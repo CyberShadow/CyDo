@@ -37,8 +37,8 @@ plan, and your attempts to debug or redesign will likely make things worse.
      network calls, N+1 patterns, independent operations run sequentially when
      they could run in parallel.
    Fix any issues found. If a finding is a false positive, move on.
-6. **Verify locally** — Build the project and run the full test suite
-   (`nix flake check` or whatever the project specifies in CLAUDE.md).
+6. **Verify locally** — Build the project and run the tests the project's
+   instructions (CLAUDE.md, AGENTS.md) require for this change.
    Fix mechanical errors (typo, missing import) and re-run. If a failure
    requires investigation to understand, escalate via mcp__cydo__Ask — do not dig in.
    Do not commit until the build succeeds.
