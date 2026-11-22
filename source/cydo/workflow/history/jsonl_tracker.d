@@ -506,9 +506,6 @@ struct JsonlTracker
 				continue;
 			if (tid !in boundaryState)
 				boundaryState[tid] = BoundaryReconcileState.init;
-			auto task = getTask(tid);
-			if (boundaryHasCheckpoint(context.agent.driver, boundary.kind))
-				boundary.checkpointUuid = task.checkpointUuidForAnchor(boundary.anchor);
 			boundaryState[tid].persistedByKind[boundary.kind] ~= PersistedBoundaryCandidate(boundary,
 				cast(size_t) boundary.sourceLine,
 				(boundary.anchor in boundaryState[tid].queueCanonicalIdentities) !is null,
@@ -586,6 +583,8 @@ struct JsonlTracker
 	{
 		if (onBoundaryResolved is null)
 			return;
+		if (boundaryHasCheckpoint(requireLiveContext(tid).agent.driver, boundary.kind))
+			boundary.checkpointUuid = getTask(tid).checkpointUuidForAnchor(boundary.anchor);
 		onBoundaryResolved(tid, seq, HistoryBoundary(boundary.anchor,
 			boundary.kind == PersistedHistoryBoundaryKind.user
 				? HistoryBoundaryKind.user
@@ -617,8 +616,10 @@ unittest
 
 unittest
 {
+	import cydo.agent.drivers.codex : CodexAgent;
 	import std.conv : to;
 	JsonlTracker tracker;
+	setTestLiveContext(tracker, 1, new CodexAgent());
 	tracker.historyGeneration = (int) => 0;
 	string[] resolved;
 	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool, ulong) {
@@ -689,7 +690,9 @@ unittest
 {
 	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import std.conv : to;
+	TaskData task = TaskData(1, "", "");
 	JsonlTracker tracker;
+	tracker.getTask = (int) => &task;
 	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
 	tracker.historyGeneration = (int) => 0;
 	string[] resolved;
@@ -762,6 +765,55 @@ unittest
 	tracker.noteLiveBoundaryCandidate(1, 4,
 		`{"type":"item/started","item_type":"user_message","uuid":"first-user"}`);
 	assert(published == ["first-user"]);
+}
+
+@("Claude publishes the user checkpoint UUID in either arrival order")
+unittest
+{
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import std.file : remove, write;
+
+	enum uuid = "2f9b69a2-fb3d-4d54-b5ce-169ea80ebfd9";
+	enum path = "/tmp/cydo-jsonl-tracker-claude-checkpoint.jsonl";
+	foreach (transcriptFirst; [false, true])
+	{
+		write(path, `{"type":"user","uuid":"` ~ uuid
+			~ `","message":{"role":"user","content":"hello"}}` ~ "\n");
+		scope(exit) remove(path);
+
+		TaskData task = TaskData(1, "", "");
+		task.history.reset(Watermark.none());
+		JsonlTracker tracker;
+		tracker.getTask = (int) => &task;
+		tracker.historyGeneration = (int) => task.history.generation;
+		setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+		string[] publishedCheckpoints;
+		tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool publish, ulong) {
+			assert(seq == 4);
+			assert(boundary.kind == HistoryBoundaryKind.user);
+			assert(boundary.anchor == uuid);
+			assert(publish);
+			publishedCheckpoints ~= boundary.checkpoint_uuid;
+		};
+
+		if (transcriptFirst)
+			tracker.attachAndCatchUp(1, path, false);
+		assert(publishedCheckpoints.length == 0);
+
+		task.registerVisibleTurnAnchor(4, true, false, uuid, uuid, false);
+		tracker.noteLiveBoundaryCandidate(1, 4,
+			`{"type":"item/started","item_type":"user_message","uuid":"` ~ uuid ~ `"}`);
+		if (!transcriptFirst)
+		{
+			assert(publishedCheckpoints.length == 0);
+			tracker.attachAndCatchUp(1, path, false);
+		}
+
+		assert(publishedCheckpoints.length == 1);
+		assert(publishedCheckpoints[0] == uuid, transcriptFirst
+			? "Transcript-first boundary must publish the Claude checkpoint UUID"
+			: "Stdout-first boundary must publish the Claude checkpoint UUID");
+	}
 }
 
 unittest
@@ -1204,10 +1256,14 @@ unittest
 
 unittest
 {
+	import cydo.agent.drivers.codex : CodexAgent;
 	import std.exception : assertThrown;
 	import core.exception : AssertError;
 	import std.conv : to;
 	JsonlTracker tracker;
+	setTestLiveContext(tracker, 1, new CodexAgent());
+	setTestLiveContext(tracker, 2, new CodexAgent());
+	setTestLiveContext(tracker, 3, new CodexAgent());
 	ulong current = 2;
 	tracker.historyGeneration = (int) => current;
 	string[] resolved;
@@ -1238,10 +1294,12 @@ unittest
 
 unittest
 {
+	import cydo.agent.drivers.codex : CodexAgent;
 	import std.conv : to;
 	// A boundary pair can be captured before a reset but resolved only after it.
 	// Publication must reject that old lineage and accept a replacement pair.
 	JsonlTracker tracker;
+	setTestLiveContext(tracker, 1, new CodexAgent());
 	TaskData task = TaskData(1, "", "");
 	task.history.reset(Watermark.none());
 	tracker.historyGeneration = (int) => task.history.generation;
@@ -1277,7 +1335,9 @@ unittest
 	import std.conv : to;
 	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	string[] resolved;
+	auto tasks = [1: TaskData(1, "", ""), 3: TaskData(3, "", ""), 5: TaskData(5, "", "")];
 	JsonlTracker tracker;
+	tracker.getTask = (int tid) => &tasks[tid];
 	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
 	tracker.historyGeneration = (int) => 0;
 	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool, ulong) {
@@ -1354,7 +1414,10 @@ unittest
 	import std.exception : assertThrown;
 	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 
+	auto tasks = [1: TaskData(1, "", ""), 2: TaskData(2, "", ""),
+		4: TaskData(4, "", ""), 6: TaskData(6, "", "")];
 	JsonlTracker tracker;
+	tracker.getTask = (int tid) => &tasks[tid];
 	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
 	tracker.historyGeneration = (int) => 0;
 	string[] resolved;
