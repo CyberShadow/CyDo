@@ -38,7 +38,7 @@ import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.workspace.worktree : linkCheckoutFiles;
-import cydo.domain.task_types.definition : integratorSingletonName, TaskTypeDef,
+import cydo.domain.task_types.definition : TaskTypeDef, formatCompactSingletonToolSummary, singletonsOfferedTo,
 	formatCompactCreatableTaskTypeToolSummary, formatCompactHandoffToolSummary,
 	isInteractive, formatCompactSwitchModeToolSummary, loadTaskTypeSystemPrompt, byName;
 import cydo.workflow.history.jsonl_store : repairInterruptedToolCallFile;
@@ -620,6 +620,9 @@ public:
 		SessionConfig sessionConfig;
 		auto taskTypes = host_.taskTypeCatalog.getTaskTypesForProject(td.projectPath);
 		auto entryPoints = host_.taskTypeCatalog.getEntryPointsForProject(td.projectPath);
+		auto singletons = singletonsOfferedTo(taskTypes, entryPoints,
+			host_.taskTypeCatalog.singletonsForProject(td.projectPath), td.taskType);
+		sessionConfig.singletons = formatCompactSingletonToolSummary(singletons);
 		sessionConfig.creatableTaskTypes = formatCompactCreatableTaskTypeToolSummary(taskTypes,
 			td.taskType);
 		sessionConfig.switchModes = formatCompactSwitchModeToolSummary(taskTypes, td.taskType);
@@ -636,7 +639,7 @@ public:
 				sessionConfig.appendSystemPrompt = loadTaskTypeSystemPrompt(*typeDef, taskTypes,
 					td.taskType,
 					host_.taskTypeCatalog.promptSearchPath(td.projectPath),
-					host_.outputPath(td));
+					host_.outputPath(td), singletons: singletons);
 		}
 		sessionConfig.mcpSocketPath = host_.mcpSocketPath();
 
@@ -778,14 +781,8 @@ public:
 			sessionConfig.includeTools ~= "AskUserQuestion";
 		sessionConfig.includeTools ~= "Ask";
 		sessionConfig.includeTools ~= "Answer";
-		// Interactive sessions are the ones that hand finished work to the
-		// user; the integrator itself is the one Land asks.
-		auto integrator = host_.taskTypeCatalog.singletonsForProject(td.projectPath)
-			.byName(integratorSingletonName);
-		bool offersLand = integrator !is null && interactive
-			&& td.taskType != integrator.task_type;
-		if (offersLand)
-			sessionConfig.includeTools ~= "Land";
+		if (sessionConfig.singletons.length > 0)
+			sessionConfig.includeTools ~= "Request";
 		if (typeDef !is null && typeDef.allow_native_subagents)
 			sessionConfig.allowNativeSubagents = true;
 		sessionConfig.allowScheduledWakeups = interactive;
@@ -794,10 +791,9 @@ public:
 
 		RenderedCydoToolsOptions renderedToolOptions;
 		renderedToolOptions.includeBash = taskAgent.needsBash();
-		renderedToolOptions.includeLand = offersLand;
 		host_.reportMcpToolDescriptionLimit(td.projectPath, td.taskType,
 			checkRenderedCydoToolDescriptionViolations(taskTypes, entryPoints,
-				td.taskType, options: renderedToolOptions));
+				td.taskType, sessionConfig.singletons, options: renderedToolOptions));
 		sessionConfig.agentName = td.agentName;
 
 		return TaskSessionLaunch(processLaunch, sessionConfig);

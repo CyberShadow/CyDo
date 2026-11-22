@@ -515,7 +515,7 @@ private TaskTypeConfig* loadAndValidate(string path, bool delegate(string) isCon
 		return null;
 	}
 
-	auto errors = validateTaskTypes(config.types, config.entryPoints,
+	auto errors = validateTaskTypes(config.types, config.entryPoints, config.singletons,
 		isConfiguredAgentName, [dirName(path)]);
 	if (errors.length > 0)
 	{
@@ -525,7 +525,7 @@ private TaskTypeConfig* loadAndValidate(string path, bool delegate(string) isCon
 		writeln();
 	}
 
-	return new TaskTypeConfig(config.types, config.entryPoints);
+	return new TaskTypeConfig(config.types, config.entryPoints, config.singletons);
 }
 
 void runSimulator(string path, bool delegate(string) isConfiguredAgentName)

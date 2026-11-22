@@ -179,6 +179,8 @@ and parents can re-engage completed children for follow-up.
 ### 10. Stewards
 
 Stateful review agents that gate continuation spawning via approval.
+Stewards are expected to build on singletons, with parallel approval gates,
+notifications, session rotation, and a queue view still to add.
 
 Deliverable: every plan and patch is reviewed by stewards before landing.
 Rejections feed back to the originating agent, which can rework and retry.

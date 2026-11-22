@@ -166,15 +166,21 @@ struct TaskTypesFile
 	@Optional @Key("name") SingletonDef[] singletons;
 }
 
+enum SingletonAudience : string
+{
+	interactive = "interactive",
+	all = "all",
+}
+
 struct SingletonDef
 {
 	string name;
 	string task_type;
 	string prompt_template;
 	string title;
+	@Optional SingletonAudience offered_to = SingletonAudience.interactive;
+	@Optional string description;
 }
-
-enum integratorSingletonName = "integrator";
 
 /// Combined result of loading task types (types + entry points).
 struct TaskTypeConfig
@@ -246,6 +252,56 @@ bool[string] interactiveTypeSet(TaskTypeDef[] types, UserEntryPointDef[] entryPo
 bool isInteractive(TaskTypeDef[] types, UserEntryPointDef[] entryPoints, string typeName)
 {
 	return (typeName in interactiveTypeSet(types, entryPoints)) !is null;
+}
+
+SingletonDef[] singletonsOfferedTo(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
+	SingletonDef[] singletons, string typeName)
+{
+	auto interactive = isInteractive(types, entryPoints, typeName);
+	return singletons.filter!(s => s.task_type != typeName
+		&& (s.offered_to == SingletonAudience.all || interactive)).array;
+}
+
+unittest
+{
+	TaskTypeDef interactiveTask;
+	interactiveTask.name = "conversation";
+	TaskTypeDef isolatedTask;
+	isolatedTask.name = "isolated";
+	TaskTypeDef integratorTask;
+	integratorTask.name = "integrator";
+	TaskTypeDef reviewerTask;
+	reviewerTask.name = "reviewer";
+	auto types = [interactiveTask, isolatedTask, integratorTask, reviewerTask];
+	auto entryPoints = [UserEntryPointDef("chat", "conversation")];
+	auto interactiveOnly = SingletonDef("review", "reviewer");
+	auto integrator = SingletonDef("integrate", "integrator", "", "", SingletonAudience.all);
+	auto reviewer = SingletonDef("review", "reviewer", "", "", SingletonAudience.all);
+
+	assert(singletonsOfferedTo(types, entryPoints, [interactiveOnly, integrator],
+		"conversation") == [interactiveOnly, integrator]);
+	assert(singletonsOfferedTo(types, entryPoints, [interactiveOnly, integrator],
+		"isolated") == [integrator]);
+
+	// The all audience includes other singleton types outside the interactive cluster.
+	assert(singletonsOfferedTo(types, entryPoints, [integrator, reviewer],
+		"integrator") == [reviewer]);
+	assert(singletonsOfferedTo(types, entryPoints, [integrator, reviewer],
+		"reviewer") == [integrator]);
+
+	entryPoints ~= [UserEntryPointDef("integrate", "integrator", system: true),
+		UserEntryPointDef("review", "reviewer", system: true)];
+	auto interactiveIntegrator = SingletonDef("integrate", "integrator");
+	assert(singletonsOfferedTo(types, entryPoints, [interactiveIntegrator, interactiveOnly],
+		"integrator") == [interactiveOnly]);
+	assert(singletonsOfferedTo(types, entryPoints, [interactiveIntegrator, interactiveOnly],
+		"reviewer") == [interactiveIntegrator]);
+}
+
+string formatCompactSingletonToolSummary(SingletonDef[] singletons)
+{
+	return singletons.map!(s => "- " ~ s.name ~ ": "
+		~ (s.description.length ? s.description.lineSplitter.front : "")).join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -437,13 +493,18 @@ string resolveModelClass(DjinjaTemplate expr, string workspace, string agent)
 // ---------------------------------------------------------------------------
 
 string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
-	bool delegate(string) isConfiguredAgentName, string[] typesDirs = null)
+	SingletonDef[] singletons, bool delegate(string) isConfiguredAgentName,
+	string[] typesDirs = null)
 {
 	import std.file : exists, readText;
 	import std.path : buildPath;
 	import cydo.foundation.system.framing : validateTemplateSource;
 
 	string[] errors;
+	foreach (ref singleton; singletons)
+		if (singleton.description.strip.length == 0)
+			errors ~= "singleton '" ~ singleton.name ~ "' has no description";
+
 
 	/// Check that a prompt_template file exists on disk and has no adjacent placeholders.
 	void checkTemplateFile(string context, string tmpl)
@@ -833,9 +894,10 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 }
 
 string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
-	bool function(string) isConfiguredAgentName, string[] typesDirs = null)
+	SingletonDef[] singletons, bool function(string) isConfiguredAgentName,
+	string[] typesDirs = null)
 {
-	return validateTaskTypes(types, entryPoints,
+	return validateTaskTypes(types, entryPoints, singletons,
 		(string name) => isConfiguredAgentName(name), typesDirs);
 }
 
@@ -1327,7 +1389,7 @@ unittest // 3. Validator emits error for unconfigured hardcoded literal
 	t.model_class = "large";
 	t.agent = "codeex"; // typo
 
-	auto errors = validateTaskTypes([t], [], &isKnownTestAgent);
+	auto errors = validateTaskTypes([t], [], [], &isKnownTestAgent);
 	assert(errors.canFind("foo: agent 'codeex' is not a configured agent"), errors.to!string);
 }
 
@@ -1338,7 +1400,7 @@ unittest // 3b. Validator accepts configured custom agent names and rejects raw 
 	custom.model_class = "large";
 	custom.agent = "work-claude";
 
-	auto errors = validateTaskTypes([custom], [], &isConfiguredCustomTestAgent);
+	auto errors = validateTaskTypes([custom], [], [], &isConfiguredCustomTestAgent);
 	assert(!errors.canFind("custom: agent 'work-claude' is not a configured agent"),
 		errors.to!string);
 
@@ -1347,7 +1409,7 @@ unittest // 3b. Validator accepts configured custom agent names and rejects raw 
 	driver.model_class = "large";
 	driver.agent = "claude";
 
-	errors = validateTaskTypes([driver], [], &isConfiguredCustomTestAgent);
+	errors = validateTaskTypes([driver], [], [], &isConfiguredCustomTestAgent);
 	assert(errors.canFind("driver: agent 'claude' is not a configured agent"),
 		errors.to!string);
 }
@@ -1359,7 +1421,7 @@ unittest // 26. Validator accepts an open-ended model_class label
 	t.model_class = "best";
 	t.agent = "claude";
 
-	auto errors = validateTaskTypes([t], [], &isKnownTestAgent);
+	auto errors = validateTaskTypes([t], [], [], &isKnownTestAgent);
 	assert(errors.length == 0, errors.to!string);
 }
 
@@ -1386,7 +1448,7 @@ unittest // 4. Validator errors on keep_context cluster with disagreeing hardcod
 	ep.description = "Start triage";
 	ep.prompt_template = "start.md";
 
-	auto errors = validateTaskTypes([triage, implement], [ep], &isKnownTestAgent);
+	auto errors = validateTaskTypes([triage, implement], [ep], [], &isKnownTestAgent);
 	import std.algorithm : any;
 	assert(errors.any!(e => e.canFind("keep_context cluster")
 		&& e.canFind("triage") && e.canFind("implement")), errors.to!string);
@@ -1421,7 +1483,7 @@ unittest // 5. Validator enforces keep_context cluster even without any entry po
 	ep.description = "Start";
 	ep.prompt_template = "start.md";
 
-	auto errors = validateTaskTypes([a, b, root], [ep], &isKnownTestAgent);
+	auto errors = validateTaskTypes([a, b, root], [ep], [], &isKnownTestAgent);
 	import std.algorithm : any;
 	assert(errors.any!(e => e.canFind("keep_context cluster")
 		&& e.canFind("atype") && e.canFind("btype")), errors.to!string);
@@ -1434,7 +1496,7 @@ unittest // 6. Validator allows {{ parent_agent_type }} / defaultAgentExpr even 
 	implement.model_class = "large";
 	implement.agent = defaultAgentExpr; // dynamic — not hardcoded
 
-	auto errors = validateTaskTypes([implement], [], &rejectAllTestAgents);
+	auto errors = validateTaskTypes([implement], [], [], &rejectAllTestAgents);
 	assert(!errors.canFind("implement: agent '{{ parent_agent_type }}' is not a configured agent"),
 		errors.to!string);
 }
@@ -1456,10 +1518,24 @@ unittest // 7. Validator errors when on_yield keep_context connects disagreeing 
 	b.model_class = "large";
 	b.agent = "codex";
 
-	auto errors = validateTaskTypes([a, b], [], &isKnownTestAgent);
+	auto errors = validateTaskTypes([a, b], [], [], &isKnownTestAgent);
 	import std.algorithm : any;
 	assert(errors.any!(e => e.canFind("keep_context cluster")
 		&& e.canFind("atype") && e.canFind("btype")), errors.to!string);
+}
+
+unittest
+{
+	auto types = [TaskTypeDef(name: "integrator")];
+	auto singletons = [SingletonDef(name: "integrate", task_type: "integrator",
+		description: "  ")];
+
+	auto warnings = validateTaskTypes(types, [], singletons, &isKnownTestAgent);
+	assert(warnings.canFind("singleton 'integrate' has no description"));
+
+	singletons[0].description = "Integrate changes.";
+	warnings = validateTaskTypes(types, [], singletons, &isKnownTestAgent);
+	assert(!warnings.canFind("singleton 'integrate' has no description"));
 }
 
 unittest // 8. Validator warns when entry point target has non-default agent (root creation ignores it)
@@ -1475,7 +1551,7 @@ unittest // 8. Validator warns when entry point target has non-default agent (ro
 	ep.description = "Start";
 	ep.prompt_template = "start.md";
 
-	auto errors = validateTaskTypes([triage], [ep], &isKnownTestAgent);
+	auto errors = validateTaskTypes([triage], [ep], [], &isKnownTestAgent);
 	import std.algorithm : any;
 	assert(errors.any!(e => e.canFind("entry_point") && e.canFind("start")
 		&& e.canFind("triage") && e.canFind("ignored at root creation")), errors.to!string);
@@ -1596,7 +1672,8 @@ private enum string createSubTasksPolicy =
 	~ "or risk warrants it.\n\n";
 
 /// Build the full task/mode/handoff guidance injected into session instructions.
-string formatGeneratedTaskGuidance(TaskTypeDef[] allTypes, string typeName)
+string formatGeneratedTaskGuidance(TaskTypeDef[] allTypes, string typeName,
+	SingletonDef[] singletons = null)
 {
 	auto def = allTypes.byName(typeName);
 	if (def is null)
@@ -1614,6 +1691,13 @@ string formatGeneratedTaskGuidance(TaskTypeDef[] allTypes, string typeName)
 			appendDetailedGuidanceEntry(result, "Task", edge.name,
 				edge.resolvedType, edgeDesc(edge.description, targetDef), targetDef);
 		}
+	}
+
+	if (singletons.length > 0)
+	{
+		result ~= "## Singletons\n\n";
+		foreach (ref singleton; singletons)
+			result ~= "### " ~ singleton.name ~ "\n\n" ~ singleton.description.strip ~ "\n\n";
 	}
 
 	if (def.continuations.length > 0)
@@ -1640,18 +1724,38 @@ string formatGeneratedTaskGuidance(TaskTypeDef[] allTypes, string typeName)
 	return result.strip.length > 0 ? result.strip ~ "\n" : "";
 }
 
-/// Build the generated vars required by loadSystemPrompt() for task guidance.
-string[string] buildTaskGuidancePromptVars(TaskTypeDef[] allTypes, string typeName)
+unittest
 {
-	return ["generated_guidance": formatGeneratedTaskGuidance(allTypes, typeName)];
+	TaskTypeDef task;
+	task.name = "isolated";
+	auto types = [task];
+	auto offered = [
+		SingletonDef("integrate", "integrator", "", "", SingletonAudience.all,
+			"Integrate changes.\nReport the resulting commit."),
+		SingletonDef("review", "reviewer", "", "", SingletonAudience.all,
+			"Review changes.\nReport actionable findings."),
+	];
+
+	assert(formatGeneratedTaskGuidance(types, task.name, offered)
+		== "## Singletons\n\n"
+		~ "### integrate\n\nIntegrate changes.\nReport the resulting commit.\n\n"
+		~ "### review\n\nReview changes.\nReport actionable findings.\n");
+	assert(formatGeneratedTaskGuidance(types, task.name, []) == "");
+}
+
+/// Build the generated vars required by loadSystemPrompt() for task guidance.
+string[string] buildTaskGuidancePromptVars(TaskTypeDef[] allTypes, string typeName,
+	SingletonDef[] singletons)
+{
+	return ["generated_guidance": formatGeneratedTaskGuidance(allTypes, typeName, singletons)];
 }
 
 /// Load a task type system prompt with generated task/mode/handoff guidance.
 string loadTaskTypeSystemPrompt(ref TaskTypeDef def, TaskTypeDef[] allTypes,
 	string typeName, string[] typesDirs, string outputFile = "",
-	string[string] extraVars = null)
+	string[string] extraVars = null, SingletonDef[] singletons = null)
 {
-	auto vars = buildTaskGuidancePromptVars(allTypes, typeName);
+	auto vars = buildTaskGuidancePromptVars(allTypes, typeName, singletons);
 	foreach (k, v; extraVars)
 		vars[k] = v;
 	return loadSystemPrompt(def, typesDirs, outputFile, vars);

@@ -4474,6 +4474,7 @@ string buildConfigOverride(int tid, SessionConfig config)
 		env["CYDO_CREATABLE_TYPES"] = config.creatableTaskTypes;
 		env["CYDO_SWITCHMODES"] = config.switchModes;
 		env["CYDO_HANDOFFS"] = config.handoffs;
+		env["CYDO_SINGLETONS"] = config.singletons;
 		env["CYDO_INCLUDE_TOOLS"] = config.includeTools is null ? "" : config.includeTools.join(",");
 
 		auto toolTimeout = environment.get("CYDO_TEST_CODEX_MCP_TOOL_TIMEOUT_SEC", "");

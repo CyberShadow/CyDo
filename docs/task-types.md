@@ -75,33 +75,42 @@ taken as it is. The path is absolute or starts with `~`:
 {{ read_file("~/notes/landing-workflow.md") }}
 ```
 
-## Landing
+## Singletons
 
-The top-level `integrator:` mapping of `task-types.yaml` defines the project's
-**integrator**: the one session that lands work on the main branch, so that
-everything being landed passes through one queue.
+The top-level `singletons:` map in `task-types.yaml` defines named tasks that
+CyDo starts on demand. The shipped `integrator` singleton lands finished work
+on the main branch.
 
 ```yaml
-integrator:
-  task_type: integrator                  # "" = the project has no integrator
-  prompt_template: prompts/integrator.md # wraps its first message
+singletons:
+  integrator:
+    task_type: integrator
+    prompt_template: prompts/integrator.md
+    title: Integrator
+    offered_to: interactive
+    description: Lands finished work on the main branch.
 ```
 
-It is an entry point like the ones under `user_entry_points`, except that CyDo
-starts the task rather than the user, so the new-task page does not offer it.
-Its task never ends its session, like the tasks users start.
+The name is the address passed to `Request(to, message)`. The prompt template
+wraps the singleton's first message and the title labels its task in the
+sidebar. The description tells callers what to send and what its answer means.
+A project overlay can disable a singleton by setting its `task_type` to `""`.
 
-When a project has an integrator, interactive sessions (the ones
-that would otherwise hand finished work to the user) get a `Land(message)`
-tool. It is an `Ask` whose target CyDo fills in: the newest unarchived integrator
-task in the caller's project and workspace, started if
-there is none. The caller waits for the integrator's `Answer`, which says what
-landed or why the work was sent back.
+By default, `offered_to: interactive` gives interactive sessions access.
+`offered_to: all` includes sub-tasks as well. A session can request other
+singletons, and its own type is excluded. Singleton types are interactive and
+keep their sessions open. CyDo starts them through system entry points that
+are hidden on the new-task page.
 
-CyDo does not know how a project is checked or when work should land. The
-integrator reads the project's instructions for the former; whether sessions
-land on request, proactively, or never is for the project's instructions too.
-Without an integrator, no task is offered `Land`.
+CyDo routes each request to the newest unarchived singleton task in the
+caller's project and workspace, starting one if needed. The caller waits
+for the singleton's `Answer`. To replace a singleton, stop and archive its
+task. The next request starts a fresh one.
+
+A singleton can receive questions while blocked in a CyDo tool call. Long
+work should run in sub-tasks or background commands so it can keep receiving
+requests. The integrator follows the project's instructions for checking and
+landing work.
 
 ## Output Types
 

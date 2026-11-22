@@ -99,6 +99,17 @@ singletons:
     task_type: integrator
     prompt_template: prompts/integrator.md
     title: Integrator
+    offered_to: interactive
+    description: >
+      Lands finished work on the main branch.
+
+      Send it the branch or commits to
+      land and the worktree they are in. Commit everything first.
+      It queues the request, brings the work up to date with the main branch,
+      runs the project's checks, and lands it. Its answer says what landed and
+      as which commits, or why the work was sent back and what it needs. You
+      can submit it again once fixed. This can take a long time if other work
+      is queued ahead of yours.
 
 task_types:
   # =========================================================================

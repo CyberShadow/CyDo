@@ -108,7 +108,8 @@ class ClaudeCodeAgent : Agent
 	{
 		lastMcpConfigPath_ = generateMcpConfig(tid, launch.nativeHistoryProfile,
 			config.creatableTaskTypes,
-			config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath);
+			config.switchModes, config.handoffs, config.singletons, config.includeTools,
+			config.mcpSocketPath);
 		auto claudeBin = launch.executablePath.length > 0
 			? launch.executablePath
 			: executableName(launch.sandbox.env);
@@ -3338,6 +3339,7 @@ private struct McpConfigEnv
 	string CYDO_CREATABLE_TYPES;
 	string CYDO_SWITCHMODES;
 	string CYDO_HANDOFFS;
+	string CYDO_SINGLETONS;
 	string CYDO_INCLUDE_TOOLS;
 }
 
@@ -3364,7 +3366,8 @@ private struct McpConfig { McpConfigServers mcpServers; }
 /// mcpSocketPath is the absolute path to the backend's UNIX socket for MCP calls.
 string generateMcpConfig(int tid, const ref NativeHistoryProfile profile,
 	string creatableTaskTypes = "",
-	string switchModes = "", string handoffs = "", string[] includeTools = null,
+	string switchModes = "", string handoffs = "", string singletons = "",
+	string[] includeTools = null,
 	string mcpSocketPath = "")
 {
 	import std.array : join;
@@ -3395,6 +3398,7 @@ string generateMcpConfig(int tid, const ref NativeHistoryProfile profile,
 			creatableTaskTypes.nonNull,
 			switchModes.nonNull,
 			handoffs.nonNull,
+			singletons.nonNull,
 			includeTools is null ? "" : includeTools.join(","),
 		),
 	)));

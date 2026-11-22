@@ -35,6 +35,9 @@ enum string handoffToolDescription =
 	~ "**This is a terminal action.** After calling mcp__cydo__Handoff, your session will end. "
 	~ "Do not call any other tools after Handoff.";
 
+enum string requestToolDescription =
+	"Send a request to a singleton and wait for its answer.\n\nAvailable singletons:\n\n";
+
 /// Specification for a single sub-task.
 struct TaskSpec
 {
@@ -178,23 +181,11 @@ interface CydoTools
 	    string message
 	);
 
-	@Description(
-	    "Submit finished work to this project's integrator, the task that lands "
-	    ~ "work on the main branch, and wait for its answer.\n\n"
-	    ~ "The integrator queues the request, brings the work up to date with the "
-	    ~ "main branch, runs the project's checks, and lands it. The result is its "
-	    ~ "answer: what landed and as which commits, or why the work was sent back "
-	    ~ "and what it needs. Work that was sent back can be submitted again once "
-	    ~ "fixed.\n\n"
-	    ~ "This can take a long time: other work may be queued ahead of yours. "
-	    ~ "Commit everything you want landed first; the integrator takes commits, "
-	    ~ "not uncommitted changes."
-	)
-	@McpName("Land")
-	McpResult land(
-	    @Description("What to land (the branch or commits, and the worktree they are in), "
-	        ~ "and anything the integrator should know about it")
-	    string message
+	@Description(requestToolDescription ~ "{{singletons}}")
+	@McpName("Request")
+	McpResult request(
+	    @Description("Name of the singleton to ask") string to,
+	    @Description("The request to send") string message
 	);
 }
 
@@ -229,7 +220,7 @@ interface ToolsBackend
 	Promise!McpResult registerBatchAndAwait(string callerTid, LaunchedTask[] launchedTasks);
 	Promise!McpResult handleAsk(string callerTid, string message, int targetTid);
 	Promise!McpResult handleAnswer(string callerTid, int qid, string message);
-	Promise!McpResult handleLand(string callerTid, string message);
+	Promise!McpResult handleRequest(string callerTid, string target, string message);
 }
 
 /// Tool implementation — constructed per MCP call with the calling App and task ID.
@@ -361,10 +352,10 @@ class CydoToolsImpl : CydoTools
 		return app.handleAnswer(callerTid, qid, message).await();
 	}
 
-	McpResult land(string message)
+	McpResult request(string to, string message)
 	{
 		import ae.utils.promise.await : await;
-		return app.handleLand(callerTid, message).await();
+		return app.handleRequest(callerTid, to, message).await();
 	}
 }
 
@@ -427,7 +418,7 @@ unittest
 			assert(0, "unexpected call");
 		}
 
-		Promise!McpResult handleLand(string callerTid, string message)
+		Promise!McpResult handleRequest(string callerTid, string target, string message)
 		{
 			assert(0, "unexpected call");
 		}

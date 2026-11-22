@@ -111,10 +111,10 @@ export function matchPattern(userText) {
         name: "mcp__cydo__Answer",
         input: { qid: parseInt(m[1]), message: "follow-up-answered" },
       };
-    // A Land request reaches the integrator as a question that names the
+    // A singleton request reaches the integrator as a question that names the
     // requesting task's working directory.
     m = userText.match(
-      /\[SYSTEM: Question from task \d+ \(qid=(\d+)\)\][\s\S]*land-test-(\w+)[\s\S]*sent with mcp__cydo__Land\. The requesting task works in `\//,
+      /\[SYSTEM: Question from task \d+ \(qid=(\d+)\)\][\s\S]*land-test-(\w+)[\s\S]*sent with mcp__cydo__Request to `integrator`\. The requesting task works in `\//,
     );
     if (m)
       return {
@@ -347,13 +347,13 @@ export function matchPattern(userText) {
       message: match[2].trim(),
     };
 
-  // "call land <message>" → Land (ask the project's integrator)
+  // "call land <message>" → Request (ask the project's integrator)
   match = userText.match(/call land (.+)/is);
   if (match)
     return {
       type: "tool_call",
-      name: "mcp__cydo__Land",
-      input: { message: match[1].trim() },
+      name: "mcp__cydo__Request",
+      input: { to: "integrator", message: match[1].trim() },
     };
 
   // "call ask <tid> <message>" → Ask with specific tid

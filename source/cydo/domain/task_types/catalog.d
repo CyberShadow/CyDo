@@ -59,7 +59,7 @@ class TaskTypeCatalog
 			auto projectTypesPath = projectPath.length > 0
 				? buildPath(projectPath, ".cydo/task-types.yaml") : "";
 			auto config = loadTaskTypes(taskTypesPath, userTypesPath, projectTypesPath);
-			auto errors = validateTaskTypes(config.types, config.entryPoints,
+			auto errors = validateTaskTypes(config.types, config.entryPoints, config.singletons,
 				isConfiguredAgentName, promptSearchPath(projectPath));
 			foreach (e; errors)
 				warningf("task type: %s", e);

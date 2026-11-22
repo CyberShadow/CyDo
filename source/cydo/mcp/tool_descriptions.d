@@ -2,11 +2,11 @@ module cydo.mcp.tool_descriptions;
 
 import ae.utils.json : JSONFragment, jsonParse, toJson;
 
-import cydo.domain.task_types.definition : TaskTypeDef, UserEntryPointDef,
+import cydo.domain.task_types.definition : TaskTypeConfig, TaskTypeDef, UserEntryPointDef,
 	ContinuationDef, CreatableTaskDef, WorktreeMode,
 	formatCompactCreatableTaskTypeToolSummary,
 	formatCompactHandoffToolSummary, formatCompactSwitchModeToolSummary,
-	isInteractive;
+	formatCompactSingletonToolSummary, isInteractive, singletonsOfferedTo;
 import cydo.mcp.binding : SchemaObj, ToolDef, ToolsList, buildToolsListJson;
 import cydo.mcp.tools : CydoTools, handoffToolDescription, taskToolDescription;
 
@@ -21,7 +21,6 @@ struct RenderedCydoToolsOptions
 	bool includeBash = true;
 	bool includeAsk = true;
 	bool includeAnswer = true;
-	bool includeLand;
 }
 
 struct ToolDescriptionViolation
@@ -36,6 +35,7 @@ ToolsList buildRenderedCydoToolsList(
 	TaskTypeDef[] types,
 	UserEntryPointDef[] entryPoints,
 	string typeName,
+	string singletons,
 	RenderedCydoToolsOptions options = RenderedCydoToolsOptions.init,
 )
 {
@@ -58,13 +58,14 @@ ToolsList buildRenderedCydoToolsList(
 		includeTools ~= "Ask";
 	if (options.includeAnswer)
 		includeTools ~= "Answer";
-	if (options.includeLand)
-		includeTools ~= "Land";
+	if (singletons.length > 0)
+		includeTools ~= "Request";
 
 	return jsonParse!ToolsList(buildToolsListJson!CydoTools([
 		"creatable_task_types": creatableTaskTypes,
 		"switchmodes": switchModes,
 		"handoffs": handoffs,
+		"singletons": singletons,
 	], includeTools));
 }
 
@@ -89,12 +90,51 @@ ToolDescriptionViolation[] checkRenderedCydoToolDescriptionViolations(
 	TaskTypeDef[] types,
 	UserEntryPointDef[] entryPoints,
 	string typeName,
+	string singletons,
 	size_t maxChars = mcpToolDescriptionMaxChars,
 	RenderedCydoToolsOptions options = RenderedCydoToolsOptions.init,
 )
 {
 	return checkToolDescriptionViolations(typeName,
-		buildRenderedCydoToolsList(types, entryPoints, typeName, options), maxChars);
+		buildRenderedCydoToolsList(types, entryPoints, typeName, singletons, options), maxChars);
+}
+
+ToolDescriptionViolation[] checkConfiguredToolDescriptions(
+	TaskTypeConfig config, size_t maxChars)
+{
+	ToolDescriptionViolation[] violations;
+	foreach (ref typeDef; config.types)
+	{
+		auto singletons = singletonsOfferedTo(config.types, config.entryPoints,
+			config.singletons, typeDef.name);
+		violations ~= checkRenderedCydoToolDescriptionViolations(config.types,
+			config.entryPoints, typeDef.name, formatCompactSingletonToolSummary(singletons),
+			maxChars);
+	}
+	return violations;
+}
+
+unittest
+{
+	import std.algorithm : filter;
+	import std.array : array, replicate;
+	import cydo.domain.task_types.definition : SingletonDef;
+
+	TaskTypeConfig config;
+	config.types = [TaskTypeDef(name: "conversation"), TaskTypeDef(name: "isolated"),
+		TaskTypeDef(name: "integrator")];
+	config.entryPoints = [UserEntryPointDef("chat", "conversation"),
+		UserEntryPointDef("integrate", "integrator", system: true)];
+	enum maxChars = mcpToolDescriptionMaxChars;
+	config.singletons = [SingletonDef(name: "integrate", task_type: "integrator",
+		description: "x".replicate(maxChars + 1))];
+
+	auto requests = checkConfiguredToolDescriptions(config, maxChars)
+		.filter!(violation => violation.toolName == "Request").array;
+	assert(requests.length == 1);
+	assert(requests[0].taskType == "conversation");
+	assert(requests[0].actualChars > maxChars);
+	assert(requests[0].maxChars == maxChars);
 }
 
 private size_t countCodePoints(string text)
@@ -103,6 +143,37 @@ private size_t countCodePoints(string text)
 	foreach (dchar _; text)
 		++count;
 	return count;
+}
+
+unittest
+{
+	import std.algorithm : canFind, filter;
+	import std.array : array;
+	import cydo.domain.task_types.definition : SingletonDef, SingletonAudience;
+
+	TaskTypeDef task;
+	task.name = "isolated";
+	auto types = [task];
+	auto defaultTools = buildRenderedCydoToolsList(types, [], task.name, "");
+	assert(!defaultTools.tools.canFind!(tool => tool.name == "Request"));
+	assert(jsonParse!ToolsList(buildToolsListJson!CydoTools(null, ["Land"])).tools.length == 0);
+
+	auto singletons = [
+		SingletonDef("integrate", "integrator", "", "", SingletonAudience.all,
+			"Integrate changes.\nReport the resulting commit."),
+		SingletonDef("review", "reviewer", "", "", SingletonAudience.all,
+			"Review changes.\nReport actionable findings."),
+	];
+	auto summary = formatCompactSingletonToolSummary(singletons);
+	auto tools = buildRenderedCydoToolsList(types, [], task.name, summary).tools;
+	auto requests = tools.filter!(tool => tool.name == "Request").array;
+	assert(requests.length == 1);
+	auto description = requests[0].description;
+	assert(description.canFind("- integrate: Integrate changes."));
+	assert(description.canFind("- review: Review changes."));
+	assert(!description.canFind("Report the resulting commit."));
+	assert(!description.canFind("Report actionable findings."));
+	assert(countCodePoints(description) < mcpToolDescriptionMaxChars);
 }
 
 unittest
@@ -185,15 +256,15 @@ unittest
 		"handoffs": formatCompactHandoffToolSummary(types, "review"),
 	], ["Bash", "Task", "SwitchMode", "Handoff", "AskUserQuestion", "Ask",
 		"Answer"]));
-	auto toolsList = buildRenderedCydoToolsList(types, entryPoints, "review");
+	auto toolsList = buildRenderedCydoToolsList(types, entryPoints, "review", "");
 	auto directViolations = checkToolDescriptionViolations("review", toolsList);
 	auto renderedViolations = checkRenderedCydoToolDescriptionViolations(types,
-		entryPoints, "review");
+		entryPoints, "review", "");
 
 	assert(toJson(toolsList) == toJson(expected));
 	assert(toJson(directViolations) == toJson(renderedViolations));
 	assert(renderedViolations.length == 0);
-	assert(checkRenderedCydoToolDescriptionViolations(types, entryPoints, "review",
+	assert(checkRenderedCydoToolDescriptionViolations(types, entryPoints, "review", "",
 		mcpToolDescriptionMaxChars).length == 0);
 	assert(toolsList.tools[$ - 2].name == "Ask");
 	assert(toolsList.tools[$ - 1].name == "Answer");
@@ -304,9 +375,9 @@ unittest
 	auto entryPoints = [UserEntryPointDef("review", "review", "Start a review task.",
 		"", WorktreeMode.inherit)];
 
-	auto toolsList = buildRenderedCydoToolsList(types, entryPoints, "review");
+	auto toolsList = buildRenderedCydoToolsList(types, entryPoints, "review", "");
 	auto violations = checkRenderedCydoToolDescriptionViolations(types, entryPoints,
-		"review");
+		"review", "");
 
 	assert(violations.length == 0);
 	foreach (ref tool; toolsList.tools)

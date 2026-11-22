@@ -50,8 +50,7 @@ import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner
 import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
 	TransportAdapter, WebSocketCallbacks;
 import cydo.domain.usage.tracker : AgentUsageTracker;
-import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
-	checkRenderedCydoToolDescriptionViolations, mcpToolDescriptionMaxChars;
+import cydo.mcp.tool_descriptions : checkConfiguredToolDescriptions, mcpToolDescriptionMaxChars;
 
 import cydo.agent.resolver : createConfiguredAgent, isConfiguredAgentName;
 import cydo.agent.contract : Agent;
@@ -63,7 +62,8 @@ import cydo.agent.terminal : TerminalProcess;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, SandboxConfig, WorkspaceConfig;
 import cydo.domain.storage.persistence : Persistence, openDatabase;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
-import cydo.domain.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
+import cydo.domain.task_types.definition : TaskTypeConfig, TaskTypeDef, ContinuationDef,
+	OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
 	loadProjectMemory, resolveAgent;
 import cydo.foundation.system.framing : tryParseSystemFraming, tryExtractSubject,
@@ -210,8 +210,6 @@ static:
 		import core.stdc.stdlib : exit;
 		import std.stdio : stderr, writeln;
 
-		import cydo.domain.task_types.definition : TaskTypeConfig, loadTaskTypes;
-
 		if (maxDescriptionChars > mcpToolDescriptionMaxChars)
 		{
 			stderr.writefln("Error: --max-description-chars may not exceed %s",
@@ -229,28 +227,12 @@ static:
 			exit(1);
 		}
 
-		RenderedCydoToolsOptions options;
-
-		bool hasViolations;
-		foreach (ref typeDef; config.types)
-		{
-			auto violations = checkRenderedCydoToolDescriptionViolations(
-				config.types,
-				config.entryPoints,
-				typeDef.name,
-				maxDescriptionChars,
-				options,
-			);
-			foreach (ref violation; violations)
-			{
-				hasViolations = true;
-				stderr.writefln("%s: %s description is %s chars (max %s)",
-					violation.taskType, violation.toolName, violation.actualChars,
-					violation.maxChars);
-			}
-		}
-
-		if (hasViolations)
+		auto violations = checkConfiguredToolDescriptions(config, maxDescriptionChars);
+		foreach (ref violation; violations)
+			stderr.writefln("%s: %s description is %s chars (max %s)",
+				violation.taskType, violation.toolName, violation.actualChars,
+				violation.maxChars);
+		if (violations.length > 0)
 			exit(1);
 
 		writeln("All rendered CyDo tool descriptions are within the limit.");

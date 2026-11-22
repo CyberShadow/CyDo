@@ -31,7 +31,7 @@ const expectedTools = [
   "mcp__cydo__Answer",
   "mcp__cydo__Ask",
   "mcp__cydo__AskUserQuestion",
-  "mcp__cydo__Land",
+  "mcp__cydo__Request",
   "mcp__cydo__SwitchMode",
   "mcp__cydo__Task",
 ];

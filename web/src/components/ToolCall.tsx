@@ -1961,7 +1961,7 @@ const knownResultFields: Record<string, Set<string>> = {
     "worktree",
     "commits",
   ]),
-  "cydo:Land": new Set([
+  "cydo:Request": new Set([
     "tasks",
     "content",
     "structuredContent",
@@ -2076,6 +2076,12 @@ function getHeaderSubtitle(
   input: Record<string, unknown>,
   result?: ToolResult,
 ): h.JSX.Element | null {
+  if (
+    toolIs(name, driver, toolServer, "cydo:Request") &&
+    typeof input.to === "string"
+  ) {
+    return <span class="tool-subtitle">{input.to}</span>;
+  }
   const viewPaths = getToolCallFilePaths(name, driver, input);
   const filePath = typeof input.file_path === "string" ? input.file_path : null;
 
@@ -2577,7 +2583,14 @@ function formatInput(
   }
   // --- CyDo MCP tools ---
   if (
-    toolIs(name, driver, toolServer, "cydo:Ask", "cydo:Answer", "cydo:Land") &&
+    toolIs(
+      name,
+      driver,
+      toolServer,
+      "cydo:Ask",
+      "cydo:Answer",
+      "cydo:Request",
+    ) &&
     typeof input.message === "string"
   ) {
     const { message, ...remaining } = input;
@@ -3025,7 +3038,7 @@ const defaultExpandedTools = new Set([
   "copilot/task",
   "cydo:Ask",
   "cydo:Answer",
-  "cydo:Land",
+  "cydo:Request",
   "cydo:Handoff",
   "cydo:AskUserQuestion",
   "cydo:Bash", // CyDo MCP Bash tool (used by Copilot/Codex)
@@ -3050,7 +3063,7 @@ const defaultExpandedResults = new Set([
   "copilot/task",
   "cydo:Ask",
   "cydo:Answer",
-  "cydo:Land",
+  "cydo:Request",
   "claude/WebSearch",
   "codex/webSearch",
   "claude/WebFetch",
@@ -3154,7 +3167,7 @@ export const ToolCall = memo(
       "cydo:Task",
       "cydo:Ask",
       "cydo:Answer",
-      "cydo:Land",
+      "cydo:Request",
     )
       ? getCydoTaskResultItems(result)
       : null;

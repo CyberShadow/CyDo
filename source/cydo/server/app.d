@@ -88,7 +88,7 @@ import cydo.server.environment : consumeServerEnvironment;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir, sharedTmpBaseDir;
 import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule;
 import cydo.domain.task_types.definition : DjinjaTemplate, TaskTypeDef, UserEntryPointDef, OutputType, WorktreeMode, byName, loadTaskTypes,
-	loadTaskTypeSystemPrompt, promptTemplateSource, renderPrompt, substituteVars,
+	loadTaskTypeSystemPrompt, formatCompactSingletonToolSummary, singletonsOfferedTo, promptTemplateSource, renderPrompt, substituteVars,
 	loadProjectMemory, resolveAgent;
 import cydo.foundation.system.framing : prependTaskFraming, validateTemplateSource;
 import cydo.foundation.system.known_messages : KnownSystemMessageKind,
@@ -461,6 +461,7 @@ class App
 			},
 			taskAlive: &taskAlive,
 			singletonForTask: &singletonForTask,
+			singletonsForProject: &taskTypeCatalog.singletonsForProject,
 			effectiveCwd: &taskPathResolver.effectiveCwd,
 			tasksShareWorkspace: (int aTid, int bTid) {
 				auto aTd = aTid in tasks;
@@ -1451,8 +1452,7 @@ class App
 	{
 		auto caller = &tasks[callerTid];
 		auto singleton = taskTypeCatalog.singletonsForProject(caller.projectPath).byName(name);
-		if (singleton is null)
-			return resolve(0);
+		assert(singleton !is null, "Request target must be an enabled singleton");
 		auto ep = taskTypeCatalog.getEntryPointsForProject(caller.projectPath).byName(name);
 
 		int found;
@@ -2212,8 +2212,12 @@ class App
 
 		auto td = &tasks[tid];
 		auto taskTypes = taskTypeCatalog.getTaskTypesForProject(td.projectPath);
+		auto singletons = singletonsOfferedTo(taskTypes,
+			taskTypeCatalog.getEntryPointsForProject(td.projectPath),
+			taskTypeCatalog.singletonsForProject(td.projectPath), td.taskType);
 		return loadTaskTypeSystemPrompt(*typeDef, taskTypes, td.taskType,
-			taskTypeCatalog.promptSearchPath(td.projectPath), taskPathResolver.outputPath(*td));
+			taskTypeCatalog.promptSearchPath(td.projectPath), taskPathResolver.outputPath(*td),
+			singletons: singletons);
 	}
 
 	/// Inject agent_name into session/init events whose translation pipeline
@@ -6099,10 +6103,12 @@ unittest
 
 	RenderedCydoToolsOptions options;
 	options.includeBash = agent.needsBash();
+	auto types = catalog.getTaskTypesForProject(projectPath);
+	auto entryPoints = catalog.getEntryPointsForProject(projectPath);
+	auto singletons = singletonsOfferedTo(types, entryPoints,
+		catalog.singletonsForProject(projectPath), "parent");
 	auto expectedViolations = checkRenderedCydoToolDescriptionViolations(
-		catalog.getTaskTypesForProject(projectPath),
-		catalog.getEntryPointsForProject(projectPath),
-		"parent",
+		types, entryPoints, "parent", formatCompactSingletonToolSummary(singletons),
 		options: options,
 	);
 	assert(reportedViolations[0] == expectedViolations);

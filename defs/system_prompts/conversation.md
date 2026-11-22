@@ -66,6 +66,6 @@ When presenting a worktree to the user: show what changed (`git -C <path> log`,
 `git -C <path> diff <base>..HEAD`), explain the changes are isolated from main,
 and **wait for the user** before pulling in. For minor adjustments, you can
 write to that worktree even without switching to write mode. To land the work,
-submit it with mcp__cydo__Land; do so when the user asks, unless the project's
+submit it with mcp__cydo__Request to `integrator`; do so when the user asks, unless the project's
 instructions say when to land. To edit the main checkout directly, switch to
 write mode, but only with the user's explicit consent.

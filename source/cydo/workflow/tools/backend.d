@@ -17,8 +17,8 @@ import cydo.agent.terminal : TerminalProcess;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallDecision, ToolCallRuling, evaluatePermissionPolicy,
 	makePermissionAllowJson, makePermissionDenyJson;
-import cydo.domain.task_types.definition : integratorSingletonName, ContinuationDef, CreatableTaskDef, DjinjaTemplate, TaskTypeDef,
-	UserEntryPointDef, WorktreeMode, byName, isInteractive,
+import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, DjinjaTemplate, TaskTypeDef,
+	UserEntryPointDef, SingletonDef, WorktreeMode, byName, isInteractive, singletonsOfferedTo,
 	loadProjectMemory, renderContinuationPrompt, renderPrompt, resolveAgent,
 	substituteVars;
 import cydo.domain.tasks.model;
@@ -92,8 +92,9 @@ struct WorkflowToolsHost
 		string body) appendAndBroadcastRecoveryDeliveryDiagnostic;
 
 	bool delegate(int tid) taskAlive;
-	/// Find or start the named singleton. Returns 0 if it is disabled.
+	/// Find or start the named singleton.
 	Promise!int delegate(int callerTid, string name) singletonForTask;
+	SingletonDef[] delegate(string projectPath) singletonsForProject;
 	string delegate(const TaskData* td) effectiveCwd;
 	bool delegate(int aTid, int bTid) tasksShareWorkspace;
 	string delegate(int tid) taskWorkspaceLabel;
@@ -858,10 +859,10 @@ public:
 			q.askerTid, qid, null, null, null))));
 	}
 
-	/// Land: a question to the project's integrator, which answers once the
-	/// work has landed or needs more work.
-	Promise!McpResult handleLand(string callerTidStr, string message)
+	Promise!McpResult handleRequest(string callerTidStr, string target, string message)
 	{
+		import std.algorithm : map;
+		import std.array : join;
 		import std.conv : to;
 
 		int callerTid;
@@ -873,16 +874,25 @@ public:
 		if (callerTd is null)
 			return resolve(McpResult("Task not found", true));
 
-		auto request = host_.readPromptFile("prompts/land_request.md",
-			callerTd.projectPath, [
-				"message": message,
-				"directory": host_.effectiveCwd(callerTd),
-			]);
-		return host_.singletonForTask(callerTid, integratorSingletonName).then((int integratorTid) {
-			if (integratorTid == 0)
-				return resolve(McpResult("This project has no integrator", true));
-			return handleAsk(callerTidStr, request, integratorTid);
-		}, (Exception e) => resolve(McpResult(e.msg, true)));
+		auto projectPath = callerTd.projectPath;
+		auto offered = singletonsOfferedTo(host_.taskTypesForProject(projectPath),
+			host_.entryPointsForProject(projectPath), host_.singletonsForProject(projectPath),
+			callerTd.taskType);
+		if (offered.byName(target) is null)
+		{
+			auto valid = offered.map!(s => s.name).join(", ");
+			return resolve(McpResult("Singleton '" ~ target
+				~ "' is unavailable. Valid targets: " ~ (valid.length ? valid : "(none)"), true));
+		}
+
+		auto request = host_.readPromptFile("prompts/singleton_request.md", projectPath, [
+			"message": message,
+			"singleton": target,
+			"directory": host_.effectiveCwd(callerTd),
+		]);
+		return host_.singletonForTask(callerTid, target).then(
+			(int targetTid) => handleAsk(callerTidStr, request, targetTid),
+			(Exception e) => resolve(McpResult(e.msg, true)));
 	}
 
 	/// Decide a tool call the agent of `tid` asks about after the policy's
@@ -2294,6 +2304,7 @@ unittest
 	import core.exception : AssertError;
 	import std.algorithm.searching : canFind;
 	import std.exception : assertThrown;
+	import cydo.domain.task_types.definition : SingletonAudience;
 
 	void drainPromiseNextTicks()
 	{
@@ -2313,6 +2324,8 @@ unittest
 	{
 		TaskData[int] tasks;
 		TaskTypeDef[] taskTypes;
+		SingletonDef[] singletons;
+		size_t singletonForTaskCalls;
 		int persistAddDependencyCalls;
 		int persistRemoveDependencyCalls;
 		int[] removedChildren;
@@ -2393,6 +2406,7 @@ unittest
 				persistLastActive: (int tid, long lastActive) {},
 				taskTypesForProject: (string projectPath) => taskTypes,
 				entryPointsForProject: (string projectPath) => cast(UserEntryPointDef[]) null,
+				singletonsForProject: (string projectPath) => singletons,
 				promptSearchPath: (string projectPath) => cast(string[]) null,
 				treeReadOnlyForProject: (string projectPath) => cast(bool[string]) null,
 				resolveTaskAgent: (DjinjaTemplate requestedAgent, string parentAgent, string workspace) => "fake",
@@ -2414,7 +2428,11 @@ unittest
 					WorktreeMode mode) {},
 				shuttingDown: () => shuttingDown,
 				effectiveCwd: (const TaskData* task) => task.projectPath,
-				singletonForTask: (int tid, string name) => resolve(integratorTid),
+				singletonForTask: (int tid, string name) {
+					singletonForTaskCalls++;
+					assert(tid == 1 && name == "integrator");
+					return resolve(integratorTid);
+				},
 				ensureProcessQueueAlive: (int tid) {
 					wakeCalls++;
 					if (failEnsure)
@@ -2512,18 +2530,22 @@ unittest
 		}
 	}
 
-	// Land releases the asker at Answer while the integrator's turn continues.
+	// Request releases the asker at Answer while the integrator's turn continues.
 	foreach (status; [TaskStatus.active, TaskStatus.waiting])
 	{
 		auto f = new BatchInvariantFixture;
+		f.singletons = [SingletonDef("integrator", "child", "", "", SingletonAudience.all)];
 		f.integratorTid = 2;
 		f.tasks[2].parentTid = 0;
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
-		McpResult landed, presented, delivered;
-		b.handleLand("1", "land this").then((McpResult r) { landed = r; }).ignoreResult();
+		McpResult requested, presented, delivered;
+		b.handleRequest("1", "integrator", "land this").then((McpResult r) {
+			requested = r;
+		}).ignoreResult();
 		drainPromiseNextTicks();
-		assert(f.tasks[1].status == TaskStatus.waiting && landed.text.length == 0);
+		assert(f.singletonForTaskCalls == 1);
+		assert(f.tasks[1].status == TaskStatus.waiting && requested.text.length == 0);
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
 		drainPromiseNextTicks();
 		auto question = presented.text.jsonParse!QuestionResult;
@@ -2534,12 +2556,33 @@ unittest
 		}).ignoreResult();
 		drainPromiseNextTicks();
 
-		assert(!landed.isError && landed.text.jsonParse!AnswerResult.message == "landed");
+		assert(!requested.isError && requested.text.jsonParse!AnswerResult.message == "landed");
 		assert(!delivered.isError && delivered.text.jsonParse!AnswerResult.status == "delivered");
 		assert(f.focusHints[$ - 1] == [2, 1]);
 		b.onToolCallDelivered("1");
 		assert(f.tasks[1].status == TaskStatus.active && b.questions_.length == 0);
 		assert(f.tasks[2].status == status && f.tasks[2].isProcessing);
+	}
+
+	// Unknown and unoffered targets are rejected before starting a singleton.
+	foreach (target; ["unknown", "reviewer"])
+	{
+		auto f = new BatchInvariantFixture;
+		f.singletons = [
+			SingletonDef("integrator", "child", "", "", SingletonAudience.all),
+			SingletonDef("reviewer", "child"),
+		];
+		auto b = f.makeBackend();
+		McpResult result;
+		b.handleRequest("1", target, "review this").then((McpResult r) {
+			result = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+
+		assert(result.isError);
+		assert(result.text == "Singleton '" ~ target
+			~ "' is unavailable. Valid targets: integrator");
+		assert(f.singletonForTaskCalls == 0);
 	}
 
 	// Shutdown leaves held results available for a later delivery attempt.

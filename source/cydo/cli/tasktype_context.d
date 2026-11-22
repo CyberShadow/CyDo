@@ -9,18 +9,20 @@ import std.stdio : stderr, write, writefln, writeln;
 import std.string : lineSplitter, strip;
 
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, TaskTypeConfig, TaskTypeDef,
-	UserEntryPointDef, WorktreeMode, byName, computeReachesWorktree,
+	UserEntryPointDef, SingletonDef, WorktreeMode, byName, computeReachesWorktree,
+	formatCompactSingletonToolSummary, singletonsOfferedTo,
 	computeTreeReadOnly, loadTaskTypes, renderPrompt, validateTaskTypes;
 import cydo.mcp.tool_descriptions : buildRenderedCydoToolsList;
 
 private string renderDumpContextToolsSection(
-	TaskTypeDef[] types,
-	UserEntryPointDef[] entryPoints,
+	TaskTypeConfig config,
 	string typeName,
 )
 {
 	string rendered = "─── MCP Tools ───\n\n";
-	auto toolsList = buildRenderedCydoToolsList(types, entryPoints, typeName);
+	auto singletons = singletonsOfferedTo(config.types, config.entryPoints, config.singletons, typeName);
+	auto toolsList = buildRenderedCydoToolsList(config.types, config.entryPoints, typeName,
+		formatCompactSingletonToolSummary(singletons));
 	foreach (ref tool; toolsList.tools)
 	{
 		rendered ~= format("### %s\n\n", tool.name);
@@ -43,7 +45,7 @@ void runDumpContext(string path, string typeName, bool delegate(string) isConfig
 		return;
 	}
 
-	auto errors = validateTaskTypes(config.types, config.entryPoints,
+	auto errors = validateTaskTypes(config.types, config.entryPoints, config.singletons,
 		isConfiguredAgentName, [typesDir]);
 	if (errors.length > 0)
 	{
@@ -137,7 +139,7 @@ void runDumpContext(string path, string typeName, bool delegate(string) isConfig
 		}
 	}
 
-	write(renderDumpContextToolsSection(types, entryPoints, typeName));
+	write(renderDumpContextToolsSection(config, typeName));
 }
 
 unittest
@@ -170,9 +172,14 @@ unittest
 	auto types = [review, implement, finish, followup];
 	auto entryPoints = [UserEntryPointDef("review", "review", "Start a review task.", "", WorktreeMode.inherit)];
 
-	auto actual = buildRenderedCydoToolsList(types, entryPoints, "review");
+	auto singletons = [SingletonDef("follow-up", "followup", description: "Follow up on review.")];
+	auto config = TaskTypeConfig(types, entryPoints, singletons);
+	auto actual = buildRenderedCydoToolsList(types, entryPoints, "review",
+		formatCompactSingletonToolSummary(singletons));
 
-	auto rendered = renderDumpContextToolsSection(types, entryPoints, "review");
+	auto rendered = renderDumpContextToolsSection(config, "review");
+	assert(rendered.canFind("### Request"));
+	assert(rendered.canFind("- follow-up: Follow up on review."));
 	assert(rendered.canFind("─── MCP Tools ───"));
 	foreach (ref tool; actual.tools)
 	{
@@ -183,5 +190,5 @@ unittest
 
 	auto toolNames = actual.tools.map!(tool => tool.name).array;
 	assert(toolNames == ["Bash", "Task", "SwitchMode", "Handoff",
-		"AskUserQuestion", "Ask", "Answer"]);
+		"AskUserQuestion", "Ask", "Answer", "Request"]);
 }

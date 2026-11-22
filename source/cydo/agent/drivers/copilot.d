@@ -39,7 +39,7 @@ import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule,
 import cydo.runtime.launch.sandbox : cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
 import cydo.mcp : McpResult;
-import cydo.mcp.tools : handoffToolDescription, taskToolDescription;
+import cydo.mcp.tools : handoffToolDescription, requestToolDescription, taskToolDescription;
 import cydo.foundation.text.title : truncateTitle;
 
 // Callback type for dispatching custom tool calls.
@@ -114,7 +114,8 @@ class CopilotAgent : Agent
 		{
 			mcpConfigPath = generateCopilotMcpConfig(tid, launch.nativeHistoryProfile,
 				config.creatableTaskTypes,
-				config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath);
+				config.switchModes, config.handoffs, config.singletons, config.includeTools,
+				config.mcpSocketPath);
 			lastMcpConfigPath_ = mcpConfigPath;
 		}
 
@@ -3128,17 +3129,24 @@ string buildToolDefinitions(SessionConfig config)
 		"Answer a question from a related task",
 		JSONFragment(`{"type":"object","properties":{"qid":{"type":"integer"},"message":{"type":"string"}},"required":["qid","message"]}`),
 		true);
-	tools ~= ToolDefinition("cydo-Land",
-		"Submit finished work to this project's integrator and wait for its answer",
-		JSONFragment(`{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}`),
-		true);
+	if (config.singletons.length > 0)
+		tools ~= ToolDefinition("cydo-Request",
+			requestToolDescription ~ config.singletons,
+			JSONFragment(`{"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"}},"required":["to","message"]}`),
+			true);
 	return toJson(tools);
 }
 
 unittest
 {
+	import std.algorithm : canFind;
+
 	SessionConfig config;
 	config.mcpSocketPath = "/tmp/cydo-mcp.sock";
+	auto defaultTools = jsonParse!(ToolDefinition[])(buildToolDefinitions(config));
+	assert(!defaultTools.canFind!(tool => tool.name == "cydo-Request"));
+
+	config.singletons = "- integrate: Integrate changes.";
 	auto tools = jsonParse!(ToolDefinition[])(buildToolDefinitions(config));
 
 	string[] expectedNames = [
@@ -3149,7 +3157,7 @@ unittest
 		"cydo-AskUserQuestion",
 		"cydo-Ask",
 		"cydo-Answer",
-		"cydo-Land",
+		"cydo-Request",
 	];
 	string[] expectedSchemas = [
 		`{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"object"}}},"required":["tasks"]}`,
@@ -3159,7 +3167,7 @@ unittest
 		`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object"}}},"required":["questions"]}`,
 		`{"type":"object","properties":{"message":{"type":"string"},"tid":{"type":"integer"}},"required":["message"]}`,
 		`{"type":"object","properties":{"qid":{"type":"integer"},"message":{"type":"string"}},"required":["qid","message"]}`,
-		`{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}`,
+		`{"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"}},"required":["to","message"]}`,
 	];
 
 	assert(tools.length == expectedNames.length);
@@ -3220,6 +3228,7 @@ private struct CopilotMcpConfigEnv
 	string CYDO_CREATABLE_TYPES;
 	string CYDO_SWITCHMODES;
 	string CYDO_HANDOFFS;
+	string CYDO_SINGLETONS;
 	string CYDO_INCLUDE_TOOLS;
 }
 
@@ -3260,7 +3269,8 @@ unittest
 /// Generate a temporary MCP config file for Copilot's --additional-mcp-config flag.
 string generateCopilotMcpConfig(int tid, const ref NativeHistoryProfile profile,
 	string creatableTaskTypes,
-	string switchModes, string handoffs, string[] includeTools, string mcpSocketPath)
+	string switchModes, string handoffs, string singletons,
+	string[] includeTools, string mcpSocketPath)
 {
 	import std.array : join;
 	import std.exception : enforce;
@@ -3289,6 +3299,7 @@ string generateCopilotMcpConfig(int tid, const ref NativeHistoryProfile profile,
 			creatableTaskTypes.nonNull,
 			switchModes.nonNull,
 			handoffs.nonNull,
+			singletons.nonNull,
 			includeTools is null ? "" : includeTools.join(","),
 		),
 	)));
@@ -3310,13 +3321,13 @@ unittest
 			rmdirRecurse(root);
 	auto profile = NativeHistoryProfile(AgentDriver.copilot,
 		buildPath(root, "supplied-profile"));
-	auto configPath = generateCopilotMcpConfig(43, profile, "", "", "", null, "");
+	auto configPath = generateCopilotMcpConfig(43, profile, "", "", "", "", null, "");
 	assert(configPath == buildPath(profile.root, "mcp-configs", "cydo-43.json"));
 	assert(exists(configPath));
 	auto wrongDriverProfile = NativeHistoryProfile(AgentDriver.codex,
 		buildPath(root, "wrong-driver"));
 	assertThrown!Exception(generateCopilotMcpConfig(43, wrongDriverProfile,
-		"", "", "", null, ""));
+		"", "", "", "", null, ""));
 }
 
 /// Extract plain text from a tool result JSONFragment.
