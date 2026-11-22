@@ -45,6 +45,52 @@ import cydo.foundation.text.title : truncateTitle;
 // Callback type for dispatching custom tool calls.
 alias ToolDispatchFn = Promise!McpResult delegate(string tool, string tid, JSONFragment args);
 
+@JSONPartial
+private struct CpPersistedEventBase
+{
+	string type;
+	string id;
+	@JSONOptional string timestamp;
+}
+
+@JSONPartial
+private struct CpSessionStartContext
+{
+	string cwd;
+}
+
+@JSONPartial
+private struct CpSessionStartData
+{
+	string sessionId;
+	string selectedModel;
+	CpSessionStartContext context;
+}
+
+@JSONPartial
+private struct CpSessionStartEvent
+{
+	string type;
+	string id;
+	@JSONOptional string timestamp;
+	CpSessionStartData data;
+}
+
+@JSONPartial
+private struct CpUserMsgData
+{
+	string content;
+}
+
+@JSONPartial
+private struct CpUserMsgEvent
+{
+	string type;
+	string id;
+	@JSONOptional string timestamp;
+	CpUserMsgData data;
+}
+
 // ---------------------------------------------------------------------------
 // CopilotAgent — Agent descriptor for GitHub Copilot CLI via SDK protocol.
 // ---------------------------------------------------------------------------
@@ -229,7 +275,6 @@ class CopilotAgent : Agent
 
 	SessionMeta readSessionMeta(const ref DiscoveredSession session)
 	{
-		import std.algorithm : canFind;
 		import std.stdio : File;
 		if (session.exactHistoryPath.length == 0)
 			return SessionMeta.init;
@@ -244,36 +289,32 @@ class CopilotAgent : Agent
 				if (lineCount++ > 50)
 					break;
 				string lineStr = cast(string) line.idup;
-				// Look for working directory in early events
-				if (meta.projectPath.length == 0 && lineStr.canFind(`"cwd"`))
+				CpPersistedEventBase base;
+				try base = jsonParse!CpPersistedEventBase(lineStr);
+				catch (Exception)
+					continue;
+				switch (base.type)
 				{
-					@JSONPartial
-					static struct CwdProbe { string cwd; }
-					try
+					case "session.start":
 					{
-						auto probe = jsonParse!CwdProbe(lineStr);
-						if (probe.cwd.length > 0)
-							meta.projectPath = probe.cwd;
+						CpSessionStartEvent event;
+						try event = jsonParse!CpSessionStartEvent(lineStr);
+						catch (Exception) {}
+						if (meta.projectPath.length == 0 && event.data.context.cwd.length > 0)
+							meta.projectPath = event.data.context.cwd;
+						break;
 					}
-					catch (Exception) {}
-				}
-				// Look for first user message
-				if (meta.title.length == 0 && lineStr.canFind(`"role":"user"`)
-					&& lineStr.canFind(`"content"`))
-				{
-					@JSONPartial
-					static struct UserMsgProbe
+					case "user.message":
 					{
-						string role;
-						string content;
+						CpUserMsgEvent event;
+						try event = jsonParse!CpUserMsgEvent(lineStr);
+						catch (Exception) {}
+						if (meta.title.length == 0 && event.data.content.length > 0)
+							meta.title = truncateTitle(event.data.content, 80);
+						break;
 					}
-					try
-					{
-						auto probe = jsonParse!UserMsgProbe(lineStr);
-						if (probe.role == "user" && probe.content.length > 0)
-							meta.title = truncateTitle(probe.content, 80);
-					}
-					catch (Exception) {}
+					default:
+						break;
 				}
 				if (meta.title.length > 0 && meta.projectPath.length > 0)
 					break;
@@ -284,6 +325,7 @@ class CopilotAgent : Agent
 			import std.logger : tracef;
 			tracef("readSessionMeta(copilot, %s): error: %s", session.sessionId, e.msg);
 		}
+		meta.hasMessages = meta.title.length > 0;
 		return meta;
 	}
 
@@ -347,6 +389,60 @@ class CopilotAgent : Agent
 		assert(agent.resolveModelSpec("").model == "");
 	}
 
+	unittest
+	{
+		import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir, write;
+
+		auto root = buildPath(tempDir(), "cydo-copilot-persisted-history");
+		if (exists(root))
+			rmdirRecurse(root);
+		scope (exit)
+			if (exists(root))
+				rmdirRecurse(root);
+		mkdirRecurse(root);
+		auto eventsPath = buildPath(root, "events.jsonl");
+		auto agent = new CopilotAgent;
+		DiscoveredSession session;
+		session.sessionId = "persisted-session";
+		session.exactHistoryPath = eventsPath;
+		auto content = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+		write(eventsPath,
+			`{"type":"session.start","id":"start-id","timestamp":"2026-09-09T22:10:03.180Z","data":{"sessionId":"persisted-session","selectedModel":"claude-opus-4.6","context":{"cwd":"/workspace"}}}` ~ "\n"
+			~ `{"type":"user.message","id":"user-id","timestamp":"2026-09-09T22:10:03.238Z","data":{"content":"` ~ content ~ `"}}` ~ "\n");
+		auto meta = agent.readSessionMeta(session);
+		assert(meta.projectPath == "/workspace");
+		assert(meta.title == truncateTitle(content, 80));
+		assert(meta.hasMessages);
+
+		write(eventsPath,
+			`{"type":"session.start","id":"start-id","data":{"sessionId":"persisted-session","selectedModel":"claude-opus-4.6","context":{}}}` ~ "\n");
+		meta = agent.readSessionMeta(session);
+		assert(meta.projectPath == "");
+		assert(meta.title == "");
+		assert(!meta.hasMessages);
+
+		write(eventsPath,
+			`{"type":"session.start","id":"start-id","cwd":"/flat-cwd","data":{"sessionId":"persisted-session","selectedModel":"claude-opus-4.6"}}` ~ "\n");
+		meta = agent.readSessionMeta(session);
+		assert(meta.projectPath == "");
+
+		auto initEvents = agent.translateHistoryLine(
+			`{"type":"session.start","id":"start-id","timestamp":"2026-09-09T22:10:03.180Z","data":{"sessionId":"persisted-session","selectedModel":"claude-opus-4.6","context":{"cwd":"/workspace"}}}`,
+			1);
+		assert(initEvents.length == 1);
+		auto init = jsonParse!SessionInitEvent(initEvents[0].translated);
+		assert(init.model == "claude-opus-4.6");
+		assert(init.cwd == "/workspace");
+
+		auto userEvents = agent.translateHistoryLine(
+			`{"type":"user.message","id":"user-id","data":{"content":"real user content"}}`, 2);
+		assert(userEvents.length == 1);
+		auto user = jsonParse!ItemStartedEvent(userEvents[0].translated);
+		assert(user.content.length == 1);
+		assert(user.content[0].text == "real user content");
+	}
+
 	// ---- History / fork ----
 
 	string historyPath(string sessionId, const ref NativeHistoryProfile profile)
@@ -382,11 +478,8 @@ class CopilotAgent : Agent
 		if (!line.canFind(`"type":"`))
 			return null;
 
-		@JSONPartial
-		static struct CpEventBase { string type; string id; @JSONOptional string timestamp; }
-
-		CpEventBase base;
-		try base = jsonParse!CpEventBase(line);
+		CpPersistedEventBase base;
+		try base = jsonParse!CpPersistedEventBase(line);
 		catch (Exception)
 			return null;
 
@@ -398,15 +491,13 @@ class CopilotAgent : Agent
 		{
 			case "session.start":
 			{
-				@JSONPartial static struct CpSessionStartData { string sessionId; string model; string cwd; }
-				@JSONPartial static struct CpSessionStartEvent { CpSessionStartData data; }
 				CpSessionStartEvent ev;
 				try ev = jsonParse!CpSessionStartEvent(line);
 				catch (Exception) {}
 				SessionInitEvent initEv;
 				initEv.session_id      = ev.data.sessionId.length > 0 ? ev.data.sessionId : base.id;
-				initEv.model           = ev.data.model;
-				initEv.cwd             = ev.data.cwd;
+				initEv.model           = ev.data.selectedModel;
+				initEv.cwd             = ev.data.context.cwd;
 				initEv.tools           = [];
 				initEv.agent_version   = "";
 				initEv.permission_mode = "dangerously-skip-permissions";
@@ -417,8 +508,6 @@ class CopilotAgent : Agent
 			}
 			case "user.message":
 			{
-				@JSONPartial static struct CpUserMsgData { string content; }
-				@JSONPartial static struct CpUserMsgEvent { CpUserMsgData data; }
 				CpUserMsgEvent ev;
 				try ev = jsonParse!CpUserMsgEvent(line);
 				catch (Exception) {}

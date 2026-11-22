@@ -285,11 +285,11 @@ version (unittest)
 
 		mkdirRecurse(buildPath(copilotRoot, "session-state", "copilot-session"));
 		write(buildPath(copilotRoot, "session-state", "copilot-session", "events.jsonl"),
-			`{"type":"session.start","data":{"cwd":"` ~ buildPath(root, "nested-cwd-must-not-count") ~ `"}}` ~ "\n"
-			~ `{"type":"session.start","cwd":"` ~ copilotProject ~ `"}` ~ "\n");
+			`{"type":"session.start","data":{"context":{"cwd":"` ~ copilotProject ~ `"}}}` ~ "\n"
+			~ `{"type":"session.start","cwd":"` ~ buildPath(root, "flat-cwd-must-not-count") ~ `"}` ~ "\n");
 		mkdirRecurse(buildPath(copilotRoot, "session-state", "no-cwd"));
 		write(buildPath(copilotRoot, "session-state", "no-cwd", "events.jsonl"),
-			`{"type":"session.start","data":{"cwd":"` ~ buildPath(root, "also-nested") ~ `"}}` ~ "\n");
+			`{"type":"session.start","data":{}}` ~ "\n");
 
 		auto candidates = collectNativeHistoryCandidatePaths([
 			NativeHistoryProfile(AgentDriver.claude, claudeRoot),
@@ -522,7 +522,7 @@ version (unittest)
 		write(buildPath(home, ".codex", "sessions", "2026", "09", "04", "rollout-x.jsonl"),
 			`{"type":"session_meta","payload":{"cwd":"` ~ codexRepo ~ `"}}` ~ "\n");
 		write(buildPath(home, ".copilot", "session-state", "p", "events.jsonl"),
-			`{"type":"session.start","cwd":"` ~ copilotRepo ~ `"}` ~ "\n");
+			`{"type":"session.start","data":{"context":{"cwd":"` ~ copilotRepo ~ `"}}}` ~ "\n");
 		mkdirRecurse(buildPath(claudeHome, "projects", "p"));
 		mkdirRecurse(buildPath(codexHome, "sessions", "2026", "09", "04"));
 		mkdirRecurse(buildPath(copilotHome, "session-state", "p"));
@@ -531,7 +531,7 @@ version (unittest)
 		write(buildPath(codexHome, "sessions", "2026", "09", "04", "rollout-x.jsonl"),
 			`{"type":"session_meta","payload":{"cwd":"` ~ codexOverrideRepo ~ `"}}` ~ "\n");
 		write(buildPath(copilotHome, "session-state", "p", "events.jsonl"),
-			`{"type":"session.start","cwd":"` ~ copilotOverrideRepo ~ `"}` ~ "\n");
+			`{"type":"session.start","data":{"context":{"cwd":"` ~ copilotOverrideRepo ~ `"}}}` ~ "\n");
 		auto tempRepo = buildPath(tempDir(), "cydo-init-detection-real-temp-repo");
 		resetInitDetectionTestDir(tempRepo);
 		scope (exit)
