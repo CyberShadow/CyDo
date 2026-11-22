@@ -82,6 +82,9 @@ struct WorkflowToolsHost
 	void delegate(int childTid, int parentTid, WorktreeMode mode) setupWorktreeForEdge;
 	Promise!void delegate(int tid) ensureProcessQueueAlive;
 	bool delegate() shuttingDown;
+	/// Tell the task's agent, if it keeps its own history, that the tool call
+	/// it recorded as aborted was accepted. Fulfilled at once for the others.
+	Promise!void delegate(int tid, string correction) correctAbortedToolCall;
 	Promise!void delegate(int tid, const(ContentBlock)[] content,
 		const(ContentBlock)[] broadcastContent, string cydoMeta,
 		string nonce) sendTaskMessage;
@@ -1372,6 +1375,10 @@ public:
 		auto contKey = td.pendingContinuation.key;
 		auto hPrompt = td.pendingContinuation.handoffPrompt;
 		auto repairedInterruptionUuid = td.pendingContinuation.repairedInterruptionUuid;
+		// The session that made the SwitchMode call ended before the call's
+		// result reached its agent.
+		auto acceptedSwitchMode = td.pendingContinuation.kind == PendingContinuation.Kind.switchMode
+			? td.pendingContinuation.resultText : null;
 		td.pendingContinuation = null;
 
 		if (typeDef is null)
@@ -1398,7 +1405,7 @@ public:
 		}
 
 		executeContinuation(tid, *contDefP, hPrompt, contKey,
-			repairedInterruptionUuid);
+			repairedInterruptionUuid, acceptedSwitchMode);
 	}
 
 	void spawnOnYieldContinuation(int tid)
@@ -1825,8 +1832,11 @@ private:
 		return true;
 	}
 
+	/// `acceptedSwitchMode`: the result of the SwitchMode call that asked for
+	/// this continuation, when the agent's session ended without receiving it.
 	void executeContinuation(int tid, ContinuationDef contDef,
-		string handoffPrompt, string edgeName, string excludedUserUuid = null)
+		string handoffPrompt, string edgeName, string excludedUserUuid = null,
+		string acceptedSwitchMode = null)
 	{
 		auto td = requireTask(tid,
 			"Continuation execution requires a live task");
@@ -1879,7 +1889,14 @@ private:
 			auto contMeta = host_.buildKnownSystemMessageMeta(
 				KnownSystemMessageKind.modeSwitch,
 				modeSwitchMsgSubject, null, null);
+			auto projectPath = td.projectPath;
 			host_.ensureProcessQueueAlive(tid).then(() {
+				if (acceptedSwitchMode.length == 0)
+					return resolve();
+				return host_.correctAbortedToolCall(tid, host_.readPromptFile(
+					"prompts/aborted_tool_call_accepted.md", projectPath,
+					["tool_name": "SwitchMode", "result": acceptedSwitchMode]));
+			}).then(() {
 				return host_.sendTaskMessage(tid,
 					[ContentBlock("text", wrapKnownSystemMessage(
 						host_.systemKeyword(),

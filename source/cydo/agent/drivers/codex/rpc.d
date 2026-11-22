@@ -77,6 +77,40 @@ struct ThreadForkParams
 	@JSONOptional JSONFragment config;
 }
 
+/// thread/inject_items: append raw Responses items to what the model sees.
+@RPCFlatten @JSONPartial
+struct ThreadInjectItemsParams
+{
+	static struct Text
+	{
+		string type = "input_text";
+		string text;
+	}
+
+	static struct Message
+	{
+		string type = "message";
+		string role;
+		Text[] content;
+	}
+
+	string threadId;
+	Message[] items;
+}
+
+@RPCFlatten @JSONPartial
+struct ThreadUnsubscribeParams
+{
+	string threadId;
+}
+
+@RPCFlatten @JSONPartial
+struct ThreadRevertParams
+{
+	string threadId;
+	string beforeTurnId;
+}
+
 @RPCFlatten @JSONPartial
 struct ThreadRollbackParams
 {

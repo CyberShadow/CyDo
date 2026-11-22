@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import type { AgentType } from "./fixtures";
 import {
   test,
@@ -12,6 +13,35 @@ import {
 } from "./fixtures";
 
 type JsonRecord = Record<string, unknown>;
+type ResponsesItem = {
+  type: string;
+  role?: string;
+  name?: string;
+  namespace?: string;
+  call_id?: string;
+  output?: unknown;
+  content?: Array<{ text?: string }>;
+};
+type ResponsesRequest = {
+  input: ResponsesItem[];
+  threadId: string | null;
+  userText: string | null;
+};
+
+function responsesCapture() {
+  const path = process.env.MOCK_OPENAI_CAPTURE;
+  if (!path) throw new Error("MOCK_OPENAI_CAPTURE is unset");
+  const read = (): ResponsesRequest[] =>
+    existsSync(path)
+      ? readFileSync(path, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line))
+      : [];
+  const start = read().length;
+  return () => read().slice(start);
+}
+
 type ContinuationTool = "SwitchMode" | "Handoff";
 type ContinuationReload = {
   tid: number;
@@ -127,43 +157,6 @@ function assertClaudeContinuationResult(
   );
 }
 
-function assertCodexContinuationResult(
-  rows: JsonRecord[],
-  tool: ContinuationTool,
-  successPrefix: string,
-) {
-  const calls = rows.filter(
-    (row) =>
-      row.type === "response_item" &&
-      isJsonRecord(row.payload) &&
-      row.payload.type === "function_call" &&
-      row.payload.name === tool &&
-      row.payload.namespace === "mcp__cydo",
-  );
-  const call = exactlyOne(calls, `Expected one Codex ${tool} function_call`);
-  const payload = requireJsonRecord(call.payload, `Codex ${tool} call payload`);
-  const callId = requireJsonString(payload.call_id, `Codex ${tool} call id`);
-  const outputs = rows.filter(
-    (row) =>
-      row.type === "response_item" &&
-      isJsonRecord(row.payload) &&
-      row.payload.type === "function_call_output" &&
-      row.payload.call_id === callId,
-  );
-  const output = exactlyOne(
-    outputs,
-    `Expected one Codex ${tool} function_call_output for ${callId}`,
-  );
-  const outputPayload = requireJsonRecord(
-    output.payload,
-    `Codex ${tool} output payload`,
-  );
-  assertAcceptedContinuationText(
-    requireJsonString(outputPayload.output, `Codex ${tool} output`),
-    successPrefix,
-  );
-}
-
 function assertCopilotContinuationResult(
   rows: JsonRecord[],
   tool: ContinuationTool,
@@ -216,8 +209,10 @@ function assertCopilotContinuationResult(
   ).toBe(content);
 }
 
+/// The agents whose history is a file CyDo corrects. Codex keeps its own
+/// history: it is told of the accepted call in its conversation instead.
 function assertRepairedContinuationHistory(
-  agentType: AgentType,
+  agentType: Exclude<AgentType, "codex">,
   rawHistory: string,
   tool: ContinuationTool,
 ) {
@@ -226,8 +221,6 @@ function assertRepairedContinuationHistory(
 
   if (agentType === "claude") {
     assertClaudeContinuationResult(rows, tool, successPrefix);
-  } else if (agentType === "codex") {
-    assertCodexContinuationResult(rows, tool, successPrefix);
   } else {
     assertCopilotContinuationResult(rows, tool, successPrefix);
     return;
@@ -244,14 +237,18 @@ test("keep_context continuation injects prompt template", async ({
   page,
   agentType,
 }) => {
+  const captured = agentType === "codex" ? responsesCapture() : null;
   await enterSession(page);
 
   await sendMessage(page, "call switchmode plan");
 
   // Verify MCP tool call shows correct tool name (not "cydo__SwitchMode" or "unknown").
-  await expect(
-    page.locator(".tool-name", { hasText: "SwitchMode" }),
-  ).toBeVisible();
+  // Codex does not keep a tool call its session's end cut short: the call
+  // is on screen only until the continuation reloads the history.
+  if (agentType !== "codex")
+    await expect(
+      page.locator(".tool-name", { hasText: "SwitchMode" }),
+    ).toBeVisible();
 
   await expect(
     page.locator(".result-divider.system-user-message", {
@@ -263,6 +260,61 @@ test("keep_context continuation injects prompt template", async ({
     assistantText(page, "SwitchMode to plan successful."),
   ).toBeVisible();
 
+  if (agentType === "codex") {
+    const wrapper = "[SYSTEM: Mode switch:";
+    const preface = "`SwitchMode` to `plan` successful.";
+    const promptTemplate = "Get the initial draft";
+    const first = captured!().find((request) =>
+      request.userText?.startsWith(wrapper),
+    );
+    expect(first, "Expected the first SwitchMode continuation request").toBeDefined();
+    const { input } = first!;
+    const call = exactlyOne(
+      input.filter(
+        (item) =>
+          item.type === "function_call" &&
+          item.namespace === "mcp__cydo" &&
+          item.name === "SwitchMode",
+      ),
+      "Expected one SwitchMode function call",
+    );
+    expect(call.call_id).toBeTruthy();
+    const abort = exactlyOne(
+      input.filter(
+        (item) =>
+          item.type === "function_call_output" && item.call_id === call.call_id,
+      ),
+      "Expected one native output for the SwitchMode call",
+    );
+    expect(JSON.stringify(abort.output)).toMatch(/aborted by user/i);
+    const correction = input.findIndex(
+      (item) =>
+        item.type === "message" &&
+        item.role === "developer" &&
+        item.content?.some(
+          (span) =>
+            span.text?.includes("Your `SwitchMode` call") &&
+            span.text.includes("was accepted and took effect"),
+        ),
+    );
+    const prompt = input.findIndex(
+      (item) =>
+        item.type === "message" &&
+        item.role === "user" &&
+        item.content?.some(
+          (span) =>
+            span.text?.startsWith(wrapper) &&
+            span.text.includes(preface) &&
+            span.text.includes(promptTemplate),
+        ),
+    );
+    expect(correction, "Expected the developer correction after the native abort")
+      .toBeGreaterThan(input.indexOf(abort));
+    expect(prompt, "Expected the wrapped continuation prompt after the correction")
+      .toBeGreaterThan(correction);
+    return;
+  }
+
   assertRepairedContinuationHistory(
     agentType,
     readHistoryFile(historyPathForTask(currentTaskTid(page))),
@@ -270,11 +322,9 @@ test("keep_context continuation injects prompt template", async ({
   );
 
   if (agentType !== "copilot") {
-    const rejectionNeedle =
-      agentType === "claude"
-        ? "The user doesn't want to proceed"
-        : "aborted by user after";
-    const encodedNeedle = Buffer.from(rejectionNeedle).toString("base64");
+    const encodedNeedle = Buffer.from(
+      "The user doesn't want to proceed",
+    ).toString("base64");
     await sendMessage(page, `check context contains ${encodedNeedle}`);
     await expect(assistantText(page, "context-check-failed")).toBeVisible({
       timeout: responseTimeout(agentType),
@@ -360,6 +410,7 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
   page,
   agentType,
 }) => {
+  const captured = agentType === "codex" ? responsesCapture() : null;
   const taskCreatedEvents: Array<{
     tid: number;
     parent_tid: number;
@@ -434,13 +485,42 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
   //
   // With the bug, it would navigate to A (completed direct parent).
   // With the fix, it walks up through completed A to find alive G.
+  if (agentType === "codex") {
+    const successorTask = () =>
+      taskCreatedEvents.find(
+        (task) =>
+          task.relation_type === "continuation" && task.parent_tid === handingOffTid,
+      );
+    await expect.poll(successorTask).toBeDefined();
+    const item = page.locator(`.sidebar-item[data-tid="${successorTask()!.tid}"]`);
+    await expect(
+      item.locator(".task-type-icon.completed, .task-type-icon.resumable"),
+    ).toBeVisible({ timeout: responseTimeout(agentType) });
+  }
   await expect(page).toHaveURL(new RegExp(`/task/${tidG}$`));
 
-  assertRepairedContinuationHistory(
-    agentType,
-    readHistoryFile(historyPathForTask(handingOffTid)),
-    "Handoff",
-  );
+  if (agentType === "codex") {
+    const requests = captured!();
+    const source = requests.find(
+      (request) =>
+        request.userText?.startsWith("[SYSTEM: Task prompt: conversation -> test_handoff]") &&
+        request.userText.includes("\n\ncall handoff done test-prompt\n"),
+    );
+    const successor = requests.find(
+      (request) =>
+        request.userText?.startsWith("[SYSTEM: Handoff: test_handoff -> done]") &&
+        request.userText.includes("\n\ntest-prompt\n"),
+    );
+    expect(source?.threadId).toBeTruthy();
+    expect(successor?.threadId).toBeTruthy();
+    expect(successor?.threadId).not.toBe(source?.threadId);
+  } else {
+    assertRepairedContinuationHistory(
+      agentType,
+      readHistoryFile(historyPathForTask(handingOffTid)),
+      "Handoff",
+    );
+  }
 
   const sourceReload = exactlyOne(
     continuationReloads.filter((reload) => reload.tid === handingOffTid),

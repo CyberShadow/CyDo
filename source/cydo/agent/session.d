@@ -35,6 +35,17 @@ struct BackgroundWork
 	string description;
 }
 
+/// A session whose agent can be told, in its own conversation, that a tool
+/// call it recorded as aborted had been accepted. An agent that offers this
+/// keeps its own history; the others have the record itself corrected in
+/// their history file (Agent.repairInterruptedToolCall).
+interface AbortedToolCallCorrection
+{
+	/// Fulfills once the agent holds `correction` and will see it before its
+	/// next turn.
+	Promise!void correctAbortedToolCall(string correction);
+}
+
 interface AgentSession
 {
 	/// Send a user message to the agent.

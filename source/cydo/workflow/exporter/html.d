@@ -4,7 +4,8 @@ import std.conv : to;
 
 import ae.utils.json : JSONFragment, toJson;
 
-import cydo.agent.contract : Agent;
+import cydo.agent.contract : Agent, DriverHistory, DriverHistoryLaunch,
+	DriverServedHistoryAgent, SessionConfig;
 import cydo.agent.resolver : tryCreateConfiguredAgent;
 import cydo.runtime.config : AgentDriver, CydoConfig;
 import cydo.protocol : TaskEventSeqEnvelope, TranslatedEvent;
@@ -12,8 +13,45 @@ import cydo.domain.storage.persistence : Persistence;
 import cydo.domain.tasks.model : TaskData, TypeInfoEntry;
 import cydo.workflow.history.jsonl_store : loadTaskHistory;
 import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
-	resolveNativeHistoryContext;
+	HistoryAccess, ResolvedNativeHistoryContext, resolveNativeHistoryContext;
 import cydo.workflow.workspace.task_path_resolver : TaskPathResolver;
+
+/// The events of a task whose agent serves its history itself. The export
+/// has no sessions: the driver starts a process of its own for the read, and
+/// the event loop runs until that read has settled and the process is gone.
+private string[] driverServedEvents(DriverServedHistoryAgent driver,
+	ref Persistence.TaskRow t, ResolvedNativeHistoryContext resolved)
+{
+	import ae.net.asockets : socketManager;
+	import cydo.runtime.launch.sandbox : cleanup, prepareProcessLaunch;
+	import cydo.runtime.launch.types : ProcessLaunch;
+
+	ProcessLaunch launch;
+	bool launched;
+	DriverHistory history;
+	Exception failure;
+	driver.loadHistory(t.agentSessionId, resolved.profile, () => null, () {
+		launch = prepareProcessLaunch(resolved.sandbox, resolved.rule, resolved.profile,
+			"", driver.executableName(resolved.sandbox.env));
+		launched = true;
+		SessionConfig config;
+		config.workspace = t.workspace;
+		return DriverHistoryLaunch(launch, config);
+	}).then((DriverHistory loaded) { history = loaded; },
+		(Exception e) { failure = e; }).ignoreResult();
+	socketManager.loop();
+	if (launched)
+		cleanup(launch.sandbox);
+	if (failure !is null)
+		throw new Exception("Cannot export task " ~ t.tid.to!string
+			~ ": session history is unavailable: " ~ failure.msg);
+
+	string[] events;
+	foreach (i, ref event; history.events)
+		events ~= toJson(TaskEventSeqEnvelope(t.tid, cast(int) i, event.ts.stdTime,
+			JSONFragment(event.translated)));
+	return events;
+}
 
 /// Recursively collect all tasks reachable from rootTids via parent_tid.
 /// Returns the deduplicated set (roots + all descendants).
@@ -131,6 +169,11 @@ string exportTaskData(Persistence.TaskRow[] taskRows, ref CydoConfig config,
 		auto context = ConfiguredNativeHistoryContext(t.agentName, t.workspace,
 			(*td).repoPath, false);
 		auto resolved = resolveNativeHistoryContext(config, agent, context);
+		if (auto driver = HistoryAccess.driverServingHistory(agent))
+		{
+			eventsMap[format!"%d"(t.tid)] = driverServedEvents(driver, t, resolved);
+			continue;
+		}
 		auto jsonlPath = agent.historyPath(t.agentSessionId, resolved.profile);
 		import std.file : exists, isFile;
 		import std.path : isAbsolute;

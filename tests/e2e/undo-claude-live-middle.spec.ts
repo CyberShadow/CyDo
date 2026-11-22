@@ -211,6 +211,8 @@ test("all agents publish canonical boundary replacements without duplicate trans
   await expect(assistantText(page, turn)).toBeVisible({
     timeout: responseTimeout(agentType),
   });
+  // Codex can replay the same message in a new history generation after Stop.
+  const liveCodexFrames = agentType === "codex" ? frames.slice() : null;
   // Stopping the real agent flushes its native history file, allowing the
   // JSONL tracker to correlate the just-visible canonical events.
   await killSession(page);
@@ -225,10 +227,17 @@ test("all agents publish canonical boundary replacements without duplicate trans
     expect(new Set(replacements.map((frame) => frame.seq)).size).toBe(
       replacements.length,
     );
+    // Codex names a turn when it accepts the message that starts it, so its
+    // user messages arrive with their boundary; the end of a turn is known
+    // only once the turn is over. The other agents' boundaries are all read
+    // from their history files afterwards.
+    const userBoundaryAtEmission = agentType === "codex";
     expect(
       new Set(replacements.map((frame) => frame.event.history_boundary.kind)),
-    ).toEqual(new Set(["user", "agent_turn"]));
-    const targetUsers = frames.filter(
+    ).toEqual(
+      new Set(userBoundaryAtEmission ? ["agent_turn"] : ["user", "agent_turn"]),
+    );
+    const targetUsers = (liveCodexFrames ?? frames).filter(
       (frame) =>
         frame?.type !== "task_history_boundary_replaced" &&
         frame?.event?.type === "item/started" &&
@@ -236,7 +245,8 @@ test("all agents publish canonical boundary replacements without duplicate trans
         !frame?.event?.is_meta &&
         !frame?.event?.is_synthetic &&
         !frame?.event?.pending &&
-        !frame?.event?.history_boundary &&
+        (frame?.event?.history_boundary?.kind === "user") ===
+          userBoundaryAtEmission &&
         frame?.event?.content?.length === 1 &&
         frame.event.content[0]?.text === targetPrompt,
     );
@@ -248,7 +258,7 @@ test("all agents publish canonical boundary replacements without duplicate trans
           frame.seq === targetSeq &&
           frame.event.history_boundary.kind === "user",
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(userBoundaryAtEmission ? 0 : 1);
     for (const replacement of replacements) {
       expect(
         frames.some(

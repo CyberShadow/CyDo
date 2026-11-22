@@ -48,12 +48,15 @@ struct HistoryAccess
 	string sessionId;
 	private string path_;
 	private DriverServedHistoryAgent historyDriver_;
+	private const(ConfiguredNativeHistoryContext)* discoveryContext_;
 
 	this(Agent agent, NativeHistoryProfile profile, string sessionId, string path)
 	{
 		this.agent = agent;
 		this.profile = profile;
 		this.sessionId = sessionId;
+		assert(driverServingHistory(agent) is null,
+			"A driver-served transcript cannot use file history access");
 		path_ = path;
 	}
 
@@ -63,12 +66,22 @@ struct HistoryAccess
 	}
 
 	static HistoryAccess driverServed(DriverServedHistoryAgent driver,
-		NativeHistoryProfile profile, string sessionId)
+		NativeHistoryProfile profile, string sessionId,
+		const(ConfiguredNativeHistoryContext)* discoveryContext = null)
 	{
 		assert(driver !is null);
-		auto access = HistoryAccess(driver, profile, sessionId, null);
+		HistoryAccess access;
+		access.agent = driver;
+		access.profile = profile;
+		access.sessionId = sessionId;
 		access.historyDriver_ = driver;
+		access.discoveryContext_ = discoveryContext;
 		return access;
+	}
+
+	@property const(ConfiguredNativeHistoryContext)* discoveryContext() const
+	{
+		return discoveryContext_;
 	}
 
 	@property bool isDriverServed() const { return historyDriver_ !is null; }
@@ -931,7 +944,7 @@ version (unittest)
 		}
 
 		override Promise!DriverHistory loadHistory(string sessionId,
-			const ref NativeHistoryProfile profile, AgentSession owner,
+			const ref NativeHistoryProfile profile, AgentSession delegate() currentOwner,
 			DriverHistoryLaunch delegate() obtainLaunch)
 		{
 			assert(0, "Unexpected driver history read");

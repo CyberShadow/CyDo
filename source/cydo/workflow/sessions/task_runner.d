@@ -33,7 +33,7 @@ import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 	UnavailableHistoryKind, resolveNativeHistoryContext;
 import cydo.agent.drivers.claude : ClaudeCodeSession, ToolPermissionRequest;
 import cydo.agent.drivers.codex : CodexAgent, CodexForkSourceOwner, CodexSession;
-import cydo.domain.tasks.model : PendingContinuation, ProcessState, TaskData, TaskStatus,
+import cydo.domain.tasks.model : NativeUndoState, PendingContinuation, ProcessState, TaskData, TaskStatus,
 	WaitingTaskDependencyState;
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
@@ -234,6 +234,8 @@ struct TaskSessionRunnerHost
 		TaskNotificationChange notification) transitionTask;
 	void delegate(int tid, TaskStatus[] expectedFrom, TaskStatus to,
 		TaskNotificationChange notification) transitionTaskFrom;
+	void delegate(int tid, TaskStatus[] expectedFrom, TaskStatus to,
+		TaskNotificationChange notification) applyTaskTransition;
 	void delegate(int tid, string resultText) persistResultText;
 	void delegate(int tid, YieldGate gate) markYieldGateNagged;
 	void delegate(int tid, YieldGateFinding finding) requestYieldGateRetry;
@@ -428,21 +430,8 @@ class TaskSessionRunner
 			deliveredPendingSubTask = host_.finalizeCompletedSubTask(tid);
 		else
 		{
-			auto targetStatus = exitCode == 0 && !current.lastTurnFailed
-				? TaskStatus.completed : TaskStatus.failed;
-			host_.persistResultText(tid, current.resultText);
-			if (current.status != targetStatus)
-			{
-				host_.transitionTaskFrom(tid,
-					targetStatus == TaskStatus.completed
-						? [TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
-							TaskStatus.waiting, TaskStatus.failed]
-						: [TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
-							TaskStatus.waiting, TaskStatus.completed],
-					targetStatus, TaskNotificationChange.preserve);
-			}
-			else
-				statusWasAlreadyTarget = true;
+			statusWasAlreadyTarget = applyStoppedTaskStatus(tid, current, exitCode,
+				host_.transitionTaskFrom);
 			if (current.status != TaskStatus.completed)
 				deliveredPendingSubTask = host_.recordChildTerminal(tid);
 		}
@@ -587,19 +576,12 @@ class TaskSessionRunner
 		auto owner = tid in sessions_;
 		enforce(owner !is null && *owner is (*binding).owner,
 			"Live history watch binding does not match the mapped session owner");
+		// A driver that serves its history knows its boundaries as it emits
+		// them; there is no file to watch for them.
+		if (HistoryAccess.driverServingHistory((*binding).agent) !is null)
+			return LiveHistoryWatchResolution.noLiveBinding();
 		auto context = LiveHistoryContext((*binding).agent, (*binding).profile,
 			(*binding).sessionId, (*binding).resuming);
-		if (auto codex = cast(CodexAgent) (*binding).agent)
-		{
-			auto codexOwner = cast(CodexSession) (*binding).owner;
-			enforce(codexOwner !is null,
-				"Codex live history binding must be owned by a Codex session");
-			auto path = codex.liveSessionPath(codexOwner, (*binding).profile,
-				(*binding).sessionId);
-			if (path.length == 0)
-				return LiveHistoryWatchResolution.awaitingPath(context);
-			return LiveHistoryWatchResolution.target(LiveHistoryWatchTarget(context, path));
-		}
 		auto path = (*binding).agent.historyPath((*binding).sessionId,
 			(*binding).profile);
 		return LiveHistoryWatchResolution.target(LiveHistoryWatchTarget(context, path));
@@ -665,13 +647,27 @@ public:
 
 	Promise!DriverHistory loadDriverHistory(int tid, HistoryAccess access)
 	{
-		auto owner = sessionForTask(tid);
-		return access.historyDriver.loadHistory(access.sessionId, access.profile, owner, () {
-			assert(owner is null, "Live driver history must use its owner");
-			auto td = requireTask(tid, "History launch requires an existing task");
-			auto launch = prepareOperationSessionLaunch(tid, access.agent, currentTaskTypeDef(td));
-			return DriverHistoryLaunch(launch.processLaunch, launch.sessionConfig);
-		});
+		// The launch a read without a live session starts its process from
+		// is the read's own, as a fork's is; it is given up when the read settles.
+		ProcessLaunch readLaunch;
+		bool launched;
+		auto history = access.historyDriver.loadHistory(access.sessionId, access.profile,
+			() => sessionForTask(tid), () {
+				assert(!launched, "A history read obtains one launch");
+				auto td = requireTask(tid, "History launch requires an existing task");
+				auto launch = buildTaskSessionLaunch(tid, access.agent, currentTaskTypeDef(td),
+					LaunchOwnership.operation, access.discoveryContext);
+				readLaunch = launch.processLaunch;
+				launched = true;
+				return DriverHistoryLaunch(launch.processLaunch, launch.sessionConfig);
+			});
+		void release()
+		{
+			if (launched)
+				launchSandbox.cleanup(readLaunch.sandbox);
+		}
+		history.then((DriverHistory) { release(); }, (Exception) { release(); }).ignoreResult();
+		return history;
 	}
 
 	void shutdownSessions()
@@ -741,7 +737,8 @@ public:
 	}
 
 	private TaskSessionLaunch buildTaskSessionLaunch(int tid, Agent taskAgent,
-		TaskTypeDef* typeDef, LaunchOwnership ownership)
+		TaskTypeDef* typeDef, LaunchOwnership ownership,
+		const(ConfiguredNativeHistoryContext)* discoveryContext = null)
 	{
 		auto td = requireTask(tid,
 			"Task must exist before preparing session launch");
@@ -784,8 +781,8 @@ public:
 		auto chdir = taskCwd.length > 0 ? taskCwd : workDir;
 
 		bool readOnly = typeDef !is null && typeDef.read_only;
-		auto context = ConfiguredNativeHistoryContext(td.agentName, td.workspace,
-			td.repoPath, readOnly);
+		auto context = discoveryContext !is null ? *discoveryContext
+			: ConfiguredNativeHistoryContext(td.agentName, td.workspace, td.repoPath, readOnly);
 		auto nativeHistoryContext = resolveNativeHistoryContext(*host_.currentConfig(),
 			taskAgent, context);
 		enforce(nativeHistoryContext.agent.driver == taskAgent.driver,
@@ -901,7 +898,7 @@ public:
 		if (ownership == LaunchOwnership.task)
 			td.launch = processLaunch;
 
-		sessionConfig.workspace = td.workspace;
+		sessionConfig.workspace = context.workspaceName;
 		sessionConfig.workDir = chdir !is null ? chdir : "";
 		sessionConfig.taskDir = tdDir;
 		if (taskAgent.needsBash())
@@ -1153,16 +1150,27 @@ public:
 			if (auto binding = tid in liveHistoryBindings_)
 				enforce((*binding).owner is session,
 					"Exiting session does not own its live history binding");
-			if (host_.shuttingDown())
+			auto current = host_.getTask(tid);
+			bool shuttingDown = host_.shuttingDown();
+			bool resumePending = !shuttingDown && current !is null
+				&& current.killPromise !is null
+				&& current.processQueue.goalState == ProcessState.Alive;
+			if (shuttingDown || resumePending || current is null)
 			{
 				host_.stopJsonlWatch(tid);
 				liveHistoryBindings_.remove(tid);
 				sessions_.remove(tid);
-				auto shutdownTask = host_.getTask(tid);
-				if (shutdownTask !is null)
+				if (current !is null)
 				{
-					cleanupTaskLaunch(shutdownTask);
-					shutdownTask.launch = ProcessLaunch.init;
+					cleanupTaskLaunch(current);
+					current.launch = ProcessLaunch.init;
+				}
+				if (resumePending)
+				{
+					// The queued resume owns task history and submissions now.
+					auto promise = current.killPromise;
+					current.killPromise = null;
+					promise.fulfill(ProcessState.Dead);
 				}
 				return;
 			}
@@ -1171,15 +1179,6 @@ public:
 
 			tracef("onExit: tid=%d exitCode=%d status=%s",
 				tid, exitCode, currentStatusForLog(tid));
-
-			auto current = host_.getTask(tid);
-			if (current is null)
-			{
-				host_.stopJsonlWatch(tid);
-				liveHistoryBindings_.remove(tid);
-				sessions_.remove(tid);
-				return;
-			}
 
 			ProcessExitEvent ev;
 			ev.code = exitCode;
@@ -1231,6 +1230,10 @@ public:
 			bool missingExecutableLaunchFailure = exitCode != 0
 				&& !current.hadTurnResult
 				&& isMissingExecutableMessage(current.error);
+			// A Codex revert settles and reloads its own history, even
+			// if the app-server exits before the request callback runs.
+			bool revertOwnsHistory = cast(CodexSession) session !is null
+				&& (current.undoStopInProgress || current.nativeUndoState == NativeUndoState.inFlight);
 			bool reloadEmitted;
 			if (missingExecutableLaunchFailure)
 			{
@@ -1241,10 +1244,12 @@ public:
 				host_.broadcastAppendedTaskEvent(tid, translated);
 				host_.unsubscribeTaskHistorySubscribers(tid);
 			}
-			else if (current.undoStopInProgress)
-				reloadEmitted = host_.resetHistoryWatermarkOnly(tid);
+			else if (revertOwnsHistory)
+				reloadEmitted = true;
 			else
-				reloadEmitted = host_.resetHistoryWatermarkAfterExit(tid);
+				reloadEmitted = current.undoStopInProgress
+					? host_.resetHistoryWatermarkOnly(tid)
+					: host_.resetHistoryWatermarkAfterExit(tid);
 
 			current = host_.getTask(tid);
 			if (current is null)
@@ -1255,7 +1260,8 @@ public:
 
 			auto ta = host_.tryAgentForTask(tid);
 			bool intentionalExit = !missingExecutableLaunchFailure
-				&& (current.processQueue.goalState != ProcessState.Alive
+				&& (current.killPromise !is null
+					|| current.processQueue.goalState != ProcessState.Alive
 					|| (ta !is null && ta.driver == AgentDriver.codex && exitCode == 143));
 
 			if (current.killPromise !is null)
@@ -1274,6 +1280,11 @@ public:
 			if (current.undoStopInProgress)
 			{
 				current.undoStopInProgress = false;
+				if (cast(CodexSession) session !is null)
+					current.applyCodexUndoStopStatus = () {
+						applyStoppedTaskStatus(tid, requireTask(tid, "Stopped undo task must exist"),
+							exitCode, host_.applyTaskTransition);
+					};
 				return;
 			}
 
@@ -1284,6 +1295,8 @@ public:
 					current.error = "Process exited unexpectedly";
 				current.resultText = current.error;
 				host_.persistResultText(tid, current.resultText);
+				if (!reloadEmitted && !revertOwnsHistory && !missingExecutableLaunchFailure)
+					host_.emitTaskReload(tid);
 				host_.transitionTaskFrom(tid,
 					[TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
 						TaskStatus.waiting], TaskStatus.failed,
@@ -1390,6 +1403,27 @@ public:
 			host_.publishTaskSnapshot(tid);
 	}
 
+	/// An ordinary stop and a failed Codex busy undo use the same exit status.
+	private bool applyStoppedTaskStatus(int tid, TaskData* task, int exitCode,
+		void delegate(int, TaskStatus[], TaskStatus, TaskNotificationChange) transition)
+	{
+		if (task.status == TaskStatus.completed)
+			return true;
+		auto targetStatus = exitCode == 0 && !task.lastTurnFailed
+			? TaskStatus.completed : TaskStatus.failed;
+		host_.persistResultText(tid, task.resultText);
+		if (task.status == targetStatus)
+			return true;
+		transition(tid,
+			targetStatus == TaskStatus.completed
+				? [TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
+					TaskStatus.waiting, TaskStatus.failed]
+				: [TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
+					TaskStatus.waiting, TaskStatus.completed],
+			targetStatus, TaskNotificationChange.preserve);
+		return false;
+	}
+
 	Promise!ProcessState delegate(ProcessState) makeProcessQueueSF(int tid)
 	{
 		return (ProcessState goal) => processTransition(tid, goal);
@@ -1431,7 +1465,9 @@ public:
 			return resolve(ProcessState.Alive);
 		}
 
-		if (!taskAlive(tid))
+		// A session whose process has ended is gone only once its exit has
+		// been handled: what waits for Dead may open the task's thread anew.
+		if (sessionForTask(tid) is null)
 			return resolve(ProcessState.Dead);
 
 		td.killPromise = new Promise!ProcessState;
@@ -1638,6 +1674,10 @@ private:
 		// was launched with, not a freshly re-resolved one.
 		auto binding = tid in liveHistoryBindings_;
 		if (binding is null || (*binding).sessionId.length == 0)
+			return;
+		// A driver-served history is not a file of CyDo's to correct; such an
+		// agent is told at the continuation (AbortedToolCallCorrection).
+		if (HistoryAccess.driverServingHistory((*binding).agent) !is null)
 			return;
 
 		string toolName;
@@ -2062,24 +2102,27 @@ version (unittest) private TaskSessionRunner gitMetadataTestRunner(
 	TaskData[int]* tasks, TaskTypeCatalog catalog, GitMetadataLaunchFixture fixture,
 	SandboxConfig workspaceSandbox, string worktreePath, string taskCwd,
 	string mcpSocketPath = "", string taskDirPath = "",
-	bool isolateFilesystem = false, string configuredTmpDir = "")
+	bool isolateFilesystem = false, string configuredTmpDir = "",
+	AgentDriver driver = AgentDriver.claude)
 {
+	import std.conv : to;
 	import configy.attributes : SetInfo;
 	import cydo.runtime.config : AgentConfig, WorkspaceConfig;
 
 	auto config = new CydoConfig;
 	config.sandbox = unrestrictedLaunchTestSandbox();
 	AgentConfig configuredAgent;
-	configuredAgent.driver = SetInfo!AgentDriver(AgentDriver.claude, true);
+	configuredAgent.driver = SetInfo!AgentDriver(driver, true);
 	configuredAgent.sandbox = unrestrictedLaunchTestSandbox();
 	configuredAgent.sandbox.isolate_filesystem = SetInfo!bool(isolateFilesystem);
 	configuredAgent.sandbox.env = [
 		"HOME": buildPath(fixture.root, "home"),
 		"CLAUDE_CONFIG_DIR": buildPath(fixture.root, "claude-profile"),
+		"CODEX_HOME": buildPath(fixture.root, "codex-profile"),
 	];
 	if (configuredTmpDir.length > 0)
 		configuredAgent.sandbox.env["TMPDIR"] = configuredTmpDir;
-	config.agents["claude"] = configuredAgent;
+	config.agents[driver.to!string] = configuredAgent;
 	config.workspaces = [WorkspaceConfig(name: "local", root: fixture.workspaceRoot,
 		sandbox: workspaceSandbox)];
 
@@ -3484,4 +3527,255 @@ unittest
 	assert(access.agent is agent);
 	assert(access.profile == profile);
 	assert(access.sessionId == "driver-session");
+}
+
+version (unittest) private final class DeferredExitTestSession : AgentSession
+{
+	import core.time : Duration;
+	import cydo.agent.session : AgentSubmissionReceipt, MessageSource;
+	import cydo.protocol : ContentBlock;
+
+	bool running = true;
+	void delegate(TranslatedEvent) emit;
+	void delegate(int) exit;
+
+	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content,
+		string correlationId, bool isContextBootstrap, string nativeSubmissionUuid,
+		MessageSource source) { assert(false, "unexpected submission"); }
+	void invalidatePendingSubmittedMessages() {}
+	@property bool supportsImages() const { return false; }
+	void interrupt() { assert(false, "unexpected interrupt"); }
+	void sigint() { assert(false, "unexpected signal"); }
+	void stop() { assert(false, "unexpected stop"); }
+	void closeStdin() { running = false; }
+	@property bool canStopAfterCloseStdin() const { return false; }
+	void killAfterTimeout(Duration timeout) {}
+	@property void onNativeSessionStarted(void delegate(string) callback) {}
+	@property void onOutput(void delegate(TranslatedEvent) callback) { emit = callback; }
+	@property void onStderr(void delegate(string) callback) {}
+	@property void onExit(void delegate(int) callback) { exit = callback; }
+	@property bool alive() { return running; }
+	@property const(BackgroundWork)[] backgroundWork() { return null; }
+}
+
+version (unittest) private final class DeferredExitTestAgent : ClaudeCodeAgent
+{
+	DeferredExitTestSession[] sessions;
+
+	override string executableName(string[string] env) { return "/bin/true"; }
+
+	override AgentSession createSession(int tid, string resumeSessionId,
+		ProcessLaunch launch, SessionConfig config)
+	{
+		auto session = new DeferredExitTestSession;
+		sessions ~= session;
+		return session;
+	}
+}
+
+unittest
+{
+	import std.conv : to;
+	import std.file : rmdirRecurse, tempDir;
+	import std.process : thisProcessID;
+
+	import ae.utils.statequeue : StateQueue;
+	import cydo.domain.tasks.model : Watermark;
+	import cydo.foundation.testing : drainNextTicks;
+
+	auto root = buildPath(tempDir(), "cydo-resume-before-exit-" ~ thisProcessID.to!string);
+	auto workspace = buildPath(root, "workspace");
+	mkdirRecurse(workspace);
+	scope (exit) rmdirRecurse(root);
+	auto fixture = GitMetadataLaunchFixture(root: root, workspaceRoot: workspace);
+	auto catalog = gitMetadataTaskCatalog(fixture,
+		"task_types:\n  runner:\n    model_class: large\n");
+	TaskData[int] tasks;
+	tasks[1] = TaskData(1, "local", "");
+	auto task = &tasks[1];
+	task.taskType = "runner";
+	task.agentName = "claude";
+	task.agentSessionId = "existing-session";
+	task.status = TaskStatus.alive;
+	auto runner = gitMetadataTestRunner(&tasks, catalog, fixture,
+		unrestrictedLaunchTestSandbox(), "", workspace);
+	scope (exit) runner.cleanupTaskLaunch(task);
+	auto agent = new DeferredExitTestAgent;
+	with (runner.host_)
+	{
+		agentForTask = (int tid) => agent;
+		tryAgentForTask = agentForTask;
+		shuttingDown = () => false;
+		clearLastActive = (int tid) {};
+		publishTaskSnapshot = (int tid) {};
+		broadcastTask = (int tid, TranslatedEvent event) {};
+		hasLiveBatchOwner = (int tid) => false;
+		hasTaskDependency = (int tid) => true;
+		checkOutputGate = (int tid) => YieldGateFinding(YieldGate.outputs, null);
+		hasPendingChildQuestion = (int tid) => false;
+		pump = (int tid) => false;
+		touchAndPersistLastActive = (int tid) {};
+		ensureHistoryLoadedForExit = (int tid) => Nullable!TaskHistoryResolution.init;
+		finalReconcileJsonlIfPresent = (int tid, Nullable!TaskHistoryResolution resolution) {};
+		broadcastHistoryOperations = (int tid) {};
+		startJsonlWatch = (int tid) {};
+		stopJsonlWatch = (int tid) {};
+		failPendingAskUserQuestionOnExit = (int tid) {};
+		failPendingPermissionPromptOnExit = (int tid) {};
+		cancelExitBackgroundWork = (int tid) {};
+		resetHistoryWatermarkAfterExit = (int tid) {
+			task.history.reset(Watermark.init);
+			return false;
+		};
+		persistResultText = (int tid, string result) {};
+		transitionTaskFrom = (int tid, TaskStatus[] expectedFrom, TaskStatus status,
+			TaskNotificationChange notification) { task.status = status; };
+		recordChildTerminal = (int tid) => true;
+		deliverWaitingParentResultsIfReady = (int tid) => resolve();
+		emitTaskReload = (int tid) {};
+	}
+	task.processQueue = new StateQueue!ProcessState(runner.makeProcessQueueSF(1),
+		ProcessState.Dead);
+	task.processQueue.setGoal(ProcessState.Alive).ignoreResult();
+	drainNextTicks();
+	assert(agent.sessions.length == 1);
+	auto retiring = agent.sessions[0];
+
+	retiring.emit(TranslatedEvent(
+		`{"type":"turn/result","subtype":"success","result":"done"}`, null));
+	drainNextTicks();
+	assert(!runner.taskAlive(1) && runner.sessionForTask(1) is retiring);
+	auto submissionGeneration = task.history.generation;
+	task.inFlightUiNonceGeneration["queued"] = submissionGeneration;
+	bool resumed;
+	task.processQueue.setGoal(ProcessState.Alive)
+		.then(() { resumed = true; }, (Exception e) { assert(false, e.msg); })
+		.ignoreResult();
+	drainNextTicks();
+	assert(!resumed && agent.sessions.length == 1);
+
+	retiring.exit(0);
+	drainNextTicks();
+	assert(task.history.generation == submissionGeneration,
+		"retiring process invalidated the queued submission's history generation");
+	assert("queued" in task.inFlightUiNonceGeneration,
+		"retiring process cleared the queued submission's nonce");
+	assert(task.status == TaskStatus.alive, "retiring process finalized a resumed task");
+	assert(resumed && agent.sessions.length == 2);
+	assert(runner.sessionForTask(1) is agent.sessions[1] && runner.taskAlive(1));
+}
+
+version (unittest) private final class BusyUndoTestCodexAgent : CodexAgent
+{
+	override string executableName(string[string] env) { return "/bin/true"; }
+
+	override AgentSession createSession(int tid, string resumeSessionId,
+		ProcessLaunch launch, SessionConfig config)
+	{
+		import cydo.agent.drivers.codex : makeUnattachedCodexSessionForTest;
+
+		return makeUnattachedCodexSessionForTest(tid, config);
+	}
+}
+
+unittest
+{
+	import std.conv : to;
+	import std.file : rmdirRecurse, tempDir;
+	import std.process : thisProcessID;
+
+	import ae.utils.statequeue : StateQueue;
+	import cydo.domain.tasks.model : Watermark;
+	import cydo.foundation.testing : drainNextTicks;
+
+	auto root = buildPath(tempDir(), "cydo-undo-stop-exit-" ~ thisProcessID.to!string);
+	auto workspace = buildPath(root, "workspace");
+	mkdirRecurse(workspace);
+	scope (exit) rmdirRecurse(root);
+	auto fixture = GitMetadataLaunchFixture(root: root, workspaceRoot: workspace);
+	auto catalog = gitMetadataTaskCatalog(fixture,
+		"task_types:\n  runner:\n    model_class: large\n");
+
+	void exercise(Agent agent)
+	{
+		TaskData[int] tasks;
+		tasks[1] = TaskData(1, "local", "");
+		auto task = &tasks[1];
+		task.taskType = "runner";
+		task.agentName = agent.driver.to!string;
+		task.status = TaskStatus.alive;
+		auto runner = gitMetadataTestRunner(&tasks, catalog, fixture,
+			unrestrictedLaunchTestSandbox(), "", workspace, driver: agent.driver);
+		scope (exit) runner.cleanupTaskLaunch(task);
+		int watermarkOnlyResets;
+		int fullHistoryResets;
+		int reloads;
+		with (runner.host_)
+		{
+			agentForTask = (int tid) => agent;
+			tryAgentForTask = agentForTask;
+			shuttingDown = () => false;
+			clearLastActive = (int tid) {};
+			publishTaskSnapshot = (int tid) {};
+			broadcastTask = (int tid, TranslatedEvent event) {};
+			hasPendingChildQuestion = (int tid) => false;
+			pump = (int tid) => false;
+			touchAndPersistLastActive = (int tid) {};
+			ensureHistoryLoadedForExit = (int tid) => Nullable!TaskHistoryResolution.init;
+			finalReconcileJsonlIfPresent = (int tid, Nullable!TaskHistoryResolution resolution) {};
+			stopJsonlWatch = (int tid) {};
+			failPendingAskUserQuestionOnExit = (int tid) {};
+			failPendingPermissionPromptOnExit = (int tid) {};
+			cancelExitBackgroundWork = (int tid) {};
+			resetHistoryWatermarkOnly = (int tid) {
+				++watermarkOnlyResets;
+				task.history.reset(Watermark.init);
+				return false;
+			};
+			resetHistoryWatermarkAfterExit = (int tid) {
+				++fullHistoryResets;
+				task.history.reset(Watermark.init);
+				return false;
+			};
+			emitTaskReload = (int tid) { ++reloads; };
+		}
+		task.processQueue = new StateQueue!ProcessState(runner.makeProcessQueueSF(1),
+			ProcessState.Dead);
+		task.processQueue.setGoal(ProcessState.Alive).ignoreResult();
+		drainNextTicks();
+		auto session = runner.sessionForTask(1);
+		assert(session !is null && session.alive);
+		auto generation = task.history.generation;
+		task.undoStopInProgress = true;
+
+		bool stopped;
+		task.processQueue.setGoal(ProcessState.Dead)
+			.then(() { stopped = true; }, (Exception e) { assert(false, e.msg); })
+			.ignoreResult();
+		drainNextTicks();
+		assert(!stopped);
+		if (auto claude = cast(DeferredExitTestSession) session)
+		{
+			claude.closeStdin();
+			claude.exit(0);
+		}
+		else
+			runner.stopTask(1);
+		drainNextTicks();
+
+		assert(stopped && runner.sessionForTask(1) is null,
+			"The runner must handle the session exit and settle the stop");
+		assert(reloads == 0 && fullHistoryResets == 0,
+			"Undo owns the post-stop history reload");
+		if (agent.driver == AgentDriver.claude)
+			assert(watermarkOnlyResets == 1, "Claude fallback still resets its watermark on exit");
+		else
+		{
+			assert(watermarkOnlyResets == 0 && task.history.generation == generation,
+				"Codex busy undo must preserve history until the revert settles");
+		}
+	}
+
+	exercise(new DeferredExitTestAgent);
+	exercise(new BusyUndoTestCodexAgent);
 }

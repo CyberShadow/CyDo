@@ -16,15 +16,12 @@ import ae.utils.statequeue : StateQueue;
 import cydo.agent.contract : Agent, PersistedHistoryBoundary, PersistedHistoryBoundaryKind,
 	SessionConfig;
 import cydo.agent.drivers.claude : ClaudeCodeSession;
-import cydo.agent.drivers.codex : CodexAgent, CodexSession,
-	NativeUndoExecutionResult, NativeUndoExecutionStatus, NativeUndoPlan,
-	ThreadForkOutcome,
-	countActiveFallbackRecordsFromBoundary;
-import cydo.agent.drivers.codex.rollout : resolveCodexFallbackUndoAnchor, rolloutTurnIdAtLine;
+import cydo.agent.drivers.codex : CodexAgent, CodexSession, ThreadForkOutcome;
 import cydo.agent.session : AgentSession;
 import cydo.domain.storage.persistence : Persistence, createForkTask;
 import cydo.domain.task_types.definition : TaskTypeDef;
-import cydo.domain.tasks.model : ArchiveState, NativeUndoState, ErrorMessage,
+import cydo.domain.tasks.model : ArchiveState, HistoryStore, NativeUndoState, ErrorMessage,
+	extractEventFromEnvelope,
 	ProcessState, TaskCreatedMessage, TaskData, TaskStatus, UndoPreviewMessage,
 	UndoResultMessage, Watermark, WsMessage, watermarkFromPath;
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
@@ -85,6 +82,8 @@ struct TaskMutationServiceHost
 		TaskNotificationChange notification) transitionTaskFrom;
 
 	void delegate(int tid) ensureHistoryLoaded;
+	void delegate(int tid, void delegate() ready) whenHistoryLoaded;
+	ubyte delegate(int tid) servedHistoryMode;
 	TaskHistoryResolution delegate(int tid) resolveTaskHistory;
 	void delegate(int tid, const ref TaskHistoryResolution resolution)
 		reportUnavailableHistory;
@@ -137,24 +136,6 @@ private final class FallbackUndoTransaction
 	}
 }
 
-private void gateLiveUndoBackup(
-	void delegate(void delegate() success, void delegate(string) failure) beginBackup,
-	void delegate() beginStop, void delegate(string) reportFailure)
-{
-	bool settled;
-	beginBackup(() {
-		if (settled)
-			return;
-		settled = true;
-		beginStop();
-	}, (string message) {
-		if (settled)
-			return;
-		settled = true;
-		reportFailure(message);
-	});
-}
-
 unittest
 {
 	string[] calls;
@@ -179,46 +160,17 @@ unittest
 	});
 	rewindFailed.fail(() { rewindCalls ~= "rewind-failed"; });
 	assert(rewindCalls == ["reset", "reload", "rewind-failed"]);
-
-	void delegate() success;
-	void delegate(string) failure;
-	int backupCalls;
-	int stopCalls;
-	int gateErrors;
-	gateLiveUndoBackup((void delegate() onSuccess, void delegate(string) onFailure) {
-		backupCalls++;
-		success = onSuccess;
-		failure = onFailure;
-	}, () { stopCalls++; }, (string) { gateErrors++; });
-	assert(backupCalls == 1 && stopCalls == 0);
-	failure("failure");
-	assert(stopCalls == 0);
-	success();
-	assert(stopCalls == 0 && gateErrors == 1);
-
-	gateLiveUndoBackup((void delegate() onSuccess, void delegate(string) onFailure) {
-		success = onSuccess;
-		failure = onFailure;
-	}, () { stopCalls++; }, (string) { gateErrors++; });
-	success();
-	success();
-	failure("late");
-	assert(stopCalls == 1 && gateErrors == 1);
 }
 
 class TaskMutationService
 {
 private:
 	TaskMutationServiceHost host_;
-	alias RunLiveCodexUndoBackup = void delegate(MutationReplySocket, int,
-		HistoryAccess, CodexSession, void delegate(), void delegate(string));
-	RunLiveCodexUndoBackup runLiveCodexUndoBackup_;
 
 public:
-	this(TaskMutationServiceHost host, RunLiveCodexUndoBackup runLiveCodexUndoBackup = null)
+	this(TaskMutationServiceHost host)
 	{
 		host_ = host;
-		runLiveCodexUndoBackup_ = runLiveCodexUndoBackup;
 	}
 
 	void handleForkTaskMsg(WebSocketAdapter ws, WsMessage json)
@@ -238,6 +190,11 @@ public:
 			"Fork failed: task history file not found", source))
 			return;
 		auto ta = source.agent;
+		if (source.isDriverServed)
+		{
+			forkCodexTask(ws, tid, json.anchor, source);
+			return;
+		}
 		HistoryBoundary boundary;
 		bool opensConversation;
 		if (!host_.resolveFreshPersistedBoundary(tid, source, json.anchor, boundary,
@@ -247,47 +204,18 @@ public:
 				"Fork failed: message UUID not found in task history", tid)).representation));
 			return;
 		}
-		auto codexSession = cast(CodexSession) host_.sessionForTask(tid);
 		auto operations = selectHistoryOperations(ta.driver,
-			host_.nativeSessionState(tid));
+			host_.nativeSessionState(tid), 0);
 		if (!allowsOperation(boundary, opensConversation, operations, HistoryOperation.fork))
 		{
 			ws.send(Data(toJson(ErrorMessage("error",
 				"Fork failed: message UUID not found in task history", tid)).representation));
 			return;
 		}
-		auto mechanism = operationMechanism(boundary, opensConversation, operations,
-			HistoryOperation.fork);
-		if (mechanism == HistoryOperationMechanism.codex_native)
-		{
-			auto ca = cast(CodexAgent) ta;
-			assert(ca !is null, "Codex-native fork requires Codex agent");
-			if (codexSession !is null)
-			{
-				beginCodexNativeFork(ws, tid, source, boundary, ca, codexSession, null);
-				return;
-			}
-			CodexForkSourceOperation operation;
-			try
-				operation = host_.openCodexForkSourceOperation(tid, source);
-			catch (Exception e)
-			{
-				ws.send(Data(toJson(ErrorMessage("error",
-					"Fork failed: " ~ e.msg, tid)).representation));
-				return;
-			}
-			operation.routeReady.then((CodexSession owner) {
-				beginCodexNativeFork(ws, tid, source, boundary, ca, owner, operation);
-			}, (Exception e) {
-				operation.closeStdin();
-				ws.send(Data(toJson(ErrorMessage("error",
-					"Fork failed: " ~ e.msg, tid)).representation));
-			}).ignoreResult();
-			return;
-		}
+		assert(operationMechanism(boundary, opensConversation, operations,
+			HistoryOperation.fork) == HistoryOperationMechanism.jsonl,
+			"A file-backed history forks by its file");
 
-		enforce(ta.driver != AgentDriver.codex,
-			"Codex history forks must use the native source-owner path");
 		auto destination = host_.prepareHistoryForkDestination(tid);
 		auto result = forkTask(*host_.persistence(), tid, source, boundary.anchor,
 			td.projectPath, td.workspace, td.title, destination,
@@ -352,7 +280,8 @@ public:
 			ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
 			return;
 		}
-		if (!json.dry_run && td.nativeUndoState == NativeUndoState.inFlight)
+		if (!json.dry_run && (td.nativeUndoState == NativeUndoState.backingUp
+			|| td.nativeUndoState == NativeUndoState.inFlight))
 		{
 			ws.send(Data(toJson(ErrorMessage("error",
 				"Native undo is already in progress", tid)).representation));
@@ -363,6 +292,11 @@ public:
 		if (!requireHistoryAccess(ws, tid, "UUID not found in task history", access))
 			return;
 		auto ta = access.agent;
+		if (access.isDriverServed)
+		{
+			undoCodexTask(ws, tid, json, access);
+			return;
+		}
 		HistoryBoundary boundary;
 		bool opensConversation;
 		if (!host_.resolveFreshPersistedBoundary(tid, access, json.anchor, boundary,
@@ -372,7 +306,7 @@ public:
 			return;
 		}
 		auto nativeSourceState = host_.nativeSessionState(tid);
-		auto operations = selectHistoryOperations(ta.driver, nativeSourceState);
+		auto operations = selectHistoryOperations(ta.driver, nativeSourceState, 0);
 		if (!allowsOperation(boundary, opensConversation, operations, HistoryOperation.undo))
 		{
 			ws.send(Data(toJson(ErrorMessage("error", opensConversation
@@ -382,7 +316,6 @@ public:
 		}
 		auto mechanism = operationMechanism(boundary, opensConversation, operations,
 			HistoryOperation.undo);
-		auto codexSession = cast(CodexSession) host_.sessionForTask(tid);
 		if (json.revert_files && !allowsFileRevert(boundary))
 		{
 			ws.send(Data(toJson(ErrorMessage("error", "File revert is unavailable for this history boundary", tid)).representation));
@@ -390,43 +323,6 @@ public:
 		}
 		if (json.dry_run)
 		{
-			if (mechanism == HistoryOperationMechanism.codex_native)
-			{
-				if (td.nativeUndoState != NativeUndoState.idle)
-				{
-					auto message = td.nativeUndoState == NativeUndoState.inFlight
-						? "Native Codex undo is in progress; request a new preview after it finishes"
-						: "Codex may already have changed or lost history; native undo is blocked in this running CyDo process";
-					ws.send(Data(toJson(ErrorMessage("error", message, tid)).representation));
-					return;
-				}
-				assert(codexSession !is null,
-					"Codex-native undo policy requires a live Codex session");
-				codexSession.prepareNativeUndo(boundary).then((NativeUndoPlan plan) {
-					ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid,
-						cast(int) plan.numTurns, "codex_turns")).representation));
-				}, (Exception e) {
-					ws.send(Data(toJson(ErrorMessage("error",
-						"Native Codex undo preparation refused: " ~ e.msg, tid)).representation));
-				}).ignoreResult();
-				return;
-			}
-			if (cast(CodexAgent) ta !is null)
-			{
-				import std.file : exists, readText;
-
-				auto jsonlPath = access.path;
-				auto count = countActiveFallbackRecordsFromBoundary(readText(jsonlPath), boundary.anchor);
-				if (count < 0)
-				{
-					ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
-					return;
-				}
-				ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid, count,
-					"history_entries")).representation));
-				return;
-			}
-
 			auto count = countLinesAfterForkId(
 				access.path,
 				boundary.anchor,
@@ -440,139 +336,6 @@ public:
 			}
 			ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid,
 				count + 1, "history_entries")).representation));
-			return;
-		}
-
-		if (json.expected_num_turns
-			&& mechanism != HistoryOperationMechanism.codex_native)
-		{
-			ws.send(Data(toJson(ErrorMessage("error",
-				"Native Codex undo preview is stale; request a new preview", tid)).representation));
-			return;
-		}
-
-		if (mechanism == HistoryOperationMechanism.codex_native)
-		{
-			if (td.nativeUndoState != NativeUndoState.idle)
-			{
-				auto message = td.nativeUndoState == NativeUndoState.inFlight
-					? "Native Codex undo is already in progress"
-					: "Codex may already have changed or lost history; native undo is blocked in this running CyDo process";
-				ws.send(Data(toJson(ErrorMessage("error", message, tid)).representation));
-				return;
-			}
-			if (!json.expected_num_turns || json.expected_num_turns.get == 0)
-			{
-				ws.send(Data(toJson(ErrorMessage("error",
-					"Native Codex undo confirmation is stale; request a new preview", tid)).representation));
-				return;
-			}
-			assert(codexSession !is null,
-				"Codex-native undo policy requires a live Codex session");
-			auto expectedNumTurns = json.expected_num_turns.get;
-			td.beginConfirmedNativeUndo();
-			codexSession.prepareNativeUndo(boundary).then((NativeUndoPlan plan) {
-				auto current = host_.getTask(tid);
-				assert(current !is null,
-					"Undo target task must exist while native preparation completes");
-				if (plan.numTurns != expectedNumTurns)
-				{
-					current.clearNativeUndoRefusalBeforeDispatch();
-					ws.send(Data(toJson(ErrorMessage("error",
-						"Native Codex undo count changed; request a new preview", tid)).representation));
-					return;
-				}
-				try
-				{
-					codexSession.executeNativeUndo(plan, {
-						host_.invalidateJsonlLineage(tid);
-					}).then((NativeUndoExecutionResult outcome) {
-						auto completed = host_.getTask(tid);
-						assert(completed !is null,
-							"Undo target task must exist while native execution completes");
-						final switch (outcome.status)
-						{
-							case NativeUndoExecutionStatus.refusedBeforeDispatch:
-								completed.clearNativeUndoRefusalBeforeDispatch();
-								ws.send(Data(toJson(ErrorMessage("error",
-									"Native Codex undo refused before dispatch: "
-										~ outcome.diagnostic, tid)).representation));
-								return;
-							case NativeUndoExecutionStatus.unverifiableAfterDispatch:
-								completed.markNativeUndoUnverified();
-								ws.send(Data(toJson(ErrorMessage("error",
-									"Native Codex undo could not be verified after dispatch; Codex may already have changed or lost history. Sends are blocked only in this running CyDo process. "
-										~ outcome.diagnostic, tid)).representation));
-								return;
-							case NativeUndoExecutionStatus.verified:
-								break;
-						}
-
-						try
-						{
-							host_.clearUndoJsonl(tid);
-							completed.history.reset(watermarkFromPath(access.path));
-							host_.unsubscribeTaskHistorySubscribers(tid);
-
-							if (completed.pendingSteeringTexts.length > 0)
-							{
-								import std.file : exists, readText;
-
-								auto histPath = access.path;
-								if (histPath.exists)
-								{
-									auto boundaries = ta.extractPersistedHistoryBoundaries(readText(histPath));
-									int remaining = 0;
-									foreach (ref f; boundaries)
-										if (f.kind == PersistedHistoryBoundaryKind.user)
-											remaining++;
-									if (remaining < cast(int) completed.pendingSteeringTexts.length)
-										completed.pendingSteeringTexts =
-											completed.pendingSteeringTexts[0 .. remaining].dup;
-								}
-							}
-
-							if (auto session = host_.sessionForTask(tid))
-								session.invalidatePendingSubmittedMessages();
-							host_.emitTaskReload(tid, "");
-							host_.startJsonlWatch(tid);
-							host_.broadcastTaskUpdate(tid);
-						}
-						catch (Exception e)
-						{
-							completed.markNativeUndoUnverified();
-							ws.send(Data(toJson(ErrorMessage("error",
-								"Native Codex undo cleanup could not be verified; Codex may already have changed or lost history. Sends are blocked only in this running CyDo process. "
-									~ e.msg, tid)).representation));
-							return;
-						}
-						completed.completeVerifiedNativeUndoCleanup();
-						ws.send(Data(toJson(UndoResultMessage("undo_result", tid, "")).representation));
-					}, (Exception e) {
-						auto failed = host_.getTask(tid);
-						assert(failed !is null,
-							"Undo target task must exist while native execution fails");
-						failed.markNativeUndoUnverified();
-						ws.send(Data(toJson(ErrorMessage("error",
-							"Native Codex undo could not be verified after dispatch; Codex may already have changed or lost history. Sends are blocked only in this running CyDo process. "
-								~ e.msg, tid)).representation));
-					}).ignoreResult();
-				}
-				catch (Exception e)
-				{
-					current.markNativeUndoUnverified();
-					ws.send(Data(toJson(ErrorMessage("error",
-						"Native Codex undo could not be verified after dispatch; Codex may already have changed or lost history. Sends are blocked only in this running CyDo process. "
-							~ e.msg, tid)).representation));
-				}
-			}, (Exception e) {
-				auto refused = host_.getTask(tid);
-				assert(refused !is null,
-					"Undo target task must exist while native preparation fails");
-				refused.clearNativeUndoRefusalBeforeDispatch();
-				ws.send(Data(toJson(ErrorMessage("error",
-					"Native Codex undo preparation refused: " ~ e.msg, tid)).representation));
-			}).ignoreResult();
 			return;
 		}
 
@@ -592,40 +355,18 @@ public:
 			return;
 		}
 
-		string truncationAnchor = boundary.anchor;
-		if (ta.driver == AgentDriver.codex && json.revert_conversation)
-		{
-			import std.file : readText;
-
-			// Resolve before backup/stop side effects; carry the result through the
-			// asynchronous fallback execution path unchanged.
-			truncationAnchor = resolveCodexFallbackUndoAnchor(readText(access.path),
-				boundary.kind == HistoryBoundaryKind.agent_turn
-					? PersistedHistoryBoundaryKind.agent_turn
-					: PersistedHistoryBoundaryKind.user, boundary.anchor);
-			if (truncationAnchor.length == 0)
-			{
-				ws.send(Data(toJson(ErrorMessage("error",
-					"UUID not found for truncation", tid)).representation));
-				return;
-			}
-		}
-
 		if (host_.taskAlive(tid))
 		{
 			auto liveLaunch = host_.requireLiveHistoryLaunch(tid, access);
 			fallbackUndoKillAndTruncate(ws, tid, json, boundary, mechanism, access,
-				liveLaunch, false, truncationAnchor);
+				liveLaunch);
 			return;
 		}
 
 		if (auto session = host_.sessionForTask(tid))
 			session.invalidatePendingSubmittedMessages();
 		performUndoExecution(ws, tid, json, boundary, mechanism, access,
-			ProcessLaunch.init, ta.driver == AgentDriver.codex
-			&& nativeSourceState == NativeSessionState.dead
-			? UndoBackupDisposition.deadCodexNative : UndoBackupDisposition.generic,
-			null, null, truncationAnchor);
+			ProcessLaunch.init);
 	}
 
 	void handleEditMessage(WebSocketAdapter ws, WsMessage json)
@@ -719,7 +460,11 @@ public:
 			return;
 		}
 
-		if (td.history.isDriverServed)
+		HistoryAccess access;
+		if (!requireHistoryAccess(MutationReplySocket((Data data) => ws.send(data)), tid,
+			"Raw event not found in JSONL file", access))
+			return;
+		if (access.isDriverServed)
 		{
 			ws.send(Data(toJson(ErrorMessage("error",
 				"Editing events is not supported for this agent", tid)).representation));
@@ -733,10 +478,6 @@ public:
 		}
 
 		auto sourceLine = td.history.sourceLineAt(seq);
-		HistoryAccess access;
-		if (!requireHistoryAccess(MutationReplySocket((Data data) => ws.send(data)), tid,
-			"Raw event not found in JSONL file", access))
-			return;
 		auto ta = access.agent;
 		auto jsonlPath = access.path;
 		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
@@ -809,7 +550,7 @@ private:
 		childSpec.failurePrefix = "Fork failed";
 		materializeCodexNativeChild(
 			MutationReplySocket((Data data) => ws.send(data)), tid, source,
-			boundary.anchor, ca, forkOwner, operation, childSpec,
+			codexTurnId(boundary), ca, forkOwner, operation, childSpec,
 			(int childTid, string workspace, string projectPath) {
 				host_.broadcastTaskCreated(TaskCreatedMessage("task_created", childTid,
 					workspace, projectPath, tid, "fork"));
@@ -820,16 +561,12 @@ private:
 	}
 
 	void materializeCodexNativeChild(MutationReplySocket ws, int tid,
-		HistoryAccess source, string forkAnchor, CodexAgent ca,
+		HistoryAccess source, string lastTurnId, CodexAgent ca,
 		CodexSession forkOwner, CodexForkSourceOperation operation,
 		CodexNativeChildSpec childSpec,
-		CodexNativeChildMaterialized onMaterialized)
+		CodexNativeChildMaterialized onMaterialized, void delegate() onFailure = null)
 	{
 		import std.datetime : Clock;
-		import std.conv : to;
-		import std.file : isFile;
-		import std.path : isAbsolute;
-		import std.stdio : File;
 
 		auto td = host_.getTask(tid);
 		if (td is null)
@@ -885,20 +622,14 @@ private:
 				return;
 			settled = true;
 			cleanupFailure();
+			if (onFailure)
+				onFailure();
 			ws.send(Data(toJson(ErrorMessage("error", childSpec.failurePrefix ~ ": " ~ message,
 				tid)).representation));
 		}
 
 		try
 		{
-			string lastTurnId;
-			if (forkAnchor.length > 0)
-			{
-				lastTurnId = rolloutTurnIdAtLine(readText(source.path), to!int(forkAnchor[5 .. $]));
-				enforce(lastTurnId.length > 0,
-					"No preceding task_started turn id for " ~ forkAnchor);
-			}
-
 			childTid = createForkTask(*host_.persistence(), tid, "", sourceProjectPath,
 				sourceWorkspace, sourceTitle, sourceDescription, sourceTaskType,
 				sourceAgentName);
@@ -950,13 +681,6 @@ private:
 				{
 					enforce(outcome.historyLease !is null,
 						"Codex native fork returned no history-path lease");
-					auto historyPath = outcome.historyLease.path;
-					enforce(historyPath.length > 0 && isAbsolute(historyPath),
-						"Codex native fork returned a non-absolute history path");
-					enforce(exists(historyPath) && isFile(historyPath),
-						"Codex native fork returned an unreadable history path");
-					auto readable = File(historyPath, "r");
-					scope(exit) readable.close();
 
 					auto currentChild = host_.getTask(childTid);
 					assert(currentChild !is null,
@@ -967,7 +691,8 @@ private:
 						host_.makeProcessQueueSF(childTid), ProcessState.Dead);
 					currentChild.archiveQueue = new StateQueue!ArchiveState(
 						host_.makeArchiveQueueSF(childTid), ArchiveState.Unarchived);
-					currentChild.history.reset(watermarkFromPath(historyPath));
+					// The child's history is Codex's to serve, like its parent's.
+					currentChild.history.reset(Watermark.driverServed());
 
 					outcome.historyLease.release();
 					releasedLease = true;
@@ -993,69 +718,362 @@ private:
 		}
 	}
 
-	/// A JSONL undo keeps its outer truncate semantics, but a dead Codex source
-	/// can create the durable pre-undo child only through the route-ready
-	/// operation owner and its owner-bound thread/fork lease.
-	void beginCodexJsonlUndoBackup(MutationReplySocket ws, int tid,
-		HistoryAccess source, void delegate() continueUndo)
+	/// The pre-undo copy of a Codex thread: a fork of all of it, an unfinished
+	/// turn included. `owner` is the thread's live session; a stopped thread
+	/// is resumed into an operation of its own for the fork.
+	void backUpCodexThread(MutationReplySocket ws, int tid, HistoryAccess source,
+		CodexSession owner, void delegate() continueUndo, void delegate() onFailure)
 	{
 		auto codex = cast(CodexAgent) source.agent;
-		assert(codex !is null && source.profile.driver == AgentDriver.codex,
-			"Codex JSONL undo backup requires Codex history access");
-		enforce(continueUndo !is null,
-			"Codex JSONL undo backup requires a truncate continuation");
-
-		CodexForkSourceOperation operation;
-		try
-			operation = host_.openCodexForkSourceOperation(tid, source);
-		catch (Exception e)
-		{
-			ws.send(Data(toJson(ErrorMessage("error",
-				"Undo failed: pre-undo backup: " ~ e.msg, tid)).representation));
-			return;
-		}
-
-		operation.routeReady.then((CodexSession owner) {
-			CodexNativeChildSpec childSpec;
-			childSpec.titleSuffix = " (pre-undo)";
-			childSpec.emptyTitle = "(pre-undo)";
-			childSpec.relationType = "undo-backup";
-			childSpec.failurePrefix = "Undo failed: pre-undo backup";
-			materializeCodexNativeChild(ws, tid, source, null, codex,
-				owner, operation, childSpec,
-				(int childTid, string workspace, string projectPath) {
-					host_.broadcastTaskCreated(TaskCreatedMessage("task_created", childTid,
-						workspace, projectPath, tid, "undo-backup"));
-					host_.broadcastTaskUpdate(childTid);
-					continueUndo();
-				},
-			);
-		}, (Exception e) {
-			operation.closeStdin();
-			ws.send(Data(toJson(ErrorMessage("error",
-				"Undo failed: pre-undo backup: " ~ e.msg, tid)).representation));
-		}).ignoreResult();
-	}
-
-	void beginLiveCodexJsonlUndoBackup(MutationReplySocket ws, int tid,
-		HistoryAccess source, CodexSession owner,
-		void delegate() continueUndo)
-	{
-		auto codex = cast(CodexAgent) source.agent;
-		assert(codex !is null && owner !is null);
+		assert(codex !is null, "Only a Codex thread has a Codex backup");
 		CodexNativeChildSpec childSpec;
 		childSpec.titleSuffix = " (pre-undo)";
 		childSpec.emptyTitle = "(pre-undo)";
 		childSpec.relationType = "undo-backup";
 		childSpec.failurePrefix = "Undo failed: pre-undo backup";
-		materializeCodexNativeChild(ws, tid, source, null, codex, owner,
-			null, childSpec, (int childTid, string workspace, string projectPath) {
-				host_.broadcastTaskCreated(TaskCreatedMessage("task_created", childTid,
-					workspace, projectPath, tid, "undo-backup"));
-				host_.broadcastTaskUpdate(childTid);
-				continueUndo();
-			},
-		);
+		void materialize(CodexSession forkOwner, CodexForkSourceOperation operation)
+		{
+			materializeCodexNativeChild(ws, tid, source, null, codex, forkOwner,
+				operation, childSpec,
+				(int childTid, string workspace, string projectPath) {
+					host_.broadcastTaskCreated(TaskCreatedMessage("task_created", childTid,
+						workspace, projectPath, tid, "undo-backup"));
+					host_.broadcastTaskUpdate(childTid);
+					continueUndo();
+				}, onFailure);
+		}
+		if (owner !is null)
+		{
+			materialize(owner, null);
+			return;
+		}
+		withCodexOperation(ws, tid, source, childSpec.failurePrefix,
+			(CodexSession operationOwner, CodexForkSourceOperation operation) {
+				materialize(operationOwner, operation);
+			}, onFailure);
+	}
+
+	/// Resume a stopped Codex thread into an operation of its own and hand
+	/// it over once its route is ready. The receiver closes the operation.
+	void withCodexOperation(MutationReplySocket ws, int tid, HistoryAccess source,
+		string failurePrefix,
+		void delegate(CodexSession owner, CodexForkSourceOperation operation) run,
+		void delegate() onFailure = null)
+	{
+		void fail(string message)
+		{
+			if (onFailure)
+				onFailure();
+			ws.send(Data(toJson(ErrorMessage("error",
+				failurePrefix ~ ": " ~ message, tid)).representation));
+		}
+		CodexForkSourceOperation operation;
+		try
+			operation = host_.openCodexForkSourceOperation(tid, source);
+		catch (Exception e)
+		{
+			fail(e.msg);
+			return;
+		}
+		operation.routeReady.then((CodexSession owner) {
+			run(owner, operation);
+		}, (Exception e) {
+			operation.closeStdin();
+			fail(e.msg);
+		}).ignoreResult();
+	}
+
+	/// The turn a Codex boundary names: Codex cuts a thread at its turns.
+	static string codexTurnId(HistoryBoundary boundary)
+	{
+		import std.algorithm : startsWith;
+
+		auto prefix = boundary.kind == HistoryBoundaryKind.user ? "before:" : "through:";
+		assert(boundary.kind != HistoryBoundaryKind.provisional_user
+			&& boundary.anchor.startsWith(prefix) && boundary.anchor.length > prefix.length,
+			"Not a Codex history boundary: " ~ boundary.anchor);
+		return boundary.anchor[prefix.length .. $];
+	}
+
+	/// The boundary `anchor` names in a loaded history.
+	/// `opensConversation`: no other user boundary precedes it.
+	/// `userBoundariesFrom`: the user boundaries from it on, itself included.
+	static bool resolveLoadedBoundary(ref HistoryStore history, string anchor,
+		out HistoryBoundary boundary, out bool opensConversation, out int userBoundariesFrom)
+	{
+		import ae.utils.array : as;
+		import ae.utils.json : JSONOptional, JSONPartial;
+
+		if (anchor.length == 0)
+			return false;
+		bool found;
+		int userBoundariesBefore;
+		foreach (ref entry; history)
+		{
+			HistoryBoundary current;
+			entry.enter((scope const(ubyte)[] bytes) {
+				@JSONPartial static struct Probe
+				{
+					@JSONOptional HistoryBoundary history_boundary;
+				}
+				current = jsonParse!Probe(
+					extractEventFromEnvelope(bytes.as!(char[])).idup).history_boundary;
+			});
+			if (current.anchor.length == 0)
+				continue;
+			if (!found && current.anchor == anchor)
+			{
+				found = true;
+				boundary = current;
+				opensConversation = current.kind == HistoryBoundaryKind.user
+					&& userBoundariesBefore == 0;
+			}
+			if (current.kind == HistoryBoundaryKind.user)
+				(found ? userBoundariesFrom : userBoundariesBefore)++;
+		}
+		return found;
+	}
+
+	/// Fork a Codex thread at the boundary the client names, which must be
+	/// one of the task's loaded history.
+	void forkCodexTask(WebSocketAdapter ws, int tid, string anchor, HistoryAccess source)
+	{
+		auto ca = cast(CodexAgent) source.agent;
+		assert(ca !is null, "Only Codex serves and forks its own history");
+		void refuse()
+		{
+			ws.send(Data(toJson(ErrorMessage("error",
+				"Fork failed: message UUID not found in task history", tid)).representation));
+		}
+		host_.whenHistoryLoaded(tid, () {
+			auto td = host_.getTask(tid);
+			if (td is null)
+				return;
+			if (td.nativeUndoBlocksDelivery)
+			{
+				ws.send(Data(toJson(ErrorMessage("error",
+					"An undo is already in progress", tid)).representation));
+				return;
+			}
+			HistoryBoundary boundary;
+			bool opensConversation;
+			int userBoundariesFrom;
+			if (!resolveLoadedBoundary(td.history, anchor, boundary, opensConversation,
+				userBoundariesFrom))
+				return refuse();
+			auto operations = selectHistoryOperations(ca.driver,
+				host_.nativeSessionState(tid), host_.servedHistoryMode(tid));
+			if (!allowsOperation(boundary, opensConversation, operations, HistoryOperation.fork))
+				return refuse();
+			if (auto owner = cast(CodexSession) host_.sessionForTask(tid))
+			{
+				beginCodexNativeFork(ws, tid, source, boundary, ca, owner, null);
+				return;
+			}
+			withCodexOperation(MutationReplySocket((Data data) => ws.send(data)), tid, source,
+				"Fork failed", (CodexSession owner, CodexForkSourceOperation operation) {
+					beginCodexNativeFork(ws, tid, source, boundary, ca, owner, operation);
+				});
+		});
+	}
+
+	/// Undo a Codex thread back to before the user message the client names:
+	/// `thread/revert` at that message's turn.
+	void undoCodexTask(MutationReplySocket ws, int tid, WsMessage json, HistoryAccess access)
+	{
+		void fail(string message)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", message, tid)).representation));
+		}
+		host_.whenHistoryLoaded(tid, () {
+			auto td = host_.getTask(tid);
+			if (td is null)
+				return;
+			HistoryBoundary boundary;
+			bool opensConversation;
+			int userBoundariesFrom;
+			if (!resolveLoadedBoundary(td.history, json.anchor, boundary, opensConversation,
+				userBoundariesFrom))
+				return fail("UUID not found in task history");
+			auto operations = selectHistoryOperations(access.agent.driver,
+				host_.nativeSessionState(tid), host_.servedHistoryMode(tid));
+			if (!allowsOperation(boundary, opensConversation, operations, HistoryOperation.undo))
+				return fail("UUID not found in task history");
+			if (json.revert_files)
+				return fail("File revert is unavailable for this history boundary");
+			if (json.dry_run)
+			{
+				ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid,
+					userBoundariesFrom, "codex_turns")).representation));
+				return;
+			}
+			if (!json.revert_conversation)
+			{
+				ws.send(Data(toJson(UndoResultMessage("undo_result", tid, "")).representation));
+				return;
+			}
+			if (td.nativeUndoState != NativeUndoState.idle)
+				return fail("An undo is already in progress");
+
+			auto turnId = codexTurnId(boundary);
+			auto session = cast(CodexSession) host_.sessionForTask(tid);
+			if (session !is null && session.canRevertThread)
+				(new CodexRevert(ws, tid, CodexRevertKind.live, session)).dispatch(session, turnId);
+			else
+			{
+				td.nativeUndoState = NativeUndoState.backingUp;
+				void releaseBackupClaim()
+				{
+					if (auto current = host_.getTask(tid))
+					{
+						assert(current.nativeUndoState == NativeUndoState.backingUp);
+						current.nativeUndoState = NativeUndoState.idle;
+					}
+				}
+				backUpCodexThread(ws, tid, access, session, () {
+					releaseBackupClaim();
+					if (session !is null)
+						stopAndRevertBusyCodexThread(
+							new CodexRevert(ws, tid, CodexRevertKind.busy), access, turnId);
+					else
+						revertStoppedCodexThread(
+							new CodexRevert(ws, tid, CodexRevertKind.stopped), access, turnId);
+				}, &releaseBackupClaim);
+			}
+		});
+	}
+
+	enum CodexRevertKind { live, stopped, busy }
+
+	final class CodexRevert
+	{
+		int tid;
+		private MutationReplySocket ws_;
+		private CodexRevertKind kind_;
+		private CodexSession live_;
+		private CodexForkSourceOperation operation_;
+		private bool settled_;
+
+		this(MutationReplySocket ws, int tid, CodexRevertKind kind, CodexSession live = null)
+		{
+			this.tid = tid;
+			ws_ = ws;
+			kind_ = kind;
+			live_ = live;
+			host_.getTask(tid).beginConfirmedNativeUndo();
+		}
+
+		void attach(CodexForkSourceOperation operation)
+		{
+			assert(operation_ is null && kind_ != CodexRevertKind.live);
+			operation_ = operation;
+		}
+
+		void dispatch(CodexSession session, string turnId)
+		{
+			Promise!void request;
+			try
+				request = session.revertThread(turnId);
+			catch (Exception e)
+				return settle(e);
+			request.then(() { settle(null); }, &settle).ignoreResult();
+		}
+
+		void settle(Exception failure)
+		{
+			assert(!settled_, "Codex revert settled twice");
+			settled_ = true;
+
+			if (operation_ !is null)
+				operation_.closeStdin();
+			if (kind_ == CodexRevertKind.live && failure !is null
+				&& host_.sessionForTask(tid) is live_ && live_.alive)
+			{
+				host_.getTask(tid).processQueue.setGoal(ProcessState.Dead).ignoreResult();
+				live_.closeStdin();
+			}
+
+			auto task = host_.getTask(tid);
+			assert(task !is null, "Reverted Codex task must exist");
+			final switch (kind_)
+			{
+			case CodexRevertKind.live:
+				break;
+			case CodexRevertKind.stopped:
+				break;
+			case CodexRevertKind.busy:
+				task.undoStopInProgress = false;
+				auto applyStopStatus = task.applyCodexUndoStopStatus;
+				task.applyCodexUndoStopStatus = null;
+				if (failure !is null && applyStopStatus !is null)
+					applyStopStatus();
+				break;
+			}
+
+			if (failure is null)
+				task.completeVerifiedNativeUndoCleanup();
+			else
+				task.clearNativeUndoRefusalBeforeDispatch();
+
+			task.history.reset(Watermark.driverServed());
+			host_.unsubscribeTaskHistorySubscribers(tid);
+			host_.emitTaskReload(tid, "");
+			if (kind_ == CodexRevertKind.busy && failure is null)
+				resumeAfterUndo(tid);
+			host_.broadcastTaskUpdate(tid);
+			if (failure is null)
+				ws_.send(Data(toJson(UndoResultMessage("undo_result", tid, "")).representation));
+			else
+				ws_.send(Data(toJson(ErrorMessage("error", "Undo failed: " ~ failure.msg,
+					tid)).representation));
+		}
+	}
+
+	/// Resume a stopped thread into a private operation for the revert.
+	void revertStoppedCodexThread(CodexRevert revert, HistoryAccess access, string turnId)
+	{
+		CodexForkSourceOperation operation;
+		try
+			operation = host_.openCodexForkSourceOperation(revert.tid, access);
+		catch (Exception e)
+			return revert.settle(e);
+		revert.attach(operation);
+		operation.routeReady.then((CodexSession owner) {
+			revert.dispatch(owner, turnId);
+		}, &revert.settle).ignoreResult();
+	}
+
+	void stopAndRevertBusyCodexThread(CodexRevert revert, HistoryAccess access, string turnId)
+	{
+		auto tid = revert.tid;
+		auto td = host_.getTask(tid);
+		td.undoStopInProgress = true;
+		if (auto live = host_.sessionForTask(tid))
+			live.invalidatePendingSubmittedMessages();
+		host_.unsubscribeTaskHistorySubscribers(tid);
+		td.processQueue.setGoal(ProcessState.Dead).then(() {
+			revertStoppedCodexThread(revert, access, turnId);
+		}, &revert.settle).ignoreResult();
+		host_.stopTask(tid);
+	}
+
+	/// Start the task's session again on the history an undo left.
+	void resumeAfterUndo(int tid)
+	{
+		auto td = host_.getTask(tid);
+		td.processQueue.setGoal(ProcessState.Alive).then(() {
+			auto current = host_.getTask(tid);
+			assert(current !is null,
+				"Undo task must exist while auto-resume is scheduled");
+			host_.transitionTaskFrom(tid,
+				[TaskStatus.pending, TaskStatus.alive, TaskStatus.waiting,
+					TaskStatus.completed, TaskStatus.failed], TaskStatus.active,
+				TaskNotificationChange.preserve);
+			try
+				host_.generateSuggestions(tid);
+			catch (Exception e)
+				warningf("Error generating suggestions: %s", e.msg);
+		}).ignoreResult();
 	}
 
 	static size_t findJsonObjectEnd(string input, size_t start)
@@ -1165,49 +1183,12 @@ private:
 
 	void fallbackUndoKillAndTruncate(MutationReplySocket ws, int tid, WsMessage json,
 		HistoryBoundary boundary, HistoryOperationMechanism mechanism,
-		HistoryAccess access, ProcessLaunch liveLaunch, bool backupMaterialized = false,
-		string truncationAnchor = null)
+		HistoryAccess access, ProcessLaunch liveLaunch)
 	{
 		auto td = host_.getTask(tid);
 		if (tid < 0 || td is null)
 			return;
 		auto ta = access.agent;
-		if (ta.driver == AgentDriver.codex && json.revert_conversation && !backupMaterialized)
-		{
-			import std.algorithm : any;
-
-			auto boundaries = exists(access.path)
-				? ta.extractPersistedHistoryBoundaries(readText(access.path)) : null;
-			if (boundaries.any!(persisted => persisted.kind == PersistedHistoryBoundaryKind.agent_turn))
-			{
-				auto owner = cast(CodexSession) host_.sessionForTask(tid);
-				assert(owner !is null);
-				auto continueUndo = () {
-					fallbackUndoKillAndTruncate(ws, tid, json, boundary, mechanism,
-						access, liveLaunch, true, truncationAnchor);
-				};
-				auto failUndo = (string message) {
-					ws.send(Data(toJson(ErrorMessage("error",
-						"Undo failed: pre-undo backup: " ~ message, tid)).representation));
-				};
-				try
-				{
-					gateLiveUndoBackup((void delegate() onSuccess,
-						void delegate(string) onFailure) {
-					if (runLiveCodexUndoBackup_ !is null)
-						runLiveCodexUndoBackup_(ws, tid, access, owner,
-							onSuccess, onFailure);
-					else
-						beginLiveCodexJsonlUndoBackup(ws, tid, access, owner,
-							onSuccess);
-					}, continueUndo, failUndo);
-				}
-				catch (Exception e)
-					failUndo(e.msg);
-				return;
-			}
-		}
-
 		auto jsonlPathSnap = access.path;
 		auto jsonlSnap = host_.getUndoJsonl(tid);
 		host_.clearUndoJsonl(tid);
@@ -1255,17 +1236,8 @@ private:
 
 					write(jsonlPathSnap, jsonlSnap);
 				}
-				if (ta.driver == AgentDriver.codex)
-				{
-					performUndoExecution(ws, tid, json, boundary, mechanism, access,
-						liveLaunch, UndoBackupDisposition.alreadyMaterialized, (string message) {
-						failUndo(message);
-					}, () { transaction.finalize(); }, truncationAnchor);
-				}
-				else
-					performUndoExecution(ws, tid, json, boundary, mechanism, access,
-						liveLaunch, UndoBackupDisposition.generic, failUndo,
-						() { transaction.finalize(); });
+				performUndoExecution(ws, tid, json, boundary, mechanism, access,
+					liveLaunch, failUndo, () { transaction.finalize(); });
 			}
 			catch (Exception e)
 			{
@@ -1512,14 +1484,10 @@ private:
 		}
 	}
 
-	enum UndoBackupDisposition { generic, deadCodexNative, alreadyMaterialized }
-
 	void performUndoExecution(MutationReplySocket ws, int tid, WsMessage json,
 		HistoryBoundary boundary, HistoryOperationMechanism mechanism,
 		HistoryAccess access, ProcessLaunch capturedLiveLaunch,
-		UndoBackupDisposition backupDisposition,
-		void delegate(string) onFailure = null, void delegate() onSuccess = null,
-		string truncationAnchor = null)
+		void delegate(string) onFailure = null, void delegate() onSuccess = null)
 	{
 		import std.algorithm : canFind, startsWith;
 
@@ -1565,28 +1533,16 @@ private:
 		{
 			auto lastForkId = lastHistoryBoundaryAnchor(access);
 			if (lastForkId.length > 0)
-			{
-				if (backupDisposition == UndoBackupDisposition.deadCodexNative)
-				{
-					beginCodexJsonlUndoBackup(ws, tid, access, () {
-						finishUndoExecution(ws, tid, json, boundary, access,
-							rewindOutput, onFailure, null, truncationAnchor);
-					});
-					return;
-				}
-				else if (backupDisposition == UndoBackupDisposition.generic)
-					createUndoBackup(tid, access, lastForkId);
-			}
+				createUndoBackup(tid, access, lastForkId);
 		}
 
 		finishUndoExecution(ws, tid, json, boundary, access, rewindOutput, onFailure,
-			onSuccess, truncationAnchor);
+			onSuccess);
 	}
 
 	void finishUndoExecution(MutationReplySocket ws, int tid, WsMessage json,
 		HistoryBoundary boundary, HistoryAccess access, string rewindOutput,
-		void delegate(string) onFailure = null, void delegate() onSuccess = null,
-		string truncationAnchor = null)
+		void delegate(string) onFailure = null, void delegate() onSuccess = null)
 	{
 		auto td = host_.getTask(tid);
 		if (tid < 0 || td is null)
@@ -1595,9 +1551,7 @@ private:
 
 		if (json.revert_conversation)
 		{
-			if (truncationAnchor.length == 0)
-				truncationAnchor = boundary.anchor;
-			if (!truncateUndoneHistory(tid, access, truncationAnchor))
+			if (!truncateUndoneHistory(tid, access, boundary.anchor))
 			{
 				if (onFailure !is null)
 					onFailure("UUID not found for truncation");
@@ -1622,21 +1576,7 @@ private:
 			host_.emitTaskReload(tid, "");
 
 		if (json.revert_conversation && td.agentSessionId.length > 0)
-		{
-			td.processQueue.setGoal(ProcessState.Alive).then(() {
-				auto current = host_.getTask(tid);
-				assert(current !is null,
-					"Undo task must exist while auto-resume is scheduled");
-				host_.transitionTaskFrom(tid,
-					[TaskStatus.pending, TaskStatus.alive, TaskStatus.waiting,
-						TaskStatus.completed, TaskStatus.failed], TaskStatus.active,
-					TaskNotificationChange.preserve);
-				try
-					host_.generateSuggestions(tid);
-				catch (Exception e)
-					warningf("Error generating suggestions: %s", e.msg);
-			}).ignoreResult();
-		}
+			resumeAfterUndo(tid);
 
 		host_.broadcastTaskUpdate(tid);
 	}
@@ -1648,8 +1588,8 @@ unittest
 	// this parser test here with the mutation entry points so a compatibility
 	// alias cannot silently reintroduce the retired wire name.
 	auto canonical = jsonParse!WsMessage(
-		`{"type":"undo_task","tid":71,"anchor":"line:2"}`);
-	assert(canonical.anchor == "line:2");
+		`{"type":"undo_task","tid":71,"anchor":"before:t"}`);
+	assert(canonical.anchor == "before:t");
 
 	bool rejectedLegacyField;
 	try
@@ -1743,378 +1683,315 @@ unittest
 	assert(sideEffects == 0);
 }
 
+// Codex fork and undo address the boundaries of the task's loaded history.
 unittest
 {
-	import ae.net.asockets : socketManager;
-	import cydo.agent.drivers.codex : AppServerProcess;
 	import cydo.agent.contract : SessionConfig;
+	import cydo.agent.drivers.codex : AppServerProcess, CodexForkSourceOwner;
+	import cydo.agent.drivers.codex.history : CodexHistoryMode;
+	import cydo.domain.storage.persistence : LoadedHistory;
+	import cydo.protocol : TaskEventEnvelope;
 	import cydo.runtime.launch.types : NativeHistoryProfile;
-	import std.algorithm : canFind, min;
-	import std.conv : to;
-	import std.file : exists, remove, write;
+	import std.algorithm : canFind, move;
+	import std.string : representation;
+	import ae.utils.json : JSONFragment, JSONPartial;
+	import core.exception : AssertError;
+	import std.exception : assertThrown;
+	import ae.utils.promise : resolve;
 
 	enum tid = 72;
 
-	NativeUndoPlan plan(uint numTurns)
-	{
-		NativeUndoPlan result;
-		result.numTurns = numTurns;
-		return result;
-	}
-
 	class StubCodexSession : CodexSession
 	{
-		NativeUndoPlan[] preparedPlans;
-		NativeUndoExecutionResult execution;
-		bool rejectPreparation;
-		bool invokePointOfNoReturn;
-		bool rollbackAvailable = true;
-		uint prepareCalls;
-		uint executeCalls;
+		bool idle = true;
+		bool closed;
+		bool throwOnRevert;
+
+		override @property bool alive() { return !closed; }
+		override void closeStdin() { closed = true; }
+		string[] reverts;
+		Promise!void revert;
 
 		this()
 		{
 			super(cast(AppServerProcess) null, tid, SessionConfig.init);
 		}
 
-		override @property bool canRollbackThread() const
+		override @property bool canRevertThread() const
 		{
-			return rollbackAvailable;
+			return idle;
 		}
 
-		override Promise!NativeUndoPlan prepareNativeUndo(HistoryBoundary)
+		override Promise!void revertThread(string beforeTurnId)
 		{
-			prepareCalls++;
-			auto result = new Promise!NativeUndoPlan;
-			if (rejectPreparation)
-			{
-				result.reject(new Exception("native ledger read refused"));
-				return result;
-			}
-			assert(preparedPlans.length > 0, "native test needs a prepared plan");
-			result.fulfill(preparedPlans[min(cast(size_t) prepareCalls - 1,
-				preparedPlans.length - 1)]);
-			return result;
-		}
-
-		override Promise!NativeUndoExecutionResult executeNativeUndo(NativeUndoPlan,
-			void delegate() pointOfNoReturn)
-		{
-			executeCalls++;
-			if (invokePointOfNoReturn)
-				pointOfNoReturn();
-			auto result = new Promise!NativeUndoExecutionResult;
-			result.fulfill(execution);
-			return result;
+			reverts ~= beforeTurnId;
+			if (throwOnRevert)
+				throw new Exception("revert dispatch failed");
+			revert = new Promise!void;
+			return revert;
 		}
 	}
 
+	auto agent = new CodexAgent;
+	auto access = HistoryAccess.driverServed(agent,
+		NativeHistoryProfile(agent.driver, "/unused-profile"), "thread");
 	auto task = TaskData(tid, "local", "/tmp");
 	task.agentName = "codex";
-	task.agentSessionId = "native-session";
-	auto session = new StubCodexSession;
-	auto agent = new CodexAgent;
-	Agent taskAgent = agent;
-	AgentSession taskSession = session;
-	bool taskIsAlive = true;
-	string[] replies;
-	int lineageCalls;
-	int clearCalls;
-	int unsubscribeCalls;
-	int reloadCalls;
-	int watchCalls;
-	int updateCalls;
-	int backupCalls;
-	int stopCalls;
-	int liveLaunchCalls;
-	int boundaryCalls;
-	int historyAccessCalls;
-	bool fallbackAnchorMatrix;
-	NativeSessionState selectedSourceState;
-	enum rolloutPath = "/tmp/cydo-native-undo-unittest.jsonl";
-	if (exists(rolloutPath))
-		remove(rolloutPath);
-	write(rolloutPath, "");
-	scope(exit) if (exists(rolloutPath)) remove(rolloutPath);
+	task.agentSessionId = "thread";
+	ubyte mode = CodexHistoryMode.paginated;
+	void loadHistory()
+	{
+		task.history.reset(Watermark.driverServed());
+		LoadedHistory loaded;
+		foreach (event; [
+			`{"type":"item/started","item_type":"user_message","history_boundary":{"anchor":"before:t1","kind":"user"}}`,
+			`{"type":"turn/stop","history_boundary":{"anchor":"through:t1","kind":"agent_turn"}}`,
+			`{"type":"item/started","item_type":"user_message","history_boundary":{"anchor":"before:t2","kind":"user"}}`,
+			`{"type":"item/started","item_type":"user_message"}`,
+			`{"type":"turn/stop","history_boundary":{"anchor":"through:t2","kind":"agent_turn"}}`,
+		])
+		{
+			loaded.history ~= Data(toJson(TaskEventEnvelope(tid, 0,
+				JSONFragment(event))).representation);
+			loaded.rawSource ~= null;
+			loaded.sourceLine ~= 0;
+		}
+		task.history.completeDriverLoad(task.history.beginDriverLoad(), move(loaded), mode);
+	}
+	loadHistory();
 
+	HistoryBoundary boundary;
+	bool opensConversation;
+	int userBoundariesFrom;
+	assert(TaskMutationService.resolveLoadedBoundary(task.history, "before:t1", boundary,
+		opensConversation, userBoundariesFrom));
+	assert(boundary.kind == HistoryBoundaryKind.user && opensConversation
+		&& userBoundariesFrom == 2);
+	assert(TaskMutationService.resolveLoadedBoundary(task.history, "before:t2", boundary,
+		opensConversation, userBoundariesFrom));
+	assert(!opensConversation && userBoundariesFrom == 1);
+	assert(TaskMutationService.resolveLoadedBoundary(task.history, "through:t2", boundary,
+		opensConversation, userBoundariesFrom));
+	assert(boundary.kind == HistoryBoundaryKind.agent_turn && userBoundariesFrom == 0);
+	foreach (forged; ["", "before:t3", "through:t", "line:2"])
+		assert(!TaskMutationService.resolveLoadedBoundary(task.history, forged, boundary,
+			opensConversation, userBoundariesFrom));
+
+	auto session = new StubCodexSession;
+	bool alive = true;
+	string[] replies;
+	string[] effects;
 	TaskMutationServiceHost host;
 	host.getTask = (int value) => value == tid ? &task : null;
-	host.agentForTask = (int) => taskAgent;
-	host.sessionForTask = (int) => taskIsAlive ? taskSession : null;
-	host.taskAlive = (int) => taskIsAlive;
-	host.resolveTaskHistory = (int) {
-		historyAccessCalls++;
-		return TaskHistoryResolution.access(HistoryAccess(
-			taskAgent, NativeHistoryProfile(taskAgent.driver, "/tmp"), task.agentSessionId,
-			rolloutPath));
+	host.sessionForTask = (int) => alive ? session : null;
+	host.taskAlive = (int) => alive;
+	host.resolveTaskHistory = (int) => TaskHistoryResolution.access(access);
+	host.whenHistoryLoaded = (int, void delegate() ready) {
+		assert(task.history.isLoaded);
+		ready();
 	};
-	host.nativeSessionState = (int) {
-		selectedSourceState = !taskIsAlive ? NativeSessionState.dead
-			: session.rollbackAvailable ? NativeSessionState.liveReady
-			: NativeSessionState.liveBusy;
-		return selectedSourceState;
+	host.servedHistoryMode = (int) => mode;
+	host.nativeSessionState = (int) => !alive ? NativeSessionState.dead
+		: session.idle ? NativeSessionState.liveReady : NativeSessionState.liveBusy;
+	host.unsubscribeTaskHistorySubscribers = (int) { effects ~= "unsubscribe"; };
+	host.emitTaskReload = (int, string) { effects ~= "reload"; };
+	bool expectResume;
+	host.broadcastTaskUpdate = (int) {
+		if (expectResume)
+		{
+			assert(task.processQueue.goalState == ProcessState.Alive);
+			effects ~= "resume";
+		}
+		effects ~= "update";
 	};
-	host.resolveFreshPersistedBoundary = (int, const ref HistoryAccess,
-		string, out HistoryBoundary boundary, out bool opensConversation) {
-		boundaryCalls++;
-		boundary = fallbackAnchorMatrix
-			? HistoryBoundary("line:3", HistoryBoundaryKind.agent_turn, null)
-			: HistoryBoundary("line:2", HistoryBoundaryKind.user, null);
-		return true;
+	host.transitionTaskFrom = (int, TaskStatus[], TaskStatus, TaskNotificationChange) {};
+	host.generateSuggestions = (int) {};
+	host.stopTask = (int) { effects ~= "stop"; };
+	auto privateSession = new StubCodexSession;
+	auto owner = new CodexForkSourceOwner(privateSession, access.sessionId);
+	auto operation = new CodexForkSourceOperation(ProcessLaunch.init);
+	operation.attachOwner(owner);
+	bool openFails;
+	host.openCodexForkSourceOperation = (int value, const ref HistoryAccess source) {
+		assert(!alive && value == tid && source.sessionId == access.sessionId);
+		if (openFails)
+			throw new Exception("operation open failed");
+		return operation;
 	};
-	host.requireLiveHistoryLaunch = (int, const ref HistoryAccess) {
-		liveLaunchCalls++;
-		return ProcessLaunch.init;
-	};
-	host.invalidateJsonlLineage = (int) { lineageCalls++; };
-	host.clearUndoJsonl = (int) { clearCalls++; };
-	host.unsubscribeTaskHistorySubscribers = (int) { unsubscribeCalls++; };
-	host.emitTaskReload = (int, string) { reloadCalls++; };
-	host.startJsonlWatch = (int) { watchCalls++; };
-	host.broadcastTaskUpdate = (int) { updateCalls++; };
-	host.stopTask = (int) { stopCalls++; };
-	host.getUndoJsonl = (int) { assert(false); return null; };
-
-	auto service = new TaskMutationService(host,
-		(MutationReplySocket, int, HistoryAccess, CodexSession,
-			void delegate(), void delegate(string)) { backupCalls++; });
-	void delegate(Data) reply = (Data data) {
-		replies ~= cast(string) data.toGC();
-	};
-	WsMessage previewRequest() => WsMessage(type: "undo_task", tid: tid,
-		anchor: "line:2", dry_run: true, revert_conversation: true);
-	WsMessage nativeConfirmation(uint expected) => jsonParse!WsMessage(
-		`{"type":"undo_task","tid":72,"anchor":"line:2","expected_num_turns":`
-		~ expected.to!string ~ `}`);
-	void resetEffects()
+	auto service = new TaskMutationService(host);
+	void delegate(Data) reply = (Data data) { replies ~= cast(string) data.toGC(); };
+	WsMessage undo(string anchor, bool dryRun = false) => WsMessage(type: "undo_task",
+		tid: tid, anchor: anchor, dry_run: dryRun, revert_conversation: true);
+	void drain()
 	{
+		import ae.net.asockets : socketManager;
+
+		for (;;)
+		{
+			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
+			if (handlers.length == 0)
+				return;
+			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
+			foreach (handler; handlers)
+				handler();
+		}
+	}
+
+	// A forged anchor, an anchor Codex does not undo at, and a legacy thread
+	// are refused before anything happens.
+	foreach (refused; ["before:t3", "line:2", "through:t2"])
+	{
+		service.handleUndoTaskMsg(reply, undo(refused));
+		service.handleUndoTaskMsg(reply, undo(refused, true));
+	}
+	mode = CodexHistoryMode.legacy;
+	service.handleUndoTaskMsg(reply, undo("before:t2"));
+	mode = CodexHistoryMode.paginated;
+	assert(replies.length == 7);
+	foreach (refusal; replies)
+		assert(refusal.canFind("UUID not found in task history"));
+	assert(effects.length == 0 && session.reverts.length == 0 && task.history.isLoaded);
+	// The preview counts the turns the undo removes.
+	replies = null;
+	service.handleUndoTaskMsg(reply, undo("before:t1", true));
+	assert(replies.length == 1 && replies[0].canFind(`"undo_preview"`)
+		&& replies[0].canFind(`"messages_removed":2`) && replies[0].canFind("codex_turns"),
+		replies[0]);
+	assert(effects.length == 0 && session.reverts.length == 0);
+
+	alias Kind = TaskMutationService.CodexRevertKind;
+	enum Outcome { verified, rejected, exited, closed, dispatchFailure,
+		openFailure, routeFailure, stopFailure }
+
+	@JSONPartial struct ReplyType { string type; }
+	void replyInOrder(Data data)
+	{
+		reply(data);
+		effects ~= "reply:" ~ jsonParse!ReplyType(replies[$-1]).type;
+	}
+
+	foreach (row; [
+		Kind.live: [Outcome.verified, Outcome.rejected, Outcome.exited, Outcome.closed,
+			Outcome.dispatchFailure],
+		Kind.stopped: [Outcome.verified, Outcome.rejected, Outcome.openFailure,
+			Outcome.routeFailure],
+		Kind.busy: [Outcome.verified, Outcome.rejected, Outcome.routeFailure,
+			Outcome.stopFailure],
+	].byKeyValue)
+	foreach (outcome; row.value)
+	{
+		auto kind = row.key;
+		bool live = kind == Kind.live;
+		bool busy = kind == Kind.busy;
+		bool verified = outcome == Outcome.verified;
+		auto scenario = toJson(kind) ~ " " ~ toJson(outcome);
+		loadHistory();
+		task.status = kind == Kind.stopped ? TaskStatus.completed : TaskStatus.active;
+		alive = kind != Kind.stopped;
+		session = new StubCodexSession;
+		privateSession = new StubCodexSession;
+		owner = new CodexForkSourceOwner(privateSession, access.sessionId);
+		operation = new CodexForkSourceOperation(ProcessLaunch.init);
+		operation.attachOwner(owner);
+		openFails = outcome == Outcome.openFailure;
+		expectResume = busy && verified;
 		replies = null;
-		lineageCalls = clearCalls = unsubscribeCalls = reloadCalls = watchCalls = updateCalls = 0;
-		backupCalls = stopCalls = liveLaunchCalls = 0;
-		boundaryCalls = 0;
-		historyAccessCalls = 0;
-		fallbackAnchorMatrix = false;
-		selectedSourceState = NativeSessionState.dead;
-		session.prepareCalls = session.executeCalls = 0;
-		session.rejectPreparation = false;
-		session.invokePointOfNoReturn = false;
-		session.rollbackAvailable = true;
-		taskIsAlive = true;
-		task.nativeUndoState = NativeUndoState.idle;
+		effects = null;
+
+		auto stopped = new Promise!ProcessState;
+		task.processQueue = new StateQueue!ProcessState((ProcessState goal) {
+			if (goal == ProcessState.Alive)
+			{
+				assert(expectResume, "failed undo requested a resume");
+				return resolve(ProcessState.Alive);
+			}
+			return busy ? stopped : resolve(ProcessState.Dead);
+		}, alive ? ProcessState.Alive : ProcessState.Dead);
+
+		auto transaction = service.new CodexRevert(MutationReplySocket(&replyInOrder),
+			tid, kind, live ? session : null);
+		if (live)
+		{
+			session.throwOnRevert = outcome == Outcome.dispatchFailure;
+			transaction.dispatch(session, "t2");
+			if (outcome == Outcome.exited)
+			{
+				alive = false;
+				session.closed = true;
+			}
+			else if (outcome == Outcome.closed)
+				session.closeStdin();
+		}
+		else if (busy)
+		{
+			service.stopAndRevertBusyCodexThread(transaction, access, "t2");
+			drain();
+			assert(task.undoStopInProgress && effects == ["unsubscribe", "stop"]);
+			if (outcome == Outcome.stopFailure)
+				stopped.reject(new Exception("busy stop failed"));
+			else
+			{
+				alive = false;
+				task.applyCodexUndoStopStatus = () {
+					task.status = TaskStatus.failed;
+					effects ~= "status";
+				};
+				stopped.fulfill(ProcessState.Dead);
+			}
+		}
+		else
+			service.revertStoppedCodexThread(transaction, access, "t2");
+
+		drain();
+		if (!live && outcome != Outcome.openFailure && outcome != Outcome.stopFailure)
+		{
+			if (outcome == Outcome.routeFailure)
+				operation.closeStdin();
+			else
+			{
+				__traits(getMember, privateSession, "threadId") = access.sessionId;
+				__traits(getMember, privateSession, "routeReadyHandler_")();
+			}
+			drain();
+		}
+
+		auto reverted = live ? session : privateSession;
+		if (auto response = reverted.revert)
+		{
+			assert(reverted.reverts == ["t2"]);
+			if (verified)
+				response.fulfill();
+			else
+				response.reject(new Exception(outcome == Outcome.rejected && busy
+					? "Codex app-server exited during a thread request" : "revert rejected"));
+			drain();
+		}
+
+		string[] expected;
+		if (busy)
+		{
+			expected ~= ["unsubscribe", "stop"];
+			if (!verified && outcome != Outcome.stopFailure)
+				expected ~= "status";
+		}
+		expected ~= ["unsubscribe", "reload"];
+		if (expectResume)
+			expected ~= "resume";
+		expected ~= ["update", verified ? "reply:undo_result" : "reply:error"];
+		assert(effects == expected, scenario ~ ": " ~ toJson(effects));
+		assert(replies.length == 1);
+		if (busy && outcome == Outcome.rejected)
+			assert(replies[0].canFind("Undo failed: Codex app-server exited during a thread request"));
+		assert(!task.history.isLoaded && task.history.isDriverServed);
+		assert(task.nativeUndoState == NativeUndoState.idle && !task.undoStopInProgress);
+		assert(task.applyCodexUndoStopStatus is null);
+		if (busy)
+			assert(task.status == (verified || outcome == Outcome.stopFailure
+				? TaskStatus.active : TaskStatus.failed));
+		if (live)
+			assert(session.closed == !verified);
+		else if (outcome != Outcome.openFailure && outcome != Outcome.stopFailure)
+			assert(privateSession.closed);
+		assertThrown!AssertError(transaction.settle(null));
 	}
-
-	// Native preview reports the fresh ledger count and preserves no plan.
-	resetEffects();
-	session.preparedPlans = [plan(2)];
-	service.handleUndoTaskMsg(reply, previewRequest());
-	socketManager.loop();
-	assert(session.prepareCalls == 1 && session.executeCalls == 0
-		&& replies.length == 1 && replies[0].canFind(`"messages_removed":2`)
-		&& replies[0].canFind(`"count_unit":"codex_turns"`)
-		&& task.nativeUndoState == NativeUndoState.idle);
-
-	// A rejected native preview remains a no-dispatch refusal and cannot fall
-	// through to either JSONL counting or fallback execution.
-	resetEffects();
-	session.rejectPreparation = true;
-	service.handleUndoTaskMsg(reply, previewRequest());
-	socketManager.loop();
-	assert(session.prepareCalls == 1 && session.executeCalls == 0 && lineageCalls == 0
-		&& clearCalls == 0 && unsubscribeCalls == 0 && reloadCalls == 0
-		&& watchCalls == 0 && updateCalls == 0
-		&& task.nativeUndoState == NativeUndoState.idle
-		&& replies.length == 1 && replies[0].canFind("preparation refused"));
-
-	// Confirmation obtains a fresh plan, and count drift refuses before lineage
-	// invalidation or a provider call.
-	resetEffects();
-	session.preparedPlans = [plan(2), plan(3)];
-	service.handleUndoTaskMsg(reply, previewRequest());
-	socketManager.loop();
-	service.handleUndoTaskMsg(reply, nativeConfirmation(2));
-	socketManager.loop();
-	assert(session.prepareCalls == 2 && session.executeCalls == 0 && lineageCalls == 0
-		&& clearCalls == 0 && unsubscribeCalls == 0 && reloadCalls == 0
-		&& watchCalls == 0 && updateCalls == 0
-		&& task.nativeUndoState == NativeUndoState.idle
-		&& replies[$ - 1].canFind("count changed"));
-
-	// A native confirmation without an echoed count does not prepare or mutate.
-	resetEffects();
-	service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
-		anchor: "line:2"));
-	assert(session.prepareCalls == 0 && session.executeCalls == 0 && lineageCalls == 0
-		&& clearCalls == 0 && unsubscribeCalls == 0 && reloadCalls == 0
-		&& watchCalls == 0 && updateCalls == 0
-		&& task.nativeUndoState == NativeUndoState.idle
-		&& replies.length == 1 && replies[0].canFind("stale"));
-
-	// A zero native echo is present on the wire but is equally stale.
-	resetEffects();
-	service.handleUndoTaskMsg(reply, nativeConfirmation(0));
-	assert(session.prepareCalls == 0 && session.executeCalls == 0 && lineageCalls == 0
-		&& clearCalls == 0 && unsubscribeCalls == 0 && reloadCalls == 0
-		&& watchCalls == 0 && updateCalls == 0
-		&& task.nativeUndoState == NativeUndoState.idle
-		&& replies.length == 1 && replies[0].canFind("stale"));
-
-	// A second confirmation is rejected at the state gate before it resolves a
-	// boundary or starts another native preparation.
-	resetEffects();
-	task.beginConfirmedNativeUndo();
-	service.handleUndoTaskMsg(reply, nativeConfirmation(2));
-	assert(historyAccessCalls == 0 && boundaryCalls == 0 && session.prepareCalls == 0
-		&& session.executeCalls == 0 && lineageCalls == 0 && clearCalls == 0
-		&& unsubscribeCalls == 0 && reloadCalls == 0 && watchCalls == 0 && updateCalls == 0
-		&& task.nativeUndoState == NativeUndoState.inFlight
-		&& replies.length == 1 && replies[0].canFind("already in progress"));
-	task.clearNativeUndoRefusalBeforeDispatch();
-
-	// Neither a new preview nor another confirmation can restart native work
-	// while the task is in flight or fail-stopped as unverified.
-	resetEffects();
-	task.beginConfirmedNativeUndo();
-	service.handleUndoTaskMsg(reply, previewRequest());
-	assert(session.prepareCalls == 0 && session.executeCalls == 0 && lineageCalls == 0
-		&& task.nativeUndoState == NativeUndoState.inFlight
-		&& replies.length == 1 && replies[0].canFind("in progress"));
-	task.markNativeUndoUnverified();
-	service.handleUndoTaskMsg(reply, previewRequest());
-	service.handleUndoTaskMsg(reply, nativeConfirmation(2));
-	assert(session.prepareCalls == 0 && session.executeCalls == 0 && lineageCalls == 0
-		&& clearCalls == 0 && unsubscribeCalls == 0 && reloadCalls == 0
-		&& watchCalls == 0 && updateCalls == 0
-		&& task.nativeUndoState == NativeUndoState.unverified
-		&& replies.length == 3
-		&& replies[1].canFind("may already have changed or lost history")
-		&& replies[2].canFind("may already have changed or lost history"));
-
-	// Preparation errors are ordinary no-dispatch refusals and never select the
-	// JSONL fallback.
-	resetEffects();
-	session.rejectPreparation = true;
-	service.handleUndoTaskMsg(reply, nativeConfirmation(2));
-	socketManager.loop();
-	assert(session.prepareCalls == 1 && session.executeCalls == 0 && lineageCalls == 0
-		&& clearCalls == 0 && unsubscribeCalls == 0 && reloadCalls == 0
-		&& watchCalls == 0 && updateCalls == 0
-		&& task.nativeUndoState == NativeUndoState.idle
-		&& replies.length == 1 && replies[0].canFind("preparation refused"));
-
-	// A driver pre-dispatch refusal clears the in-flight state without invoking
-	// the lineage point of no return.
-	resetEffects();
-	session.preparedPlans = [plan(2)];
-	session.execution = NativeUndoExecutionResult(
-		NativeUndoExecutionStatus.refusedBeforeDispatch, "plan changed");
-	service.handleUndoTaskMsg(reply, nativeConfirmation(2));
-	socketManager.loop();
-	assert(session.prepareCalls == 1 && session.executeCalls == 1 && lineageCalls == 0
-		&& clearCalls == 0 && unsubscribeCalls == 0 && reloadCalls == 0
-		&& watchCalls == 0 && updateCalls == 0
-		&& task.nativeUndoState == NativeUndoState.idle
-		&& replies.length == 1 && replies[0].canFind("before dispatch")
-		&& !replies[0].canFind(`"type":"undo_result"`));
-
-	// Verified execution runs the existing cleanup exactly once before emitting
-	// the empty-output success result and returning to idle.
-	resetEffects();
-	session.preparedPlans = [plan(2)];
-	session.execution = NativeUndoExecutionResult(NativeUndoExecutionStatus.verified, "");
-	session.invokePointOfNoReturn = true;
-	service.handleUndoTaskMsg(reply, nativeConfirmation(2));
-	socketManager.loop();
-	assert(session.executeCalls == 1 && lineageCalls == 1 && clearCalls == 1
-		&& unsubscribeCalls == 1 && reloadCalls == 1 && watchCalls == 1 && updateCalls == 1
-		&& task.nativeUndoState == NativeUndoState.idle
-		&& replies.length == 1 && replies[0].canFind(`"type":"undo_result"`)
-		&& replies[0].canFind(`"output":""`));
-
-	// Any result that becomes uncertain after the point of no return leaves the
-	// task fail-stopped and suppresses all verified-success cleanup.
-	resetEffects();
-	session.preparedPlans = [plan(2)];
-	session.execution = NativeUndoExecutionResult(
-		NativeUndoExecutionStatus.unverifiableAfterDispatch, "marker missing");
-	session.invokePointOfNoReturn = true;
-	service.handleUndoTaskMsg(reply, nativeConfirmation(2));
-	socketManager.loop();
-	assert(session.executeCalls == 1 && lineageCalls == 1 && clearCalls == 0
-		&& unsubscribeCalls == 0 && reloadCalls == 0 && watchCalls == 0 && updateCalls == 0
-		&& task.nativeUndoState == NativeUndoState.unverified
-		&& replies.length == 1 && replies[0].canFind("may already have changed or lost history")
-		&& !replies[0].canFind(`"type":"undo_result"`));
-
-	// A native-preview confirmation cannot silently fall through to the JSONL
-	// path after capability drift.
-	resetEffects();
-	session.rollbackAvailable = false;
-	service.handleUndoTaskMsg(reply, nativeConfirmation(2));
-	assert(session.prepareCalls == 0 && session.executeCalls == 0 && lineageCalls == 0
-		&& clearCalls == 0 && unsubscribeCalls == 0 && reloadCalls == 0
-		&& watchCalls == 0 && updateCalls == 0
-		&& replies.length == 1 && replies[0].canFind("preview is stale"));
-
-	// A live but busy Codex session retains the JSONL preview policy and never
-	// calls the native ledger API.
-	resetEffects();
-	write(rolloutPath,
-		`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n"
-		~ `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n"
-		~ `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}`);
-	session.rollbackAvailable = false;
-	service.handleUndoTaskMsg(reply, previewRequest());
-	assert(selectedSourceState == NativeSessionState.liveBusy
-		&& session.prepareCalls == 0 && session.executeCalls == 0 && replies.length == 1
-		&& replies[0].canFind(`"messages_removed":2`)
-		&& replies[0].canFind(`"count_unit":"history_entries"`));
-
-	struct FallbackAnchorFailureCase
-	{
-		string name;
-		string rollout;
-	}
-	foreach (failureCase; [
-		FallbackAnchorFailureCase("missing", `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n"
-			~ `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n"
-			~ `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"selected"}]}}`),
-		FallbackAnchorFailureCase("malformed", `{"type":"event_msg","payload":{"type":"agent_message","message":[]}}` ~ "\n"
-			~ `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n"
-			~ `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"selected"}]}}`),
-		FallbackAnchorFailureCase("ambiguous", `{"type":"event_msg","payload":{"type":"agent_message","message":"selected","phase":null,"memory_citation":null}}` ~ "\n"
-			~ `{"type":"event_msg","payload":{"type":"agent_message","message":"selected","phase":null,"memory_citation":null}}` ~ "\n"
-			~ `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"selected"}]}}`),
-	])
-	{
-		resetEffects();
-		fallbackAnchorMatrix = true;
-		session.rollbackAvailable = false;
-		write(rolloutPath, failureCase.rollout);
-		auto before = readText(rolloutPath);
-		service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
-		anchor: "line:3", dry_run: false, revert_conversation: true));
-		assert(selectedSourceState == NativeSessionState.liveBusy
-			&& liveLaunchCalls == 0 && backupCalls == 0 && stopCalls == 0
-			&& lineageCalls == 0 && clearCalls == 0 && unsubscribeCalls == 0
-			&& reloadCalls == 0 && watchCalls == 0 && updateCalls == 0
-			&& session.prepareCalls == 0 && session.executeCalls == 0
-			&& taskIsAlive && !task.undoStopInProgress
-			&& replies.length == 1 && replies[0].canFind("UUID not found for truncation")
-			&& readText(rolloutPath) == before, failureCase.name);
-	}
-
-	// Once stopped, a fresh JSONL preview uses the dead-source policy and never
-	// carries the native ledger count unit.
-	resetEffects();
-	write(rolloutPath,
-		`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n"
-		~ `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n"
-		~ `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}`);
-	taskIsAlive = false;
-	service.handleUndoTaskMsg(reply, previewRequest());
-	assert(selectedSourceState == NativeSessionState.dead
-		&& session.prepareCalls == 0 && session.executeCalls == 0 && replies.length == 1
-		&& replies[0].canFind(`"messages_removed":2`)
-		&& replies[0].canFind(`"count_unit":"history_entries"`));
-
 }

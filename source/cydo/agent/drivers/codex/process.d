@@ -7,7 +7,7 @@ import std.exception : enforce;
 import ae.net.jsonrpc.binding : JsonRpcDispatcher, jsonRpcDispatcher;
 import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.utils.json : JSONFragment, jsonParse, toJson;
-import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
+import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcException, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
 version (unittest) import ae.net.asockets : IConnection;
@@ -31,7 +31,7 @@ class AppServerProcess
 	private bool terminating_;
 	private void delegate() releaseStartupGate_;
 
-	enum State { starting, initializing, authenticating, ready, failed, dead }
+	enum State { starting, initializing, authenticating, ready, dead }
 	private State state_ = State.starting;
 
 	// Thread routing: threadId → session (populated after thread/start response)
@@ -40,22 +40,50 @@ class AppServerProcess
 	private CodexSessionRouteTarget[int] sessionsByTid;
 	// A stopped-source fork owns a real private CodexSession while it resumes
 	// the source thread. Its route identity must never overlap a logical task.
-	private bool[int] operationRouteReservations_;
+	// A reservation keeps the process alive without a route. One that never
+	// gets a session (a history read) names what to run if the process ends.
+	private void delegate()[int] operationRouteReservations_;
 	private int nextOperationRouteTid_ = int.min;
 
 	// Actions queued until server reaches ready state.
-	private void delegate()[] readyQueue;
+	private struct ReadyWaiter
+	{
+		void delegate() ready;
+		void delegate(Exception) failed;
+	}
+	private ReadyWaiter[] readyQueue;
+	private Exception readinessError_;
 
 	this(string[] args)
 	{
 		this.args = args;
 	}
 
+	version (unittest) package static IConnection delegate(string[]) spawnForTest;
+
 	void startProcess(void delegate() releaseStartupGate)
 	{
+		releaseStartupGate_ = releaseStartupGate;
+		try
+			spawnAndInitialize();
+		catch (Exception e)
+			failStartup(e);
+	}
+
+	package @property Exception startupError() { return readinessError_; }
+
+	private void spawnAndInitialize()
+	{
+		version (unittest)
+			if (spawnForTest !is null)
+			{
+				auto connection = spawnForTest(args);
+				makeTestAppServerProcess(connection, true, this);
+				return;
+			}
+
 		// Environment and current directory are handled by bwrap (included in args).
 		process = new AgentProcess(args, logName: "codex");
-		releaseStartupGate_ = releaseStartupGate;
 
 		// Set up bidirectional JSON-RPC codec on the process connection.
 		// The codec takes over handleReadData from stdoutLines; onStdoutLine
@@ -121,14 +149,14 @@ class AppServerProcess
 		};
 
 		process.onExit = (int status) {
+			if (!terminating_ && state_ != State.ready)
+				return failStartup(new Exception("Codex app-server exited"));
 			releaseStartupGateOnce();
 			state_ = State.dead;
 			auto effectiveStatus = status;
 			if (terminating_)
 				effectiveStatus = 143;
-			foreach (session; sessionsByTid)
-				if (session.onServerExit !is null)
-					session.onServerExit(effectiveStatus);
+			notifyExit(effectiveStatus);
 		};
 
 		// Begin initialization handshake.
@@ -145,8 +173,13 @@ class AppServerProcess
 		sessions[threadId] = session;
 	}
 
-	void unregisterSession(string threadId)
+	void unregisterSession(string threadId, void delegate(int) ownerExit)
 	{
+		auto route = threadId in sessions;
+		if (route is null || route.onServerExit != ownerExit)
+			return;
+		// Send before removing the last route, which can stop the server.
+		unsubscribeThread(threadId).ignoreResult();
 		sessions.remove(threadId);
 		shutdownIfUnrouted();
 	}
@@ -160,7 +193,7 @@ class AppServerProcess
 		sessionsByTid[tid] = session;
 	}
 
-	package int reserveOperationRouteTid()
+	package int reserveOperationRouteTid(void delegate() onServerExit = null)
 	{
 		for (;;)
 		{
@@ -169,7 +202,7 @@ class AppServerProcess
 			auto routeTid = nextOperationRouteTid_++;
 			if (routeTid in sessionsByTid || routeTid in operationRouteReservations_)
 				continue;
-			operationRouteReservations_[routeTid] = true;
+			operationRouteReservations_[routeTid] = onServerExit;
 			return routeTid;
 		}
 	}
@@ -194,21 +227,25 @@ class AppServerProcess
 		shutdownIfUnrouted();
 	}
 
-	void unregisterSessionByTid(int tid)
+	void unregisterSessionByTid(int tid, void delegate(int) ownerExit)
 	{
+		auto route = tid in sessionsByTid;
+		if (route is null || route.onServerExit != ownerExit)
+			return;
 		sessionsByTid.remove(tid);
 		operationRouteReservations_.remove(tid);
 		shutdownIfUnrouted();
 	}
 
-	/// Queue an action for when the server is ready. Runs immediately if
-	/// already ready; silently dropped if failed/dead.
-	void onReady(void delegate() dg)
+	/// Run the action once startup succeeds or report why it failed.
+	void onReady(void delegate() ready, void delegate(Exception) failed)
 	{
 		if (state_ == State.ready)
-			dg();
-		else if (state_ != State.failed && state_ != State.dead)
-			readyQueue ~= dg;
+			ready();
+		else if (state_ == State.dead)
+			failed(readinessError_);
+		else
+			readyQueue ~= ReadyWaiter(ready, failed);
 	}
 
 	void terminate()
@@ -221,9 +258,7 @@ class AppServerProcess
 			if (onCancelStartup_)
 				onCancelStartup_();
 			state_ = State.dead;
-			foreach (session; sessionsByTid)
-				if (session.onServerExit !is null)
-					session.onServerExit(143);
+			notifyExit(143);
 			return;
 		}
 		if (process.dead)
@@ -240,7 +275,7 @@ class AppServerProcess
 
 	@property bool dead()
 	{
-		if (state_ == State.dead || state_ == State.failed)
+		if (state_ == State.dead)
 			return true;
 		return process !is null && process.dead;
 	}
@@ -254,6 +289,8 @@ class AppServerProcess
 	void shutdown()
 	{
 		if (state_ == State.dead) return;
+		state_ = State.dead;
+		scope (exit) releaseStartupGateOnce();
 		if (process is null)
 		{
 			if (onCancelStartup_)
@@ -261,7 +298,6 @@ class AppServerProcess
 		}
 		else
 		{
-			releaseStartupGateOnce();
 			process.onExit = null;
 			if (!process.dead)
 			{
@@ -270,12 +306,9 @@ class AppServerProcess
 				process.killAfterTimeout(0.seconds);
 			}
 		}
-		state_ = State.dead;
-		foreach (session; sessionsByTid)
-			if (session.onServerExit !is null)
-				session.onServerExit(1);
 		if (onShutdown_)
 			onShutdown_();
+		notifyExit(1);
 	}
 
 	/// Send a JSON-RPC request to the Codex server.
@@ -288,15 +321,28 @@ class AppServerProcess
 		return codec.sendRequest(req);
 	}
 
+	package Promise!JsonRpcResponse unsubscribeThread(string threadId)
+	{
+		return sendRequest("thread/unsubscribe", toJson(ThreadUnsubscribeParams(threadId)));
+	}
+
+	package void releaseUnroutedThread(string threadId)
+	{
+		if (threadId !in sessions)
+			unsubscribeThread(threadId).ignoreResult();
+	}
+
 	// ---- Initialization handshake ----
 
 	private void sendInitialize()
 	{
 		state_ = State.initializing;
 		sendRequest("initialize", toJson(makeInitializeParams())).then((JsonRpcResponse result) {
+			if (result.isError)
+				return failStartup(new JsonRpcException(result.error.get));
 			releaseStartupGateOnce();
 			sendLogin();
-		});
+		}, &failStartup).ignoreResult();
 	}
 
 	private void releaseStartupGateOnce()
@@ -324,22 +370,48 @@ class AppServerProcess
 			toJson(LoginStartParams("apiKey", apiKey))
 		).then((JsonRpcResponse result) {
 			import std.algorithm : canFind;
+			if (result.isError)
+				return failStartup(new JsonRpcException(result.error.get));
 			// API-key auth may complete synchronously.
 			auto resultJson = result.result.toJson();
 			if (resultJson.canFind(`"success"`) || resultJson.canFind(`"loggedIn"`))
 				onLoginCompleted();
-		});
+		}, &failStartup).ignoreResult();
+	}
+
+	private void failStartup(Exception error)
+	{
+		if (state_ == State.dead)
+			return;
+		readinessError_ = error;
+		shutdown();
 	}
 
 	private void onLoginCompleted()
 	{
-		if (state_ == State.ready)
+		if (state_ != State.initializing && state_ != State.authenticating)
 			return;
 		state_ = State.ready;
 		auto queue = readyQueue;
 		readyQueue = null;
-		foreach (dg; queue)
-			dg();
+		foreach (waiter; queue)
+			waiter.ready();
+	}
+
+	private void notifyExit(int status)
+	{
+		if (readinessError_ is null)
+			readinessError_ = new Exception("Codex app-server exited");
+		auto queue = readyQueue;
+		readyQueue = null;
+		foreach (waiter; queue)
+			waiter.failed(readinessError_);
+		foreach (session; sessionsByTid.values)
+			if (session.onServerExit !is null)
+				session.onServerExit(status);
+		foreach (onServerExit; operationRouteReservations_.values)
+			if (onServerExit !is null)
+				onServerExit();
 	}
 
 	private CodexSessionRouteTarget sessionForThread(string threadId)
@@ -396,11 +468,15 @@ private InitializeParams makeInitializeParams()
 }
 
 version (unittest) package AppServerProcess makeTestAppServerProcess(
-	IConnection connection)
+	IConnection connection, bool startHandshake = false, AppServerProcess server = null)
 {
-	auto server = new AppServerProcess(null);
+	if (server is null)
+		server = new AppServerProcess(null);
 	server.codec = new JsonRpcCodec(connection);
-	server.state_ = AppServerProcess.State.ready;
+	if (startHandshake)
+		server.sendInitialize();
+	else
+		server.state_ = AppServerProcess.State.ready;
 	return server;
 }
 

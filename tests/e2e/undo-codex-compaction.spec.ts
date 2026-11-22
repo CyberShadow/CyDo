@@ -5,14 +5,10 @@ import {
   sendMessage,
   assistantText,
   responseTimeout,
-  visibleHistory,
-  currentTaskTid,
-  codexRolloutRecords,
-  expectUndoRefusalForUserMessage,
 } from "./fixtures";
 
 test(
-  "codex refuses native undo of a compaction-folded turn without side effects",
+  "codex undoes a turn across a compaction and continues",
   { tag: "@codex-only" },
   async ({ page, agentType }) => {
     const frames: any[] = [];
@@ -43,13 +39,6 @@ test(
       timeout,
     });
 
-    const tid = currentTaskTid(page);
-    await expect
-      .poll(
-        () => codexRolloutRecords(tid).some((record) => record.type === "compacted"),
-      )
-      .toBe(true);
-
     // The first user message of a session is folded into the session-start
     // SYSTEM prompt and has no undo affordance at all (finding F2). Pin the
     // session-start-folded message with .first(): if compaction context
@@ -66,52 +55,31 @@ test(
     await foldedWrapper.hover();
     await expect(foldedWrapper.locator(".undo-btn")).toHaveCount(0);
 
-    const history = await visibleHistory(page);
-    // Read before/after the undo attempt below; this spans a multi-second
-    // window, so a late-flushed record from the *preceding* turn could in
-    // principle fail this check pointing at an innocent undo (plan §3.4).
-    const before = codexRolloutRecords(tid).length;
-    const frameStart = frames.length;
-
-    await expectUndoRefusalForUserMessage(
-      page,
-      'reply with "After compaction."',
-      "Native Codex undo preparation refused: completed native turn does not match the simple one-user grammar",
-    );
-
-    await expect
-      .poll(
-        () =>
-          frames.slice(frameStart).filter((frame) => frame?.type === "error")
-            .length,
-      )
-      .toBe(1);
-    expect(
-      frames
-        .slice(frameStart)
-        .filter((frame) => frame?.type === "error")
-        .map((frame) => ({ tid: frame.tid, message: frame.message })),
-    ).toEqual([
-      {
-        tid,
-        message:
-          "Native Codex undo preparation refused: completed native turn does not match the simple one-user grammar",
-      },
-    ]);
-    expect(
-      frames
-        .slice(frameStart)
-        .some(
-          (frame) =>
-            frame?.type === "undo_preview" ||
-            frame?.type === "undo_result" ||
-            frame?.type === "task_reload",
+    // Codex compacted the context while running the second turn. Undoing
+    // that turn takes the thread back to before the compaction.
+    const compacted = page
+      .locator(".message-wrapper:visible", {
+        has: page.locator(
+          ".message.user-message:visible:not(.pending):not(.meta-message)",
+          { hasText: 'reply with "After compaction."' },
         ),
-    ).toBe(false);
+      })
+      .last();
+    await compacted.hover();
+    await expect(compacted.locator(".undo-btn")).toBeVisible();
+    const frameStart = frames.length;
+    await compacted.locator(".undo-btn").click();
+    await expect(page.locator(".undo-dialog-count:visible")).toContainText(
+      "1 whole turn will be removed.",
+    );
+    await page.locator(".btn-undo:visible").click();
 
-    // See the "before" comment above re: the multi-second comparison window.
-    expect(await visibleHistory(page)).toEqual(history);
-    expect(codexRolloutRecords(tid).length).toBe(before);
+    await expect(assistantText(page, "After compaction.")).toHaveCount(0);
+    await expect(assistantText(page, "Ready for compaction.")).toBeVisible();
+    await expect(page.locator(".compact-boundary-message")).toHaveCount(0);
+    expect(
+      frames.slice(frameStart).filter((frame) => frame?.type === "error"),
+    ).toEqual([]);
 
     await sendMessage(page, 'Please reply with "compact-final"');
     await expect(assistantText(page, "compact-final")).toBeVisible({

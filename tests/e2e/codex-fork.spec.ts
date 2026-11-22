@@ -173,8 +173,9 @@ test(
       });
     });
 
+    // Codex names a turn when it accepts the message that starts it, so the
+    // user message arrives with its boundary.
     const isCanonicalUserBoundary = (frame: any, tid: number, prompt: string) =>
-      frame?.type === "task_history_boundary_replaced" &&
       frame?.tid === tid &&
       frame?.event?.type === "item/started" &&
       frame?.event?.item_type === "user_message" &&
@@ -328,6 +329,9 @@ test(
       timeout: responseTimeout(agentType),
     });
     await Promise.all([offlineCanonical, offlineTurnComplete]);
+    // The frames of this turn as the session emitted it: the reloads below
+    // replay the message, boundary included.
+    const offlineFrameEnd = frames.length;
     await sendMessage(page, `Reply exactly with ${offlineTail}`);
     await expect(activeAssistantText(page, offlineTail)).toBeVisible({
       timeout: responseTimeout(agentType),
@@ -353,13 +357,13 @@ test(
     await offlineUserMessage.hover();
     await expect(offlineUserMessage.locator(".fork-btn")).toHaveCount(0);
     const userBoundaries = frames
-      .slice(offlineFrameStart)
+      .slice(offlineFrameStart, offlineFrameEnd)
       .filter((frame) =>
         isCanonicalUserBoundary(frame, Number(offlineParentTid), offlinePrompt),
       );
     expect(userBoundaries).toHaveLength(1);
     const offlineUserAnchor = userBoundaries[0].event.history_boundary.anchor;
-    expect(offlineUserAnchor).toMatch(/^line:\d+$/);
+    expect(offlineUserAnchor).toMatch(/^before:.+$/);
     const offlineRollout = codexRolloutRecords(Number(offlineParentTid));
     await forkThroughBridge(page, Number(offlineParentTid), offlineUserAnchor!);
     const forkError = page.locator(".command-error-dialog");
@@ -465,7 +469,6 @@ test(
       .poll(() => {
         const matches = frames.filter(
           (frame) =>
-            frame?.type === "task_history_boundary_replaced" &&
             frame?.tid === Number(parentTid) &&
             frame?.event?.type === "item/started" &&
             frame?.event?.item_type === "user_message" &&
@@ -483,7 +486,7 @@ test(
         return matches.length;
       })
       .toBe(1);
-    expect(userAnchor).toMatch(/^line:\d+$/);
+    expect(userAnchor).toMatch(/^before:.+$/);
 
     const userMessage = messageWrapper(page, ".user-message", currentUser);
     await userMessage.hover();
@@ -508,7 +511,7 @@ test(
 );
 
 test(
-  "codex rejects a forged line anchor without changing parent history",
+  "codex rejects a forged anchor without changing parent history",
   { tag: "@codex-only" },
   async ({ page, agentType }) => {
     await installCydoE2eBridge(page);
@@ -533,6 +536,11 @@ test(
     await expect(activeAssistantText(page, marker)).toBeVisible({
       timeout: responseTimeout(agentType),
     });
+    // The turn is over once its end is known, which is when the reply can
+    // be forked at: the transcript does not change after that.
+    await expect(
+      messageWrapper(page, ".assistant-message", marker).locator(".fork-btn"),
+    ).toHaveCount(1);
     const parentHistory = await visibleHistory(page);
     const tidsBeforeFork = await snapshotTids(page);
 
@@ -560,7 +568,7 @@ test(
 );
 
 test(
-  "codex rejects a stale line anchor after dead-session rollback without creating a child",
+  "codex rejects a stale anchor after a dead-session undo without creating a child",
   { tag: "@codex-only" },
   async ({ page, agentType }) => {
     await installCydoE2eBridge(page);
@@ -601,7 +609,7 @@ test(
     const staleTid = Number(await staleFork.getAttribute("data-fork-tid"));
     const staleAnchor = await staleFork.getAttribute("data-fork-anchor");
     expect(staleTid).toBe(parentTid);
-    expect(staleAnchor).toMatch(/^line:\d+$/);
+    expect(staleAnchor).toMatch(/^through:.+$/);
 
     await killSession(page, agentType);
     await undoUserMessage(page, rolledBack);
@@ -1082,7 +1090,9 @@ codexProfileTest(
     const childDiagnostics = page.locator(
       "[style*='display: contents'] .diagnostic-message.diagnostic-error",
     );
-    await expect(childDiagnostics).toHaveCount(1);
+    await expect
+      .poll(() => childDiagnostics.allInnerTexts())
+      .toHaveLength(1);
     const childDiagText = await childDiagnostics.first().innerText();
     expect(childDiagText).toContain("Failed to load session history");
     // Deterministic, not a race: the fork-materialization callback writes

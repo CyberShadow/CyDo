@@ -439,6 +439,22 @@ public:
         install(loaded);
     }
 
+    /// Before a load: visit the buffered live events, newest first, until
+    /// `visit` returns true. It may replace the event it is given.
+    void amendPending(scope bool delegate(ref Data event) visit)
+    {
+        assert(state_ == State.deferred || state_ == State.loading,
+            "amendPending requires an unloaded store");
+        foreach_reverse (i; 0 .. pendingEvents_.length)
+        {
+            auto event = pendingEvents_[i];
+            auto done = visit(event);
+            pendingEvents_[i] = event;
+            if (done)
+                return;
+        }
+    }
+
     ulong beginDriverLoad()
     {
         assert(state_ == State.deferred && isDriverServed);
@@ -516,7 +532,7 @@ struct VisibleTurnAnchor
 
 enum ProcessState : bool { Dead = false, Alive = true }
 enum ArchiveState : bool { Unarchived = false, Archived = true }
-enum NativeUndoState { idle, inFlight, unverified }
+enum NativeUndoState { idle, backingUp, inFlight, unverified }
 
 /// Pending SwitchMode or Handoff continuation, set by the tool handler and
 /// consumed by onExit. Null when no continuation is pending.
@@ -634,6 +650,7 @@ struct TaskData
 	bool lastTurnFailed = false;   // is_error of the most recent turn/result (terminal agent error)
 	bool wasKilledByUser = false;  // set when user explicitly kills via stop button
 	bool undoStopInProgress; // true while undo fallback owns post-stop reload/finalization
+	void delegate() applyCodexUndoStopStatus; // set on exit and consumed by revert settlement
 	/// Runtime-only native rollback serialization. This is intentionally not
 	/// persisted: uncertainty blocks this server process only.
 	NativeUndoState nativeUndoState = NativeUndoState.idle;

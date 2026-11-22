@@ -146,7 +146,7 @@ test("sending message to stopped session auto-resumes it", async ({
   });
 });
 
-test("codex reload replays apply_patch tool call", { tag: "@codex-only" }, async ({
+test("codex reload replays a file change", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -173,7 +173,7 @@ test("codex reload replays apply_patch tool call", { tag: "@codex-only" }, async
 
   const tool = page
     .locator(".tool-call")
-    .filter({ has: page.locator(".tool-name", { hasText: /apply_patch/i }) })
+    .filter({ has: page.locator(".tool-name", { hasText: /fileChange/i }) })
     .last();
   await expect(tool).toBeVisible({ timeout: responseTimeout(agentType) });
 

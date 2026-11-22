@@ -26,11 +26,13 @@ version (unittest) import ae.net.asockets : ConnectionState, DisconnectType,
 	IConnection;
 version (unittest) import ae.utils.jsonrpc : JsonRpcRequest;
 
-import cydo.agent.contract : Agent, HistoryReplay, DiscoveredSession, InterruptedToolCallRepair,
+import cydo.agent.contract : Agent, HistoryReplay, DiscoveredSession, DriverHistory, DriverHistoryLaunch,
+	DriverServedHistoryAgent, InterruptedToolCallRepair,
 	PersistedHistoryBoundary, OneShotHandle, RewindResult, SessionConfig,
 	SessionMeta;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.drivers.codex.app_server : CodexSessionRouteTarget;
+import cydo.agent.drivers.codex.history : readThreadHistory;
 public import cydo.agent.drivers.codex.process : AppServerProcess;
 public import cydo.agent.drivers.codex.native_undo;
 public import cydo.agent.drivers.codex.rollout;
@@ -38,7 +40,7 @@ public import cydo.agent.drivers.codex.rpc;
 public import cydo.agent.drivers.codex.thread_items;
 import cydo.protocol : ContentBlock, HistoryBoundary, HistoryBoundaryKind,
 	ProcessStderrEvent, TranslatedEvent;
-import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork, MessageSource;
+import cydo.agent.session : AbortedToolCallCorrection, AgentSession, AgentSubmissionReceipt, BackgroundWork, MessageSource;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
@@ -151,8 +153,9 @@ public:
 			if (!routeReadySettled_)
 			{
 				routeReadySettled_ = true;
-				routeReady_.reject(new Exception(
-					"Codex fork source owner exited before its route was ready"));
+				routeReady_.reject(session_.threadStartError_ is null
+					? new Exception("Codex fork source owner exited before its route was ready")
+					: session_.threadStartError_);
 			}
 			notifyClosed();
 		};
@@ -196,7 +199,7 @@ private:
 
 private enum RouteOwnerKind { task, forkOperation }
 
-class CodexAgent : Agent
+class CodexAgent : DriverServedHistoryAgent
 {
 	private AppServerProcess[string] serverPool; // keyed by workspace+sandbox signature
 	private AppServerStartupGate[string] appServerStartupGates;
@@ -352,7 +355,16 @@ class CodexAgent : Agent
 		// Build config override (reasoning summary + MCP tools).
 		auto configOverride = buildConfigOverride(mcpTid, config);
 
+		void registerPath(ThreadStartResult result)
+		{
+			if (result.thread.path.length > 0)
+				registerLiveSessionPath(session, launch.nativeHistoryProfile,
+					result.thread.id, result.thread.path);
+		}
+
 		server.onReady(() {
+			if (!session.alive)
+				return;
 			void startFreshThread()
 			{
 				ThreadStartParams tsp;
@@ -364,29 +376,8 @@ class CodexAgent : Agent
 					tsp.developerInstructions = devInstructions;
 				tsp.config = JSONFragment(configOverride);
 
-				server.sendRequest("thread/start",
-					toJson(tsp)
-				).then((JsonRpcResponse resp) {
-					try
-					{
-						auto result = resp.getResult!ThreadStartResult();
-						enforce(result.thread.id.length > 0,
-							"thread/start returned an empty thread id");
-						if (result.thread.path.length > 0)
-							registerLiveSessionPath(session, launch.nativeHistoryProfile,
-								result.thread.id, result.thread.path);
-						session.onThreadStarted(result, null, model, workDir,
-							resp.result.toJson());
-					}
-					catch (Exception e)
-					{
-						warningf("thread/start error: %s", e.msg);
-						session.onThreadStartFailed(e);
-						return;
-					}
-				}, (Exception e) {
-					session.onThreadStartFailed(e);
-				});
+				session.startThread("thread/start", toJson(tsp), null,
+					&registerPath, model, workDir);
 			}
 
 			if (resumeSessionId.length > 0)
@@ -405,35 +396,93 @@ class CodexAgent : Agent
 				// is silently ignored — the thread keeps its original effort.
 				trp.config = JSONFragment(configOverride);
 
-				server.sendRequest("thread/resume",
-					toJson(trp)
-				).then((JsonRpcResponse resp) {
-					try
-					{
-						auto result = resp.getResult!ThreadStartResult();
-						enforce(result.thread.id.length > 0,
-							"thread/resume returned an empty thread id");
-						enforce(result.thread.id == resumeSessionId,
-							"thread/resume returned a different thread id");
-						if (result.thread.path.length > 0)
-							registerLiveSessionPath(session, launch.nativeHistoryProfile,
-								result.thread.id, result.thread.path);
-						session.onThreadStarted(result, resumeSessionId, model, workDir,
-							resp.result.toJson());
-					}
-					catch (Exception e)
-					{
-						warningf("thread/resume error: %s", e.msg);
-						session.onThreadStartFailed(e);
-						return;
-					}
-				}, (Exception e) {
-					session.onThreadStartFailed(e);
-				});
+				session.startThread("thread/resume", toJson(trp), resumeSessionId,
+					&registerPath, model, workDir);
 			}
 			else
 				startFreshThread();
+		}, &session.onThreadStartFailed);
+	}
+
+	/// Read a thread's history on the app-server of its live session, or on
+	/// the task's own pooled app-server, which a reservation keeps running
+	/// for as long as the read takes.
+	Promise!DriverHistory loadHistory(string sessionId,
+		const ref NativeHistoryProfile profile, AgentSession delegate() currentOwner,
+		DriverHistoryLaunch delegate() obtainLaunch)
+	{
+		CodexSession liveOwner()
+		{
+			auto owner = currentOwner();
+			auto codexOwner = cast(CodexSession) owner;
+			enforce(owner is null || codexOwner !is null,
+				"A Codex history belongs to a Codex session");
+			return codexOwner;
+		}
+
+		AppServerProcess server;
+		try
+		{
+			if (auto owner = liveOwner())
+				server = owner.server;
+			else
+			{
+				auto launch = obtainLaunch();
+				enforce(launch.processLaunch.nativeHistoryProfile == profile,
+					"Codex history launch must use the profile the history belongs to");
+				auto workspace = launch.sessionConfig.workspace.length > 0
+					? launch.sessionConfig.workspace : "default";
+				server = getOrCreateServer(serverPoolKey(workspace, launch.processLaunch),
+					launch.processLaunch);
+			}
+		}
+		catch (Exception e)
+		{
+			// A process that cannot be launched is a history that cannot be read.
+			auto unavailable = new Promise!DriverHistory;
+			unavailable.reject(e);
+			return unavailable;
+		}
+		return readHistoryOn(server, sessionId, () {
+			auto owner = liveOwner();
+			return owner is null ? null : owner.liveTurnIds;
 		});
+	}
+
+	private Promise!DriverHistory readHistoryOn(AppServerProcess server, string threadId,
+		const(bool[string]) delegate() liveTurnIds)
+	{
+		import std.file : readText;
+
+		auto result = new Promise!DriverHistory;
+		bool settled;
+		int reservation;
+		void settle(void delegate() how)
+		{
+			if (settled)
+				return;
+			settled = true;
+			how();
+			server.cancelOperationRouteReservation(reservation);
+		}
+		reservation = server.reserveOperationRouteTid(() {
+			settle(() {
+				result.reject(new Exception("Codex app-server exited while reading history"));
+			});
+		});
+		server.onReady(() {
+			readThreadHistory((string method, string params) => server.sendRequest(method, params),
+				threadId, liveTurnIds, (string path) => readText(path),
+				&createHistoryReplay)
+			.then((DriverHistory history) {
+				settle(() { result.fulfill(history); });
+			}, (Exception e) {
+				settle(() { result.reject(e); });
+			}).ignoreResult();
+		}, (Exception e) {
+			settle(() { result.reject(e); });
+		});
+		return result;
 	}
 
 	Promise!ThreadForkOutcome forkSession(CodexSession forkOwner, int childTid,
@@ -451,6 +500,7 @@ class CodexAgent : Agent
 		ThreadForkParams tfp;
 		tfp.threadId = sourceThreadId;
 		tfp.excludeTurns = true;
+		tfp.config = JSONFragment(buildConfigOverride(childTid, childConfig));
 		if (lastTurnId.length > 0)
 		{
 			tfp.lastTurnId = lastTurnId;
@@ -461,7 +511,6 @@ class CodexAgent : Agent
 			tfp.approvalPolicy = "never";
 			tfp.sandbox = "danger-full-access";
 			tfp.developerInstructions = buildDeveloperInstructions();
-			tfp.config = JSONFragment(buildConfigOverride(childTid, childConfig));
 		}
 
 		server.onReady(() {
@@ -481,27 +530,43 @@ class CodexAgent : Agent
 							"thread/fork returned empty thread id"));
 						return;
 					}
-					if (!forkOwner.alive)
-					{
-						outcome.fulfill(ThreadForkOutcome(false, "", null,
-							resp.result.toJson(), "Codex fork parent exited"));
-						return;
-					}
+					// A fork never takes a route on the source app-server.
+					auto release = server.unsubscribeThread(result.thread.id);
 					CodexForkPathLease lease;
 					try
+					{
+						enforce(forkOwner.alive, "Codex fork parent exited");
 						lease = forkOwner.registerForkPath(childLaunch.nativeHistoryProfile,
 							result.thread.id, result.thread.path);
+					}
 					catch (Exception e)
 					{
+						release.ignoreResult();
 						outcome.fulfill(ThreadForkOutcome(false, "", null,
 							resp.result.toJson(), e.msg));
 						return;
 					}
-					outcome.fulfill(ThreadForkOutcome(true, result.thread.id, lease,
-						resp.result.toJson(), ""));
+					release
+						.then((JsonRpcResponse unsubscribed) {
+							if (unsubscribed.isError)
+							{
+								lease.release();
+								outcome.fulfill(ThreadForkOutcome(false, "", null,
+									resp.result.toJson(), unsubscribed.error.get.message));
+								return;
+							}
+							outcome.fulfill(ThreadForkOutcome(true, result.thread.id, lease,
+								resp.result.toJson(), ""));
+						}, (Exception e) {
+							lease.release();
+							outcome.fulfill(ThreadForkOutcome(false, "", null,
+								resp.result.toJson(), e.msg));
+						}).ignoreResult();
 				}, (Exception e) {
 					outcome.fulfill(ThreadForkOutcome(false, "", null, "", e.msg));
 				}).ignoreResult();
+		}, (Exception e) {
+			outcome.fulfill(ThreadForkOutcome(false, "", null, "", e.msg));
 		});
 
 		return outcome;
@@ -535,11 +600,16 @@ class CodexAgent : Agent
 		serverPool[poolKey] = server;
 		AppServerStartupRequest startupRequest;
 		server.onShutdown_ = {
-			serverPool.remove(poolKey);
+			if (auto current = poolKey in serverPool)
+				if (*current is server)
+					serverPool.remove(poolKey);
 			cancelQueuedAppServerStartup(startupRequest);
 		};
 		server.onCancelStartup_ = { cancelQueuedAppServerStartup(startupRequest); };
 		startupRequest = queueAppServerStartup(codexHome, server);
+		// A synchronous failure has already settled and evicted the server.
+		if (auto error = server.startupError)
+			throw error;
 		return server;
 	}
 
@@ -881,24 +951,25 @@ class CodexAgent : Agent
 		if (!exists(sessionsDir))
 			return [];
 
-		enum uuidRx = ctRegex!`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`;
-		bool[string] seen;
-		DiscoveredSession[] result;
+		// rollout-<time>-<thread id>.jsonl; a thread Codex has reverted keeps
+		// its superseded rollouts and names the later ones
+		// rollout-<time>-<thread id>_<rollout id>.jsonl.
+		enum rolloutRx = ctRegex!(`^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-`
+			~ `([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(_.+)?$`);
+		DiscoveredSession[string] newest;
 		foreach (DirEntry entry; dirEntries(sessionsDir, "*.jsonl", SpanMode.depth))
 		{
 			auto base = baseName(entry.name, ".jsonl");
-			auto match = base.matchFirst(uuidRx);
-			auto sessionId = match.empty ? base : match.hit;
-			enforce(sessionId !in seen,
-				"Codex profile contains duplicate rollout histories for session " ~ sessionId);
-			seen[sessionId] = true;
+			auto match = base.matchFirst(rolloutRx);
 			DiscoveredSession session;
-			session.sessionId = sessionId;
+			session.sessionId = match.empty ? base : match[1];
 			session.mtime = entry.timeLastModified.stdTime;
 			session.exactHistoryPath = entry.name;
-			result ~= session;
+			auto known = session.sessionId in newest;
+			if (known is null || known.mtime < session.mtime)
+				newest[session.sessionId] = session;
 		}
-		return result;
+		return newest.values;
 	}
 
 	private static TranslatedEvent[] translateHistoryLine(string line, int lineNum, ref bool seenTaskStarted)
@@ -1579,6 +1650,7 @@ unittest
 unittest
 {
 	import std.json : parseJSON;
+	import std.conv : to;
 	import ae.net.asockets : socketManager;
 	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
 
@@ -1605,6 +1677,17 @@ unittest
 		return response;
 	}
 
+	auto comparableConfig(JsonRpcRequest request, int tid)
+	{
+		auto config = parseJSON(toJson(request.params))["config"];
+		auto env = config["mcp_servers.cydo"]["env"].object;
+		assert(env["CYDO_TID"].str == to!string(tid));
+		env.remove("CYDO_TID");
+		assert(config["thread_unload_delay_secs"].integer == 0);
+		assert(config["model_reasoning_effort"].str == "high");
+		return config;
+	}
+
 	auto connection = new TestCodexConnection;
 	auto server = makeTestAppServerProcess(connection);
 	auto agent = new CodexAgent;
@@ -1616,6 +1699,8 @@ unittest
 	SessionConfig sourceConfig;
 	sourceConfig.workspace = "operation-owner";
 	sourceConfig.model = "test-model";
+	sourceConfig.effort = "high";
+	sourceConfig.mcpSocketPath = "/test/cydo.sock";
 	agent.serverPool[agent.serverPoolKey(sourceConfig.workspace, sourceLaunch)] = server;
 
 	auto operation = agent.openForkSourceOwner(71, "source-thread", sourceLaunch,
@@ -1630,6 +1715,7 @@ unittest
 	}).ignoreResult();
 
 	auto resumeRequest = connection.takeRequest("thread/resume");
+	auto expectedConfig = comparableConfig(resumeRequest, 71);
 	auto resumeParams = parseJSON(toJson(resumeRequest.params));
 	assert(resumeParams["threadId"].str == "source-thread"
 		&& resumeParams["excludeTurns"].boolean
@@ -1644,12 +1730,22 @@ unittest
 	childLaunch.workDir = "/test/child-workdir";
 	childLaunch.nativeHistoryProfile = NativeHistoryProfile(AgentDriver.codex,
 		"/test/child-profile");
-	SessionConfig childConfig;
-	childConfig.workspace = sourceConfig.workspace;
-	childConfig.model = "test-model";
+	auto fresh = agent.createSession(74, null, sourceLaunch, sourceConfig);
+	auto freshRequest = connection.takeRequest("thread/start");
+	assert(comparableConfig(freshRequest, 74) == expectedConfig);
+	connection.respond(freshRequest, threadResponse("fresh-thread",
+		"/test/source-profile/sessions/2026/08/fresh-thread.jsonl"));
+	drainNextTicks();
+	fresh.closeStdin();
+	JsonRpcResponse unsubscribed;
+	unsubscribed.result = SO.from(["status": "unsubscribed"]);
+	connection.respond(connection.takeRequest("thread/unsubscribe"), unsubscribed);
+	drainNextTicks();
+	auto childConfig = sourceConfig;
 	auto fork = agent.forkSession(owner, 72, "source-thread",
 		"source-turn", childLaunch, childConfig);
 	auto forkRequest = connection.takeRequest("thread/fork");
+	assert(comparableConfig(forkRequest, 72) == expectedConfig);
 	auto forkParams = parseJSON(toJson(forkRequest.params));
 	assert(forkParams["threadId"].str == "source-thread"
 		&& forkParams["lastTurnId"].str == "source-turn"
@@ -1667,14 +1763,63 @@ unittest
 	connection.respond(forkRequest, threadResponse("child-thread",
 		"/test/child-profile/sessions/2026/08/child-thread.jsonl"));
 	drainNextTicks();
+	// The fork is not this app-server's to keep loaded.
+	assert(!forkSettled);
+	auto unsubscribe = connection.takeRequest("thread/unsubscribe");
+	assert(parseJSON(toJson(unsubscribe.params))["threadId"].str == "child-thread");
+	connection.respond(unsubscribe, unsubscribed);
+	drainNextTicks();
 	assert(forkSettled && outcome.ok && outcome.threadId == "child-thread"
 		&& outcome.historyLease.path
 			== "/test/child-profile/sessions/2026/08/child-thread.jsonl");
 	outcome.historyLease.release();
 
+	agent.forkSession(owner, 73, "source-thread", null, childLaunch, childConfig)
+		.then((ThreadForkOutcome backupOutcome) {
+			assert(backupOutcome.ok, backupOutcome.error);
+			backupOutcome.historyLease.release();
+		}, (Exception e) { assert(false, e.msg); }).ignoreResult();
+	auto backupRequest = connection.takeRequest("thread/fork");
+	auto backup = parseJSON(toJson(backupRequest.params));
+	assert(backup["threadId"].str == "source-thread" && backup["excludeTurns"].boolean);
+	assert("lastTurnId" !in backup.object && "path" !in backup.object);
+	assert(comparableConfig(backupRequest, 73) == expectedConfig);
+	connection.respond(backupRequest, threadResponse("backup-thread",
+		"/test/child-profile/sessions/2026/08/backup-thread.jsonl"));
+	drainNextTicks();
+	connection.respond(connection.takeRequest("thread/unsubscribe"), unsubscribed);
+	drainNextTicks();
+
+	// Keep the app-server available after explicitly closing the fork owner.
+	auto reservation = server.reserveOperationRouteTid();
+	scope (exit) server.cancelOperationRouteReservation(reservation);
+	auto lateFork = agent.forkSession(owner, 74, "source-thread", "source-turn",
+		childLaunch, childConfig);
+	lateFork.then((ThreadForkOutcome lateOutcome) {
+		if (lateOutcome.historyLease !is null)
+			lateOutcome.historyLease.release();
+	}, (Exception e) { assert(false, e.msg); }).ignoreResult();
+	auto lateForkRequest = connection.takeRequest("thread/fork");
+
 	operation.closeStdin();
-	assert(!owner.alive);
+	assert(!owner.alive && !server.dead);
 	assert(!server.hasThreadRouteForTest("source-thread"));
+	auto sourceUnsubscribe = connection.takeRequest("thread/unsubscribe");
+	assert(parseJSON(toJson(sourceUnsubscribe.params))["threadId"].str == "source-thread");
+	connection.respond(sourceUnsubscribe, unsubscribed);
+
+	connection.respond(lateForkRequest, threadResponse("late-child-thread",
+		"/test/child-profile/sessions/2026/08/late-child-thread.jsonl"));
+	drainNextTicks();
+	assert(!server.hasThreadRouteForTest("late-child-thread"),
+		"A fork reply after parent close must not install a child route");
+	assert(connection.sentMessages.length > 0,
+		"A fork reply after parent close must unsubscribe the child thread");
+	auto lateUnsubscribe = connection.takeRequest("thread/unsubscribe");
+	assert(parseJSON(toJson(lateUnsubscribe.params))["threadId"].str == "late-child-thread");
+	connection.respond(lateUnsubscribe, unsubscribed);
+	drainNextTicks();
+	assert(!server.hasThreadRouteForTest("late-child-thread"));
 }
 
 unittest
@@ -2197,7 +2342,7 @@ unittest
 	inFlightSteer.threadId = "prepare-thread";
 	inFlightSteer.retainRolloutPath(rolloutPath);
 	inFlightSteer.inFlightMessages_ ~= new CodexSession.PendingMessage([ContentBlock("text", "steering")], "steering", "steering-uuid", false);
-	assert(!inFlightSteer.canRollbackThread);
+	assert(!inFlightSteer.canRevertThread);
 	expectPreparationRefusal(inFlightSteer, NativeUndoPreparationRefusalCategory.inFlightSubmission, 0);
 
 	auto unavailable = new RecordingPreparationSession;
@@ -2839,7 +2984,7 @@ unittest
 }
 
 
-class CodexSession : AgentSession
+class CodexSession : AgentSession, AbortedToolCallCorrection
 {
 	private AppServerProcess server;
 	private void delegate(CodexSession owner) releaseLivePaths_;
@@ -2851,6 +2996,19 @@ class CodexSession : AgentSession
 	private void delegate() routeReadyHandler_;
 	private CodexForkPathLease[CodexHistoryKey] forkPaths_;
 	private string activeTurnId_;
+	/// The turns this session started. Their events reach the task's history
+	/// live, so a read of the thread leaves them out.
+	private bool[string] liveTurnIds_;
+	/// Whether the running turn already has the user message it can be cut before.
+	private bool turnHasUserOpener_;
+	/// The request in flight that needs the thread to itself, if any.
+	private Promise!void threadRequest_;
+	private Exception threadStartError_;
+	private bool startupOutstanding_;
+	private bool closing_;
+	/// A correction accepted before the thread was attached, and its promise.
+	private void delegate() pendingCorrection_;
+	private Promise!void pendingCorrectionPromise_;
 	private string model;
 	private string workDir;
 	private string rolloutPath_;
@@ -3093,6 +3251,50 @@ class CodexSession : AgentSession
 	{
 	}
 
+	package void startThread(string method, string params, string resumeId,
+		void delegate(ThreadStartResult) registerPath, string model, string workDir)
+	{
+		assert(alive_ && !closing_ && !startupOutstanding_ && threadId.length == 0);
+		startupOutstanding_ = true;
+		void failed(Exception e)
+		{
+			startupOutstanding_ = false;
+			if (alive_)
+				warningf("%s error: %s", method, e.msg);
+			onThreadStartFailed(e);
+		}
+
+		Promise!JsonRpcResponse request;
+		try
+			request = sendCodexRequest(method, params);
+		catch (Exception e)
+			return failed(e);
+		request.then((JsonRpcResponse response) {
+			startupOutstanding_ = false;
+			if (!alive_)
+				return;
+			try
+			{
+				auto result = response.getResult!ThreadStartResult();
+				enforce(result.thread.id.length > 0, method ~ " returned an empty thread id");
+				scope (exit)
+					if (threadId.length == 0)
+						server.releaseUnroutedThread(result.thread.id);
+				enforce(resumeId.length == 0 || result.thread.id == resumeId,
+					"thread/resume returned a different thread id");
+				if (!closing_)
+				{
+					registerPath(result);
+					onThreadStarted(result, resumeId, model, workDir, response.result.toJson());
+				}
+			}
+			catch (Exception e)
+				return failed(e);
+			if (closing_)
+				finishClose(0);
+		}, &failed).ignoreResult();
+	}
+
 	/// Called when thread/start or thread/resume response arrives.
 	package void onThreadStarted(ThreadStartResult result, string resumeId,
 		string model, string workDir, string rawResultJson)
@@ -3101,13 +3303,8 @@ class CodexSession : AgentSession
 		this.workDir = workDir;
 		retainRolloutPath(result.thread.path);
 
-		if (result.thread.id.length > 0)
-			threadId = result.thread.id;
-
-		if (threadId.length == 0 && resumeId.length > 0)
-			threadId = resumeId;
-
-		if (threadId.length == 0)
+		auto loadedThreadId = result.thread.id.length > 0 ? result.thread.id : resumeId;
+		if (loadedThreadId.length == 0)
 		{
 			if (outputHandler_)
 			{
@@ -3119,8 +3316,8 @@ class CodexSession : AgentSession
 			return;
 		}
 
-		sessionId = threadId;
-		server.registerSession(threadId, asRouteTarget());
+		server.registerSession(loadedThreadId, asRouteTarget());
+		threadId = sessionId = loadedThreadId;
 		notifyNativeSessionStarted(threadId);
 		notifyRouteReady();
 
@@ -3149,11 +3346,17 @@ class CodexSession : AgentSession
 		}
 
 		// Drain queued messages now that the thread is ready.
+		deliverPendingCorrection();
 		drainPendingMessages();
 	}
 
 	package void onThreadStartFailed(Exception error)
 	{
+		if (!alive_)
+			return;
+		threadStartError_ = error;
+		if (stderrHandler_)
+			stderrHandler_(error.msg);
 		rejectUnsettledMessages(error);
 		closeStdin();
 	}
@@ -3164,7 +3367,8 @@ class CodexSession : AgentSession
 			return;
 		while (pendingMessages_.length > 0)
 		{
-			if (threadId.length == 0 || startInFlight_
+			// A message sent during a revert starts its turn on what remains.
+			if (threadId.length == 0 || startInFlight_ || threadRequest_ !is null
 				|| (turnInProgress && activeTurnId_.length == 0))
 				return;
 			auto submission = pendingMessages_[0];
@@ -3311,6 +3515,127 @@ class CodexSession : AgentSession
 		}
 	}
 
+	private void noteLiveTurn(string turnId)
+	{
+		activeTurnId_ = turnId;
+		liveTurnIds_[turnId] = true;
+	}
+
+	package(cydo) const(bool[string]) liveTurnIds() const
+	{
+		return liveTurnIds_;
+	}
+
+	/// Send a request that needs the thread idle and to itself: submissions
+	/// wait for it. `accept` checks the response and throws to reject.
+	private Promise!void sendThreadRequest(string method, string params,
+		void delegate(JsonRpcResponse) accept)
+	{
+		enforce(canRevertThread, "Codex " ~ method ~ " requires a live, idle session");
+		threadRequest_ = new Promise!void;
+		auto request = threadRequest_;
+		void settle(void delegate() how)
+		{
+			// The session has ended meanwhile, and settled it.
+			if (threadRequest_ !is request)
+				return;
+			threadRequest_ = null;
+			how();
+		}
+		void rejectRequest(Exception error)
+		{
+			rejectUnsettledMessages(error);
+			request.reject(error);
+		}
+		Promise!JsonRpcResponse responsePromise;
+		try
+			responsePromise = sendCodexRequest(method, params);
+		catch (Exception e)
+		{
+			settle(() { rejectRequest(e); });
+			return request;
+		}
+		responsePromise.then((JsonRpcResponse response) {
+			settle(() {
+				try
+				{
+					if (response.isError)
+						throw new Exception(response.error.get.message);
+					accept(response);
+				}
+				catch (Exception e)
+				{
+					rejectRequest(e);
+					return;
+				}
+				request.fulfill();
+				drainPendingMessages();
+			});
+		}, (Exception e) {
+			settle(() { rejectRequest(e); });
+		}).ignoreResult();
+		return request;
+	}
+
+	/// Cut the thread before `beforeTurnId`, the turn and everything after it.
+	/// Codex would interrupt a running turn to do it, so the session must be
+	/// idle. What remains of the thread is then all read from Codex again:
+	/// the caller resets the task's history when this fulfills.
+	Promise!void revertThread(string beforeTurnId)
+	{
+		enforce(beforeTurnId.length > 0, "Codex revert requires a turn");
+		return sendThreadRequest("thread/revert",
+			toJson(ThreadRevertParams(threadId, beforeTurnId)), (JsonRpcResponse response) {
+				enforce(response.getResult!ThreadStartResult().thread.id == threadId,
+					"thread/revert returned a different thread");
+				liveTurnIds_ = null;
+			});
+	}
+
+	/// Codex records a tool call cut short by the session's end as aborted
+	/// and keeps no way to amend the record, so the model is told in a
+	/// developer message appended to the thread.
+	Promise!void correctAbortedToolCall(string correction)
+	{
+		enforce(alive_ && !closing_, "Codex session is no longer alive");
+		enforce(pendingCorrection_ is null, "Codex session already has a correction to deliver");
+		auto delivered = new Promise!void;
+		pendingCorrection_ = () {
+			ThreadInjectItemsParams params;
+			params.threadId = threadId;
+			params.items = [ThreadInjectItemsParams.Message("message", "developer",
+				[ThreadInjectItemsParams.Text("input_text", correction)])];
+			sendThreadRequest("thread/inject_items", toJson(params), (JsonRpcResponse) {})
+				.then(() { delivered.fulfill(); }, (Exception e) { delivered.reject(e); })
+				.ignoreResult();
+		};
+		pendingCorrectionPromise_ = delivered;
+		if (threadId.length > 0)
+			deliverPendingCorrection();
+		return delivered;
+	}
+
+	/// The session ended before its thread was attached.
+	private void abandonPendingCorrection()
+	{
+		auto abandoned = pendingCorrectionPromise_;
+		if (abandoned is null)
+			return;
+		pendingCorrection_ = null;
+		pendingCorrectionPromise_ = null;
+		abandoned.reject(new Exception("Codex session ended before its thread was attached"));
+	}
+
+	private void deliverPendingCorrection()
+	{
+		if (pendingCorrection_ is null)
+			return;
+		auto deliver = pendingCorrection_;
+		pendingCorrection_ = null;
+		pendingCorrectionPromise_ = null;
+		deliver();
+	}
+
 	private void submitStart(PendingMessage submission)
 	{
 		submission.operation = SubmissionOperation.starting;
@@ -3340,7 +3665,7 @@ class CodexSession : AgentSession
 						auto result = response.getResult!TurnStartResult();
 						if (result.turn.id.length == 0)
 							throw new Exception("turn/start returned an empty turn id");
-						activeTurnId_ = result.turn.id;
+						noteLiveTurn(result.turn.id);
 						startInFlight_ = false;
 						fulfillSubmission(submission);
 						drainPendingMessages();
@@ -3392,15 +3717,26 @@ class CodexSession : AgentSession
 	{
 		if (turn.id.length == 0)
 			return;
-		activeTurnId_ = turn.id;
+		noteLiveTurn(turn.id);
 		if (!startInFlight_)
 			drainPendingMessages();
+	}
+
+	private void closeThreadWork(string reason)
+	{
+		rejectUnsettledMessages(new Exception(reason ~ " before accepting message submission"));
+		if (auto request = threadRequest_)
+		{
+			threadRequest_ = null;
+			request.reject(new Exception(reason ~ " during a thread request"));
+		}
 	}
 
 	/// Called when the app-server process dies.
 	package void onServerExit(int status)
 	{
-		rejectUnsettledMessages(new Exception("Codex app-server exited before accepting message submission"));
+		closeThreadWork("Codex app-server exited");
+		abandonPendingCorrection();
 		releaseNativeHistoryPaths();
 		if (!alive_)
 			return; // Already stopped; avoid double-invocation of exitHandler_.
@@ -3427,14 +3763,14 @@ class CodexSession : AgentSession
 
 		auto submission = new PendingMessage(content, text, correlationId,
 			isContextBootstrap);
-		if (!alive_)
+		if (!alive_ || closing_)
 		{
 			submission.promise.reject(new Exception(
 				"Codex session is no longer alive"));
 			return submission.promise;
 		}
 
-		if (threadId.length == 0 || startInFlight_
+		if (threadId.length == 0 || startInFlight_ || threadRequest_ !is null
 			|| (turnInProgress && activeTurnId_.length == 0))
 			pendingMessages_ ~= submission;
 		else
@@ -3450,14 +3786,14 @@ class CodexSession : AgentSession
 
 	@property bool supportsImages() const { return false; }
 
-	@property bool canRollbackThread() const
+	@property bool canRevertThread() const
 	{
 		// startInFlight_ needs no separate check: its own start submission sits in
 		// inFlightMessages_ for exactly as long as startInFlight_ is set, so the
 		// check below already covers it. turnInProgress does not — handleTurnCompleted
 		// clears it without consulting either.
 		return alive_ && threadId.length > 0 && !turnInProgress
-			&& inFlightMessages_.length == 0;
+			&& inFlightMessages_.length == 0 && threadRequest_ is null;
 	}
 
 	/// Read the exact current rollout path and one fresh native ledger, then
@@ -3799,23 +4135,33 @@ class CodexSession : AgentSession
 
 	void closeStdin()
 	{
-		rejectUnsettledMessages(new Exception(
-			"Codex session closed before accepting message submission"));
-		releaseNativeHistoryPaths();
+		closeThreadWork("Codex session closed");
+		abandonPendingCorrection();
 		if (!alive_)
 			return;
+		if (startupOutstanding_)
+		{
+			closing_ = true;
+			return;
+		}
+		finishClose(threadStartError_ is null ? 0 : 1);
+	}
+
+	private void finishClose(int status)
+	{
 		if (threadId.length > 0)
-			server.unregisterSession(threadId);
-		server.unregisterSessionByTid(tid);
+			server.unregisterSession(threadId, &onServerExit);
+		releaseNativeHistoryPaths();
+		server.unregisterSessionByTid(tid, &onServerExit);
 		activeTurnId_ = null;
 		alive_ = false;
 		auto cb = exitHandler_;
 		exitHandler_ = null;
 		if (cb)
-			cb(0); // zero = clean close
+			cb(status);
 	}
 
-	void killAfterTimeout(Duration timeout) {} // no-op: closeStdin fires exit immediately
+	void killAfterTimeout(Duration timeout) {} // app-server lifetime is shared
 
 	@property bool canStopAfterCloseStdin() const
 	{
@@ -3851,7 +4197,7 @@ class CodexSession : AgentSession
 	package void handleItemStarted(ItemStartedParams params, string rawNotification)
 	{
 		if (params.turnId.length > 0)
-			activeTurnId_ = params.turnId;
+			noteLiveTurn(params.turnId);
 
 		auto item = params.item;
 
@@ -3870,6 +4216,10 @@ class CodexSession : AgentSession
 			assert(userMessageText(item) == submission.text,
 				"Codex native user echo text does not match expected submission");
 			ev.correlation_id = submission.correlationId;
+			// The context bootstrap occupies the opener position too.
+			assert(activeTurnId_.length > 0, "Codex user message belongs to no turn");
+			attachUserBoundary(ev, activeTurnId_, submission.isContextBootstrap
+				|| isCodexContextOnlyUserText(submission.text), turnHasUserOpener_);
 			auto translated = TranslatedEvent(toJson(ev), rawNotification,
 				AbsTime.init, 0, submission.isContextBootstrap);
 			if (submission.accepted)
@@ -3987,6 +4337,7 @@ class CodexSession : AgentSession
 	{
 		turnInProgress = false;
 		activeTurnId_ = null;
+		turnHasUserOpener_ = false;
 
 		// Do NOT clear activeItemId_ or activeItemTypes_ here — background items
 		// may still complete after the turn ends.
@@ -4004,8 +4355,13 @@ class CodexSession : AgentSession
 
 		// 2. turn/result — always emitted
 		if (outputHandler_)
-			outputHandler_(TranslatedEvent(
-				toJson(turnResultEvent(params.turn, lastResultText_)), rawNotification));
+		{
+			auto result = TranslatedEvent(
+				toJson(turnResultEvent(params.turn, lastResultText_)), rawNotification);
+			result.turnBoundary = HistoryBoundary("through:" ~ params.turn.id,
+				HistoryBoundaryKind.agent_turn);
+			outputHandler_(result);
+		}
 		lastResultText_ = null;
 		drainPendingMessages();
 	}
@@ -4031,6 +4387,17 @@ class CodexSession : AgentSession
 			outputHandler_(TranslatedEvent(toJson(tsev), rawNotification));
 		}
 	}
+}
+
+version (unittest) package(cydo) CodexSession makeUnattachedCodexSessionForTest(
+	int tid, SessionConfig config)
+{
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+
+	auto server = makeTestAppServerProcess(new TestCodexConnection);
+	auto session = new CodexSession(server, tid, config);
+	server.registerSessionByTid(tid, session.asRouteTarget());
+	return session;
 }
 
 version (unittest) private final class TestCodexConnection : IConnection
@@ -4141,6 +4508,12 @@ string buildConfigOverride(int tid, SessionConfig config)
 	// Turning the feature off removes both the collaboration tools and the injected
 	// "team of agents" framing in one shot.
 	overrides["features.multi_agent"] = JSONFragment("false");
+
+	// A loaded thread holds its writer lock, across processes, until Codex
+	// unloads it: by default a minute after its last subscriber left. CyDo
+	// unsubscribes when a thread's session ends, and the thread must then be
+	// free for whichever app-server resumes it next.
+	overrides["thread_unload_delay_secs"] = JSONFragment("0");
 
 	// Force CyDo's MCP tools to be exposed as top-level DIRECT model tools rather
 	// than nested inside Codex's code-mode `exec` sandbox. In code mode the exec
@@ -4431,18 +4804,52 @@ unittest
 	session.expectedEchoMessages_ ~= bootstrapSubmission;
 	session.expectedEchoMessages_ ~= ordinarySubmission;
 	auto bootstrap = jsonParse!StartedNotification(
-		`{"params":{"item":{"id":"bootstrap","type":"userMessage","content":[{"type":"text","text":"ignored"}]}}}`);
+		`{"params":{"turnId":"turn-1","item":{"id":"bootstrap","type":"userMessage","content":[{"type":"text","text":"ignored"}]}}}`);
 	session.handleItemStarted(bootstrap.params, "bootstrap");
 	drainPromiseNextTicks();
 	assert(emitted.length == 1 && emitted[0].isContextBootstrap);
 	auto ordinary = jsonParse!StartedNotification(
-		`{"params":{"item":{"id":"ordinary","type":"userMessage","content":[{"type":"text","text":"ordinary"}]}}}`);
+		`{"params":{"turnId":"turn-1","item":{"id":"ordinary","type":"userMessage","content":[{"type":"text","text":"ordinary"}]}}}`);
 	session.handleItemStarted(ordinary.params, "ordinary");
 	drainPromiseNextTicks();
 	auto ordinaryEvent = jsonParse!ItemStartedEvent(emitted[1].translated);
 	assert(emitted.length == 2 && !emitted[1].isContextBootstrap
 		&& ordinaryEvent.correlation_id == "ordinary-nonce"
 		&& session.expectedEchoMessages_.length == 0);
+
+	// Neither the context opener nor a message steered into its turn anchors undo.
+	assert(jsonParse!ItemStartedEvent(emitted[0].translated).history_boundary
+		== HistoryBoundary.init);
+	assert(ordinaryEvent.history_boundary == HistoryBoundary.init);
+	void echo(string turnId, string text)
+	{
+		auto submission = new CodexSession.PendingMessage(
+			[ContentBlock("text", text)], text, text ~ "-nonce", false);
+		submission.accepted = true;
+		submission.settled = true;
+		session.expectedEchoMessages_ ~= submission;
+		session.handleItemStarted(jsonParse!StartedNotification(`{"params":{"turnId":"`
+			~ turnId ~ `","item":{"id":"` ~ text ~ `","type":"userMessage","content":`
+			~ `[{"type":"text","text":"` ~ text ~ `"}]}}}`).params, text);
+		drainPromiseNextTicks();
+	}
+	echo("turn-1", "steer");
+	assert(jsonParse!ItemStartedEvent(emitted[2].translated).history_boundary
+		== HistoryBoundary.init);
+
+	// The end of the turn is reported with its result, for the pipeline to
+	// place on the turn's last turn/stop.
+	@JSONPartial struct CompletedNotification { TurnCompletedParams params; }
+	session.handleTurnCompleted(jsonParse!CompletedNotification(
+		`{"params":{"threadId":"thread","turn":{"id":"turn-1","status":"completed"}}}`).params,
+		"completed");
+	assert(emitted[$ - 1].turnBoundary
+		== HistoryBoundary("through:turn-1", HistoryBoundaryKind.agent_turn));
+	echo("turn-2", "next");
+	assert(jsonParse!ItemStartedEvent(emitted[$ - 1].translated).history_boundary
+		== HistoryBoundary("before:turn-2", HistoryBoundaryKind.user));
+	assert(session.liveTurnIds.length == 2 && "turn-1" in session.liveTurnIds
+		&& "turn-2" in session.liveTurnIds);
 }
 
 unittest
@@ -4469,7 +4876,7 @@ unittest
 		second.accepted = true;
 		session.expectedEchoMessages_ = [first, second];
 		auto outOfOrder = jsonParse!StartedNotification(
-			`{"params":{"item":{"id":"native-second","type":"userMessage","content":[{"type":"text","text":"second"}]}}}`);
+			`{"params":{"turnId":"turn-1","item":{"id":"native-second","type":"userMessage","content":[{"type":"text","text":"second"}]}}}`);
 		assertThrown!AssertError(session.handleItemStarted(outOfOrder.params,
 			"out-of-order"));
 		assert(session.expectedEchoMessages_ == [first, second]);
@@ -4485,7 +4892,7 @@ unittest
 			[ContentBlock("text", "once")], "once", "once-nonce", false);
 		session.expectedEchoMessages_ = [submission];
 		auto echo = jsonParse!StartedNotification(
-			`{"params":{"item":{"id":"native-once","type":"userMessage","content":[{"type":"text","text":"once"}]}}}`);
+			`{"params":{"turnId":"turn-1","item":{"id":"native-once","type":"userMessage","content":[{"type":"text","text":"once"}]}}}`);
 		session.handleItemStarted(echo.params, "first-echo");
 		assert(submission.hasGatedUserEcho);
 		assertThrown!AssertError(session.handleItemStarted(echo.params,
@@ -4499,7 +4906,7 @@ unittest
 			SessionConfig.init);
 		session.onOutput(&ignoreOutput);
 		auto unexpected = jsonParse!StartedNotification(
-			`{"params":{"item":{"id":"native-unexpected","type":"userMessage","content":[{"type":"text","text":"unexpected"}]}}}`);
+			`{"params":{"turnId":"turn-1","item":{"id":"native-unexpected","type":"userMessage","content":[{"type":"text","text":"unexpected"}]}}}`);
 		assertThrown!AssertError(session.handleItemStarted(unexpected.params,
 			"no-expected-echo"));
 	}
@@ -5369,7 +5776,10 @@ unittest
 		assertRejectedOnce(queued);
 		assert(session.activeTurnId_.length == 0);
 		assert(session.expectedEchoMessages_.length == 0);
-		assert(connection.sentMessages.length == 0);
+		// Nothing is sent for the lost submissions; a session that closed
+		// only let go of its thread.
+		foreach (message; connection.sentMessages)
+			assert(jsonParse!JsonRpcRequest(message).method == "thread/unsubscribe");
 	}
 
 	exerciseLifecycleLoss("thread-setup-owner",
@@ -5577,8 +5987,9 @@ unittest
 	//   grows by deltas, a history item is complete. Each item is given the
 	//   text it ends up with (see `finalItemTexts`);
 	// - every turn/stop but a turn's last: a session stops after each model
-	//   response, which the history does not record. Token usage likewise;
-	// - history boundaries: sessions do not yet emit the turn-id anchors.
+	//   response, which the history does not record. Token usage likewise.
+	// A session reports the end of a turn with its turn/result, and the
+	// pipeline puts that boundary on the turn's last turn/stop; so is it here.
 	JSONValue[] comparable(TranslatedEvent[] events)
 	{
 		auto texts = finalItemTexts(events);
@@ -5592,11 +6003,13 @@ unittest
 				continue;
 			if (type == "item/started" && json["item_type"].str != "user_message")
 				json["text"] = texts[json["item_id"].str];
+			// Replay carries bootstrap metadata in JSON, live in the event envelope.
+			if (event.isContextBootstrap)
+				json["is_meta"] = true;
 			if (type == "item/completed")
 				json.object.remove("text");
 			if (type == "turn/stop")
 				json.object.remove("usage");
-			json.object.remove("history_boundary");
 			if (type == "turn/result")
 			{
 				// Keep the turn's last turn/stop only.
@@ -5605,6 +6018,9 @@ unittest
 				foreach (i, ref turnEvent; result[turnStart .. $])
 					if (turnEvent["type"].str == "turn/stop")
 						lastStop = i;
+				if (lastStop >= 0 && event.turnBoundary.anchor.length > 0)
+					result[turnStart + lastStop]["history_boundary"] =
+						parseJSON(toJson(event.turnBoundary));
 				foreach (i, ref turnEvent; result[turnStart .. $])
 					if (turnEvent["type"].str != "turn/stop" || i == lastStop)
 						turn ~= turnEvent;
@@ -5623,6 +6039,14 @@ unittest
 	session.model = thread.model;
 	TranslatedEvent[] live;
 	session.onOutput((TranslatedEvent event) { live ~= event; });
+	auto turns = ascendingTurns(nineTurnTurnsPage);
+	auto items = pageItems(nineTurnItemsPage);
+	assert(items[0].turnId == turns[0].id && items[0].item.type == "userMessage");
+	auto bootstrap = items[0];
+	bootstrap.item.id = "bootstrap";
+	enum bootstrapText = "[SYSTEM: Session start: test]";
+	bootstrap.item.content = jsonParse!SO(
+		`[{"type":"text","text":"[SYSTEM: Session start: test]","text_elements":[]}]`);
 	foreach (line; nineTurnLiveNotifications.lineSplitter)
 	{
 		auto notification = jsonParse!Notification(line);
@@ -5639,6 +6063,19 @@ unittest
 				if (started.item.type == "userMessage")
 				{
 					// The submission this message echoes, already accepted.
+					if (started.item.id == items[0].item.id)
+					{
+						// The first captured prompt is now a steer into this bootstrap turn.
+						auto bootstrapStarted = started;
+						bootstrapStarted.item = bootstrap.item;
+						auto context = new CodexSession.PendingMessage(
+							[ContentBlock("text", bootstrapText)], bootstrapText, null, true);
+						context.accepted = true;
+						context.settled = true;
+						session.expectedEchoMessages_ ~= context;
+						session.handleItemStarted(bootstrapStarted, toJson(bootstrapStarted));
+						drainPromiseNextTicks();
+					}
 					auto text = userMessageText(started.item);
 					auto submission = new CodexSession.PendingMessage(
 						[ContentBlock("text", text)], text, null, false);
@@ -5666,18 +6103,591 @@ unittest
 		}
 	}
 
-	auto replay = translateThreadHistory(thread, ascendingTurns(nineTurnTurnsPage),
-		pageItems(nineTurnItemsPage));
+	auto replay = translateThreadHistory(thread, turns, [bootstrap] ~ items);
 
 	auto liveEvents = comparable(live);
 	auto replayEvents = comparable(replay);
-	// 22 items in 9 turns: 9 user messages, a compaction and 12 content
-	// items, 5 of them tools with a result; 6 turns stop.
-	assert(replayEvents.length == 9 + 1 + 12 * 2 + 5 + 6 + 9);
+	// Ten user messages, a compaction, twelve content items (five with
+	// tool results), six turn stops, and nine turn results.
+	assert(replayEvents.length == 10 + 1 + 12 * 2 + 5 + 6 + 9);
 	foreach (i; 0 .. replayEvents.length)
 		assert(i < liveEvents.length && liveEvents[i] == replayEvents[i],
 			"event " ~ to!string(i) ~ ":\nlive   "
 			~ (i < liveEvents.length ? liveEvents[i].toString() : "(none)")
 			~ "\nreplay " ~ replayEvents[i].toString());
 	assert(liveEvents.length == replayEvents.length);
+}
+
+// Requests that need the thread to itself: thread/inject_items and
+// thread/revert. Messages wait for them.
+unittest
+{
+	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicks;
+
+	CodexSession attached(TestCodexConnection connection)
+	{
+		auto session = new CodexSession(makeTestAppServerProcess(connection), 1,
+			SessionConfig.init);
+		session.onOutput = (TranslatedEvent event) {};
+		ThreadStartResult started;
+		started.thread.id = "thread";
+		session.onThreadStarted(started, "thread", "model", "/work",
+			`{"thread":{"id":"thread"}}`);
+		return session;
+	}
+	JsonRpcResponse result(string json)
+	{
+		JsonRpcResponse response;
+		response.result = jsonParse!SO(json);
+		return response;
+	}
+	string[] outcomes;
+	void observe(Promise!void promise)
+	{
+		promise.then(() { outcomes ~= "done"; }, (Exception e) { outcomes ~= e.msg; })
+			.ignoreResult();
+	}
+
+	// A correction accepted before the thread is attached is the first thing
+	// the thread is sent, and the continuation's message follows it.
+	auto connection = new TestCodexConnection;
+	auto session = new CodexSession(makeTestAppServerProcess(connection), 1,
+		SessionConfig.init);
+	session.onOutput = (TranslatedEvent event) {};
+	observe(session.correctAbortedToolCall("the call was accepted"));
+	session.sendMessage([ContentBlock("text", "continue")], "nonce").ignoreResult();
+	assert(connection.sentMessages.length == 0);
+	ThreadStartResult started;
+	started.thread.id = "thread";
+	session.onThreadStarted(started, "thread", "model", "/work", `{"thread":{"id":"thread"}}`);
+	auto inject = connection.takeRequest("thread/inject_items");
+	auto injected = jsonParse!ThreadInjectItemsParams(toJson(inject.params));
+	assert(injected.threadId == "thread" && injected.items.length == 1
+		&& injected.items[0].type == "message" && injected.items[0].role == "developer"
+		&& injected.items[0].content == [ThreadInjectItemsParams.Text("input_text",
+			"the call was accepted")]);
+	assert(connection.sentMessages.length == 0, "the message waits for the correction");
+	connection.respond(inject, result(`{}`));
+	drainNextTicks();
+	assert(outcomes == ["done"]);
+	connection.takeRequest!TurnStartParams("turn/start", "continue");
+
+	// A rejected correction fails; nothing is retried.
+	outcomes = null;
+	connection = new TestCodexConnection;
+	session = attached(connection);
+	observe(session.correctAbortedToolCall("the call was accepted"));
+	inject = connection.takeRequest("thread/inject_items");
+	JsonRpcResponse refused;
+	refused.error = JsonRpcError.fromCode(JsonRpcErrorCode.invalidRequest, "thread not found");
+	connection.respond(inject, refused);
+	drainNextTicks();
+	assert(outcomes == ["thread not found"] && connection.sentMessages.length == 0);
+
+	// thread/revert names the thread and the turn to cut before. What the
+	// session ran itself is then Codex's to tell again.
+	outcomes = null;
+	connection = new TestCodexConnection;
+	session = attached(connection);
+	session.noteLiveTurn("turn-1");
+	observe(session.revertThread("turn-2"));
+	assert(!session.canRevertThread, "one thread request at a time");
+	auto revert = connection.takeRequest("thread/revert");
+	assert(jsonParse!ThreadRevertParams(toJson(revert.params))
+		== ThreadRevertParams("thread", "turn-2"));
+	session.sendMessage([ContentBlock("text", "next")], "nonce").ignoreResult();
+	assert(connection.sentMessages.length == 0, "the message waits for the revert");
+	connection.respond(revert, result(
+		`{"thread":{"id":"thread","path":"/profile/sessions/new.jsonl"},"turns":[]}`));
+	drainNextTicks();
+	assert(outcomes == ["done"] && session.liveTurnIds.length == 0);
+	connection.takeRequest!TurnStartParams("turn/start", "next");
+
+	// A response that names another thread is a failure, and so is Codex's.
+	outcomes = null;
+	connection = new TestCodexConnection;
+	session = attached(connection);
+	session.noteLiveTurn("turn-1");
+	observe(session.revertThread("turn-2"));
+	connection.respond(connection.takeRequest("thread/revert"),
+		result(`{"thread":{"id":"other"},"turns":[]}`));
+	drainNextTicks();
+	assert(outcomes == ["thread/revert returned a different thread"]);
+	assert(session.liveTurnIds.length == 1 && session.canRevertThread);
+	observe(session.revertThread("turn-9"));
+	auto rejectedRevert = connection.takeRequest("thread/revert");
+	string submissionFailure;
+	session.sendMessage([ContentBlock("text", "queued behind revert")], "queued")
+		.then((AgentSubmissionReceipt) { assert(false, "queued submission was accepted"); },
+			(Exception e) { submissionFailure = e.msg; }).ignoreResult();
+	refused.error = JsonRpcError.fromCode(JsonRpcErrorCode.invalidRequest, "turn not found");
+	connection.respond(rejectedRevert, refused);
+	drainNextTicks();
+	assert(outcomes[1] == "turn not found");
+	assert(submissionFailure == "turn not found", "queued submission must be rejected");
+	assert(connection.sentMessages.length == 0);
+
+	// The app-server ending mid-request settles it.
+	observe(session.revertThread("turn-2"));
+	session.onServerExit(1);
+	drainNextTicks();
+	assert(outcomes[2] == "Codex app-server exited during a thread request");
+
+	// Closing the last route must settle the revert even without a server exit.
+	outcomes = null;
+	connection = new TestCodexConnection;
+	session = attached(connection);
+	observe(session.revertThread("turn-2"));
+	auto closedRevert = connection.takeRequest("thread/revert");
+	auto queued = new TestSubmissionOutcome(session.sendMessage(
+		[ContentBlock("text", "queued during close")], "close-queued"));
+	session.closeStdin();
+	drainNextTicks();
+	assert(outcomes == ["Codex session closed during a thread request"],
+		"explicit close left a dispatched revert unsettled");
+	assert(queued.rejectedCount == 1 && queued.acceptedCount == 0);
+	assert(session.pendingMessages_.length == 0 && session.threadRequest_ is null);
+	connection.respond(closedRevert, result(`{"thread":{"id":"thread"}}`));
+	drainNextTicks();
+	assert(outcomes.length == 1 && queued.rejectedCount == 1);
+
+	// Codex would interrupt a running turn to revert: only an idle session may.
+	connection = new TestCodexConnection;
+	session = attached(connection);
+	session.turnInProgress = true;
+	import std.exception : assertThrown;
+	assertThrown!Exception(session.revertThread("turn-1"));
+	assert(connection.sentMessages.length == 0);
+}
+
+// A history is read on the app-server of the task's live session, else on
+// the task's own pooled one. The read holds the process until it settles.
+unittest
+{
+	import cydo.agent.drivers.codex.history : CodexHistoryMode;
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicks;
+
+	enum silentThread = `{"thread":{"id":"thread","historyMode":"paginated","cwd":"/work",`
+		~ `"cliVersion":"0.171.0","modelProvider":"openai","preview":""}}`;
+	enum emptyPage = `{"data":[],"nextCursor":null}`;
+	JsonRpcResponse result(string json)
+	{
+		JsonRpcResponse response;
+		response.result = jsonParse!SO(json);
+		return response;
+	}
+	auto profile = NativeHistoryProfile(AgentDriver.codex, "/profile");
+	auto agent = new CodexAgent;
+	string[] outcomes;
+	void observe(Promise!DriverHistory read)
+	{
+		read.then((DriverHistory history) {
+			assert(history.mode == CodexHistoryMode.paginated);
+			outcomes ~= "read";
+		}, (Exception e) { outcomes ~= e.msg; }).ignoreResult();
+	}
+	DriverHistoryLaunch noLaunch()
+	{
+		assert(false, "a live session's history is read on its own app-server");
+	}
+
+	// The live session's app-server; the session leaving does not end it
+	// while the read lasts.
+	auto connection = new TestCodexConnection;
+	auto server = makeTestAppServerProcess(connection);
+	auto owner = agent.makeSession(server, 1, SessionConfig.init, RouteOwnerKind.task);
+	observe(agent.loadHistory("thread", profile, () => owner, &noLaunch));
+	auto read = connection.takeRequest("thread/read");
+	owner.closeStdin();
+	assert(!server.dead, "the read keeps the app-server");
+	connection.respond(read, result(silentThread));
+	drainNextTicks();
+	connection.respond(connection.takeRequest("thread/turns/list"), result(emptyPage));
+	drainNextTicks();
+	connection.respond(connection.takeRequest("thread/items/list"), result(emptyPage));
+	drainNextTicks();
+	assert(outcomes == ["read"] && server.dead, "the settled read lets the app-server go");
+
+	// Without a session: the app-server of the task's own pool key.
+	outcomes = null;
+	connection = new TestCodexConnection;
+	server = makeTestAppServerProcess(connection);
+	ProcessLaunch launch;
+	launch.nativeHistoryProfile = profile;
+	launch.executablePath = "/bin/codex";
+	agent.serverPool[agent.serverPoolKey("workspace", launch)] = server;
+	SessionConfig config;
+	config.workspace = "workspace";
+	observe(agent.loadHistory("thread", profile, () => null,
+		() => DriverHistoryLaunch(launch, config)));
+	read = connection.takeRequest("thread/read");
+
+	// The app-server ending is the read's failure.
+	server.terminate();
+	drainNextTicks();
+	assert(outcomes == ["Codex app-server exited while reading history"]);
+
+	// A launch that cannot be had is a history that cannot be read.
+	outcomes = null;
+	observe(agent.loadHistory("thread", profile, () => null,
+		delegate DriverHistoryLaunch() { throw new Exception("no sandbox"); }));
+	drainNextTicks();
+	assert(outcomes == ["no sandbox"]);
+}
+
+version (unittest) private struct TestCodexStartup
+{
+	enum spawnError = "test app-server spawn failed";
+	enum profile = NativeHistoryProfile(AgentDriver.codex, "/test-startup-profile");
+	enum failingExecutable = "/test-startup/fail";
+	enum workingExecutable = "/test-startup/succeed";
+	CodexAgent agent;
+	TestCodexConnection connection;
+	int spawnAttempts;
+
+	static TestCodexStartup create()
+	{
+		return TestCodexStartup(new CodexAgent, new TestCodexConnection);
+	}
+
+	IConnection spawn(string[] args)
+	{
+		++spawnAttempts;
+		if (args[0] == failingExecutable)
+			throw new Exception(spawnError);
+		assert(args[0] == workingExecutable);
+		return connection;
+	}
+
+	Promise!DriverHistory read(string workspace, string executable)
+	{
+		ProcessLaunch launch;
+		launch.nativeHistoryProfile = profile;
+		launch.executablePath = executable;
+		SessionConfig config;
+		config.workspace = workspace;
+		return agent.loadHistory("thread", launch.nativeHistoryProfile, () => null,
+			() => DriverHistoryLaunch(launch, config));
+	}
+}
+
+version (unittest) private class TestCodexHistoryFailure
+{
+	string[] errors;
+
+	this(Promise!DriverHistory read)
+	{
+		read.then((DriverHistory) { assert(false, "expected history to fail"); },
+			(Exception e) { errors ~= e.msg; }).ignoreResult();
+	}
+}
+
+// A synchronous spawn failure must leave the same pool key available for retry.
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks;
+
+	auto startup = TestCodexStartup.create();
+	AppServerProcess.spawnForTest = &startup.spawn;
+	scope (exit) AppServerProcess.spawnForTest = null;
+
+	auto first = new TestCodexHistoryFailure(startup.read("retry", startup.failingExecutable));
+	drainNextTicks();
+	assert(first.errors == [startup.spawnError]);
+	assert(startup.agent.serverPool.length == 0 && startup.agent.appServerStartupGates.length == 0);
+	auto second = new TestCodexHistoryFailure(startup.read("retry", startup.failingExecutable));
+	drainNextTicks();
+	assert(second.errors == [startup.spawnError], "same-key retry did not receive the spawn error");
+
+	// Keep the pool key unchanged and let the third attempt supply a connection.
+	AppServerProcess.spawnForTest = (string[] args) {
+		assert(args[0] == startup.failingExecutable);
+		++startup.spawnAttempts;
+		return startup.connection;
+	};
+	startup.read("retry", startup.failingExecutable).ignoreResult();
+	auto initialize = startup.connection.takeRequest("initialize");
+	assert(startup.spawnAttempts == 3);
+	JsonRpcResponse initialized;
+	initialized.result = jsonParse!SO("{}");
+	startup.connection.respond(initialize, initialized);
+	drainNextTicks();
+	startup.agent.shutdownAllServers();
+	drainNextTicks();
+}
+
+// A failure after a reader has joined the startup queue must reject that reader.
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks;
+	import std.exception : collectException;
+
+	auto startup = TestCodexStartup.create();
+	AppServerProcess.spawnForTest = &startup.spawn;
+	scope (exit) AppServerProcess.spawnForTest = null;
+
+	auto gate = new AppServerStartupGate;
+	gate.busy = true;
+	startup.agent.appServerStartupGates[startup.profile.root] = gate;
+	auto reader = new TestCodexHistoryFailure(startup.read("queued", startup.failingExecutable));
+	drainNextTicks();
+	assert(startup.spawnAttempts == 0 && reader.errors.length == 0);
+
+	gate.busy = false;
+	auto escaped = collectException(startup.agent.startNextAppServerStartup(startup.profile.root));
+	drainNextTicks();
+	assert(reader.errors == [startup.spawnError], "queued reader did not receive the spawn error");
+	assert(escaped is null, "queued spawn failure escaped startup");
+	assert(startup.agent.serverPool.length == 0 && startup.agent.appServerStartupGates.length == 0);
+}
+
+// A queued spawn failure released by initialize must leave the first server's login intact.
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks;
+	import std.process : environment;
+
+	auto startup = TestCodexStartup.create();
+	AppServerProcess.spawnForTest = &startup.spawn;
+	scope (exit) AppServerProcess.spawnForTest = null;
+	auto previousKey = environment.get("CODEX_API_KEY", null);
+	environment["CODEX_API_KEY"] = "test-startup-key";
+	scope (exit)
+	{
+		if (previousKey is null)
+			environment.remove("CODEX_API_KEY");
+		else
+			environment["CODEX_API_KEY"] = previousKey;
+	}
+
+	startup.read("initializing", startup.workingExecutable).ignoreResult();
+	auto initialize = startup.connection.takeRequest("initialize");
+	startup.read("queued", startup.failingExecutable).ignoreResult();
+	assert(startup.spawnAttempts == 1, "second startup must wait for initialize");
+
+	JsonRpcResponse initialized;
+	initialized.result = jsonParse!SO("{}");
+	startup.connection.respond(initialize, initialized);
+	drainNextTicks();
+	assert(startup.spawnAttempts == 2, "initialize must release the queued startup");
+	assert(startup.connection.sentMessages.length > 0,
+		"queued spawn failure prevented the initialized server from logging in");
+	auto login = startup.connection.takeRequest("account/login/start");
+	JsonRpcResponse loggedIn;
+	loggedIn.result = jsonParse!SO(`{"success":true}`);
+	startup.connection.respond(login, loggedIn);
+	drainNextTicks();
+	startup.connection.takeRequest("thread/read");
+	startup.agent.shutdownAllServers();
+	drainNextTicks();
+}
+
+// A late initialize failure must preserve the replacement at the same pool key.
+unittest
+{
+	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicks;
+
+	auto startup = TestCodexStartup.create();
+	AppServerProcess.spawnForTest = &startup.spawn;
+	scope (exit) AppServerProcess.spawnForTest = null;
+
+	ProcessLaunch launch;
+	launch.nativeHistoryProfile = startup.profile;
+	launch.executablePath = startup.workingExecutable;
+	auto key = startup.agent.serverPoolKey("replacement", launch);
+	auto original = startup.agent.getOrCreateServer(key, launch);
+	auto initialize = startup.connection.takeRequest("initialize");
+
+	auto replacement = makeTestAppServerProcess(new TestCodexConnection);
+	startup.agent.serverPool[key] = replacement;
+	scope (exit) replacement.shutdown();
+
+	JsonRpcResponse refused;
+	refused.error = JsonRpcError.fromCode(JsonRpcErrorCode.invalidRequest,
+		"mock initialize rejected");
+	startup.connection.respond(initialize, refused);
+	drainNextTicks();
+	assert(original.dead, "initialize rejection must shut down the original server");
+	auto pooled = key in startup.agent.serverPool;
+	assert(pooled !is null && *pooled is replacement,
+		"failed startup evicted its same-key replacement");
+	assert(startup.agent.getOrCreateServer(key, launch) is replacement);
+}
+
+// An initialize error settles every startup waiter with the server diagnostic.
+unittest
+{
+	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicks;
+
+	auto connection = new TestCodexConnection;
+	auto server = makeTestAppServerProcess(connection, true);
+	auto initialize = connection.takeRequest("initialize");
+	auto agent = new CodexAgent;
+	ProcessLaunch launch;
+	launch.nativeHistoryProfile = NativeHistoryProfile(AgentDriver.codex, "/profile");
+	launch.executablePath = "/unused/codex";
+	SessionConfig config;
+	config.workspace = "startup-error";
+	agent.serverPool[agent.serverPoolKey(config.workspace, launch)] = server;
+	auto session = cast(CodexSession) agent.createSession(1, null, launch, config);
+	auto queued = new TestSubmissionOutcome(session.sendMessage(
+		[ContentBlock("text", "queued during initialize")], "startup-queued"));
+	auto operation = agent.openForkSourceOwner(2, "thread", launch, config);
+	string routeFailure;
+	operation.routeReady.then((CodexSession) { assert(false, "failed startup acquired a route"); },
+		(Exception e) { routeFailure = e.msg; }).ignoreResult();
+	string historyFailure;
+	agent.loadHistory("thread", launch.nativeHistoryProfile, () => null,
+		() => DriverHistoryLaunch(launch, config))
+		.then((DriverHistory) { assert(false, "failed startup loaded history"); },
+			(Exception e) { historyFailure = e.msg; }).ignoreResult();
+
+	enum diagnostic = "mock initialize rejected";
+	JsonRpcResponse refused;
+	refused.error = JsonRpcError.fromCode(JsonRpcErrorCode.invalidRequest, diagnostic);
+	connection.respond(initialize, refused);
+	drainNextTicks();
+	assert(historyFailure == diagnostic, "history must receive the initialize error");
+	assert(routeFailure == diagnostic);
+	assert(queued.rejectedCount == 1 && queued.rejectionMessage == diagnostic);
+	assert(server.dead && !session.alive);
+	assert(__traits(getMember, server, "operationRouteReservations_").length == 0);
+	assert(connection.sentMessages.length == 0, "a rejected initialize must not start login or a thread");
+}
+
+
+// A closed startup still owns its task route until the reply or server exit.
+unittest
+{
+	import std.algorithm : canFind;
+	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicks;
+
+	enum End { attachReply, startupFailure, serverExit }
+	string[] prematureExits;
+	void exercise(string resumeId, End end, string label)
+	{
+		auto connection = new TestCodexConnection;
+		auto server = makeTestAppServerProcess(connection);
+		auto agent = new CodexAgent;
+		ProcessLaunch launch;
+		launch.executablePath = "/unused/codex";
+		launch.nativeHistoryProfile = NativeHistoryProfile(AgentDriver.codex, "/profile");
+		SessionConfig config;
+		config.workspace = "close-startup";
+		agent.serverPool[agent.serverPoolKey(config.workspace, launch)] = server;
+		auto reasonToKeepServer = resumeId.length == 0
+			? server.reserveOperationRouteTid() : 0;
+		if (resumeId.length != 0)
+		{
+			agent.createSession(2, null, launch, config);
+			connection.takeRequest("thread/start");
+		}
+
+		auto session = cast(CodexSession) agent.createSession(1, resumeId, launch, config);
+		auto method = resumeId.length == 0 ? "thread/start" : "thread/resume";
+		auto request = connection.takeRequest(method);
+		int[] exits;
+		session.onExit = (int status) { exits ~= status; };
+		session.closeStdin();
+		auto submitted = new TestSubmissionOutcome(session.sendMessage(
+			[ContentBlock("text", "after close")], "after-close"));
+		drainNextTicks();
+		assert(submitted.rejectedCount == 1 && submitted.acceptedCount == 0);
+		assert(!server.dead);
+		if (!session.alive || exits.length != 0)
+			prematureExits ~= label;
+
+		auto threadId = resumeId.length == 0 ? "fresh-thread" : resumeId;
+		JsonRpcResponse resp;
+		if (end == End.attachReply)
+		{
+			ThreadStartResult result;
+			result.thread.id = threadId;
+			result.thread.path = "/profile/sessions/thread.jsonl";
+			resp.result = SO.from(result);
+		}
+		else
+			resp.error = JsonRpcError.fromCode(JsonRpcErrorCode.internalError, "startup interrupted");
+
+		if (end == End.serverExit)
+			server.terminate();
+		connection.respond(request, resp);
+		drainNextTicks();
+		// On the baseline the orphan route is observable even after the early exit.
+		if (server.hasThreadRouteForTest(threadId))
+			prematureExits ~= label ~ ": orphan route";
+		if (prematureExits.canFind(label))
+			return;
+		assert(!session.alive && exits.length == 1);
+		assert(agent.liveSessionPath(session, launch.nativeHistoryProfile, threadId).length == 0);
+		if (end == End.attachReply)
+		{
+			auto release = connection.takeRequest("thread/unsubscribe");
+			assert(jsonParse!ThreadUnsubscribeParams(toJson(release.params)).threadId == threadId);
+			if (resumeId.length != 0)
+			{
+				auto next = cast(CodexSession) agent.createSession(1, resumeId, launch, config);
+				connection.respond(connection.takeRequest("thread/resume"), resp);
+				drainNextTicks();
+				assert(next.alive && server.hasThreadRouteForTest(threadId));
+			}
+		}
+		assert(connection.sentMessages.length == 0);
+		if (reasonToKeepServer != 0 && end != End.serverExit)
+		{
+			server.cancelOperationRouteReservation(reasonToKeepServer);
+			assert(server.dead);
+		}
+	}
+	exercise("thread-a", End.attachReply, "late resume success");
+	exercise(null, End.attachReply, "late start success");
+	exercise("thread-a", End.serverExit, "server exit during close");
+	exercise(null, End.startupFailure, "startup rejection during close");
+	assert(prematureExits.length == 0, toJson(prematureExits));
+}
+
+// Session discovery names each thread once, by its newest rollout.
+unittest
+{
+	import core.time : seconds;
+	import std.datetime.systime : Clock;
+	import std.file : mkdirRecurse, rmdirRecurse, setTimes, tempDir, write;
+	import std.process : thisProcessID;
+
+	auto root = buildPath(tempDir, "cydo-codex-discovery-" ~ thisProcessID.to!string);
+	scope (exit) rmdirRecurse(root);
+	auto day = buildPath(root, "sessions", "2026", "11", "22");
+	mkdirRecurse(day);
+	enum thread = "01a1feac-c4fb-7600-9ec5-7f31ac22c94a";
+	enum other = "01a1feae-9e4c-7d83-a43c-dbd595e0221d";
+	auto now = Clock.currTime;
+	string rollout(string name, int age)
+	{
+		auto path = buildPath(day, name ~ ".jsonl");
+		write(path, "");
+		setTimes(path, now - age.seconds, now - age.seconds);
+		return path;
+	}
+	rollout("rollout-2026-11-22T10-00-00-" ~ thread, 30);
+	auto newest = rollout("rollout-2026-11-22T10-05-00-" ~ thread ~ "_r2", 10);
+	rollout("rollout-2026-11-22T10-02-00-" ~ thread ~ "_r1", 20);
+	auto single = rollout("rollout-2026-11-22T11-00-00-" ~ other, 5);
+
+	auto profile = NativeHistoryProfile(AgentDriver.codex, root);
+	string[string] found;
+	foreach (session; (new CodexAgent).enumerateAllSessions(profile))
+	{
+		assert(session.sessionId !in found);
+		found[session.sessionId] = session.exactHistoryPath;
+	}
+	assert(found == [thread: newest, other: single]);
 }

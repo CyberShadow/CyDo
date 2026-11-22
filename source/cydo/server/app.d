@@ -442,6 +442,12 @@ class App
 			},
 			setupWorktreeForEdge: &worktreeAllocator.setupForEdge,
 			shuttingDown: () => shuttingDown,
+			correctAbortedToolCall: (int tid, string correction) {
+				import cydo.agent.session : AbortedToolCallCorrection;
+
+				auto session = cast(AbortedToolCallCorrection) sessionForTask(tid);
+				return session is null ? resolve() : session.correctAbortedToolCall(correction);
+			},
 			ensureProcessQueueAlive: (int tid) {
 				assert((tid in tasks) !is null,
 					format!"Process queue requested for missing task %d"(tid));
@@ -587,9 +593,11 @@ class App
 			},
 			noteLiveBoundaryCandidate: (int tid, size_t seq, string event, string raw, int sourceLine,
 				bool isContextBootstrap, LocalUserProvenance localUserProvenance) {
-				jsonlTracker.noteLiveBoundaryCandidate(tid, seq, event, raw, sourceLine,
-					isContextBootstrap,
-					localUserProvenance == LocalUserProvenance.registeredLocal);
+				// Boundaries of a driver-served history arrive with its events.
+				if (HistoryAccess.driverServingHistory(tryAgentForTask(tid)) is null)
+					jsonlTracker.noteLiveBoundaryCandidate(tid, seq, event, raw, sourceLine,
+						isContextBootstrap,
+						localUserProvenance == LocalUserProvenance.registeredLocal);
 			},
 			sendReplaySupplementalState: &sendHistoryReplaySupplementalState,
 			onHistorySubscribed: &onHistorySubscribed,
@@ -681,6 +689,7 @@ class App
 			touchAndPersistLastActive: &touchAndPersistLastActive,
 			transitionTask: &transitionTask,
 			transitionTaskFrom: &transitionTask,
+			applyTaskTransition: &taskLifecycle.applyTransition,
 			persistResultText: (int tid, string resultText) {
 				persistence.setResultText(tid, resultText);
 			},
@@ -758,6 +767,10 @@ class App
 			ensureHistoryLoaded: (int tid) {
 				historyPipeline.ensureHistoryLoaded(tid);
 			},
+			whenHistoryLoaded: (int tid, void delegate() ready) {
+				historyPipeline.whenHistoryLoaded(tid, ready);
+			},
+			servedHistoryMode: &servedHistoryMode,
 			resolveTaskHistory: &resolveTaskHistory,
 			reportUnavailableHistory: &reportUnavailableHistory,
 			requireLiveHistoryLaunch: (int tid, const ref HistoryAccess access) {
@@ -841,24 +854,6 @@ class App
 			jsonlTracker.startJsonlWatch(tid);
 		};
 		jsonlTracker.onJsonlLine = &onTailedJsonlLine;
-		jsonlTracker.onJsonlFileAttached = (int tid,
-			LiveHistoryWatchTarget watchedTarget) {
-			auto td = tid in tasks;
-			if (td is null || td.agentSessionId != watchedTarget.context.sessionId)
-				return;
-			auto resolution = resolveLiveHistoryWatch(tid);
-			if (resolution.kind != LiveHistoryWatchResolutionKind.target)
-				return;
-			auto currentTarget = resolution.requireTarget();
-			if (!currentTarget.matchesExactly(watchedTarget))
-				return;
-			auto codex = cast(CodexSession) sessionForTask(tid);
-			if (codex is null)
-				return;
-			codex.bindPendingRolloutIdentity(watchedTarget.context.sessionId,
-				watchedTarget.path);
-		};
-
 		// Load task type definitions
 		auto types = taskTypeCatalog.getTaskTypes();
 		if (types.length == 0)
@@ -1701,6 +1696,7 @@ class App
 		{
 			case NativeUndoState.idle:
 				assert(false, "idle native undo state cannot block delivery");
+			case NativeUndoState.backingUp:
 			case NativeUndoState.inFlight:
 				return "Native undo is in progress and this message was not sent";
 			case NativeUndoState.unverified:
@@ -2527,7 +2523,8 @@ class App
 		{
 			auto tid = persistence.createTask("", spec.projectPath, spec.agentName);
 			auto access = acceptedAccess[i];
-			enforce(exists(access.path) && isFile(access.path),
+			auto scannedPath = spec.scanRecord.discovered.exactHistoryPath;
+			enforce(exists(scannedPath) && isFile(scannedPath),
 				"Validated importable history locator disappeared before reconciliation");
 			auto td = TaskData(tid, "", spec.projectPath);
 			td.status = TaskStatus.importable;
@@ -2536,7 +2533,7 @@ class App
 			td.title = spec.title;
 			td.createdAt = Clock.currStdTime;
 			td.lastActive = spec.lastActive;
-			td.history.reset(watermarkFromPath(access.path));
+			td.history.reset(historyWatermark(access));
 			td.processQueue = new StateQueue!ProcessState(
 				makeProcessQueueSF(tid),
 				ProcessState.Dead,
@@ -2663,6 +2660,9 @@ class App
 				return TaskHistoryResolution.unavailable(UnavailableHistory(
 					UnavailableHistoryKind.profilePath, record.agentName,
 					record.key.sessionId, e.msg, resolved.rule, resolved.profile));
+			if (auto driver = HistoryAccess.driverServingHistory(resolved.agent))
+				return TaskHistoryResolution.access(HistoryAccess.driverServed(driver,
+					resolved.profile, record.key.sessionId, &context));
 			return TaskHistoryResolution.access(HistoryAccess(resolved.agent,
 				resolved.profile, record.key.sessionId,
 				record.discovered.exactHistoryPath));
@@ -2685,21 +2685,23 @@ class App
 		auto td = tid in tasks;
 		assert(td !is null, "Unavailable history report requires an existing task");
 		auto unavailable = resolution.requireUnavailable();
-		string body;
-		if (unavailable.kind == UnavailableHistoryKind.profilePath)
+		auto location = "session " ~ unavailable.sessionId ~ " under "
+			~ unavailable.profile.root ~ " (agent '" ~ unavailable.agentName ~ "').\n\nCheck "
+			~ unavailable.rule.profileEnvName
+			~ " and the configured profile location, then reload the task.";
+		if (unavailable.kind == UnavailableHistoryKind.driverRead)
 		{
-			body = "No history for session " ~ unavailable.sessionId ~ " under "
-				~ unavailable.profile.root ~ " (agent '" ~ unavailable.agentName
-				~ "').\n\nCheck " ~ unavailable.rule.profileEnvName
-				~ " and the configured profile location, then reload the task.";
+			// The read was made for clients that asked for the history, and
+			// leaves it loaded: they are about to be given it, diagnostic
+			// included.
+			historyPipeline.appendTaskDiagnostic(tid, "Failed to load session history",
+				unavailable.detail ~ "\n\nThe agent was asked for " ~ location);
+			return;
 		}
-		else
-			body = unavailable.detail;
-		if (unavailable.kind != UnavailableHistoryKind.driverRead)
-		{
-			td.history.reset(Watermark.unreadable());
-			td.history.load((ulong) => LoadedHistory.init);
-		}
+		auto body = unavailable.kind == UnavailableHistoryKind.profilePath
+			? "No history for " ~ location : unavailable.detail;
+		td.history.reset(Watermark.unreadable());
+		td.history.load((ulong) => LoadedHistory.init);
 		historyPipeline.appendTaskDiagnostic(tid, "Failed to load session history", body);
 		emitTaskReload(tid, "history_unavailable");
 	}
@@ -3515,16 +3517,17 @@ class App
 			rejectPromotion("The agent configured for this imported session is unavailable");
 			return;
 		}
-		try
-			// Teach the persistent agent instance the scanned locator, so
-			// post-import history resolution finds the session even when it
-			// appeared after the agent's profile scan.
-			taskAgent.registerHistoryPath((*record).key.sessionId,
-				(*record).discovered.exactHistoryPath, selectedContext.profile);
-		catch (Exception e)
+		auto access = history.requireAccess();
+		if (!access.isDriverServed)
 		{
-			rejectPromotion(e.msg);
-			return;
+			try
+				// Teach the persistent agent the path found by discovery.
+				taskAgent.registerHistoryPath(access.sessionId, access.path, selectedContext.profile);
+			catch (Exception e)
+			{
+				rejectPromotion(e.msg);
+				return;
+			}
 		}
 		persistence.promoteImportableTask(tid, json.workspace);
 		enforce(persistence.db.db.changes == 1,
@@ -3671,7 +3674,7 @@ class App
 	{
 		auto codex = cast(CodexSession) sessionForTask(tid);
 		if (codex !is null)
-			return codex.canRollbackThread
+			return codex.canRevertThread
 				? NativeSessionState.liveReady
 				: NativeSessionState.liveBusy;
 		auto claude = cast(ClaudeCodeSession) sessionForTask(tid);
@@ -3687,7 +3690,15 @@ class App
 	private auto historyOperationsForTask(int tid)
 	{
 		return selectHistoryOperations(agentForTask(tid).driver,
-			nativeSessionState(tid));
+			nativeSessionState(tid), servedHistoryMode(tid));
+	}
+
+	/// What the driver said of the history it served for the task: 0 when
+	/// it has served none.
+	private ubyte servedHistoryMode(int tid)
+	{
+		auto history = &tasks[tid].history;
+		return history.isLoaded && history.isDriverServed ? history.historyMode : 0;
 	}
 
 	private bool taskAlive(int tid)
@@ -4240,8 +4251,7 @@ version (unittest) private final class GatedSubmissionRunner : TaskSessionRunner
 version (unittest)
 	import cydo.agent.contract : DriverHistory, DriverHistoryLaunch, DriverServedHistoryAgent;
 
-version (unittest) private final class GatedSubmissionCodexAgent : CodexAgent,
-	DriverServedHistoryAgent
+version (unittest) private final class GatedSubmissionCodexAgent : CodexAgent
 {
 	GatedSubmissionSession session;
 
@@ -4253,7 +4263,7 @@ version (unittest) private final class GatedSubmissionCodexAgent : CodexAgent,
 	}
 
 	override Promise!DriverHistory loadHistory(string sessionId,
-		const ref NativeHistoryProfile profile, AgentSession owner,
+		const ref NativeHistoryProfile profile, AgentSession delegate() currentOwner,
 		DriverHistoryLaunch delegate() obtainLaunch)
 	{
 		assert(0, "Exit fixture does not request driver history");
@@ -6621,6 +6631,7 @@ version (unittest) private final class DriverHistoryTurnFixture
 			getTask: (int tid) => tid in app.tasks,
 			resolveTaskHistory: (int tid) => TaskHistoryResolution.access(access),
 			injectAgentNameIntoSessionInit: (string translated, string agentName) => translated,
+			broadcastHistoryOperations: (int tid) {},
 			loadDriverHistory: (int tid, HistoryAccess resolved) {
 				auto read = new Promise!DriverHistory;
 				reads ~= read;
@@ -6713,4 +6724,145 @@ unittest
 	service.handleEditMessage(fixture.socket, message);
 	assert(fixture.socket.sent[$ - 1].canFind("Editing messages is not supported for this agent"));
 	assert(!td.history.isLoaded);
+}
+
+version (unittest) private final class CodexOfferFixture
+{
+	enum sessionId = "01a1feae-9e4c-7d83-a43c-dbd595e0221d";
+	enum retainedEvent = `{"type":"item/started","item_id":"retained","item_type":"text","text":"retained turn"}`;
+	GatedSubmissionFixture base;
+	App app;
+	string profileRoot;
+	string rolloutPath;
+	int tid;
+	size_t driverReads;
+
+	this(string root)
+	{
+		import cydo.agent.contract : DiscoveredSession;
+		import cydo.workflow.discovery.service : NativeSessionKey;
+
+		base = new GatedSubmissionFixture(":memory:");
+		app = base.app;
+		profileRoot = buildPath(root, "codex-profile");
+		rolloutPath = buildPath(profileRoot, "sessions", "rollout.jsonl");
+		mkdirRecurse(buildPath(profileRoot, "sessions"));
+		write(rolloutPath, "{}\n");
+		auto projectPath = buildPath(root, "project");
+		mkdirRecurse(projectPath);
+
+		auto sandbox = SandboxConfig(
+			isolate_filesystem: SetInfo!bool(false),
+			isolate_processes: SetInfo!bool(false),
+			isolate_environment: SetInfo!bool(false),
+		);
+		app.config.sandbox = sandbox;
+		app.config.agents["test"].sandbox = sandbox;
+		app.config.agents["test"].sandbox.env["CODEX_HOME"] = profileRoot;
+		app.config.workspaces = [WorkspaceConfig(name: "local", root: root, sandbox: sandbox)];
+		app.discoveryService = new DiscoveryService(DiscoveryServiceHost.init);
+		app.discoveryService.workspacesInfo = [
+			WorkspaceInfo("local", [ProjectInfo("project", projectPath, false, true)])
+		];
+		app.taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost(
+			getTask: (int taskId) => taskId in app.tasks,
+			currentConfig: () => &app.config,
+			tryAgentForTask: &app.tryAgentForTask,
+			taskTypeCatalog: app.taskTypeCatalog,
+		));
+		app.historyPipeline = new HistoryEventPipeline(HistoryEventPipelineHost(
+			getTask: (int taskId) => taskId in app.tasks,
+			resolveTaskHistory: &app.resolveTaskHistory,
+			injectAgentNameIntoSessionInit: (string event, string agentName) => event,
+			broadcastHistoryOperations: (int taskId) {},
+			loadDriverHistory: (int taskId, HistoryAccess access) {
+				assert(taskId == tid && access.sessionId == sessionId);
+				assert(access.profile.root == profileRoot);
+				driverReads++;
+				return resolve(DriverHistory([TranslatedEvent(retainedEvent, null)], 0));
+			},
+		));
+
+		auto record = ImportableScanRecord(
+			NativeSessionKey(AgentDriver.codex, profileRoot, sessionId),
+			DiscoveredSession(sessionId, 42, rolloutPath),
+			"test", [ConfiguredNativeHistoryContext("test", "local", "", false)], 1);
+		ImportableReconciliationCommit publish;
+		app.withDiscoveryMutationTransaction(() {
+			publish = app.reconcileImportableTasks(1,
+				[ImportableTaskSpec(projectPath, "test", "Discovered Codex thread", 42, record)]);
+		});
+		publish();
+		assert(app.importableScanRecords_.length == 1, "Reconciliation must publish the Codex offer");
+		tid = app.importableScanRecords_.keys[0];
+	}
+}
+
+unittest
+{
+	auto root = buildPath(tempDir(), "cydo-app-codex-offer-history");
+	scope(exit) if (exists(root)) rmdirRecurse(root);
+	auto fixture = new CodexOfferFixture(root);
+	auto resolution = fixture.app.resolveTaskHistory(fixture.tid);
+	assert(resolution.kind == TaskHistoryResolutionKind.access);
+	auto access = resolution.requireAccess();
+	assert(access.isDriverServed, "A discovered Codex offer must resolve history through the driver");
+	assert(access.sessionId == fixture.sessionId && access.profile.root == fixture.profileRoot);
+	assert(fixture.app.tasks[fixture.tid].history.isDriverServed,
+		"The offer's history store must match its driver-served access");
+}
+
+unittest
+{
+	auto root = buildPath(tempDir(), "cydo-app-codex-offer-promotion");
+	scope(exit) if (exists(root)) rmdirRecurse(root);
+	auto fixture = new CodexOfferFixture(root);
+	auto app = fixture.app;
+	auto td = fixture.tid in app.tasks;
+	assert(!td.history.isLoaded && !td.history.isLoading);
+	WsMessage message;
+	message.tid = fixture.tid;
+	message.workspace = "local";
+	app.handlePromoteTaskMsg(fixture.base.socket, message);
+	assert(td.status == TaskStatus.completed && td.workspace == "local");
+
+	bool loaded;
+	app.historyPipeline.whenHistoryLoaded(fixture.tid, () { loaded = true; });
+	drainSubmissionNextTicks();
+	assert(loaded && fixture.driverReads == 1 && td.history.length == 1
+		&& (cast(string) td.history[0].unsafeContents).canFind("retained turn"),
+		"The first load after promotion must deliver the driver transcript");
+}
+
+unittest
+{
+	import std.file : readText;
+
+	auto root = buildPath(tempDir(), "cydo-app-codex-offer-edits");
+	scope(exit) if (exists(root)) rmdirRecurse(root);
+	auto fixture = new CodexOfferFixture(root);
+	auto app = fixture.app;
+	size_t editLoads;
+	app.taskMutationService = new TaskMutationService(TaskMutationServiceHost(
+		getTask: (int tid) => tid in app.tasks,
+		taskAlive: &app.taskAlive,
+		resolveTaskHistory: &app.resolveTaskHistory,
+		ensureHistoryLoaded: (int tid) {
+			editLoads++;
+			app.tasks[tid].history.load((ulong) => LoadedHistory.init);
+		},
+	));
+	auto socket = fixture.base.socket;
+	WsMessage message;
+	message.tid = fixture.tid;
+	message.anchor = "message-id";
+	message.seq = 0;
+	app.handleEditMessage(socket, message);
+	auto messageReply = socket.sent[$ - 1];
+	app.handleEditRawEvent(socket, message);
+	auto eventReply = socket.sent[$ - 1];
+	assert(messageReply.canFind("Editing messages is not supported for this agent")
+		&& eventReply.canFind("Editing events is not supported for this agent"),
+		"Expected both Codex offer edits to be refused: " ~ messageReply ~ " / " ~ eventReply);
+	assert(editLoads == 0 && readText(fixture.rolloutPath) == "{}\n");
 }

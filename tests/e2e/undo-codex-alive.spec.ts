@@ -26,7 +26,6 @@ import {
   undoThroughBridge,
   currentTaskTid,
   codexRolloutRecords,
-  expectUndoRefusalForUserMessage, // One line on purpose: check attribute names are pinned to test() line numbers.
 } from "./fixtures";
 import type { Page } from "@playwright/test";
 
@@ -186,8 +185,16 @@ test(
       await expect(assistantText(page, marker)).not.toBeVisible();
     }
 
-    // Session is still alive: input box is visible and enabled.
+    // Session is still alive: input box is visible and enabled, and holds
+    // the prompts the undo removed.
     await expect(page.locator(".input-textarea:visible").first()).toBeEnabled();
+    await expect(page.locator(".input-textarea:visible").first()).toHaveValue(
+      [
+        'Please reply with "alive-three"',
+        'Please reply with "alive-four"',
+        'Please reply with "alive-five"',
+      ].join("\n\n"),
+    );
 
     const rollbackFrames = () => frames.slice(rollbackFrameStart);
     await expect
@@ -236,6 +243,24 @@ test(
           frame?.type === "task_reload" && frame?.reason === "history_lineage",
       ),
     ).toBe(false);
+
+    // What Codex kept is all there is after a reload: the undone turns stay
+    // gone, and the prompts are the two retained ones and the follow-up.
+    await page.reload();
+    await expect(assistantText(page, "alive-six")).toBeVisible();
+    await expect(
+      page.locator(
+        ".message.user-message:not(.pending):not(.meta-message):visible",
+      ),
+    ).toHaveCount(3);
+    for (const marker of ["alive-one", "alive-two", "alive-six"])
+      await expect(assistantText(page, marker)).toHaveCount(1);
+    for (const marker of ["alive-three", "alive-four", "alive-five"]) {
+      await expect(
+        page.locator(".message.user-message:visible", { hasText: marker }),
+      ).toHaveCount(0);
+      await expect(assistantText(page, marker)).toHaveCount(0);
+    }
   },
 );
 
@@ -299,87 +324,6 @@ test(
       ).not.toBeVisible();
       await expect(assistantText(page, marker)).not.toBeVisible();
     }
-  },
-);
-
-test(
-  "codex capability loss falls back to JSONL assistant undo",
-  { tag: "@codex-only" },
-  async ({ page, agentType }) => {
-    const prompt = "CODEX_FALLBACK_PROMPT";
-    const response = "CODEX_FALLBACK_RESPONSE";
-    const later = "CODEX_FALLBACK_LATER";
-
-    await enterSession(page);
-
-    // Produce a real native rollback marker and leave its dead physical records
-    // in Codex's JSONL before switching mechanisms.
-    await sendMessage(page, 'Please reply with "CODEX_ROLLBACK_LIVE"');
-    await expect(assistantText(page, "CODEX_ROLLBACK_LIVE")).toBeVisible();
-    await sendMessage(page, 'Please reply with "CODEX_ROLLBACK_DEAD"');
-    await expect(assistantText(page, "CODEX_ROLLBACK_DEAD")).toBeVisible();
-    await undoUserMessage(page, 'Please reply with "CODEX_ROLLBACK_DEAD"');
-    await expect(assistantText(page, "CODEX_ROLLBACK_DEAD")).toHaveCount(0);
-
-    await sendMessage(page, `Reply exactly with ${response}. ${prompt}`);
-    await expect(assistantText(page, response)).toBeVisible();
-    await sendMessage(page, `Reply exactly with ${later}`);
-    await expect(assistantText(page, later)).toBeVisible();
-    await killSession(page, agentType);
-
-    const assistant = page
-      .locator(".message-wrapper:visible", {
-        has: page.locator(".assistant-message:visible", { hasText: response }),
-      })
-      .last();
-    await assistant.hover();
-    await expect(assistant.locator(".undo-btn")).toBeVisible();
-    await assistant.locator(".undo-btn").click();
-    await expect(
-      page.locator(".undo-dialog-prompt-retention:visible"),
-    ).toHaveText(
-      "This response and later history will be removed. The preceding prompt will remain.",
-    );
-    await expect(page.locator(".undo-dialog-count:visible")).toContainText(
-      "3 messages will be removed.",
-    );
-    await page.locator(".btn-undo:visible").click();
-
-    await expect(assistantText(page, response)).toHaveCount(0);
-    await expect(assistantText(page, later)).toHaveCount(0);
-    await expect(
-      page.locator(".message.user-message:visible:not(.pending)", {
-        hasText: prompt,
-      }),
-    ).toBeVisible();
-    await expect
-      .poll(() =>
-        codexRolloutRecords(currentTaskTid(page)).some(
-          (record) =>
-            record.type === "event_msg" &&
-            record.payload?.type === "agent_message" &&
-            record.payload?.message === response,
-        ),
-      )
-      .toBe(false);
-
-    await page.reload();
-    for (const marker of ["CODEX_ROLLBACK_DEAD", response, later]) {
-      await expect(assistantText(page, marker)).toHaveCount(0);
-    }
-    await expect(
-      page.locator(".message.user-message:visible:not(.pending)", {
-        hasText: "CODEX_ROLLBACK_DEAD",
-      }),
-    ).toHaveCount(0);
-    await expect(
-      page.locator(".message.user-message:visible:not(.pending)", {
-        hasText: prompt,
-      }),
-    ).toBeVisible();
-
-    await sendMessage(page, 'Please reply with "CODEX_FALLBACK_FOLLOW_UP"');
-    await expect(assistantText(page, "CODEX_FALLBACK_FOLLOW_UP")).toBeVisible();
   },
 );
 
@@ -455,7 +399,7 @@ test(
 );
 
 test(
-  "codex rejects a rollback-dead undo anchor after canonical reload without side effects",
+  "codex rejects the anchor of an undone turn after reload without side effects",
   { tag: "@codex-only" },
   async ({ page }) => {
     await installCydoE2eBridge(page);
@@ -483,7 +427,6 @@ test(
       .poll(() => {
         const matches = frames.filter(
           (frame) =>
-            frame?.type === "task_history_boundary_replaced" &&
             frame?.tid === tid &&
             frame?.event?.type === "item/started" &&
             frame?.event?.item_type === "user_message" &&
@@ -502,7 +445,7 @@ test(
         return matches.length;
       })
       .toBe(1);
-    expect(staleAnchor).toMatch(/^line:\d+$/);
+    expect(staleAnchor).toMatch(/^before:.+$/);
 
     const rollbackFrameStart = frames.length;
     await undoUserMessage(page, `Reply exactly with ${rolledBack}`);
@@ -521,8 +464,8 @@ test(
           .some((frame) => frame?.type === "task_reload"),
       )
       .toBe(true);
-    // Reload from the canonical active boundary set before replaying the old
-    // physical JSONL line anchor through the normal request bridge.
+    // Reload, so that the history holds what Codex kept, before replaying
+    // the undone turn's anchor through the normal request bridge.
     await page.reload();
     await expect(assistantText(page, retained)).toBeVisible();
     await expect(assistantText(page, rolledBack)).toHaveCount(0);
@@ -632,22 +575,6 @@ test(
     await expect(page.locator(".btn-stop:visible")).toHaveCount(0);
     await expect(activeUsers).toHaveCount(4);
 
-    const tid = currentTaskTid(page);
-    await expect
-      .poll(() =>
-        codexRolloutRecords(tid).some(
-          (record) =>
-            record.type === "response_item" &&
-            record.payload?.type === "message" &&
-            record.payload?.role === "user" &&
-            (record.payload?.content ?? [])
-              .map((part: any) => part?.text ?? "")
-              .join("")
-              .includes("<turn_aborted>"),
-        ),
-      )
-      .toBe(true);
-
     await openUndoDialogForUserMessage(
       page,
       'Please reply with "interrupt-undo-two"',
@@ -683,18 +610,6 @@ test(
       secondUndoPreview: "3 whole turns will be removed.",
       retainedContext: "context-check-passed",
     });
-
-    await expect
-      .poll(() =>
-        codexRolloutRecords(tid)
-          .filter(
-            (record) =>
-              record.type === "event_msg" &&
-              record.payload?.type === "thread_rolled_back",
-          )
-          .map((record) => record.payload.num_turns),
-      )
-      .toEqual([1, 3]);
   },
 );
 
@@ -728,8 +643,7 @@ test(
         dupAnchors = frames
           .filter(
             (frame) =>
-              frame?.type === "task_history_boundary_replaced" &&
-              frame?.tid === tid &&
+                frame?.tid === tid &&
               frame?.event?.type === "item/started" &&
               frame?.event?.item_type === "user_message" &&
               !frame.event?.pending &&
@@ -749,8 +663,8 @@ test(
       .toBe(2);
     expect(dupAnchors).toHaveLength(2);
     const [earlierAnchor, laterAnchor] = dupAnchors;
-    expect(earlierAnchor).toMatch(/^line:\d+$/);
-    expect(laterAnchor).toMatch(/^line:\d+$/);
+    expect(earlierAnchor).toMatch(/^before:.+$/);
+    expect(laterAnchor).toMatch(/^before:.+$/);
     expect(earlierAnchor).not.toBe(laterAnchor);
 
     await openUndoDialogForUserMessage(page, 'Please reply with "dup-marker"');
@@ -780,36 +694,6 @@ test(
     ).toBeVisible();
     await expect(assistantText(page, "dup-first")).toBeVisible();
 
-    // Rollout evidence for the undo itself, asserted before any further
-    // message adds another client-id-bearing turn to the ledger.
-    await expect
-      .poll(() => {
-        const clientIds = codexRolloutRecords(tid)
-          .filter(
-            (record) =>
-              record.type === "event_msg" &&
-              record.payload?.type === "user_message",
-          )
-          .map((record) => record.payload?.client_id)
-          .filter(
-            (clientId) => typeof clientId === "string" && clientId.length > 0,
-          );
-        return { count: clientIds.length, distinct: new Set(clientIds).size };
-      })
-      .toEqual({ count: 2, distinct: 2 });
-
-    await expect
-      .poll(() =>
-        codexRolloutRecords(tid)
-          .filter(
-            (record) =>
-              record.type === "event_msg" &&
-              record.payload?.type === "thread_rolled_back",
-          )
-          .map((record) => record.payload.num_turns),
-      )
-      .toEqual([1]);
-
     const probeMarker = Buffer.from("dup-first").toString("base64");
     await sendMessage(page, `check context contains ${probeMarker}`);
     await expect(
@@ -824,20 +708,9 @@ test(
 );
 
 test(
-  "codex refuses native undo of a steered turn without side effects",
+  "codex offers no undo at a steered message",
   { tag: "@codex-only" },
   async ({ page }) => {
-    const frames: any[] = [];
-    page.on("websocket", (ws) => {
-      ws.on("framereceived", (event) => {
-        try {
-          frames.push(JSON.parse(event.payload.toString()));
-        } catch {
-          // ignore non-JSON frames
-        }
-      });
-    });
-
     await enterSession(page);
 
     await sendMessage(page, 'Please reply with "steer-first"');
@@ -860,64 +733,24 @@ test(
     ).toBeVisible();
     await expect(page.locator(".btn-stop:visible")).toHaveCount(0);
 
-    const tid = currentTaskTid(page);
-    const history = await visibleHistory(page);
-    // Read before/after the two refusal attempts below; this spans a
-    // multi-second window, so a late-flushed record from the *preceding*
-    // turn could in principle fail this check pointing at an innocent undo
-    // (plan §3.3c).
-    const before = codexRolloutRecords(tid).length;
-    const frameStart = frames.length;
-
-    await expectUndoRefusalForUserMessage(
-      page,
-      'Also please reply with "steer-marker"',
-      "Native Codex undo preparation refused: completed native turn does not match the simple one-user grammar",
-    );
-    await expectUndoRefusalForUserMessage(
-      page,
-      "run command sleep 5",
-      "Native Codex undo preparation refused: candidate suffix reuses a raw turn id",
-    );
-
-    await expect
-      .poll(
-        () =>
-          frames.slice(frameStart).filter((frame) => frame?.type === "error")
-            .length,
-      )
-      .toBe(2);
-    expect(
-      frames
-        .slice(frameStart)
-        .filter((frame) => frame?.type === "error")
-        .map((frame) => ({ tid: frame.tid, message: frame.message })),
-    ).toEqual([
-      {
-        tid,
-        message:
-          "Native Codex undo preparation refused: completed native turn does not match the simple one-user grammar",
-      },
-      {
-        tid,
-        message:
-          "Native Codex undo preparation refused: candidate suffix reuses a raw turn id",
-      },
-    ]);
-    expect(
-      frames
-        .slice(frameStart)
-        .some(
-          (frame) =>
-            frame?.type === "undo_preview" ||
-            frame?.type === "undo_result" ||
-            frame?.type === "task_reload",
-        ),
-    ).toBe(false);
-
-    // See the "before" comment above re: the multi-second comparison window.
-    expect(await visibleHistory(page)).toEqual(history);
-    expect(codexRolloutRecords(tid).length).toBe(before);
+    // Codex reverts whole turns: a turn can be undone at the message that
+    // started it, and a message steered into it is no place to cut.
+    const userMessage = (text: string) =>
+      page
+        .locator(".message-wrapper:visible", {
+          has: page.locator(
+            ".message.user-message:visible:not(.pending):not(.meta-message)",
+            { hasText: text },
+          ),
+        })
+        .last();
+    const opener = userMessage("run command sleep 5");
+    await opener.hover();
+    await expect(opener.locator(".undo-btn")).toBeVisible();
+    const steered = userMessage('Also please reply with "steer-marker"');
+    await steered.hover();
+    await expect(steered.locator(".undo-btn")).toHaveCount(0);
+    await expect(steered.locator(".fork-btn")).toHaveCount(0);
 
     const sleepProbe = Buffer.from("run command sleep 5").toString("base64");
     await sendMessage(page, `check context contains ${sleepProbe}`);
@@ -1227,7 +1060,7 @@ async function openTaskByTid(
 }
 
 codexProfileTest(
-  "codex live rollback lands in the launch profile B rollout, never in an A/C same-ID poison sibling",
+  "codex live undo cuts the thread in its launch profile B, never touching an A/C same-ID poison sibling",
   { tag: "@codex-only" },
   async ({ page, profileBackend }) => {
     const marker1 = "split-undo-one";
@@ -1254,9 +1087,6 @@ codexProfileTest(
     );
     const relPath = relativeRolloutPath(profileBackend.profileB, realRollout);
     const sessionId = sessionIdFromRollout(realRollout);
-    expect(readFileSync(realRollout, "utf8")).not.toContain(
-      "thread_rolled_back",
-    );
 
     // Adversarial same-session-ID poison siblings under the backend's own
     // parent profile (A) and under the root work-codex is about to be
@@ -1312,14 +1142,8 @@ codexProfileTest(
     await expect(assistantText(page, marker2)).toBeVisible();
     await expect(assistantText(page, marker1)).toBeVisible();
 
-    // The rollback landed in B's own rollout file as a native
-    // thread_rolled_back marker (append-only — Codex's rollback never
-    // truncates the file, it appends an event marker that CyDo's own replay
-    // logic skips past)...
-    await expect
-      .poll(() => readFileSync(realRollout, "utf8"))
-      .toContain("thread_rolled_back");
-
+    // Codex cut the thread where it lives, in profile B (the transcript above
+    // is what it kept, read back from there),
     // ...and never touched either poison sibling.
     expect(
       readFileSync(join(profileBackend.backendProfileA, relPath), "utf8"),
@@ -1328,9 +1152,9 @@ codexProfileTest(
       poisonCContent,
     );
 
-    // Session is still alive and fully functional after the rollback, and
-    // its follow-up turn lands in the very same B rollout file, not a new
-    // one under B, A, or C.
+    // Session is still alive and fully functional after the undo, and its
+    // follow-up turn lands in a rollout of the same thread under B, never
+    // under A or C.
     await expect(page.locator(".input-textarea:visible").first()).toBeEnabled();
     await sendMessage(page, `Please reply with "${followup}"`);
     await expect(assistantText(page, followup)).toBeVisible({ timeout });
@@ -1338,12 +1162,52 @@ codexProfileTest(
       profileBackend.profileB,
       followup,
     );
-    expect(followupRollout).toBe(realRollout);
+    expect(basename(followupRollout)).toContain(sessionId);
     expect(
       readFileSync(join(profileBackend.backendProfileA, relPath), "utf8"),
     ).toBe(poisonAContent);
     expect(readFileSync(join(profileBackend.profileC, relPath), "utf8")).toBe(
       poisonCContent,
     );
+  },
+);
+
+test(
+  "bootstrap turn steer has no history actions after reload",
+  { tag: "@codex-only" },
+  async ({ page }) => {
+    await enterSession(page);
+    await sendMessage(page, "run command sleep 5");
+    await expect(
+      page.locator(".tool-call", { hasText: "sleep 5" }).first(),
+    ).toBeVisible();
+    await sendMessage(page, 'Also please reply with "FIRST_STEER"');
+    const steer = page
+      .locator(".message-wrapper:visible", {
+        has: page.locator(".user-message:visible:not(.pending)", {
+          hasText: "FIRST_STEER",
+        }),
+      })
+      .last();
+    await expect(steer).toBeVisible();
+    await expect(assistantText(page, "FIRST_STEER")).toBeVisible();
+    await expect(page.locator(".btn-stop:visible")).toHaveCount(0);
+    const tid = currentTaskTid(page);
+    // If the second prompt started a turn, it would leave another turn opener.
+    await expect
+      .poll(
+        () =>
+          codexRolloutRecords(tid).filter(
+            (record) => record.payload?.type === "task_started",
+          ).length,
+      )
+      .toBe(1);
+    await steer.hover();
+    await expect(steer.locator(".undo-btn, .fork-btn")).toHaveCount(0);
+
+    await page.reload();
+    await expect(steer).toBeVisible();
+    await steer.hover();
+    await expect(steer.locator(".undo-btn, .fork-btn")).toHaveCount(0);
   },
 );

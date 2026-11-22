@@ -930,6 +930,8 @@ function handleResponses(req, res) {
           path: req.url || "/v1/responses",
           model: requestedModel,
           userText,
+          input,
+          threadId: req.headers["thread-id"] ?? null,
           isToolOutput,
           reasoningEffort: parsed.reasoning?.effort ?? null,
         }) + "\n",

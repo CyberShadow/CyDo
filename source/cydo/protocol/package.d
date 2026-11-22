@@ -510,6 +510,9 @@ struct TranslatedEvent
 	AbsTime ts;         // AbsTime.init (stdTime == 0) means "not available"
 	int sourceLine;     // 1-based physical JSONL line for raw, 0 when not file-backed
 	bool isContextBootstrap; // internal submission provenance, never sent on the wire
+	/// On a turn/result whose agent knows it: the boundary at the end of the
+	/// turn, which belongs on the turn's last turn/stop. Never sent on the wire.
+	HistoryBoundary turnBoundary;
 
 	this(string translated, string raw, AbsTime ts = AbsTime.init,
 		int sourceLine = 0, bool isContextBootstrap = false) @safe nothrow

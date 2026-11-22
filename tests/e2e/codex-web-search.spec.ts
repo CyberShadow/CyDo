@@ -1,24 +1,18 @@
 import { test as base, expect } from "@playwright/test";
-import type { Page } from "@playwright/test";
 import { spawn } from "child_process";
 import type { ChildProcess } from "child_process";
 import {
-  appendFileSync,
   cpSync,
   mkdirSync,
-  readdirSync,
   rmSync,
-  statSync,
   symlinkSync,
   writeFileSync,
 } from "fs";
-import { join } from "path";
 import {
   enterSession,
   sendMessage,
   killSession,
   responseTimeout,
-  assistantText,
   killBackend,
 } from "./fixtures";
 
@@ -89,21 +83,6 @@ function spawnBackend(
   });
 }
 
-function findRolloutJsonl(root: string): string | null {
-  for (const entry of readdirSync(root)) {
-    const fullPath = join(root, entry);
-    const stat = statSync(fullPath);
-    if (stat.isDirectory()) {
-      const nested = findRolloutJsonl(fullPath);
-      if (nested) return nested;
-      continue;
-    }
-    if (entry.startsWith("rollout-") && entry.endsWith(".jsonl"))
-      return fullPath;
-  }
-  return null;
-}
-
 const test = base.extend<{ restartableBackend: RestartableBackend }>({
   restartableBackend: async ({}, use, testInfo) => {
     test.skip(testInfo.project.name !== "codex", "codex-only regression");
@@ -164,31 +143,6 @@ supports_websockets = false
   },
 });
 
-async function seedTaskAndLocateRollout(
-  page: Page,
-  restartableBackend: RestartableBackend,
-): Promise<{ taskUrl: string; rolloutPath: string }> {
-  await page.goto("/");
-  await page.locator('button[title="New task"]').first().click();
-
-  const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled();
-  await input.fill('reply with "seed-history"');
-  await page.locator(".btn-send:visible").first().click();
-
-  await expect(assistantText(page, "seed-history")).toBeVisible();
-
-  const taskUrl = page.url();
-  await page.waitForTimeout(1_000);
-
-  const rolloutPath = findRolloutJsonl(
-    join(restartableBackend.codexHome, "sessions"),
-  );
-  expect(rolloutPath).not.toBeNull();
-
-  return { taskUrl, rolloutPath: rolloutPath! };
-}
-
 test("codex web search renders query subtitle and formatted results", { tag: "@codex-only" }, async ({
   page,
   restartableBackend,
@@ -231,59 +185,4 @@ test("codex web search renders query subtitle and formatted results", { tag: "@c
     "dagster incremental pipelines",
   );
   await expect(replayedToolCall.locator(".web-search-query")).toBeVisible();
-});
-
-test("codex history replay renders web_search_call from rollout JSONL", { tag: "@codex-only" }, async ({
-  page,
-  restartableBackend,
-}) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
-    page,
-    restartableBackend,
-  );
-
-  // Append a web_search_call event to the rollout JSONL
-  appendFileSync(
-    rolloutPath,
-    [
-      JSON.stringify({
-        timestamp: "2026-04-14T10:00:00.000Z",
-        type: "response_item",
-        payload: {
-          type: "web_search_call",
-          status: "completed",
-          action: {
-            type: "search",
-            query: "dagster incremental pipelines",
-            queries: [
-              "dagster incremental pipelines",
-              "dagster asset partitions docs",
-            ],
-          },
-        },
-      }),
-      "",
-    ].join("\n"),
-  );
-
-  await restartableBackend.restart();
-  await page.goto(taskUrl);
-
-  // Verify seed message replays
-  await expect(assistantText(page, "seed-history")).toBeVisible();
-
-  // Verify web search tool call renders from history
-  const wsToolCall = page.locator(".tool-call").filter({
-    has: page.locator(".tool-name", { hasText: "webSearch" }),
-  });
-  await expect(wsToolCall).toBeVisible();
-
-  // Verify subtitle has main query
-  await expect(wsToolCall.locator(".tool-subtitle")).toContainText(
-    "dagster incremental pipelines",
-  );
-
-  // Verify both queries appear in formatted result
-  await expect(wsToolCall).toContainText("dagster incremental pipelines");
-  await expect(wsToolCall).toContainText("dagster asset partitions docs");
 });

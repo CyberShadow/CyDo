@@ -707,6 +707,8 @@ struct JsonlTracker
 			break;
 		}
 		auto access = resolution.requireAccess();
+		if (access.isDriverServed)
+			return; // no file that an agent could rewrite under an undo
 		undoJsonl[tid] = readText(access.path);
 		tracef("[jsonl] captureUndoSnapshot tid=%d path=%s bytes=%d", tid,
 			access.path, undoJsonl[tid].length);
@@ -1274,19 +1276,19 @@ unittest
 {
 	import std.file : getSize, readText, remove, write;
 	import std.conv : to;
-	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import cydo.runtime.launch.types : NativeHistoryProfile;
 	import cydo.workflow.history.native_history : HistoryAccess;
 	import ae.utils.json : JSONFragment, toJson;
 	import cydo.protocol : TaskEventEnvelope;
 	auto path = "/tmp/cydo-jsonl-tracker-final-flush.jsonl";
-	write(path, `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n");
+	write(path, `{"type":"system","subtype":"init"}` ~ "\n");
 	TaskData task = TaskData(1, "", "");
 	task.agentSessionId = "session";
 	task.history.reset(Watermark.none());
 	task.history.appendLive(Data(toJson(TaskEventEnvelope(1, 1,
 		JSONFragment(`{"type":"item/started","item_type":"user_message"}`))).representation), null);
-	auto agent = new CodexAgent();
+	auto agent = new ClaudeCodeAgent();
 	JsonlTracker tracker;
 	tracker.getTask = (int) => &task;
 	setTestLiveContext(tracker, 1, agent);
@@ -1304,7 +1306,7 @@ unittest
 	tracker.boundaryState[1] = JsonlTracker.BoundaryReconcileState.init;
 	tracker.boundaryState[1].liveByKind[PersistedHistoryBoundaryKind.user] ~=
 		JsonlTracker.LiveBoundaryCandidate(0, PersistedHistoryBoundaryKind.user, "", task.history.generation);
-	write(path, readText(path) ~ `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n");
+	write(path, readText(path) ~ `{"type":"user","message":{"content":"saved"}}` ~ "\n");
 	tracker.finalReconcileJsonlIfPresent(1);
 	assert(resolved == ["line:2:0"]);
 	tracker.finalReconcileJsonlIfPresent(1);

@@ -121,16 +121,16 @@
           nodejs = pkgs.nodejs_22;
 
           # Codex CLI — pre-built static binary from npm
-          codexVersion = "0.144.1";
+          codexVersion = "0.171.0";
           codexSrc = {
             x86_64-linux = {
               url = "https://registry.npmjs.org/@openai/codex/-/codex-${codexVersion}-linux-x64.tgz";
-              hash = "sha256-4qZNQhwQqvC348DovXG3Hkl9dYIwAzGLZ0onjXGt0Mc=";
+              hash = "sha256-4T1nr7BTPMYWC19BQOStB+Ks2Hrbqggbv2m4LpDPTlU=";
               triple = "x86_64-unknown-linux-musl";
             };
             aarch64-linux = {
               url = "https://registry.npmjs.org/@openai/codex/-/codex-${codexVersion}-linux-arm64.tgz";
-              hash = "sha256-JcZtRFHE9X32tCcXPtfT1+KcEp1h3FhJjb25Rnh7dlU=";
+              hash = "sha256-Jq4neIx9lirmQyGrpGc/kYuZtAxGVSRpML+WL6W4GwE=";
               triple = "aarch64-unknown-linux-musl";
             };
           }.${system} or (throw "Codex CLI: unsupported system ${system}");
@@ -145,8 +145,9 @@
               tar xzf $src
             '';
             installPhase = ''
-              mkdir -p $out/bin
-              install -m755 package/vendor/${codexSrc.triple}/bin/codex $out/bin/codex
+              mkdir -p $out/bin $out/libexec
+              cp -R package/vendor/${codexSrc.triple} $out/libexec/codex
+              ln -s ../libexec/codex/bin/codex $out/bin/codex
             '';
             meta.platforms = [ "x86_64-linux" "aarch64-linux" ];
           };
@@ -782,7 +783,10 @@ EOF
 
               export MOCK_ANTHROPIC_CAPTURE=/tmp/mock-anthropic-requests.ndjson
               rm -f "$MOCK_ANTHROPIC_CAPTURE"
-              ${lib.optionalString (lib.hasPrefix "e2e/model-effort-reaches-api.spec.ts:" testMatch) ''
+              ${lib.optionalString (
+                lib.hasPrefix "e2e/model-effort-reaches-api.spec.ts:" testMatch
+                || (agentType == "codex" && lib.hasPrefix "e2e/continuation.spec.ts:" testMatch)
+              ) ''
               export MOCK_OPENAI_CAPTURE=/tmp/mock-openai-requests.ndjson
               rm -f "$MOCK_OPENAI_CAPTURE"
               ''}

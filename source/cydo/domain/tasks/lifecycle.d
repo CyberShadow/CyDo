@@ -51,6 +51,14 @@ struct TaskLifecycle
 	void transitionTask(int tid, TaskStatus[] expectedFrom, TaskStatus to,
 		TaskNotificationChange notification = TaskNotificationChange.preserve)
 	{
+		applyTransition(tid, expectedFrom, to, notification);
+		publishSnapshot(tid);
+	}
+
+	/// Apply and persist the status when the caller owns the snapshot.
+	void applyTransition(int tid, TaskStatus[] expectedFrom, TaskStatus to,
+		TaskNotificationChange notification)
+	{
 		enforce(expectedFrom.length > 0, "Task transition requires an expected origin");
 		auto td = getTask(tid);
 		enforce(td !is null, "Task transition requested for missing task");
@@ -82,7 +90,6 @@ struct TaskLifecycle
 				onTaskTerminal(tid);
 		if (attentionChanged)
 			persistNeedsAttention(tid, false);
-		publishSnapshot(tid);
 	}
 }
 

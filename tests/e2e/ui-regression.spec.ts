@@ -142,6 +142,8 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
   await expect(assistantText(page, "fork-tail")).toBeVisible({
     timeout: responseTimeout(agentType),
   });
+  // Stop can trigger a Codex replay before the explicit reload below.
+  const preStopFrameEnd = frames.length;
   if (agentType === "codex" || agentType === "copilot") {
     // Codex/Copilot: kill and reload so JSONL is finalized and fork buttons appear
     await killSession(page, agentType);
@@ -185,7 +187,13 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
   });
   await expect(userMsg).toHaveCount(1);
   await expect(async () => {
-    const targetUsers = frames.filter(
+    // Codex names a turn when it accepts the message that starts it, so the
+    // live message arrives with its boundary; the other agents' is read from
+    // their history file afterwards. (The replay after the reload carries
+    // every agent's boundaries.)
+    const liveFrames =
+      agentType === "codex" ? frames.slice(0, preStopFrameEnd) : frames;
+    const targetUsers = liveFrames.filter(
       (frame) =>
         frame?.type !== "task_history_boundary_replaced" &&
         frame?.event?.type === "item/started" &&
@@ -193,7 +201,8 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
         !frame?.event?.is_meta &&
         !frame?.event?.is_synthetic &&
         !frame?.event?.pending &&
-        !frame?.event?.history_boundary &&
+        (frame?.event?.history_boundary?.kind === "user") ===
+          (agentType === "codex") &&
         frame?.event?.content?.[0]?.text === targetPrompt,
     );
     expect(targetUsers).toHaveLength(1);
@@ -204,7 +213,7 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
         frame?.seq === target.seq &&
         frame?.event?.history_boundary?.kind === "user",
     );
-    expect(targetReplacements).toHaveLength(1);
+    expect(targetReplacements).toHaveLength(agentType === "codex" ? 0 : 1);
     expect(
       frames
         .slice(postReloadFrameStart)

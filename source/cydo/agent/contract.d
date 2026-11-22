@@ -271,8 +271,11 @@ struct DriverHistory
 interface DriverServedHistoryAgent : Agent
 {
 	/// Reject with the detail to display when history is unavailable.
+	/// `currentOwner` returns the task's live session, if it has one: a
+	/// session can attach while the history is being read. Without one,
+	/// `obtainLaunch` provides the launch of the task's own process.
 	Promise!DriverHistory loadHistory(string sessionId,
-		const ref NativeHistoryProfile profile, AgentSession owner,
+		const ref NativeHistoryProfile profile, AgentSession delegate() currentOwner,
 		DriverHistoryLaunch delegate() obtainLaunch);
 }
 

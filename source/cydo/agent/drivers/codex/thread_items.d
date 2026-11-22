@@ -8,7 +8,6 @@ module cydo.agent.drivers.codex.thread_items;
 
 import std.conv : to;
 import std.exception : enforce;
-import std.logger : tracef;
 
 import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.time.types : AbsTime;
@@ -20,6 +19,16 @@ import cydo.protocol : ContentBlock, HistoryBoundary, HistoryBoundaryKind,
 	ItemCompletedEvent, ItemResultEvent, ItemStartedEvent, SessionCompactedEvent,
 	SessionInitEvent, TranslatedEvent, TurnEndReason, TurnResultEvent,
 	TurnStopEvent, UsageInfo, extrasToFragment;
+
+void attachUserBoundary(ref ItemStartedEvent event, string turnId, bool isContext,
+	ref bool seenUserMessage)
+{
+	if (seenUserMessage)
+		return;
+	seenUserMessage = true;
+	if (!isContext && turnId.length > 0)
+		event.history_boundary = HistoryBoundary("before:" ~ turnId, HistoryBoundaryKind.user);
+}
 
 /// The item_type CyDo displays a Codex item as. Item types CyDo does not
 /// know are displayed as text.
@@ -508,12 +517,8 @@ TranslatedEvent[] translateThreadHistory(ThreadMetadata thread, Turn[] turns,
 					auto ev = userMessageEvent(item, unrecognized);
 					// Context CyDo or Codex put into the conversation is not
 					// a message of the user's, and not a place to cut it.
-					if (isCodexContextOnlyUserText(userMessageText(item)))
-						ev.is_meta = true;
-					else if (!seenUserMessage)
-						ev.history_boundary = HistoryBoundary("before:" ~ turn.id,
-							HistoryBoundaryKind.user);
-					seenUserMessage = true;
+					ev.is_meta = isCodexContextOnlyUserText(userMessageText(item));
+					attachUserBoundary(ev, turn.id, ev.is_meta, seenUserMessage);
 					events ~= TranslatedEvent(toJson(ev), rawItem, ts);
 					foreach (event; unrecognized)
 						events ~= TranslatedEvent(event, rawItem, ts);
@@ -544,7 +549,10 @@ TranslatedEvent[] translateThreadHistory(ThreadMetadata thread, Turn[] turns,
 			events[lastStopIndex].translated = toJson(lastStop);
 		}
 
-		if (!turn.completedAt.isNull)
+		// Codex times a turn in whole seconds: its end can read as earlier
+		// than its last item, which the result must not precede.
+		if (!turn.completedAt.isNull
+			&& unixTime(turn.completedAt.get * 1000).stdTime > ts.stdTime)
 			ts = unixTime(turn.completedAt.get * 1000);
 		events ~= TranslatedEvent(toJson(turnResultEvent(turn, lastAgentText)), rawTurn, ts);
 	}
@@ -607,24 +615,19 @@ string extractCommandActionsCommand(JSONFragment commandActions, out string acti
 	if (commandActions.json is null || commandActions.json.length == 0)
 		return "";
 
+	// Every kind of command action Codex reports has these two.
 	@JSONPartial
 	static struct CommandAction
 	{
-		@JSONOptional string type;
-		@JSONOptional string command;
+		string type;
+		string command;
 	}
 
-	try
-	{
-		auto actions = jsonParse!(CommandAction[])(commandActions.json);
-		if (actions.length != 1 || actions[0].command.length == 0)
-			return "";
-		actionType = actions[0].type;
-		return actions[0].command;
-	}
-	catch (Exception e)
-	{ tracef("extractCommandActionsInput: parse error: %s", e.msg); }
-	return "";
+	auto actions = jsonParse!(CommandAction[])(commandActions.json);
+	if (actions.length != 1 || actions[0].command.length == 0)
+		return "";
+	actionType = actions[0].type;
+	return actions[0].command;
 }
 
 version (unittest)
@@ -829,10 +832,12 @@ unittest
 	assert(jsonParse!TurnResult(events[39].translated).result == "MCP done");
 
 	// Each event carries the item's time (the turn's, where the item has
-	// none) and the object it was translated from.
+	// none) and the object it was translated from. The turn completed at
+	// second 219, by Codex's whole-second count: its result is not dated
+	// before its last item.
 	import std.algorithm.searching : canFind, startsWith;
 	assert(events[1].ts == unixTime(1_795_274_219_154) && events[4].ts == unixTime(1_795_274_219_214)
-		&& events[6].ts == events[4].ts && events[7].ts == unixTime(1_795_274_219_000));
+		&& events[6].ts == events[4].ts && events[7].ts == events[4].ts);
 	assert(events[4].raw.canFind(`"type":"agentMessage"`) && events[4].raw.canFind(`"id":"msg_mock_00001"`));
 	assert(events[7].raw.startsWith(`{"id":"01a1feae-9e5b-7430-b501-883bafb074dd","status":"completed"`));
 }
@@ -1063,8 +1068,7 @@ unittest
 		"turn success",
 	]);
 
-	// Context put into the conversation as a user message is marked as such
-	// and is no boundary, nor is a message steered in after it.
+	// Bootstrap context occupies the opener position. A later steer cannot anchor it.
 	auto context = items.dup;
 	context[3].item.content = jsonParse!SO(
 		`[{"type":"text","text":"[SYSTEM: Session start]\n\nrun it","text_elements":[]}]`);

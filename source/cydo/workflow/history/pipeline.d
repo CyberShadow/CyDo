@@ -227,6 +227,7 @@ class HistoryEventPipeline
 				host_.reportUnavailableHistory(tid, unavailable);
 			}
 			rebuildVisibleTurnAnchors(tid);
+			host_.broadcastHistoryOperations(tid);
 		}
 		deliver(tid, load.waiters);
 	}
@@ -660,7 +661,11 @@ class HistoryEventPipeline
 			seq = td.history.appendLive(historyData, ev.raw);
 
 		if (seq == cast(size_t) -1)
+		{
+			if (ev.turnBoundary.anchor.length > 0)
+				attachTurnBoundary(tid, td, ev.turnBoundary);
 			return seq;
+		}
 
 		if (!merged)
 		{
@@ -672,7 +677,77 @@ class HistoryEventPipeline
 		if (!merged && host_.noteLiveBoundaryCandidate !is null)
 			host_.noteLiveBoundaryCandidate(tid, seq, ev.translated, ev.raw, ev.sourceLine,
 				ev.isContextBootstrap, localUserProvenance);
+		if (ev.turnBoundary.anchor.length > 0)
+			attachTurnBoundary(tid, td, ev.turnBoundary);
 		return seq;
+	}
+
+	private enum TurnEvent { other, stop, result }
+
+	private static TurnEvent turnEventOf(scope const(char)[] envelope)
+	{
+		@JSONPartial static struct Probe
+		{
+			string type;
+			@JSONOptional bool is_sidechain;
+			@JSONOptional string parent_tool_use_id;
+		}
+		auto probe = jsonParse!Probe(extractEventFromEnvelope(envelope));
+		if (probe.is_sidechain || probe.parent_tool_use_id.length > 0)
+			return TurnEvent.other;
+		return probe.type == "turn/stop" ? TurnEvent.stop
+			: probe.type == "turn/result" ? TurnEvent.result : TurnEvent.other;
+	}
+
+	/// An agent that knows where a turn ends says so with the turn/result,
+	/// which has just been appended. The boundary belongs on the last
+	/// turn/stop of that turn; a turn that produced none has no boundary.
+	private void attachTurnBoundary(int tid, TaskData* td, HistoryBoundary boundary)
+	{
+		assert(boundary.kind == HistoryBoundaryKind.agent_turn);
+		if (!td.history.isLoaded)
+		{
+			bool newest = true;
+			td.history.amendPending((ref Data event) {
+				if (newest)
+				{
+					// The turn/result that carried the boundary.
+					newest = false;
+					return false;
+				}
+				TurnEvent kind;
+				event.enter((scope const(ubyte)[] bytes) { kind = turnEventOf(bytes.as!(char[])); });
+				if (kind == TurnEvent.stop)
+					event = withHistoryBoundary(tid, event, boundary);
+				return kind != TurnEvent.other;
+			});
+			return;
+		}
+		foreach_reverse (seq; 0 .. td.history.length - 1)
+		{
+			TurnEvent kind;
+			td.history[seq].enter((scope const(ubyte)[] bytes) {
+				kind = turnEventOf(bytes.as!(char[]));
+			});
+			if (kind == TurnEvent.stop)
+				backfillHistoryBoundary(tid, seq, boundary);
+			if (kind != TurnEvent.other)
+				return;
+		}
+	}
+
+	private static Data withHistoryBoundary(int tid, ref const Data envelopeData,
+		HistoryBoundary boundary)
+	{
+		Data replacement;
+		envelopeData.enter((scope const(ubyte)[] bytes) {
+			auto envelope = bytes.as!(char[]);
+			auto event = extractEventFromEnvelope(envelope);
+			auto enriched = event[0 .. $ - 1] ~ `,"history_boundary":` ~ toJson(boundary) ~ `}`;
+			replacement = Data(toJson(TaskEventEnvelope(tid, extractTsFromEnvelope(envelope),
+				JSONFragment(enriched.idup))).representation);
+		});
+		return replacement;
 	}
 
 	void broadcastTask(int tid, TranslatedEvent ev)
@@ -711,7 +786,6 @@ class HistoryEventPipeline
 			auto envelope = bytes.as!(char[]);
 			auto event = extractEventFromEnvelope(envelope);
 			assert(event.length > 0, "history boundary target has no event");
-			auto timestamp = extractTsFromEnvelope(envelope);
 			@JSONPartial static struct Probe {
 				string type; @JSONOptional string item_type; @JSONOptional bool is_meta;
 				@JSONOptional bool is_synthetic; @JSONOptional bool pending;
@@ -739,14 +813,10 @@ class HistoryEventPipeline
 				alreadyResolved = true;
 				return;
 			}
-			auto enriched = event[0 .. $ - 1] ~ `,"history_boundary":` ~ toJson(boundary) ~ `}`;
-			replacement = Data(toJson(TaskEventEnvelope(tid, timestamp,
-				JSONFragment(enriched.idup))).representation);
 		});
 		if (alreadyResolved)
 			return;
-		assert(replacement.length > 0, "history boundary replacement was not produced");
-		td.history.replaceAt(seq, replacement);
+		td.history.replaceAt(seq, withHistoryBoundary(tid, td.history[seq], boundary));
 		if (!publish)
 			return;
 		td.history[seq].enter((scope const(ubyte)[] bytes) {
@@ -1941,6 +2011,7 @@ version (unittest) private final class DriverHistoryPipelineFixture
 			return pending;
 		};
 		host.injectAgentNameIntoSessionInit = (string translated, string agentName) => translated;
+		host.broadcastHistoryOperations = (int t) {};
 		host.reportUnavailableHistory = (int t, const ref TaskHistoryResolution resolution) {
 			assert(t == tid);
 			reports ~= resolution.requireUnavailable();
@@ -2133,4 +2204,62 @@ unittest
 	fixture.reads[1].fulfill(DriverHistory.init);
 	drainHistoryNextTicks();
 	assert(fixture.task.history.length == 0 && fixture.sent.length == 0);
+}
+
+// The end of a turn, which an agent reports with the turn/result, goes on the
+// turn's last turn/stop: at once in a loaded history, where clients are told,
+// and in the events waiting for a load.
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks;
+
+	enum stop = `{"type":"turn/stop"}`;
+	TranslatedEvent result(string turnId)
+	{
+		auto event = TranslatedEvent(`{"type":"turn/result","subtype":"success"}`, null);
+		event.turnBoundary = HistoryBoundary("through:" ~ turnId, HistoryBoundaryKind.agent_turn);
+		return event;
+	}
+	string[] boundaries(ref TaskData task)
+	{
+		string[] found;
+		foreach (ref entry; task.history)
+			found ~= (cast(string) entry.toGC()).canFind("history_boundary")
+				? (cast(string) entry.toGC()).canFind("through:t1") ? "t1" : "t2" : "-";
+		return found;
+	}
+
+	auto fixture = new DriverHistoryPipelineFixture;
+	fixture.pipeline.host_.normalizeKnownSystemMessageMeta = (string translated, int) => translated;
+	fixture.pipeline.host_.updateClaudeUsageFromEvent = (int, string) => false;
+	fixture.pipeline.host_.planBroadcast = (int, TranslatedEvent event) {
+		HistoryBroadcastPlan plan;
+		plan.currentEvent = event;
+		return plan;
+	};
+	auto pipeline = fixture.pipeline;
+	enum tid = DriverHistoryPipelineFixture.tid;
+
+	// Before the load: the live events are buffered.
+	foreach (event; [TranslatedEvent(stop, null), TranslatedEvent(stop, null), result("t1"),
+		// a turn that stopped nowhere has no end to cut at
+		result("t2")])
+		pipeline.broadcastTask(tid, event);
+	assert(fixture.sent.length == 0);
+	pipeline.whenHistoryLoaded(tid, () {});
+	fixture.reads[0].fulfill(DriverHistory.init);
+	drainNextTicks();
+	assert(boundaries(fixture.task) == ["-", "t1", "-", "-"]);
+
+	// In a loaded history the boundary is published as a replacement.
+	fixture.sent = null;
+	pipeline.broadcastTask(tid, TranslatedEvent(stop, null));
+	pipeline.broadcastTask(tid, TranslatedEvent(`{"type":"item/started","item_id":"i"}`, null));
+	pipeline.broadcastTask(tid, result("t2"));
+	assert(boundaries(fixture.task) == ["-", "t1", "-", "-", "t2", "-", "-"]);
+	assert(fixture.sent.length == 4);
+	assert(fixture.sent[3].canFind("task_history_boundary_replaced")
+		&& fixture.sent[3].canFind("through:t2") && fixture.sent[3].canFind(`"seq":4`));
+	pipeline.broadcastTask(tid, result("t2"));
+	assert(boundaries(fixture.task) == ["-", "t1", "-", "-", "t2", "-", "-", "-"]);
 }

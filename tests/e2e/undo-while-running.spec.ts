@@ -1,15 +1,16 @@
+import type { Page } from "@playwright/test";
 import {
   test,
   expect,
   enterSession,
   sendMessage,
   assistantText,
-  codexRolloutRecords,
   currentTaskTid,
+  killSession,
 } from "./fixtures";
 
 test(
-  "busy Codex undo replays the canonical rollback and resumes",
+  "busy Codex undo stops the session, reverts the thread and resumes",
   { tag: "@codex-only" },
   async ({ page }) => {
     const frames: any[] = [];
@@ -50,16 +51,15 @@ test(
     await secondUserMsg.locator(".undo-btn").click();
 
     await expect(page.locator(".undo-dialog")).toBeVisible();
-    // A busy Codex session uses the resolved JSONL fallback preview, rather
-    // than a stale native-turn count.
+    // The turn of the message and the one running after it.
     await expect(page.locator(".undo-dialog-count")).toContainText(
-      /\d+ messages?/,
+      "2 whole turns will be removed.",
     );
     const rollbackFrameStart = frames.length;
     await page.locator(".btn-undo").click();
 
     // The undo is async: backend stops the session first (setGoal Dead), then
-    // performs the undo in the callback, which triggers a history reload.
+    // reverts the stopped thread, which triggers a history reload.
     // Wait for the second user message to disappear — this is the primary
     // indicator that the full stop→undo→reload cycle completed.
     await expect(
@@ -110,14 +110,8 @@ test(
     // The first reply should still be visible.
     await expect(assistantText(page, "first-reply").first()).toBeVisible();
 
-    // The fallback truncation must be durable in the canonical rollout, not
-    // merely hidden by the optimistic in-memory view.
-    await expect
-      .poll(() => JSON.stringify(codexRolloutRecords(tid)))
-      .not.toContain("second-reply");
-
-    // Reload from the server's canonical history before sending another turn.
-    // This catches a rollback that only updates the currently mounted view.
+    // Reload from what Codex kept before sending another turn. This catches
+    // an undo that only updates the currently mounted view.
     await page.reload();
     await expect(assistantText(page, "first-reply")).toBeVisible();
     await expect(assistantText(page, "second-reply")).toHaveCount(0);
@@ -137,53 +131,8 @@ test(
 
     await sendMessage(page, 'Please reply with "third-reply"');
     await expect(assistantText(page, "third-reply")).toBeVisible();
-    await expect
-      .poll(() => JSON.stringify(codexRolloutRecords(tid)))
-      .toContain("third-reply");
-    await enterSession(page);
-    await sendMessage(page, 'Please reply with "assistant-busy-prefix"');
-    await expect(assistantText(page, "assistant-busy-prefix")).toBeVisible();
-    await sendMessage(page, 'Please reply with "assistant-busy-selected"');
-    await expect(assistantText(page, "assistant-busy-selected")).toBeVisible();
-    const assistantTid = currentTaskTid(page);
-    await sendMessage(page, "stall session");
-    await expect(page.locator(".btn-banner-stop")).toBeVisible();
-    const selectedAssistant = page
-      .locator(".message-wrapper", {
-        has: page.locator(".assistant-message", {
-          hasText: "assistant-busy-selected",
-        }),
-      })
-      .last();
-    await selectedAssistant.hover();
-    await selectedAssistant.locator(".undo-btn").click();
-    await expect(page.locator(".undo-dialog")).toBeVisible();
-    await page.locator(".btn-undo").click();
-    await expect(assistantText(page, "assistant-busy-selected")).toHaveCount(0);
-    await expect(
-      page.locator(".user-message:not(.pending)", { hasText: "stall session" }),
-    ).toHaveCount(0);
-    await expect(
-      page.locator(".user-message:not(.pending)", {
-        hasText: "assistant-busy-selected",
-      }),
-    ).toBeVisible();
-    await expect
-      .poll(() =>
-        codexRolloutRecords(assistantTid).some(
-          (record) =>
-            record.type === "event_msg" &&
-            record.payload?.type === "agent_message" &&
-            record.payload?.message === "assistant-busy-selected",
-        ),
-      )
-      .toBe(false);
-    await page.reload();
-    await expect(assistantText(page, "assistant-busy-prefix")).toBeVisible();
-    await expect(assistantText(page, "assistant-busy-selected")).toHaveCount(0);
-    await expect(page.locator(".input-textarea:visible").first()).toBeEnabled();
-    await sendMessage(page, 'Please reply with "assistant-busy-follow-up"');
-    await expect(assistantText(page, "assistant-busy-follow-up")).toBeVisible();
+
+    // Codex reverts whole turns: there is no undo at an assistant message.
     await enterSession(page);
     await sendMessage(page, 'Please reply with "assistant-ready-unsupported"');
     await expect(
@@ -199,4 +148,92 @@ test(
     await readyAssistant.hover();
     await expect(readyAssistant.locator(".undo-btn")).toHaveCount(0);
   },
+);
+
+async function confirmUndoTwice(page: Page, state: "busy" | "stopped") {
+  let tid: number;
+  const otherPage = await page.context().newPage();
+  const replies: { tab: number; type: string; message?: string }[] = [];
+  const backups: number[] = [];
+  const tabs = [page, otherPage];
+  for (const [tab, view] of tabs.entries()) {
+    view.on("websocket", (ws) => {
+      ws.on("framereceived", ({ payload }) => {
+        const frame = JSON.parse(payload.toString());
+        if (
+          frame.tid === tid &&
+          (frame.type === "error" || frame.type === "undo_result")
+        ) {
+          replies.push({ tab, type: frame.type, message: frame.message });
+        }
+        if (
+          tab === 1 &&
+          frame.type === "task_created" &&
+          frame.parent_tid === tid &&
+          frame.relation_type === "undo-backup"
+        ) {
+          backups.push(frame.tid);
+        }
+      });
+    });
+  }
+  await enterSession(page);
+  await sendMessage(page, 'Please reply with "keep-before-undo"');
+  await expect(assistantText(page, "keep-before-undo")).toBeVisible();
+  await sendMessage(page, 'Please reply with "remove-by-undo"');
+  await expect(assistantText(page, "remove-by-undo")).toBeVisible();
+  tid = currentTaskTid(page);
+
+  await sendMessage(page, "stall session");
+  await expect(
+    page.locator(".user-message:not(.pending)", { hasText: "stall session" }),
+  ).toBeVisible();
+  await expect(page.locator(".btn-banner-stop")).toBeVisible();
+  if (state === "stopped") await killSession(page, "codex");
+
+  await otherPage.goto(page.url());
+
+  async function prepareConfirmation(view: Page) {
+    await expect(assistantText(view, "remove-by-undo")).toBeVisible();
+    const message = view.locator(".message-wrapper", {
+      has: view.locator(".user-message", { hasText: "remove-by-undo" }),
+    });
+    await message.hover();
+    await message.locator(".undo-btn").click();
+    await expect(view.locator(".undo-dialog-count")).toContainText(
+      "2 whole turns will be removed.",
+    );
+  }
+
+  for (const view of tabs) await prepareConfirmation(view);
+
+  // Each tab has its own confirmation for the same task. Submit both
+  // without waiting for either undo to finish.
+  await Promise.all(tabs.map((view) => view.locator(".btn-undo").click()));
+  await expect
+    .poll(() => replies.map(({ type }) => type))
+    .toEqual(["error", "undo_result"]);
+
+  const [refused, completed] = replies;
+  expect(refused.message).toContain("undo is already in progress");
+  expect(refused.tab).not.toBe(completed.tab);
+  await expect(tabs[refused.tab].locator(".command-error-dialog")).toContainText(
+    "undo is already in progress",
+  );
+  const successfulView = tabs[completed.tab];
+  await expect(assistantText(successfulView, "remove-by-undo")).toHaveCount(0);
+  await expect(assistantText(successfulView, "keep-before-undo")).toBeVisible();
+  expect(backups).toHaveLength(1);
+}
+
+test(
+  "busy Codex undo rejects a second confirmation during backup",
+  { tag: "@codex-only" },
+  async ({ page }) => confirmUndoTwice(page, "busy"),
+);
+
+test(
+  "stopped Codex undo rejects a second confirmation during backup",
+  { tag: "@codex-only" },
+  async ({ page }) => confirmUndoTwice(page, "stopped"),
 );
