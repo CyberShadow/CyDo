@@ -10,6 +10,7 @@ import type {
   ItemDenier,
   ItemPermissionStage,
   TaskDiagnosticEvent,
+  AgentNoticeEvent,
   TurnEndReason,
 } from "./protocol";
 import type { PatchHunk } from "./lib/patches";
@@ -129,6 +130,7 @@ export interface DisplayMessage {
   diagnostic?: {
     severity: TaskDiagnosticEvent["severity"];
     subject: string;
+    hookOutput?: HookOutput;
   };
 }
 
@@ -228,11 +230,14 @@ interface BlockBase {
 
 type NonDiagnosticBlockType =
   | "text"
+  | "command_output"
   | "thinking"
   | "tool_use"
   | "unrecognized"
   | "user_message"
   | "other";
+
+export type HookOutput = Pick<AgentNoticeEvent, "stdout" | "stderr" | "output">;
 
 export type Block =
   | (BlockBase & { type: NonDiagnosticBlockType })
@@ -240,6 +245,7 @@ export type Block =
       type: "diagnostic";
       severity: TaskDiagnosticEvent["severity"];
       subject: string;
+      hookOutput?: HookOutput;
     });
 
 export interface SessionInfo {

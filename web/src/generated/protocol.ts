@@ -178,6 +178,22 @@ export interface TaskDiagnosticEvent {
   body: string;
 }
 
+export interface AgentNoticeEvent {
+  type: "agent/notice";
+  severity: TaskDiagnosticSeverity;
+  subject: string;
+  body: string;
+  stdout?: string;
+  stderr?: string;
+  output?: string;
+  collapsible?: boolean;
+}
+
+export interface CommandOutputEvent {
+  type: "agent/command_output";
+  text: string;
+}
+
 export interface TurnRetractedEvent {
   type: "turn/retracted";
   uuids: string[];

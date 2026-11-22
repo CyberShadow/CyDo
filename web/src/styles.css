@@ -1174,6 +1174,12 @@ body,
   line-height: 1.5;
 }
 
+.command-output {
+  font-family: var(--font-mono);
+  overflow-x: auto;
+  margin: 0;
+}
+
 .thinking-text {
   padding: 8px;
   background: var(--overlay-dark);

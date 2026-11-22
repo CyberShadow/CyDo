@@ -1683,10 +1683,17 @@ function reduceTurnRetracted(
 
 function reduceTaskDiagnostic(
   s: SessionState,
-  msg: Extract<AgnosticEvent, { type: "cydo/task_diagnostic" }>,
+  msg: Extract<
+    AgnosticEvent,
+    { type: "cydo/task_diagnostic" | "agent/notice" }
+  >,
   seq?: number,
   ts?: number,
 ): SessionState {
+  const hookOutput =
+    msg.type === "agent/notice" && msg.collapsible
+      ? { stdout: msg.stdout, stderr: msg.stderr, output: msg.output }
+      : undefined;
   for (let i = s.messages.length - 1; i >= 0; i--) {
     if (s.messages[i]!.type !== "assistant" || !s.messages[i]!.streaming)
       continue;
@@ -1704,6 +1711,7 @@ function reduceTaskDiagnostic(
       text: msg.body,
       severity: msg.severity,
       subject: msg.subject,
+      hookOutput,
       completed: false,
       creationOrder,
     });
@@ -1721,6 +1729,7 @@ function reduceTaskDiagnostic(
         diagnostic: {
           severity: msg.severity,
           subject: msg.subject,
+          hookOutput,
         },
         rawSource: msg,
         seq,
@@ -1741,8 +1750,36 @@ export function reduceMessage(
   ts?: number,
 ): SessionState {
   switch (msg.type) {
+    case "agent/notice":
     case "cydo/task_diagnostic":
       return reduceTaskDiagnostic(s, msg, seq, ts);
+    case "agent/command_output": {
+      const id = `command-output-${++s.msgIdCounter}`;
+      const blocks = new Map(s.blocks);
+      blocks.set(id, {
+        itemId: id,
+        type: "command_output",
+        text: msg.text,
+        completed: true,
+        creationOrder: 0,
+      });
+      return {
+        ...s,
+        blocks,
+        messages: [
+          ...s.messages,
+          {
+            id,
+            type: "assistant",
+            content: [],
+            blockIds: [id],
+            rawSource: msg,
+            seq,
+            ts,
+          },
+        ],
+      };
+    }
     case "turn/retracted":
       return reduceTurnRetracted(s, msg, seq, ts);
     case "session/init":

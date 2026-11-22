@@ -34,6 +34,8 @@ export type {
   ProcessStderrEvent,
   ProcessExitEvent,
   TaskDiagnosticEvent,
+  AgentNoticeEvent,
+  CommandOutputEvent,
   ItemStartedEvent,
   ItemDeltaEvent,
   ItemCompletedEvent,
@@ -65,6 +67,8 @@ import type {
   ProcessStderrEvent,
   ProcessExitEvent,
   TaskDiagnosticEvent,
+  AgentNoticeEvent,
+  CommandOutputEvent,
   ItemStartedEvent,
   ItemDeltaEvent,
   ItemCompletedEvent,
@@ -169,6 +173,8 @@ export type AgnosticEvent =
   | ControlResponseEvent
   | ProcessExitEvent
   | TaskDiagnosticEvent
+  | AgentNoticeEvent
+  | CommandOutputEvent
   | ProcessStderrEvent
   | AgentUnrecognizedEvent
   | CydoTaskSpawnedEvent;

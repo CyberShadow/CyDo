@@ -264,6 +264,24 @@ struct TaskDiagnosticEvent
 	string body;
 }
 
+struct AgentNoticeEvent
+{
+	string type = "agent/notice";
+	TaskDiagnosticSeverity severity;
+	string subject;
+	string body;
+	@JSONOptional string stdout;
+	@JSONOptional string stderr;
+	@JSONOptional string output;
+	@JSONOptional bool collapsible;
+}
+
+struct CommandOutputEvent
+{
+	string type = "agent/command_output";
+	string text;
+}
+
 /// turn/retracted — the agent withdrew messages it had already delivered
 /// (the response a model refused, before retrying it on a fallback model),
 /// saying why in `notice`. CyDo keeps them on display, marked as retracted.

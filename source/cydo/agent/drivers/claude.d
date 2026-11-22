@@ -2,6 +2,7 @@ module cydo.agent.drivers.claude;
 
 import core.time : Duration, seconds;
 
+import std.algorithm : startsWith;
 import std.conv : to;
 import std.exception : enforce;
 import std.format : format;
@@ -2485,6 +2486,7 @@ class ClaudeCodeSession : AgentSession
 			@JSONOptional bool isSidechain;
 			@JSONOptional bool isApiErrorMessage;
 			@JSONOptional string uuid;
+			@JSONOptional string local_command_source;
 			ClaudeMessage message;
 			/// Indexes into message.content of the thinking blocks the server
 			/// tagged as narration. Claude Code decodes the tag from the block
@@ -2515,6 +2517,15 @@ class ClaudeCodeSession : AgentSession
 			raw = jsonParse!ClaudeAssistant(rawLine);
 		catch (Exception e)
 		{ tracef("translateAssistantLive: parse error: %s", e.msg); return; }
+
+		if (raw.local_command_source.length)
+		{
+			import std.algorithm : map;
+			import std.array : join;
+			auto text = raw.message.content.map!(block => block.text).join("\n");
+			emitEvent(TranslatedEvent(commandOutput(text), rawLine));
+			return;
+		}
 
 		// A listed block with no thinking text gets ordinary thinking
 		// treatment (Claude Code documents this for narration_block_indexes).
@@ -2688,6 +2699,8 @@ class ClaudeCodeSession : AgentSession
 			string text;
 			try text = jsonParse!string(contentJson);
 			catch (Exception) {}
+			if (raw.isMeta && text.startsWith("<local-command-caveat>"))
+				return;
 
 			ContentBlock cb;
 			cb.type = "text";
@@ -3756,6 +3769,8 @@ private TranslatedEvent[] normalizeUserHistory(string rawLine)
 		string text;
 		try text = jsonParse!string(contentJson);
 		catch (Exception) {}
+		if (raw.isMeta && text.startsWith("<local-command-caveat>"))
+			return [];
 
 		ContentBlock cb;
 		cb.type = "text";
@@ -3890,6 +3905,8 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 	{
 		case "system":
 			return translateSystemEvent(rawLine, probe.subtype, agentName);
+		case "attachment":
+			return translateHookAttachment(rawLine);
 		case "result":
 			return normalizeTurnResult(rawLine);
 		case "summary":
@@ -3929,7 +3946,6 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 		case "artifact-autoreact-ledger":
 		case "artifact-comment-monitor":
 		case "atis-latch":
-		case "attachment":
 		case "attribution-snapshot":
 		case "bridge-session":
 		case "content-replacement":
@@ -4011,6 +4027,16 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 			return null;
 		case "stop_hook_summary":
 			return rawLine; // Rendered by the frontend's system reducer.
+		case "informational":
+			// Claude emits these notices on stdout. Its tool results can retain
+			// the underlying error, but the notice itself is live-only.
+			return translateInformational(rawLine);
+		case "local_command_output":
+			return translateCommandOutput(rawLine, false);
+		case "local_command":
+			return translateCommandOutput(rawLine, true);
+		case "hook_response":
+			return translateHookResponse(rawLine);
 		// Ignored stdout and session-file subtypes.
 		case "agents_killed":
 		case "api_error":
@@ -4029,14 +4055,10 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 		case "file_snapshot":
 		case "files_persisted":
 		case "hook_progress":
-		case "hook_response":
 		case "hook_started":
-		case "informational":
 		case "inherited_asks_settled":
 		case "instruction_size_warning":
 		case "late_allow_not_run":
-		case "local_command":
-		case "local_command_output":
 		case "memory_recall":
 		case "memory_saved":
 		case "mirror_error":
@@ -4062,6 +4084,9 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 		case "tool_host_result":
 		case "turn_duration":
 		case "turn_handoff_available":
+		// TODO: Opt into rapidFollowupPreempt at initialize. Claude can stop a
+		// turn before it shows output and run the follow-up next. Use
+		// preempted_by_uuid / preempted_message_uuids to show the superseded turn.
 		case "turn_preempted":
 		case "ui_focus":
 		case "ui_invalidate":
@@ -4092,6 +4117,192 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 		default:
 			import cydo.protocol : makeUnrecognizedEvent;
 			return makeUnrecognizedEvent("unknown system subtype: " ~ subtype);
+	}
+}
+
+private string translateInformational(string rawLine)
+{
+	import cydo.protocol : AgentNoticeEvent, TaskDiagnosticSeverity;
+
+	auto raw = parseJSON(rawLine);
+	auto level = raw["level"].str;
+	auto content = raw["content"].str;
+	AgentNoticeEvent event;
+	switch (level)
+	{
+		case "warning":
+		case "suggestion":
+			event.severity = TaskDiagnosticSeverity.warning;
+			break;
+		case "notice":
+		case "info":
+			event.severity = TaskDiagnosticSeverity.info;
+			break;
+		default:
+			throw new Exception("Unknown Claude informational level: " ~ level);
+	}
+	event.subject = level == "suggestion" ? "Agent suggestion" : "Agent notice";
+	event.body = content;
+	return toJson(event);
+}
+
+private string translateCommandOutput(string rawLine, bool wrapped)
+{
+	auto text = parseJSON(rawLine)["content"].str;
+	if (!wrapped)
+		return commandOutput(text);
+
+	text = synthesizeCommandOutput(text);
+	return text.length ? commandOutput(text) : null;
+}
+
+private string synthesizeCommandOutput(string text)
+{
+	import std.regex : ctRegex, matchFirst, replaceAll;
+	import std.string : indexOf;
+	import std.array : appender;
+
+	enum opening = ctRegex!`<local-command-(stdout|stderr)>`;
+	if (text.matchFirst(opening).empty)
+		return null;
+
+	// The CLI strips terminal controls before unwrapping the first stdout and
+	// stderr frames. Decode only the three entities its wire format escapes.
+	enum ansi = ctRegex!(
+		r"(?:\x1b\[|\u009b)[^@-~\x1b\x18\x1a\u009c]*(?:[@-~\x18\x1a\u009c]|$)?"
+		~ r"|(?:\x1b\]|\u009d)[^\x07\x1b\x18\x1a\u009c]*(?:\x1b\\|[\x07\x18\x1a\u009c])?"
+		~ r"|(?:\x1b[PX^_]|[\u0090\u0098\u009e\u009f])[^\x1b\x18\x1a\u009c]*(?:\x1b\\|[\x18\x1a\u009c])?"
+		~ r"|\x1b[ -/][^\x1b]?|\x1b[0-~\x18\x1a\u009c]?");
+	enum entities = ctRegex!`&(amp|lt|gt);`;
+	text = text.replaceAll(ansi, "");
+
+	auto output = appender!string;
+	auto remaining = text;
+	auto unprinted = text;
+	bool[2] seen;
+	bool[2] unclosed;
+	size_t frames;
+	while (frames < seen.length)
+	{
+		auto open = remaining.matchFirst(opening);
+		if (open.empty)
+			break;
+		remaining = open.post;
+		auto stream = open[1];
+		auto index = stream == "stdout" ? 0 : 1;
+		if (unclosed[index])
+			continue;
+		auto close = "</local-command-" ~ stream ~ ">";
+		auto end = remaining.indexOf(close);
+		if (end < 0)
+		{
+			unclosed[index] = true;
+			continue;
+		}
+		auto beforeOpen = unprinted.length - remaining.length - open.hit.length;
+		output.put(unprinted[0 .. beforeOpen]);
+		if (!seen[index])
+		{
+			frames++;
+			auto body = remaining[0 .. end].replaceAll!(
+				m => m[1] == "amp" ? "&" : m[1] == "lt" ? "<" : ">")(entities);
+			output.put(body);
+		}
+		seen[index] = true;
+		remaining = remaining[end + close.length .. $];
+		unprinted = remaining;
+	}
+	output.put(unprinted);
+
+	// ECMAScript trim includes BOM and excludes NEL.
+	enum whitespace = r"[\x09-\x0d\x20\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]";
+	enum trim = ctRegex!("^" ~ whitespace ~ "+|" ~ whitespace ~ "+$");
+	return output.data.replaceAll(trim, "");
+}
+
+private string commandOutput(string text)
+{
+	CommandOutputEvent event;
+	event.text = text;
+	return toJson(event);
+}
+
+private string makeHookNotice(string name, string hookEvent, bool cancelled, Nullable!int exitCode,
+	string stdout, string stderr, string output)
+{
+	import cydo.protocol : AgentNoticeEvent, TaskDiagnosticSeverity;
+
+	AgentNoticeEvent event;
+	event.severity = cancelled ? TaskDiagnosticSeverity.warning : TaskDiagnosticSeverity.error;
+	event.subject = (name.length ? name : hookEvent) ~ (cancelled ? " cancelled" : " failed");
+	if (!exitCode.isNull)
+		event.subject ~= format(" (exit code %d)", exitCode.get);
+	event.stdout = stdout;
+	event.stderr = stderr;
+	event.output = output;
+	event.collapsible = true;
+	return toJson(event);
+}
+
+private string translateHookResponse(string rawLine)
+{
+	auto raw = parseJSON(rawLine);
+	auto outcome = raw["outcome"].str;
+	auto name = raw["hook_name"].str;
+	auto hookEvent = raw["hook_event"].str;
+	auto stdout = raw["stdout"].str;
+	auto stderr = raw["stderr"].str;
+	auto output = raw["output"].str;
+	Nullable!int exitCode;
+	if (auto code = "exit_code" in raw.object)
+		exitCode = code.integer.to!int;
+
+	switch (outcome)
+	{
+		case "success":
+			return null;
+		case "error":
+		case "cancelled":
+			return makeHookNotice(name, hookEvent, outcome == "cancelled", exitCode, stdout, stderr, output);
+		default:
+			throw new Exception("Unknown Claude hook outcome: " ~ outcome);
+	}
+}
+
+// Claude adds status text to persisted stderr and omits the live combined
+// output. Cancelled attachments carry neither streams nor an exit code.
+private string translateHookAttachment(string rawLine)
+{
+	auto raw = parseJSON(rawLine)["attachment"];
+	auto kind = raw["type"].str;
+	switch (kind)
+	{
+		case "hook_non_blocking_error":
+		case "hook_blocking_error":
+		case "hook_error_during_execution":
+		case "hook_cancelled":
+			break;
+		default:
+			return null;
+	}
+
+	auto name = raw["hookName"].str;
+	auto hookEvent = raw["hookEvent"].str;
+	switch (kind)
+	{
+		case "hook_non_blocking_error":
+			return makeHookNotice(name, hookEvent, false,
+				Nullable!int(raw["exitCode"].integer.to!int), raw["stdout"].str, raw["stderr"].str, null);
+		case "hook_blocking_error":
+			return makeHookNotice(name, hookEvent, false,
+				Nullable!int.init, null, null, raw["blockingError"]["blockingError"].str);
+		case "hook_error_during_execution":
+			return makeHookNotice(name, hookEvent, false,
+				Nullable!int.init, null, null, raw["content"].str);
+		case "hook_cancelled":
+			return makeHookNotice(name, hookEvent, true, Nullable!int.init, null, null, null);
+		default:
+			assert(0);
 	}
 }
 
@@ -5401,6 +5612,27 @@ unittest
 				return `{"type":"control_cancel_request","request_id":"fixture"}`;
 			case "control_response":
 				return `{"type":"control_response","response":{"subtype":"success","request_id":"fixture","response":{}}}`;
+			case "attachment":
+				return `{"type":"attachment","attachment":{"type":"fixture"}}`;
+			case "system":
+				switch (subtype)
+				{
+					case "informational":
+						return `{"type":"system","subtype":"informational","level":"info","content":"Fixture notice",`
+							~ `"tag":"fixture","uuid":"00000000-0000-4000-8000-000000000001","session_id":"fixture"}`;
+					case "hook_response":
+						return `{"type":"system","subtype":"hook_response","hook_id":"fixture","hook_name":"SessionStart:startup",`
+							~ `"hook_event":"SessionStart","output":"","stdout":"","stderr":"","outcome":"success","exit_code":0,`
+							~ `"uuid":"00000000-0000-4000-8000-000000000001","session_id":"fixture"}`;
+					case "local_command":
+						return `{"type":"system","subtype":"local_command","content":"<local-command-stdout>Fixture output</local-command-stdout>"}`;
+					case "local_command_output":
+						return `{"type":"system","subtype":"local_command_output","content":"Fixture output",`
+							~ `"uuid":"00000000-0000-4000-8000-000000000001","session_id":"fixture"}`;
+					default:
+						break;
+				}
+				break;
 			default:
 				break;
 		}
@@ -5448,6 +5680,247 @@ unittest
 
 	assert(missing.length == 0,
 		"unclassified Claude events in " ~ binary ~ ":\n" ~ missing.sort().release.join("\n"));
+}
+
+unittest
+{
+	@JSONPartial static struct Notice
+	{
+		string type;
+		string severity;
+		string subject;
+		string body;
+		@JSONOptional bool collapsible;
+	}
+
+	// Captured from a failed SDK permission hook callback.
+	enum warningBody = `PreToolUse: Hook callback cydo-permission-policy failed: the SDK host replied with an error or an invalid answer. onFailure is "block", so this failure counts as a block.`;
+	auto warningLine = `{"type":"system","subtype":"informational","level":"warning","tag":"hook_callback_failed","content":`
+		~ toJson(warningBody) ~ `,"uuid":"a97d52fb-c64c-4ef0-aa19-49ebdf9f1245","session_id":"39fd6f3a-5760-4194-a440-579b122ec04f"}`;
+
+	TranslatedEvent[] events;
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.onOutput = (TranslatedEvent event) { events ~= event; };
+	foreach (level; ["warning", "suggestion", "notice", "info"])
+	{
+		auto body = level == "warning" ? warningBody : "Claude informational message";
+		auto line = level == "warning" ? warningLine
+			: `{"type":"system","subtype":"informational","level":"` ~ level
+				~ `","content":` ~ toJson(body)
+				~ `,"tag":"fixture","uuid":"a97d52fb-c64c-4ef0-aa19-49ebdf9f1245","session_id":"fixture"}`;
+		events = [];
+		session.translateLiveLine(line);
+		assert(events.length == 1, level);
+		auto notice = jsonParse!Notice(events[0].translated);
+		assert(notice.type == "agent/notice");
+		assert(notice.severity == (level == "warning" || level == "suggestion"
+			? "warning" : "info"), level);
+		assert(notice.subject == (level == "suggestion" ? "Agent suggestion" : "Agent notice"));
+		assert(notice.body == body && !notice.collapsible);
+	}
+}
+
+unittest
+{
+	import std.exception : collectException;
+
+	auto failure = collectException(translateClaudeEventInner(
+		`{"type":"system","subtype":"informational","level":"fatal","content":"Unknown level"}`, "claude"));
+	assert(failure && failure.msg == "Unknown Claude informational level: fatal");
+}
+
+unittest
+{
+	@JSONPartial static struct Notice
+	{
+		string type;
+		string severity;
+		string subject;
+		@JSONOptional string stdout;
+		@JSONOptional string stderr;
+		@JSONOptional string output;
+		@JSONOptional bool collapsible;
+	}
+
+	TranslatedEvent[] events;
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.onOutput = (TranslatedEvent event) { events ~= event; };
+
+	// Captured from a SessionStart shell hook that exits with status 1.
+	enum failure = `{"type":"system","subtype":"hook_response","hook_id":"ffe5d329-3861-40fd-aeed-a459a8d929d9","hook_name":"SessionStart:startup","hook_event":"SessionStart",`
+		~ `"output":"probe-stdout-only","stdout":"probe-stdout-only","stderr":"","exit_code":1,"outcome":"error",`
+		~ `"uuid":"71d1e875-fece-49f8-a2e2-0c18135ab330","session_id":"8fe9b540-44dc-4b46-bd83-884a281e4457"}`;
+	session.translateLiveLine(failure);
+	assert(events.length == 1);
+	auto notice = jsonParse!Notice(events[0].translated);
+	assert(notice.type == "agent/notice" && notice.severity == "error");
+	assert(notice.subject == "SessionStart:startup failed (exit code 1)");
+	assert(notice.stdout == "probe-stdout-only" && notice.output == notice.stdout);
+	assert(notice.stderr.length == 0 && notice.collapsible);
+
+	enum completedHook = `{"type":"system","subtype":"hook_response","hook_id":"fixture",`
+		~ `"hook_name":"SessionStart:startup","hook_event":"SessionStart","output":"hook output",`
+		~ `"stdout":"hook output","stderr":"","uuid":"78746a29-b404-4487-97f0-5beefb83d837",`
+		~ `"session_id":"fixture","outcome":"`;
+	events = [];
+	session.translateLiveLine(completedHook ~ `cancelled"}`);
+	assert(events.length == 1);
+	notice = jsonParse!Notice(events[0].translated);
+	assert(notice.type == "agent/notice" && notice.severity == "warning");
+	assert(notice.subject == "SessionStart:startup cancelled");
+	assert(notice.stdout == "hook output" && notice.output == notice.stdout && notice.collapsible);
+
+	events = [];
+	session.translateLiveLine(completedHook ~ `success","exit_code":0}`);
+	assert(events.length == 0);
+}
+
+unittest
+{
+	@JSONPartial static struct Notice
+	{
+		string type;
+		string severity;
+		string subject;
+		@JSONOptional string stdout;
+		@JSONOptional string stderr;
+		@JSONOptional string output;
+		@JSONOptional bool collapsible;
+	}
+
+	// The same stdout-only failure in the native session JSONL.
+	enum line = `{"type":"attachment","attachment":{"type":"hook_non_blocking_error",`
+		~ `"hookName":"SessionStart:startup","hookEvent":"SessionStart","exitCode":1,`
+		~ `"stdout":"probe-stdout-only","stderr":"Failed with non-blocking status code: No stderr output",`
+		~ `"toolUseID":"3f3f0437-fe88-48f4-a002-671f27d00d62"},"uuid":"2b9d0caf-919c-4c60-8ef4-59c03844e294",`
+		~ `"timestamp":"2026-11-22T20:37:01.914Z","sessionId":"8fe9b540-44dc-4b46-bd83-884a281e4457"}`;
+	auto events = translateClaudeHistoryEvent(line);
+	assert(events.length == 1);
+	auto notice = jsonParse!Notice(events[0].translated);
+	assert(notice.type == "agent/notice" && notice.severity == "error");
+	assert(notice.subject == "SessionStart:startup failed (exit code 1)");
+	assert(notice.stdout == "probe-stdout-only" && notice.output.length == 0);
+	assert(notice.stderr == "Failed with non-blocking status code: No stderr output" && notice.collapsible);
+	// The other failure attachments store subtype-specific detail.
+	foreach (fixture; [
+		[`{"type":"hook_blocking_error","hookName":"PostToolUse:Bash","hookEvent":"PostToolUse","toolUseID":"toolu_1","blockingError":{"blockingError":"Blocked","command":"check"}}`,
+			"error", "PostToolUse:Bash failed", "Blocked"],
+		[`{"type":"hook_error_during_execution","hookName":"PreToolUse:Bash","hookEvent":"PreToolUse","toolUseID":"toolu_2","content":"Could not execute"}`,
+			"error", "PreToolUse:Bash failed", "Could not execute"],
+		[`{"type":"hook_cancelled","hookName":"SessionStart:startup","hookEvent":"SessionStart","toolUseID":"toolu_3","timedOut":true,"timeoutMs":1000}`,
+			"warning", "SessionStart:startup cancelled", ""],
+	])
+	{
+		events = translateClaudeHistoryEvent(`{"type":"attachment","attachment":` ~ fixture[0] ~ "}");
+		assert(events.length == 1);
+		notice = jsonParse!Notice(events[0].translated);
+		assert(notice.type == "agent/notice" && notice.severity == fixture[1]);
+		assert(notice.subject == fixture[2] && notice.output == fixture[3]);
+		assert(notice.stdout.length == 0 && notice.stderr.length == 0 && notice.collapsible);
+	}
+}
+
+unittest
+{
+	import cydo.protocol : CommandOutputEvent;
+
+	// SDKLocalCommandOutputMessage has unwrapped content on stdout.
+	import std.exception : assertThrown;
+	assertThrown(translateClaudeEventInner(
+		`{"type":"system","subtype":"local_command_output","uuid":"u","session_id":"s"}`, "claude"));
+
+	enum live = `{"type":"system","subtype":"local_command_output","content":"Voice mode enabled.\nSpeak now.",`
+		~ `"uuid":"1c07d4a2-84fc-450a-912e-fc144eba7269","session_id":"fixture"}`;
+	TranslatedEvent[] events;
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.onOutput = (TranslatedEvent event) { events ~= event; };
+	session.translateLiveLine(live);
+	assert(events.length == 1);
+	auto output = jsonParse!CommandOutputEvent(events[0].translated);
+	assert(output.type == "agent/command_output" && output.text == "Voice mode enabled.\nSpeak now.");
+}
+
+unittest
+{
+	// Captured /usage caveat, output, and SDK assistant echo.
+	enum caveat = `{"type":"user","message":{"role":"user","content":"<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request, and its output goes straight to the user. It's recorded here as context for later messages.</local-command-caveat>"},"isMeta":true,"uuid":"40d4232e-1ff9-49cd-9fc3-3ed5bc1568c6"}`;
+	enum body = "Estimated cost:        $0.0000\nTotal duration (API):  0s\nTotal duration (wall):  0s\n"
+		~ "Total code changes:    0 lines added, 0 lines removed\n"
+		~ "Usage:                 0 input, 0 output, 0 cache read, 0 cache write";
+	enum wrapped = "<local-command-stdout>" ~ body ~ "</local-command-stdout>";
+	auto output = `{"type":"system","subtype":"local_command","level":"info","content":`
+		~ toJson(wrapped) ~ `,"uuid":"c15ff70a-e5cc-49a7-8435-3ae041f95643","commandRun":{"command":"usage","args":""}}`;
+
+	assert(translateClaudeHistoryEvent(caveat).length == 0);
+	auto replayed = translateClaudeHistoryEvent(output);
+	assert(replayed.length == 1);
+	auto command = jsonParse!CommandOutputEvent(replayed[0].translated);
+	assert(command.type == "agent/command_output" && command.text == body);
+
+	auto live = `{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":`
+		~ toJson(body) ~ `}]}, "local_command_source":` ~ toJson(wrapped)
+		~ `,"uuid":"c15ff70a-e5cc-49a7-8435-3ae041f95643"}`;
+	TranslatedEvent[] events;
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.onOutput = (TranslatedEvent event) { events ~= event; };
+	session.translateLiveLine(caveat);
+	assert(events.length == 0);
+	session.translateLiveLine(live);
+	assert(events.length == 1 && events[0].translated == replayed[0].translated);
+}
+
+unittest
+{
+	enum expected = "<command-name>example</command-name><command-args>literal prose</command-args>";
+	@JSONPartial static struct TextBlock { string text; }
+	@JSONPartial static struct UserItem { string item_type; TextBlock[] content; }
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	TranslatedEvent[] live;
+	session.onOutput = (TranslatedEvent event) { live ~= event; };
+	foreach (content; [
+		`"<command-name>example</command-name><command-args>literal prose</command-args>"`,
+		`[{"type":"text","text":"<command-name>example</command-name><command-args>literal prose</command-args>"}]`,
+	])
+	{
+		auto line = `{"type":"user","message":{"role":"user","content":` ~ content ~ "}}";
+		live = [];
+		session.translateLiveLine(line);
+		auto history = translateClaudeHistoryEvent(line);
+		assert(live.length == 1 && history.length == 1);
+		foreach (event; [live[0], history[0]])
+		{
+			auto user = jsonParse!UserItem(event.translated);
+			assert(user.item_type == "user_message");
+			assert(user.content.length == 1 && user.content[0].text == expected);
+		}
+	}
+}
+
+unittest
+{
+	// The SDK strips ANSI, unwraps stdout and stderr, decodes entities once,
+	// trims the whole result, and skips a result that becomes empty.
+	foreach (fixture; [
+		[`{"type":"system","subtype":"local_command","content":"\ufeff <local-command-stdout>\t\u001b[31m&lt;tag&gt; &amp; &amp;lt; &quot;\u001b[0m </local-command-stdout> \r\n"}`,
+			"<tag> & &lt; &quot;"],
+		[`{"type":"system","subtype":"local_command","content":"<local-command-stderr>\n  Failed: &lt;reason&gt; &amp; retry\t</local-command-stderr>"}`,
+			"Failed: <reason> & retry"],
+		[`{"type":"system","subtype":"local_command","content":" <local-command-stderr>error &gt;</local-command-stderr> / <local-command-stdout>output &lt;</local-command-stdout> "}`,
+			"error > / output <"],
+	])
+	{
+		auto events = translateClaudeHistoryEvent(fixture[0]);
+		assert(events.length == 1);
+		auto command = jsonParse!CommandOutputEvent(events[0].translated);
+		assert(command.type == "agent/command_output" && command.text == fixture[1]);
+	}
+	assert(translateClaudeHistoryEvent(
+		`{"type":"system","subtype":"local_command","content":"<local-command-stderr>\n \t</local-command-stderr>"}`).length == 0);
 }
 
 unittest

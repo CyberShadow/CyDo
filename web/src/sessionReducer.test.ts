@@ -201,6 +201,91 @@ describe("task diagnostic reducer", () => {
   });
 });
 
+describe("agent notices and command output", () => {
+  const notice = {
+    type: "agent/notice",
+    severity: "error",
+    subject: "SessionStart:startup failed (exit code 1)",
+    body: "",
+    stdout: "probe-hook-output",
+    stderr: "probe-hook-error",
+    output: "additional hook diagnostic",
+    collapsible: true,
+  } as const;
+
+  const hookOutput = {
+    stdout: "probe-hook-output",
+    stderr: "probe-hook-error",
+    output: "additional hook diagnostic",
+  };
+
+  it("keeps each hook stream on a standalone diagnostic", () => {
+    const next = reduceMessage(makeState(), notice, 17, 123456);
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toMatchObject({
+      type: "diagnostic",
+      diagnostic: {
+        severity: notice.severity,
+        subject: notice.subject,
+        hookOutput,
+      },
+      content: [{ type: "text", text: "" }],
+      seq: 17,
+      ts: 123456,
+    });
+  });
+
+  it("adds each hook stream to the active assistant turn in transcript order", () => {
+    const started = reduceMessage(
+      makeState(),
+      asEvent({
+        type: "item/started",
+        item_id: "text-1",
+        item_type: "text",
+        text: "Before the hook.",
+      }),
+    );
+    const next = reduceMessage(started, notice);
+
+    expect(next.messages).toHaveLength(1);
+    const assistant = next.messages[0]!;
+    expect(assistant).toMatchObject({ type: "assistant", streaming: true });
+    const blocks = assistant.blockIds!.map((id) => next.blocks.get(id));
+    expect(blocks).toMatchObject([
+      { type: "text", text: "Before the hook." },
+      {
+        type: "diagnostic",
+        severity: notice.severity,
+        subject: notice.subject,
+        text: "",
+        hookOutput,
+      },
+    ]);
+  });
+
+  it("shows local command output as completed assistant text immediately", () => {
+    const text = "Estimated cost:        $0.0000\nTotal duration (API):  0s";
+    const next = reduceMessage(
+      makeState(),
+      { type: "agent/command_output", text },
+      18,
+      123457,
+    );
+
+    expect(next.messages).toHaveLength(1);
+    const message = next.messages[0]!;
+    expect(message).toMatchObject({ type: "assistant", seq: 18, ts: 123457 });
+    expect(message.streaming).toBeFalsy();
+    expect(message.blockIds).toHaveLength(1);
+    expect(next.blocks.get(message.blockIds![0]!)).toMatchObject({
+      type: "command_output",
+      text,
+      completed: true,
+    });
+  });
+});
+
 describe("session init and metadata reducers", () => {
   it("bootstraps session state from init, then applies metadata as a model update", () => {
     const init = {

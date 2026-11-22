@@ -293,6 +293,18 @@ export const AssistantMessage = memo(
             );
           }
 
+          if (block.type === "command_output") {
+            return (
+              <pre
+                key={itemId}
+                class="text-content command-output"
+                {...assistantTextAttrs}
+              >
+                <span>{block.text}</span>
+              </pre>
+            );
+          }
+
           if (block.type === "text") {
             return (
               <Fragment key={itemId}>
@@ -438,6 +450,7 @@ export const AssistantMessage = memo(
                   severity={block.severity}
                   subject={block.subject}
                   body={block.text}
+                  hookOutput={block.hookOutput}
                 />
               </div>
             );
