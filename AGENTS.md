@@ -60,8 +60,11 @@ from the git-tracked tree: `git add` new files before running them.
   `git rebase --autosquash`) instead of adding a separate "fix tests" commit
   on top. The same applies to work sent back by the integrator.
 - If a test fails and the failure looks flaky (non-deterministic, unrelated to
-  the change), retry it. If it fails consistently, treat it as a real
-  regression. For the full suite, retry with
+  the change), report it to the `flaky_tests` singleton with
+  `mcp__cydo__Request` when that tool is available: give the check name, the
+  failing output or log path, and the commit; say whether you want the answer
+  now or after the fix has landed. Then retry it. If it fails consistently,
+  treat it as a real regression. For the full suite, retry with
   `nix --option keep-going true flake check`.
 
 **Formatting:**

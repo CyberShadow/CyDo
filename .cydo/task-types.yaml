@@ -1,0 +1,41 @@
+# Project-specific task type overlay.
+# Deep-merged on top of defs/task-types.yaml (and any user overlay).
+# See docs/task-types.md for schema.
+
+singletons:
+  flaky_tests:
+    task_type: flaky_investigator
+    prompt_template: prompts/flaky_investigator.md
+    title: Flaky tests
+    offered_to: all
+    description: >
+      Investigates and fixes flaky tests.
+
+      Send a request whenever a test or check fails for a reason unrelated to
+      your work. Include the check or test name, the failing output or the
+      path of its log (for a nix check, the .drv), the commit it ran on, and
+      your worktree. Say when you want the answer: "now" if you can carry on
+      by retrying, or "after the fix has landed" if you are blocked and will
+      rebase onto it. The answer says whether the flake is known, and, if you
+      waited, the commit that fixes it.
+
+task_types:
+  flaky_investigator:
+    icon: bug
+    system_prompt_template: system_prompts/flaky_investigator.md
+    model_class: large
+    read_only: true
+    output_type: []
+    knowledge_base: .cydo/memory/flaky-tests/
+    creatable_tasks:
+      bug:
+        prompt_template: prompts/bug.md
+        result_note: "Read the investigation report to confirm the root cause before planning a fix."
+      plan:
+        prompt_template: prompts/plan.md
+        result_note: "Read the plan and pass it to execute."
+      execute:
+        task_type: triage
+        worktree: require
+        prompt_template: prompts/triage.md
+        result_note: "Read the results. The worktree holds the fix commit to send to integrator."
