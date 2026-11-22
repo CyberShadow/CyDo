@@ -153,11 +153,9 @@ export function responseTimeout(_agentType: AgentType): number {
 }
 
 export async function visibleHistory(page: Page) {
-  return page.locator(".message-wrapper").evaluateAll((wrappers) =>
-    wrappers
-      .filter((wrapper) => wrapper.querySelector(".message:not(.meta-message)"))
-      .map((wrapper) => wrapper.textContent),
-  );
+  return page
+    .locator(".message-wrapper .message:not(.meta-message)")
+    .allTextContents();
 }
 
 export async function installCydoE2eBridge(page: Page) {
