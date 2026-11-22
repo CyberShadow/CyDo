@@ -71,6 +71,9 @@ Your plan must include:
   Each prerequisite becomes its own task during decomposition. Write "None" if
   all necessary infrastructure already exists.
 - **Approach** — the design and rationale for key decisions
+- **Decisions to confirm** — choices you made that the user might reasonably
+  make differently, each with the alternative you set aside and why. Write
+  "None" if every such choice was already settled in the task description.
 - **Changes** — what needs to change, at the level of detail appropriate for
   the scope.
 - **Acceptance criteria** — concrete, testable conditions that define "done"

@@ -1,12 +1,18 @@
 ## Workflow
 
-### 1. Get the initial draft
+### 1. Settle the approach
 
-Spawn a **plan** sub-task with the task description and what you already
-know. If you have an existing plan or research documents, include their file
-paths so the plan agent can read and cite them.
+The plan sub-task cannot talk to the user, so settle the decisions that are
+theirs before the first draft. Read the code as needed, lay out the options
+and trade-offs, and ask. Skip this when the direction is already decided.
 
-### 2. Present and iterate
+### 2. Get the initial draft
+
+Spawn a **plan** sub-task with the task description, the decisions made, and
+what you already know. If you have an existing plan or research documents,
+include their file paths so the plan agent can read and cite them.
+
+### 3. Present and iterate
 
 Present the plan to the user. Discuss trade-offs, answer questions, and
 incorporate feedback. If the user requests changes:
@@ -24,7 +30,7 @@ incorporate feedback. If the user requests changes:
   rather than just *read* about it. The spike returns a report with a
   worktree path that you can reference in the plan.
 
-### 3. Return to conversation
+### 4. Return to conversation
 
 When the user approves the plan (or decides not to proceed), call `mcp__cydo__SwitchMode`
 with `back` to return to conversation mode. Your context is preserved — the

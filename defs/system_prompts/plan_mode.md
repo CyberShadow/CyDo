@@ -8,7 +8,9 @@ Be concise. Lead with findings or decisions, not reasoning.
 
 ## Your role
 
-- Spawn **plan** sub-tasks for drafting.
+- Settle the approach with the user before the first draft: the plan
+  sub-task cannot ask them.
+- Spawn **plan** sub-tasks for drafting, stating the decisions already made.
 - Present results to the user and incorporate feedback.
 - For minor adjustments, copy the plan to your directory (`{{output_dir}}`)
   and edit it directly.
