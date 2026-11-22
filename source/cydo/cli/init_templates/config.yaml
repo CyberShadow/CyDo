@@ -1,0 +1,778 @@
+## ===========================================================================
+## CyDo main configuration
+## ===========================================================================
+
+## Where this file lives
+##
+## CyDo reads its main config only from ~/.config/cydo/config.yaml. It uses
+## neither an XDG location nor a project overlay for this file. (Task types
+## are configured separately in task-types.yaml, which can have a project
+## overlay.)
+
+## Reloading
+##
+## Changes take effect live if ~/.config/cydo existed at server startup.
+## If init creates that directory while CyDo is running, restart CyDo.
+## See "Task placement and server defaults" for setting-specific behavior.
+
+## How to use the examples
+##
+## Lines beginning with "## " are documentation. Lines beginning with "# "
+## are example YAML: remove the "# " from the lines of one example to use it.
+##
+## The small examples show where each setting belongs. Merge their keys into
+## your existing mappings instead of repeating a parent key. To try all the
+## examples of a section together, use only its "Complete example" block.
+
+## ===========================================================================
+## Workspaces
+## ===========================================================================
+
+## What a workspace is
+##
+## A workspace is a directory that CyDo scans for projects. Scoped roots
+## help keep unrelated HOME contents, such as ~/.ssh, outside the default
+## sandbox. An empty mapping falls back to one workspace named local at ~.
+
+## How cydo init chose the workspaces below
+##
+## Init uses its invocation directory and the working directories the
+## Claude, Codex, and Copilot readers recover from the first 51 lines
+## of each session. Claude needs cwd on the first user record that
+## supplies a title. Copilot uses session.start data.context.cwd.
+##
+## The history locations are ~/.claude, ~/.codex, and ~/.copilot. Set
+## CLAUDE_CONFIG_DIR, CODEX_HOME, or COPILOT_HOME to a nonempty absolute
+## path to override one.
+##
+## Of those directories, init keeps the Git roots that still exist. It
+## skips the system temporary directory, .cydo/tasks worktrees, and a root
+## equal to HOME. If init detects a parent and a nested Git root, it keeps
+## only the parent entry. Default discovery stops at the parent repo.
+## Add the nested root explicitly or change recursion to show it separately.
+## Init does not search for other projects.
+
+## Widening coverage
+##
+## Add a sibling root, or widen a root such as ~/work/api to ~/work. Remove
+## entries that the wider root then covers.
+
+## Enabling a workspaces example
+##
+## YAML permits only one workspaces key. Replace the entire active
+## workspaces line or mapping below with the uncommented block. If init
+## detected projects, you can retain them by merging their entries into the
+## same mapping.
+
+## About cydo init itself
+##
+## cydo init installs config.yaml and task-types.yaml as a pair. An existing
+## target, even a directory or dangling symlink, prevents either write.
+
+## cydo-init: detected-settings begin
+workspaces: {}
+## cydo-init: detected-settings end
+
+## ---------------------------------------------------------------------------
+## Workspace fields
+## ---------------------------------------------------------------------------
+
+## workspaces
+## Purpose: Names the directories CyDo scans for projects.
+## Type: Mapping from workspace names to workspace settings.
+## Default: Required root key. An empty mapping uses local at HOME.
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+
+## root
+## Purpose: Sets the directory CyDo scans.
+## Type: Path string.
+## Default: Required.
+## Accepted values: Absolute, relative, or home-relative paths. CyDo resolves
+##   relative paths from its working directory and expands ~ to HOME. It
+##   normalizes paths and resolves symlinks for existing directories. An
+##   existing root must be a directory.
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+
+## exclude
+## Purpose: Skips directories by basename during discovery.
+## Type: List of strings.
+## Default: Empty. The scanner also skips hidden directories and symlinks.
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     exclude: [node_modules, .cache]
+
+## default_agent
+## Purpose: Selects the default agent for this workspace.
+## Type: Configured agent name string.
+## Default: Inherits the global selection.
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     default_agent: claude
+
+## default_task_type
+## Purpose: Preselects an entry in the new-task UI for this workspace.
+## Type: Entry key from user_entry_points, or its target task-type name.
+## Default: Inherits the global preference if empty.
+## Notes: A nonempty workspace value overrides the global preference. The
+##   picker selects the first visible match, or its first entry if none match.
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     default_task_type: direct
+
+## project_discovery
+## Purpose: Customizes project recognition and recursion.
+## Type: Mapping of discovery expressions.
+## Default: Uses the two built-in expressions below.
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     project_discovery:
+#       recurse_when: "{{ not is_project and depth < 4 }}"
+
+## worktree_links
+## Purpose: Links files from the main checkout into task worktrees.
+## Type: List of repository-relative path strings or Djinja templates.
+## Default: Empty.
+## Accepted values: Templates get workspace, workspace_root, project_path, and
+##   repo_path. Use relative paths without any ".." component.
+## Notes: At task launch CyDo skips missing sources and empty results.
+##   Existing destinations, including dangling symlinks, stay in place.
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     worktree_links: [AGENTS.md]
+
+## sandbox
+## Purpose: Overrides selected sandbox fields for this workspace.
+## Type: Sandbox mapping described below.
+## Default: Inherits the earlier layers.
+## Notes: Task launches layer global, agent, then workspace settings.
+##   Discovery uses global and workspace settings with a read-only cap.
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     sandbox:
+#       paths:
+#         ~/work/shared: ro
+
+## permissions
+## Purpose: Overrides selected Claude permission settings for this workspace.
+## Type: Permissions mapping described below.
+## Default: Inherits the earlier layers.
+## Notes: Workspace fields override Claude's agent and global settings.
+##   Project discovery does not consult permissions.
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     permissions:
+#       policy: ask
+
+## ---------------------------------------------------------------------------
+## Project discovery expressions
+## ---------------------------------------------------------------------------
+
+## is_project
+## Purpose: Decides whether the current directory is a project.
+## Type: Djinja template. Only the trimmed string "true" is true.
+## Default: {{ has_entry('.git') }}.
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     project_discovery:
+#       is_project: "{{ has_file('package.json') }}"
+
+## recurse_when
+## Purpose: Decides whether to scan the current directory’s children.
+## Type: Djinja template. Only the trimmed string "true" is true.
+## Default: {{ not is_project and depth < 3 }}.
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     project_discovery:
+#       recurse_when: "{{ not is_project and depth < 4 }}"
+
+## ---------------------------------------------------------------------------
+## How to change project discovery
+## ---------------------------------------------------------------------------
+
+## 1. Choose a marker such as package.json and test it with is_project.
+## 2. Set recurse_when to stop at a discovered project and bound the depth.
+##    The root has depth 0. The scanner evaluates depths 0 through 19.
+## 3. Both expressions receive depth, relative_path, name, and is_project.
+##    is_project has the recognition result during recursion and is false
+##    during recognition. relative_path is relative to the workspace root
+##    and is "." at the root. name is the current directory basename.
+## 4. Use has_entry(name) for an existing entry, has_file(name) for an
+##    existing non-directory, and has_dir(name) for a directory.
+##    A missing workspace directory yields no discoveries.
+
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     project_discovery:
+#       is_project: "{{ has_file('package.json') }}"
+#       recurse_when: "{{ not is_project and depth < 4 }}"
+
+## ---------------------------------------------------------------------------
+## Complete example
+## ---------------------------------------------------------------------------
+
+## cydo-init: complete-example begin
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     exclude: [node_modules, .cache]
+#     default_agent: claude
+#     default_task_type: direct
+#     project_discovery:
+#       is_project: "{{ has_entry('.git') }}"
+#       recurse_when: "{{ not is_project and depth < 4 }}"
+#     worktree_links: [AGENTS.md]
+#     sandbox:
+#       isolate_filesystem: true
+#       isolate_processes: true
+#       isolate_environment: true
+#       paths:
+#         ~/work/shared: ro
+#       env:
+#         EDITOR: vim
+#       git:
+#         name: Example Workspace
+#         email: workspace@example.invalid
+#     permissions:
+#       policy: ask
+## cydo-init: complete-example end
+
+## ===========================================================================
+## Sandbox
+## ===========================================================================
+
+## sandbox
+## Purpose: Sets the shared sandbox configuration.
+## Type: Mapping of sandbox fields.
+## Default: Uses the built-in defaults below.
+# sandbox:
+#   isolate_filesystem: true
+
+## ---------------------------------------------------------------------------
+## Sandbox fields
+## ---------------------------------------------------------------------------
+
+## isolate_filesystem
+## Purpose: Restricts filesystem access to sandbox mounts.
+## Type: Boolean.
+## Default: True, or the earlier layer’s value.
+## Accepted values: True or false. Bubblewrap is selected if either filesystem
+##   or process isolation is enabled.
+# sandbox:
+#   isolate_filesystem: true
+
+## isolate_processes
+## Purpose: Runs the command in a separate process namespace.
+## Type: Boolean.
+## Default: True, or the earlier layer’s value.
+## Accepted values: True or false. Bubblewrap is selected if either filesystem
+##   or process isolation is enabled.
+# sandbox:
+#   isolate_processes: true
+
+## isolate_environment
+## Purpose: Clears the inherited environment before applying sandbox.env.
+## Type: Boolean.
+## Default: True, or the earlier layer’s value.
+## Accepted values: True keeps host HOME (or /tmp if unset) and nonempty
+##   NIX_PATH. False inherits the host environment.
+# sandbox:
+#   isolate_environment: true
+
+## paths
+## Purpose: Declares filesystem mounts or masks.
+## Type: Mapping of absolute or home-relative host paths to modes.
+## Default: Built-in mounts, with per-path overrides inherited. Mount
+##   planning skips non-existent paths and logs a warning.
+## Accepted values:
+##   ro: read-only access.
+##   rw: write access subject to task rules.
+##   always_rw: survives the ordinary task read-only downgrade.
+##   tmpfs: disposable memory-backed storage.
+##   empty_dir: an empty directory.
+##   empty_file: an empty file.
+## Notes: Discovery and exact checkout/worktree caps can make always_rw
+##   read-only. Use nonempty absolute paths after tilde expansion. A leading
+##   "//", a trailing slash on a path other than "/", and any ".." component
+##   are invalid. Interior repeated separators and "." normalize away.
+##   Conflicting aliases for the same path in one layer are invalid.
+##   Incompatible mounts at the same physical destination are also invalid.
+##   Read-only mounts and masks can conflict with required write access.
+# sandbox:
+#   paths:
+#     /usr/share: ro
+
+## env
+## Purpose: Sets child environment entries and can override the PATH used to
+##   find agent executables.
+## Type: Mapping of variable names to strings or Djinja expressions.
+## Default: No added entries, or entries inherited by key.
+## Accepted values: Use env.NAME to read host variables. The executable lookup
+##   uses host PATH when no override is set.
+## Notes: After rendering, ~/ expands using host HOME. A template error
+##   logs a warning and produces an empty string.
+# sandbox:
+#   env:
+#     PATH: "{{ env.PATH }}"
+
+## git
+## Purpose: Overrides the Git identity under filesystem isolation.
+## Type: Mapping with required name and email strings.
+## Default: Inherits each field, starting with the driver’s identity.
+## Notes: Each nonempty field overrides the same field in earlier layers.
+# sandbox:
+#   git:
+#     name: Example User
+#     email: example@example.invalid
+
+## ---------------------------------------------------------------------------
+## Git identity fields
+## ---------------------------------------------------------------------------
+
+## name
+## Purpose: Sets the Git identity name.
+## Type: String.
+## Default: Required in a git block. Use "" to inherit this field.
+# sandbox:
+#   git:
+#     name: Example User
+#     email: example@example.invalid
+
+## email
+## Purpose: Sets the Git identity email.
+## Type: String.
+## Default: Required in a git block. Use "" to inherit this field.
+# sandbox:
+#   git:
+#     name: Example User
+#     email: example@example.invalid
+
+## ---------------------------------------------------------------------------
+## How to choose a sandbox path mode
+## ---------------------------------------------------------------------------
+
+## 1. Decide whether to share the original path or hide its contents.
+## 2. Use ro, rw, or always_rw to share existing contents with the access
+##    you need.
+## 3. Use tmpfs, empty_dir, or empty_file to mask existing contents. The
+##    mount point must exist, even for a temporary mount.
+
+# sandbox:
+#   paths:
+#     ~/work/reference: ro
+#     /run/cydo: tmpfs
+
+## ---------------------------------------------------------------------------
+## How to layer sandbox settings
+## ---------------------------------------------------------------------------
+
+## 1. Put shared mounts and defaults in the global sandbox block.
+## 2. Override settings for one configured agent in its sandbox block.
+## 3. Override settings for a workspace in its sandbox block. Later layers
+##    replace declarations at the same normalized path. Task and launch
+##    rules determine final access. Discovery skips the agent layer.
+
+# sandbox:
+#   paths:
+#     ~/work/reference: ro
+# agents:
+#   claude:
+#     sandbox:
+#       env:
+#         EDITOR: vim
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     sandbox:
+#       paths:
+#         ~/work/shared: ro
+
+## ---------------------------------------------------------------------------
+## Complete example
+## ---------------------------------------------------------------------------
+
+## Create ~/work/cydo-scratch if you want to use the writable scratch mount.
+
+## cydo-init: complete-example begin
+# sandbox:
+#   isolate_filesystem: true
+#   isolate_processes: true
+#   isolate_environment: true
+#   paths:
+#     /usr/share: ro
+#     ~/work/cydo-scratch: rw
+#     /var/cache/cydo: always_rw
+#     /run/cydo: tmpfs
+#     /var/empty: empty_dir
+#     /var/empty-file: empty_file
+#   env:
+#     PATH: "{{ env.PATH }}"
+#   git:
+#     name: Example User
+#     email: example@example.invalid
+## cydo-init: complete-example end
+
+## ===========================================================================
+## Claude permissions
+## ===========================================================================
+
+## permissions
+## Purpose: Sets how Claude tool calls are decided.
+## Type: Mapping of permission fields.
+## Default: Uses the built-in values below.
+## Notes: Only Claude uses CyDo’s permission policy. Codex uses approval
+##   policy never. CyDo automatically approves Copilot permission requests.
+##   Only Claude agent entries may set fields in this mapping.
+# permissions:
+#   policy: ask
+
+## ---------------------------------------------------------------------------
+## Permission fields
+## ---------------------------------------------------------------------------
+
+## policy
+## Purpose: Chooses how to handle a tool call.
+## Type: A decision string or Djinja string rendering a decision.
+## Default: Ask on dangerous calls in interactive tasks, deny them elsewhere,
+##   and otherwise use auto if enabled or allow.
+## Accepted values: allow, deny, ask, auto.
+## Notes: Templates receive tool_name, input, auto_mode, dangerous, and
+##   interactive. dangerous means Claude Code’s safety checks flagged the
+##   call. interactive includes entry-point types, even system entries,
+##   and types reachable from them through named keep-context transitions.
+##   An empty policy selects the built-in policy. Invalid decisions and
+##   evaluation errors deny the call, as does auto with auto_mode off.
+##   With auto_mode on, auto prompts a user on Claude safety escalation.
+# permissions:
+#   policy: "{{ 'ask' if tool_name == 'Bash' else 'allow' }}"
+
+## auto_mode
+## Purpose: Lets Claude Code’s classifier judge calls sent to auto.
+## Type: Boolean.
+## Default: False, or the earlier layer’s value.
+# permissions:
+#   auto_mode: true
+
+## prompt_timeout
+## Purpose: Denies a call if its permission prompt stays unanswered.
+## Type: Unsigned number of seconds.
+## Default: 120, or the earlier layer’s value.
+## Accepted values: 0 waits indefinitely.
+# permissions:
+#   prompt_timeout: 120
+
+## ---------------------------------------------------------------------------
+## How to layer permission settings
+## ---------------------------------------------------------------------------
+
+## 1. Set a global prompt timeout.
+## 2. Enable auto mode on a configured Claude agent to inherit that timeout.
+## 3. Set a workspace policy to override just that field. The last supplied
+##    field wins, and omitted fields inherit.
+
+# permissions:
+#   prompt_timeout: 120
+# agents:
+#   claude:
+#     permissions:
+#       auto_mode: true
+# workspaces:
+#   example-project:
+#     root: ~/work/example-project
+#     permissions:
+#       policy: ask
+
+## ---------------------------------------------------------------------------
+## Complete example
+## ---------------------------------------------------------------------------
+
+## cydo-init: complete-example begin
+# permissions:
+#   policy: "{{ 'ask' if tool_name == 'Bash' else 'allow' }}"
+#   auto_mode: false
+#   prompt_timeout: 120
+## cydo-init: complete-example end
+
+## ===========================================================================
+## Agents
+## ===========================================================================
+
+## agents
+## Purpose: Names configured instances of the built-in agent drivers.
+## Type: Mapping of names to agent settings.
+## Default: Synthesizes built-in entries for uncovered drivers.
+## Notes: A driver’s entry is synthesized only if its built-in name is
+##   unused and no configured entry selects that driver. References to
+##   a configured name use the driver selected by that entry. Keep an
+##   explicit claude or codex key if other settings refer to that name.
+# agents:
+#   claude:
+#     display_name: Claude Code
+
+## ---------------------------------------------------------------------------
+## Agent fields
+## ---------------------------------------------------------------------------
+
+## driver
+## Purpose: Selects the agent implementation.
+## Type: Driver name string.
+## Default: Inferred if the entry name is a built-in driver name. Required for
+##   custom names.
+## Accepted values: claude, codex, copilot.
+# agents:
+#   claude-auto:
+#     driver: claude
+
+## display_name
+## Purpose: Supplies the label shown in the UI.
+## Type: String.
+## Default: The driver’s UI label, such as Claude Code.
+# agents:
+#   claude-auto:
+#     driver: claude
+#     display_name: Claude with auto mode
+
+## sandbox
+## Purpose: Overrides sandbox settings for this agent.
+## Type: Sandbox mapping.
+## Default: Inherits global settings.
+# agents:
+#   claude-auto:
+#     driver: claude
+#     sandbox:
+#       env:
+#         EDITOR: vim
+
+## permissions
+## Purpose: Overrides permission settings for this agent.
+## Type: Permissions mapping.
+## Default: Inherits global settings.
+## Accepted values: Only Claude agent entries may set fields.
+# agents:
+#   claude-auto:
+#     driver: claude
+#     permissions:
+#       auto_mode: true
+
+## model_aliases
+## Purpose: Maps model class labels to a driver model or effort.
+## Type: Mapping from class names to model strings or model setting maps.
+## Default: Driver defaults for small, medium, and large. Other classes name a
+##   model directly.
+# agents:
+#   claude-auto:
+#     driver: claude
+#     model_aliases:
+#       small: haiku
+
+## ---------------------------------------------------------------------------
+## Model alias fields
+## ---------------------------------------------------------------------------
+
+## model
+## Purpose: Selects a driver-specific model name.
+## Type: String.
+## Default: Omit it to keep the usual model for the class.
+# agents:
+#   claude-auto:
+#     driver: claude
+#     model_aliases:
+#       large:
+#         model: opus
+
+## effort
+## Purpose: Sets reasoning effort on launch.
+## Type: String.
+## Default: Omit it to use the CLI default.
+## Accepted values: Claude passes it to --effort. Codex passes it to
+##   model_reasoning_effort. The CLI decides values. Copilot rejects nonempty
+##   effort.
+# agents:
+#   claude-auto:
+#     driver: claude
+#     model_aliases:
+#       large:
+#         effort: high
+
+## ---------------------------------------------------------------------------
+## How to define a custom agent
+## ---------------------------------------------------------------------------
+
+## 1. Retain the built-in name explicitly if anything refers to it.
+## 2. Add a custom entry and specify its driver.
+## 3. Give it a display label and any overrides it needs. Select it using
+##    default_agent or the agent field of a child task type.
+
+# agents:
+#   claude:
+#     driver: claude
+#   claude-auto:
+#     driver: claude
+#     display_name: Claude with auto mode
+#     permissions:
+#       auto_mode: true
+
+## ---------------------------------------------------------------------------
+## How to set model aliases and effort
+## ---------------------------------------------------------------------------
+
+## 1. Use a scalar for a model-only alias.
+## 2. Use a mapping to set model, effort, or both.
+## 3. Use the class label in a task type’s model_class. See that field in
+##    task-types.yaml for the expression context.
+
+# agents:
+#   claude-auto:
+#     driver: claude
+#     model_aliases:
+#       small: haiku
+#       large:
+#         model: opus
+#         effort: high
+
+## ---------------------------------------------------------------------------
+## Complete example
+## ---------------------------------------------------------------------------
+
+## cydo-init: complete-example begin
+# agents:
+#   claude:
+#     display_name: Claude Code
+#   claude-auto:
+#     driver: claude
+#     display_name: Claude with auto mode
+#     permissions:
+#       auto_mode: true
+#   codex:
+#     display_name: Codex
+#   custom-codex:
+#     driver: codex
+#     display_name: Custom Codex
+#     sandbox:
+#       isolate_filesystem: true
+#       isolate_processes: true
+#       isolate_environment: true
+#       paths:
+#         /usr/share: ro
+#       env:
+#         EDITOR: vim
+#       git:
+#         name: Example Agent
+#         email: agent@example.invalid
+#     model_aliases:
+#       small: gpt-5-mini
+#       large:
+#         model: gpt-5
+#         effort: high
+#   custom-copilot:
+#     driver: copilot
+#     model_aliases:
+#       large: claude-sonnet
+## cydo-init: complete-example end
+
+## ===========================================================================
+## Task placement and server defaults
+## ===========================================================================
+
+## If ~/.config/cydo existed at server startup, CyDo reloads valid edits
+## to this file. It rescans workspaces, refreshes
+## agents, model aliases, task-type lists and status, and applies the log
+## level. Workspace and global defaults update for new tasks. Suggestions,
+## development mode and the system message keyword also update live.
+## Sandbox and permission edits affect subsequent launches or lookups.
+## An already-running agent retains its launch settings. Restart CyDo to
+## apply a changed task_dir template or if init created ~/.config/cydo
+## while the server was running.
+
+## task_dir
+## Purpose: Determines where CyDo stores each task.
+## Type: Djinja path string.
+## Default: {{ workspace_root }}/.cydo/tasks/{{ tid }}. Restart after changing
+##   it.
+## Accepted values: The context provides tid, workspace, workspace_root,
+##   project_path, and repo_path.
+## Notes: tid is text. CyDo expands a leading tilde in the rendered path.
+# task_dir: "{{ workspace_root }}/.cydo/tasks/{{ tid }}"
+
+## default_agent
+## Purpose: Selects the default agent when a workspace supplies none.
+## Type: Configured agent name string.
+## Default: Uses the entry named claude, or the sole Claude-driver entry.
+##   With no claude key and zero or multiple Claude entries, set this field.
+## Notes: Explicit names must resolve to a configured agent.
+# default_agent: claude
+
+## default_task_type
+## Purpose: Preselects an entry in the new-task UI.
+## Type: Entry key from user_entry_points, or its target task-type name.
+## Default: The first visible entry.
+## Notes: The picker selects the first visible match, or its first entry
+##   if none match. A nonempty workspace value overrides this preference.
+# default_task_type: direct
+
+## suggestions
+## Purpose: Generates next-message suggestions on turn end and when opening a
+##   live task.
+## Type: Boolean.
+## Default: True. Title generation is separate.
+# suggestions: false
+
+## dev_mode
+## Purpose: Enables development behavior in the server and UI.
+## Type: Boolean.
+## Default: False.
+# dev_mode: false
+
+## log_level
+## Purpose: Sets backend logging verbosity.
+## Type: String.
+## Default: info. An invalid value logs a warning and falls back to info.
+## Accepted values: trace, info, warning, error.
+# log_level: info
+
+## system_keyword
+## Purpose: Sets the marker used for generated system messages.
+## Type: String.
+## Default: SYSTEM.
+# system_keyword: SYSTEM
+
+## disk_cleanup_threshold_bytes
+## Purpose: Sets the threshold for a task's disk cleanup request.
+## Type: Positive integer number of bytes.
+## Default: 10485760 (10 MiB).
+## Notes: CyDo checks on eligible exits when the last turn succeeded and
+##   a live batch owner or task dependency is waiting for the result.
+##   Continuations and the missing-output retry take precedence.
+##   CyDo asks at most once per task. The signed sum of task-directory
+##   and task-temp bytes triggers cleanup at or above the threshold.
+##   Any one referenced Nix closure can independently reach the threshold.
+##   A task-owned worktree contributes its byte delta from its fork base.
+# disk_cleanup_threshold_bytes: 10485760
+
+## ---------------------------------------------------------------------------
+## Complete example
+## ---------------------------------------------------------------------------
+
+## cydo-init: complete-example begin
+# task_dir: "{{ workspace_root }}/.cydo/tasks/{{ tid }}"
+# default_agent: claude
+# default_task_type: direct
+# suggestions: false
+# dev_mode: false
+# log_level: info
+# system_keyword: SYSTEM
+# disk_cleanup_threshold_bytes: 10485760
+## cydo-init: complete-example end

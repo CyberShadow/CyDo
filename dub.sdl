@@ -5,6 +5,7 @@ targetType "executable"
 targetPath "build"
 
 sourcePaths "source"
+stringImportPaths "source/cydo/cli/init_templates"
 excludedSourceFiles "source/cydo/agent/protocol_codegen.d"
 
 dependency "ae" version="~>0.0.3817"

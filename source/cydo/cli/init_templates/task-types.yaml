@@ -1,0 +1,782 @@
+## ===========================================================================
+## CyDo task types
+## ===========================================================================
+
+## Where task types come from
+##
+## CyDo loads the packaged definitions, then this file
+## (~/.config/cydo/task-types.yaml), then the project's
+## .cydo/task-types.yaml. The root keys are task_types, user_entry_points,
+## and singletons. There is no version key.
+
+## How the layers merge
+##
+## Mappings merge recursively. Later values replace earlier scalars, lists,
+## and nulls. An existing mapping survives a non-mapping overlay or an empty
+## mapping. So this file only needs the entries you add or change.
+
+## Reloading
+##
+## CyDo reloads the user file if ~/.config/cydo existed at server startup.
+## If init creates that directory while CyDo is running, restart CyDo.
+## CyDo also reloads watched project files. It logs validation diagnostics
+## and still uses the loaded definitions. Parse or load errors can leave a
+## catalog empty after a reload.
+##
+## Prompts are read when rendered. Startup prompt text already sent to a
+## process stays with it.
+
+## How to use the examples
+##
+## Lines beginning with "## " are documentation. Lines beginning with "# "
+## are example YAML: remove the "# " from one example's lines to use it.
+##
+## Start with all the "Complete example" blocks to try the sample graph. The
+## short examples are edits to those blocks: merge their keys into the
+## corresponding mappings, keeping the other fields, prompts and incoming
+## routes from the complete blocks.
+
+## Enabling the task_types example
+##
+## YAML permits only one task_types key. Replace the active task_types: {}
+## line below with the uncommented task_types block. If you have types
+## already, merge the entries into that mapping.
+
+task_types: {}
+
+## ===========================================================================
+## How to define a task type
+## ===========================================================================
+
+## 1. Add a named entry below task_types. The research_console type in
+##    the complete example starts with the shipped prompts/blank.md.
+## 2. To customize that prompt, create ~/.config/cydo/defs/prompts/my_task.md
+##    and refer to prompts/my_task.md from its user_entry_points entry. For
+##    example, write "Discuss this request: {{ task_description }}". An
+##    autonomous task can use {{ output_file }} and {{ output_dir }} where
+##    applicable to tell the agent where to write a result.
+## 3. To customize the startup prompt, create
+##    ~/.config/cydo/defs/system_prompts/my_task.md and set
+##    system_prompt_template to system_prompts/my_task.md. For example,
+##    write "Help the user explore the research question." CyDo renders
+##    role prompts through system_prompts/master.md. Claude and Copilot
+##    receive the prompt at launch. Codex gets it in task message framing.
+## 4. Use paths relative to a defs directory. Lookup prefers the project
+##    .cydo/defs/, then ~/.config/cydo/defs/, then the shipped definitions.
+##    Use {{ default }} to include the next matching file. A missing
+##    lower-priority file is an error. Use read_file with an absolute or
+##    tilde-expanded absolute path to insert literal file contents. For
+##    example, create ~/notes/workflow.md and put this in your prompt:
+##    {{ read_file("~/notes/workflow.md") }}
+## 5. Make the type reachable from a user entry, a child tool on a parent
+##    type, a named continuation, or on_yield. An entry point or a
+##    keep-context transition always needs its own prompt even if its
+##    target is a steward. For other edges to ordinary types the prompt
+##    also goes on the edge. Stewards may provide a node-level prompt.
+## 6. Give every edge an existing target. Every path to a type that emits
+##    commits or a worktree needs a worktree. Interactive types have no
+##    outputs or on_yield and can only continue with keep_context.
+##    A keep-context transition needs worktree: inherit. Validation flags
+##    unconditional cycles in named continuations and on_yield. A type
+##    with multiple named continuations acts as a decision point.
+## 7. Check the server log for validation diagnostics. Examples include
+##    missing prompts, adjacent placeholders in prompts, unknown targets,
+##    and agent overrides on types started directly by entry points.
+
+# task_types:
+#   research_console:
+#     system_prompt_template: system_prompts/my_task.md
+# user_entry_points:
+#   research_console:
+#     description: Discuss a research question.
+#     prompt_template: prompts/my_task.md
+
+## ===========================================================================
+## Task types
+## ===========================================================================
+
+## task_types
+## Purpose: Defines named roles and how they can delegate or transition.
+## Type: Mapping of type names to task settings.
+## Default: An empty user mapping keeps the packaged types.
+# task_types:
+#   research_console:
+#     agent_description: Discuss research questions.
+
+## ---------------------------------------------------------------------------
+## Task type fields
+## ---------------------------------------------------------------------------
+
+## icon
+## Purpose: Selects the icon shown for the type.
+## Type: String.
+## Default: Looks up the task-type name in the icon registry.
+## Accepted values: check, dot, plus, question, archive, import, subtasks,
+##   blank, conversation, plan-mode, bug-mode, write-mode, crate, plan,
+##   quick-research, research, bug, reproduce, spike, test, work, triage,
+##   decompose, oversee, integrator, implement, verify, review,
+##   steward-quality, steward-security.
+## Notes: Unknown keys produce no icon. The new-task picker uses only the
+##   configured icon, without falling back to the task-type name.
+# task_types:
+#   coordinator:
+#     icon: oversee
+
+## agent_description
+## Purpose: Explains to the agent when to choose this type.
+## Type: String.
+## Default: Empty.
+# task_types:
+#   coordinator:
+#     agent_description: Break a request into focused child tasks.
+
+## tool_guidance
+## Purpose: Helps other roles choose this type.
+## Type: String.
+## Default: Empty.
+## Notes: Added to generated guidance for incoming child and named
+##   continuation routes. Put instructions for the current role in its prompt.
+# task_types:
+#   coordinator:
+#     tool_guidance: Choose this role when you need research coordinated.
+
+## prompt_template
+## Purpose: Supplies a steward’s node-level user prompt.
+## Type: Path string relative to defs.
+## Default: Empty. Ordinary types get prompts from incoming edges.
+## Accepted values: Steward types only. Entry points and keep-context
+##   transitions still need their own prompt.
+# task_types:
+#   approval_steward:
+#     prompt_template: prompts/blank.md
+
+## system_prompt_template
+## Purpose: Supplies the role prompt.
+## Type: Path string relative to defs.
+## Default: No custom role prompt.
+## Notes: The role template receives generated_guidance, plus knowledge_base
+##   when set and output_file and output_dir when supplied. The master
+##   template also receives role_prompt. Claude and Copilot receive the
+##   rendered prompt at launch. Codex gets it in task message framing.
+# task_types:
+#   approval_steward:
+#     system_prompt_template: system_prompts/sample_steward.md
+
+## model_class
+## Purpose: Selects the model class after the agent is resolved.
+## Type: String or Djinja expression.
+## Default: large.
+## Accepted values: A model name, alias, or small, medium, or large.
+## Notes: Expressions receive workspace and agent and support read_file.
+##   small, medium, and large use driver defaults unless aliased.
+##   The example matches the configured name codex. A custom agent using
+##   the Codex driver has its own name.
+# task_types:
+#   coordinator:
+#     model_class: "{{ 'small' if agent == 'codex' else 'large' }}"
+
+## agent
+## Purpose: Selects the configured agent for a child or fresh successor.
+## Type: String or Djinja expression.
+## Default: {{ parent_agent_type }}. Root tasks use their selected agent.
+## Accepted values: A configured agent name, including when rendered.
+## Notes: Expressions receive parent_agent_type (a configured agent name)
+##   and workspace and support read_file. New singleton tasks resolve the
+##   expression against the requesting agent. The root-entry validator can
+##   still warn about this override. Keep-context clusters must agree on
+##   literal agents.
+# task_types:
+#   worktree_builder:
+#     agent: codex
+
+## read_only
+## Purpose: Downgrades ordinary rw mounts under filesystem isolation.
+## Type: Boolean.
+## Default: False.
+## Notes: Also caps the active worktree. The task directory and canonical
+##   project memory can still receive launch-time write grants.
+# task_types:
+#   approval_steward:
+#     read_only: true
+
+## output_type
+## Purpose: Declares the structured result of a completed task.
+## Type: List of strings.
+## Default: Empty. Interactive types must use an empty list.
+## Accepted values: report, worktree, commit.
+## Notes: report checks that output.md exists. It may be empty.
+##   Both worktree and commit need an allocated worktree. worktree checks
+##   for uncommitted changes or commits in the fork-base range. A failed
+##   Git status also passes that changes check. commit checks for commits
+##   in that range and for a clean worktree when Git status succeeds.
+##   CyDo follows continuations first.
+##   When an eligible result is awaited, missing output triggers one retry
+##   prompt. A second miss logs a warning and can still complete successfully.
+# task_types:
+#   report_writer:
+#     output_type: [report]
+
+## allow_native_subagents
+## Purpose: Allows Claude’s native Task and Agent tools.
+## Type: Boolean.
+## Default: False.
+## Accepted values: True requires an empty creatable_tasks map.
+## Notes: Other drivers ignore this option.
+# task_types:
+#   native_helper:
+#     allow_native_subagents: true
+
+## serial
+## Purpose: Marks a type as serial in its definition.
+## Type: Boolean.
+## Default: False. The server does not enforce serial scheduling.
+## Accepted values: Stewards must set true.
+# task_types:
+#   approval_steward:
+#     serial: true
+
+## max_turns
+## Purpose: Declares a turn budget for tools that inspect task definitions.
+## Type: Unsigned integer.
+## Default: 0 when unset. The server does not enforce it as a runtime limit.
+# task_types:
+#   coordinator:
+#     max_turns: 12
+
+## memory
+## Purpose: Frames initial task, mode-switch, and handoff prompts with memory.
+## Type: Boolean.
+## Default: False.
+## Notes: CyDo reads .cydo/memory/MEMORY.md, creates it if missing, and
+##   substitutes a placeholder for empty memory. The memory preamble has
+##   memory_dir and memory_contents.
+# task_types:
+#   coordinator:
+#     memory: true
+
+## steward
+## Purpose: Marks a role for steward validation.
+## Type: Boolean.
+## Default: False. The server does not schedule stewards.
+## Accepted values: True requires serial: true and rules out commit and
+##   worktree outputs.
+# task_types:
+#   approval_steward:
+#     steward: true
+
+## steward_domain
+## Purpose: Describes the steward’s area of responsibility.
+## Type: String.
+## Default: Empty.
+# task_types:
+#   approval_steward:
+#     steward_domain: quality
+
+## knowledge_base
+## Purpose: Describes the steward’s knowledge directory.
+## Type: Path string.
+## Default: Empty.
+# task_types:
+#   approval_steward:
+#     knowledge_base: .cydo/stewards/quality
+
+## creatable_tasks
+## Purpose: Offers child task tools on this type.
+## Type: Mapping from tool labels to child edges.
+## Default: Empty.
+# task_types:
+#   coordinator:
+#     creatable_tasks:
+#       quick_research:
+#         prompt_template: prompts/quick_research.md
+
+## continuations
+## Purpose: Defines named mode switches or handoffs.
+## Type: Mapping of transition names to edges.
+## Default: Empty.
+# task_types:
+#   coordinator:
+#     continuations:
+#       after_research:
+#         task_type: implement
+#         requires_approval: true
+#         keep_context: false
+#         worktree: require
+#         prompt_template: prompts/implement.md
+
+## on_yield
+## Purpose: Defines an automatic transition after an eligible exit.
+## Type: A continuation-shaped mapping.
+## Default: No transition.
+## Accepted values: Uses the continuation fields below. Unavailable on
+##   interactive types.
+## Notes: An eligible exit may have a nonzero exit code. A pending named
+##   continuation takes precedence. User kills and unexpected exits while
+##   a task is active skip this transition.
+# task_types:
+#   coordinator:
+#     on_yield:
+#       task_type: review
+#       requires_approval: false
+#       keep_context: false
+#       worktree: fork
+#       prompt_template: prompts/review.md
+
+## ---------------------------------------------------------------------------
+## Child edge fields
+## ---------------------------------------------------------------------------
+
+## task_type
+## Purpose: Selects the child type to create.
+## Type: Type name string.
+## Default: Uses the child tool label.
+# task_types:
+#   coordinator:
+#     creatable_tasks:
+#       implement_change:
+#         task_type: implement
+
+## worktree
+## Purpose: Controls worktree placement for the child.
+## Type: Worktree mode string.
+## Default: inherit.
+## Accepted values: inherit, require, fork.
+## Notes: inherit reuses the immediate parent’s worktree if present.
+##   require reuses an ancestor’s or requests a shared root-task worktree.
+##   fork requests a task-owned worktree, starting from the parent’s
+##   worktree when present. Git allocation can fail.
+# task_types:
+#   coordinator:
+#     creatable_tasks:
+#       implement_change:
+#         worktree: require
+
+## prompt_template
+## Purpose: Wraps the task description for the child.
+## Type: Path string relative to defs.
+## Default: Required for ordinary targets.
+## Notes: Receives task_description, knowledge_base when set, and
+##   output_file and output_dir when an output path is supplied.
+# task_types:
+#   coordinator:
+#     creatable_tasks:
+#       implement_change:
+#         prompt_template: prompts/implement.md
+
+## result_note
+## Purpose: Supplies a fallback note on the child result sent to its parent.
+## Type: Djinja string.
+## Default: Empty.
+## Notes: output_dir is the parent’s task directory. A generated note
+##   for a report, worktree, or commit takes precedence. The example
+##   applies when the test has no output file or worktree.
+# task_types:
+#   research_console:
+#     creatable_tasks:
+#       test:
+#         result_note: "Record your next steps in {{ output_dir }}/notes.md."
+
+## description
+## Purpose: Describes the child tool to the agent.
+## Type: String.
+## Default: The target’s first agent_description line or its name in
+##   generated guidance.
+# task_types:
+#   coordinator:
+#     creatable_tasks:
+#       implement_change:
+#         description: Implement the requested change.
+
+## ---------------------------------------------------------------------------
+## Continuation and on_yield fields
+## ---------------------------------------------------------------------------
+
+## task_type
+## Purpose: Selects the successor type.
+## Type: Type name string.
+## Default: Required.
+# task_types:
+#   coordinator:
+#     continuations:
+#       after_research:
+#         task_type: implement
+
+## requires_approval
+## Purpose: Records approval metadata on the edge.
+## Type: Boolean.
+## Default: Required.
+## Notes: True on a named continuation logs a validation diagnostic if no
+##   steward is defined. The server does not gate transitions on approval.
+##   The steward check does not apply to on_yield.
+# task_types:
+#   coordinator:
+#     continuations:
+#       after_research:
+#         requires_approval: true
+
+## keep_context
+## Purpose: Chooses a mode switch or a new task handoff.
+## Type: Boolean.
+## Default: Required.
+## Accepted values: True preserves the session and requires an edge prompt and
+##   worktree: inherit.
+# task_types:
+#   coordinator:
+#     continuations:
+#       after_research:
+#         keep_context: false
+
+## worktree
+## Purpose: Controls worktree placement for a successor.
+## Type: Worktree mode string.
+## Default: inherit.
+## Accepted values: inherit, require, fork.
+## Notes: inherit reuses the immediate parent’s worktree if present.
+##   require reuses an ancestor’s or requests a shared root-task worktree.
+##   fork requests a task-owned worktree, starting from the parent’s
+##   worktree when present. Git allocation can fail.
+# task_types:
+#   coordinator:
+#     continuations:
+#       after_research:
+#         worktree: require
+
+## prompt_template
+## Purpose: Wraps the successor’s input.
+## Type: Path string relative to defs.
+## Default: Required for keep-context edges and handoffs to ordinary types.
+## Notes: Fresh handoffs and on_yield get result_text alongside the normal
+##   task prompt variables. An in-place switch gets result_text and the
+##   existing task’s output_dir.
+# task_types:
+#   coordinator:
+#     continuations:
+#       after_research:
+#         prompt_template: prompts/implement.md
+
+## description
+## Purpose: Describes when to select a named transition.
+## Type: String.
+## Default: Empty.
+## Notes: Named transition guidance falls back to the target's first
+##   agent_description line or its name. For on_yield this is metadata
+##   only and does not affect or advertise the automatic transition.
+# task_types:
+#   coordinator:
+#     continuations:
+#       after_research:
+#         description: Continue by implementing the findings.
+
+## ---------------------------------------------------------------------------
+## Complete example
+## ---------------------------------------------------------------------------
+
+## Enable the complete user entry points below to start the sample graph.
+## Create ~/.config/cydo/defs/system_prompts/sample_steward.md with this
+## role prompt: "Review the request for quality and report your findings."
+## Create ~/.config/cydo/defs/prompts/sample_report.md with this prompt:
+## "Write a report at {{ output_file }} about: {{ task_description }}"
+## The other prompt files in this example ship with CyDo.
+
+## cydo-init: complete-example begin
+# task_types:
+#   research_console:
+#     agent_description: Explore research questions interactively.
+#     output_type: []
+#     creatable_tasks:
+#       coordinator:
+#         prompt_template: prompts/quick_research.md
+#       report_writer:
+#         prompt_template: prompts/sample_report.md
+#       approval_steward:
+#         prompt_template: prompts/blank.md
+#         description: Request a quality review.
+#       native_helper:
+#         worktree: require
+#         prompt_template: prompts/implement.md
+#       worktree_builder:
+#         worktree: fork
+#         prompt_template: prompts/implement.md
+#       test:
+#         worktree: inherit
+#         prompt_template: prompts/test.md
+#         result_note: "Record your next steps in {{ output_dir }}/notes.md."
+
+#   coordinator:
+#     icon: oversee
+#     agent_description: Break a request into focused child tasks.
+#     tool_guidance: Choose this role when you need research coordinated.
+#     model_class: "{{ 'small' if agent == 'codex' else 'large' }}"
+#     read_only: false
+#     output_type: []
+#     allow_native_subagents: false
+#     creatable_tasks:
+#       quick_research:
+#         worktree: inherit
+#         prompt_template: prompts/quick_research.md
+#         description: Research the request and return a report.
+#       implement_change:
+#         task_type: implement
+#         worktree: require
+#         prompt_template: prompts/implement.md
+#         description: Implement the requested change.
+#       isolated_review:
+#         task_type: review
+#         worktree: fork
+#         prompt_template: prompts/review.md
+#         description: Review in an isolated worktree.
+#     continuations:
+#       after_research:
+#         task_type: implement
+#         requires_approval: true
+#         keep_context: false
+#         worktree: require
+#         prompt_template: prompts/implement.md
+#         description: Continue by implementing the findings.
+#     on_yield:
+#       task_type: review
+#       requires_approval: false
+#       keep_context: false
+#       worktree: fork
+#       prompt_template: prompts/review.md
+#       description: Review after the coordinator exits and yields.
+#     serial: false
+#     max_turns: 12
+#     agent: "{{ parent_agent_type }}"
+#     memory: true
+
+#   approval_steward:
+#     icon: steward-quality
+#     agent_description: Review a proposed transition.
+#     tool_guidance: Choose this role for a quality review.
+#     prompt_template: prompts/blank.md
+#     system_prompt_template: system_prompts/sample_steward.md
+#     model_class: large
+#     read_only: true
+#     output_type: []
+#     allow_native_subagents: false
+#     creatable_tasks:
+#       delegated_review:
+#         task_type: review
+#         worktree: inherit
+#         prompt_template: prompts/review.md
+#         description: Request an additional review.
+#     continuations:
+#       after_quality_review:
+#         task_type: review
+#         requires_approval: true
+#         keep_context: false
+#         worktree: inherit
+#         prompt_template: prompts/review.md
+#         description: Request an independent follow-up review.
+#     on_yield:
+#       task_type: review
+#       requires_approval: true
+#       keep_context: false
+#       worktree: require
+#       prompt_template: prompts/review.md
+#       description: Hand off after yielding.
+#     serial: true
+#     max_turns: 3
+#     agent: "{{ parent_agent_type }}"
+#     memory: false
+#     steward: true
+#     steward_domain: quality
+#     knowledge_base: .cydo/stewards/quality
+
+#   report_writer:
+#     agent_description: Write a standalone report answering the request.
+#     output_type: [report]
+
+#   native_helper:
+#     agent_description: Use Claude's native subagents to complete a change.
+#     allow_native_subagents: true
+#     agent: claude
+#     output_type: [commit]
+
+#   worktree_builder:
+#     agent_description: Produce changes in a task worktree.
+#     output_type: [worktree]
+#     agent: codex
+## cydo-init: complete-example end
+
+## ===========================================================================
+## User entry points
+## ===========================================================================
+
+## user_entry_points
+## Purpose: Provides the named new-task selections.
+## Type: Mapping from entry labels to entry settings.
+## Default: Retains entries from lower layers.
+## Accepted values: A key must not match a singleton name, even if disabled.
+## Notes: CyDo creates a hidden system entry for each enabled singleton.
+# user_entry_points:
+#   research_console:
+#     description: Discuss a research question.
+#     prompt_template: prompts/blank.md
+
+## ---------------------------------------------------------------------------
+## Entry-point fields
+## ---------------------------------------------------------------------------
+
+## task_type
+## Purpose: Selects which task type to start.
+## Type: Type name string.
+## Default: Uses the entry-point key when omitted.
+# user_entry_points:
+#   start_research:
+#     task_type: research_console
+
+## description
+## Purpose: Supplies the description in the task picker. The key is the label.
+## Type: String.
+## Default: Required. May be empty for a system entry.
+# user_entry_points:
+#   start_research:
+#     description: Discuss a research question.
+
+## prompt_template
+## Purpose: Wraps the first message when this entry starts.
+## Type: Path string relative to defs.
+## Default: Required for every entry, including system entries.
+## Notes: Receives task_description, knowledge_base when set, and
+##   output_file and output_dir when an output path is supplied.
+# user_entry_points:
+#   start_research:
+#     prompt_template: prompts/blank.md
+
+## worktree
+## Purpose: Controls worktree placement for the root task.
+## Type: Worktree mode string.
+## Default: inherit. The root task stays in the checkout.
+## Accepted values: inherit, require, fork.
+## Notes: require requests a shared root-task worktree. fork requests a
+##   task-owned worktree. Git allocation can fail.
+# user_entry_points:
+#   start_research:
+#     worktree: inherit
+
+## system
+## Purpose: Hides the entry from the user-facing task picker.
+## Type: Boolean.
+## Default: False.
+# user_entry_points:
+#   start_research:
+#     system: false
+
+## ---------------------------------------------------------------------------
+## Complete example
+## ---------------------------------------------------------------------------
+
+## The research_console entry omits task_type and resolves to the type of the
+## same name.
+
+## cydo-init: complete-example begin
+# user_entry_points:
+#   start_research:
+#     task_type: research_console
+#     description: Start a conversation about a research request.
+#     prompt_template: prompts/blank.md
+#     worktree: inherit
+#     system: false
+#   research_console:
+#     description: Discuss a research question.
+#     prompt_template: prompts/blank.md
+## cydo-init: complete-example end
+
+## ===========================================================================
+## Singletons
+## ===========================================================================
+
+## singletons
+## Purpose: Defines named tasks started on demand through Request.
+## Type: Mapping from singleton names to singleton settings.
+## Default: Retains the singletons from lower layers.
+## Notes: The name is the Request address and is reserved against
+##   user_entry_points keys, even when disabled. CyDo reuses the newest
+##   top-level task started through that entry in the caller's project and
+##   workspace, excluding archived, archiving, and importable tasks.
+##   If no match exists, CyDo starts one.
+# singletons:
+#   research_desk:
+#     task_type: research_console
+
+## ---------------------------------------------------------------------------
+## Singleton fields
+## ---------------------------------------------------------------------------
+
+## task_type
+## Purpose: Selects the type CyDo starts for this singleton.
+## Type: Type name string.
+## Default: Required for a new singleton. An overlay inherits it.
+## Accepted values: An existing type, or an empty string.
+## Notes: An empty effective value disables the singleton after merging.
+##   The name remains reserved. A later overlay can restore it.
+##   CyDo creates a same-name hidden system entry for an enabled singleton.
+##   The target type's agent expression resolves against the requester.
+# singletons:
+#   research_desk:
+#     task_type: research_console
+
+## prompt_template
+## Purpose: Wraps the startup message when CyDo creates the task.
+## Type: Path string relative to defs.
+## Default: Required for a new singleton. An overlay inherits it.
+## Notes: Requests arrive separately via Ask. The caller waits for Answer.
+# singletons:
+#   research_desk:
+#     prompt_template: prompts/blank.md
+
+## title
+## Purpose: Sets the initial sidebar title of a newly created task.
+## Type: String.
+## Default: Required for a new singleton. An overlay inherits it.
+## Notes: A blank title allows normal title generation. Edits apply only
+##   when a fresh singleton task starts.
+# singletons:
+#   research_desk:
+#     title: Research Desk
+
+## offered_to
+## Purpose: Chooses which sessions may request the singleton.
+## Type: Audience string.
+## Default: interactive.
+## Accepted values: interactive, all.
+## Notes: interactive includes types started by user or system entry points
+##   and types reachable from them through named keep-context transitions.
+##   all also includes autonomous types. Both exclude the target type.
+# singletons:
+#   research_desk:
+#     offered_to: all
+
+## description
+## Purpose: Tells callers what to send and what the answer means.
+## Type: String.
+## Default: Empty, which validation reports as a diagnostic.
+## Notes: The first line is the compact Request summary. The full text goes
+##   into generated guidance for sessions offered this singleton.
+# singletons:
+#   research_desk:
+#     description: |
+#       Answer research questions about the current project.
+#       Send one question with relevant context. Expect a concise answer.
+
+## ---------------------------------------------------------------------------
+## Complete example
+## ---------------------------------------------------------------------------
+
+## The research_desk singleton uses research_console from the complete task
+## type block above. Its own name lets it coexist with the shipped integrator.
+
+## cydo-init: complete-example begin
+# singletons:
+#   research_desk:
+#     task_type: research_console
+#     prompt_template: prompts/blank.md
+#     title: Research Desk
+#     offered_to: interactive
+#     description: |
+#       Answer research questions about the current project.
+#       Send one question, with relevant paths and context if available.
+#       Expect a concise answer with supporting findings or open questions.
+## cydo-init: complete-example end

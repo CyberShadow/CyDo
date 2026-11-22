@@ -1008,6 +1008,9 @@ EOF
             # The build sandbox has no Nix store database or daemon socket.
             CYDO_TEST_SKIP_NIX_STORE = "1";
 
+            CYDO_TEST_PACKAGED_TASK_TYPES = "${./defs}/task-types.yaml";
+            CYDO_TEST_TASK_TYPE_ICON_SOURCE = "${./web/src/components/TaskTypeIcon.tsx}";
+
             # Provide git identity so worktree unit tests can create commits.
             GIT_AUTHOR_NAME = "CyDo Test";
             GIT_AUTHOR_EMAIL = "test@example.com";
