@@ -10,7 +10,8 @@ import {
 } from "preact";
 import renderToString from "preact-render-to-string";
 import { act } from "preact/test-utils";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ownedRoots } from "./test-support/preactAct";
 import type { ControlledImageStore } from "./components/InputBox";
 import type { DraftViewSnapshot, TaskManager } from "./useSessionManager";
 import { makeTaskState, type TaskState } from "./types";
@@ -281,17 +282,7 @@ function expectPlaceholderFrame(html: string): void {
 }
 
 describe("server command errors", () => {
-  let container: HTMLDivElement | null = null;
-
-  afterEach(async () => {
-    if (!container) return;
-    const root = container;
-    await act(() => {
-      render(null, root);
-    });
-    container.remove();
-    container = null;
-  });
+  const roots = ownedRoots();
 
   it("renders the server error dialog and dismisses it", () => {
     state.serverError = { message: "Undo target is no longer valid", tid: 7 };
@@ -417,17 +408,16 @@ describe("server command errors", () => {
       onBlur: vi.fn(),
       onSubmit: controlledSubmit,
     } satisfies DraftViewSnapshot;
-    container = document.createElement("div");
-    document.body.appendChild(container);
+    const container = roots.create();
 
     await act(() => {
-      render(h(App, {}), container!);
+      render(h(App, {}), container);
     });
     expect(
       container.querySelector<HTMLTextAreaElement>("textarea")?.value,
     ).toBe("peer B");
     await act(() => {
-      container!.querySelector<HTMLButtonElement>(".btn-send")!.click();
+      container.querySelector<HTMLButtonElement>(".btn-send")!.click();
     });
     expect(controlledSubmit).toHaveBeenCalledWith("peer B", []);
 
@@ -449,15 +439,15 @@ describe("server command errors", () => {
     state.tasks = new Map([[ordinaryTask.uuid, ordinaryTask]]);
     state.draftView = null;
     await act(() => {
-      render(h(App, {}), container!);
+      render(h(App, {}), container);
     });
     expect(
       container.querySelector<HTMLTextAreaElement>("textarea")?.value,
     ).toBe("");
 
     await act(() => {
-      render(null, container!);
-      render(h(App, {}), container!);
+      render(null, container);
+      render(h(App, {}), container);
     });
     expect(
       container.querySelector<HTMLTextAreaElement>("textarea")?.value,
@@ -548,10 +538,9 @@ describe("server command errors", () => {
       state.activeWorkspace = "workspace";
       state.activeProject = "project";
       state.draftView = rootDraft;
-      container = document.createElement("div");
-      document.body.appendChild(container);
+      const container = roots.create();
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       const beforeInputBox =
@@ -591,7 +580,7 @@ describe("server command errors", () => {
         lifecycle: "present",
       };
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       expect(container.querySelector(".input-box")).toBe(beforeInputBox);
@@ -676,10 +665,9 @@ describe("server command errors", () => {
       ];
       state.agents = [{ name: "agent", driver: "claude" }];
       state.draftView = projectDraft;
-      container = document.createElement("div");
-      document.body.appendChild(container);
+      const container = roots.create();
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       const beforeInputBox =
@@ -698,7 +686,7 @@ describe("server command errors", () => {
         metadataReady: false,
       };
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       expect(container.querySelector(".input-box")).toBe(beforeInputBox);
@@ -727,7 +715,7 @@ describe("server command errors", () => {
 
       state.draftView = projectDraft;
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       expect(container.querySelector(".input-box")).toBe(beforeInputBox);
@@ -836,10 +824,9 @@ describe("server command errors", () => {
       ];
       state.agents = [{ name: "agent A", driver: "claude" }];
       state.draftView = cachedDraft;
-      container = document.createElement("div");
-      document.body.appendChild(container);
+      const container = roots.create();
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       const rootTextarea =
@@ -855,7 +842,7 @@ describe("server command errors", () => {
       state.tasks = new Map([[realTaskB.uuid, realTaskB]]);
       state.draftView = null;
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
         completeNextReader();
       });
 
@@ -869,7 +856,7 @@ describe("server command errors", () => {
 
       state.tasks = new Map([[pendingTaskB.uuid, pendingTaskB]]);
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       expect(container.querySelectorAll(".input-box")).toHaveLength(0);
@@ -881,7 +868,7 @@ describe("server command errors", () => {
       state.activeTaskId = null;
       state.draftView = cachedDraft;
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       expect(container.querySelectorAll("textarea")).toHaveLength(1);
@@ -909,7 +896,7 @@ describe("server command errors", () => {
         metadataReady: true,
       };
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       expect(
@@ -982,9 +969,10 @@ describe("server command errors", () => {
       onSubmit: vi.fn(),
     } satisfies DraftViewSnapshot;
 
+    const container = roots.create();
     const renderApp = async () => {
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
     };
 
@@ -1002,8 +990,6 @@ describe("server command errors", () => {
       ];
       state.agents = [{ name: "agent", driver: "claude" }];
       state.draftView = draftA;
-      container = document.createElement("div");
-      document.body.appendChild(container);
       await renderApp();
 
       const imageStore = controlledImageStore.current!;
@@ -1030,7 +1016,7 @@ describe("server command errors", () => {
       state.activeProject = "project-a";
       state.draftView = draftA;
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
         complete(heldAcrossHome);
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
@@ -1039,7 +1025,7 @@ describe("server command errors", () => {
       let heldAcrossReset: FileReader;
       await act(() => {
         const current =
-          container!.querySelector<HTMLTextAreaElement>("textarea")!;
+          container.querySelector<HTMLTextAreaElement>("textarea")!;
         pasteImage(current);
         heldAcrossReset = readers[2]!;
       });
@@ -1103,13 +1089,13 @@ describe("server command errors", () => {
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
 
       await act(() => {
-        container!.querySelector<HTMLButtonElement>(".btn-send")!.click();
+        container.querySelector<HTMLButtonElement>(".btn-send")!.click();
       });
       expect(freshSubmit).toHaveBeenCalledWith("fresh A", []);
 
       await act(() => {
         const current =
-          container!.querySelector<HTMLTextAreaElement>("textarea")!;
+          container.querySelector<HTMLTextAreaElement>("textarea")!;
         pasteImage(current);
         complete(readers[4]!);
       });
@@ -1258,10 +1244,9 @@ describe("server command errors", () => {
         { name: "agent B", driver: "codex" },
       ];
       state.draftView = draftA;
-      container = document.createElement("div");
-      document.body.appendChild(container);
+      const container = roots.create();
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       const beforeInputBox =
@@ -1278,7 +1263,7 @@ describe("server command errors", () => {
       // B. The A project slot must continue to own the controlled composer.
       state.activeTaskId = "72";
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       expect(container.querySelector(".input-box")).toBe(beforeInputBox);
@@ -1292,7 +1277,7 @@ describe("server command errors", () => {
 
       state.draftView = draftB;
       await act(() => {
-        render(h(App, {}), container!);
+        render(h(App, {}), container);
       });
 
       expect(container.querySelector(".input-box")).toBe(beforeInputBox);
@@ -1372,17 +1357,7 @@ describe("missing numeric tasks", () => {
 });
 
 describe("completion-aware task loading", () => {
-  let container: HTMLDivElement | null = null;
-
-  afterEach(async () => {
-    if (!container) return;
-    const root = container;
-    await act(() => {
-      render(null, root);
-    });
-    container.remove();
-    container = null;
-  });
+  const roots = ownedRoots();
 
   it("passes live partial loading to Sidebar and both session view paths", () => {
     const active = {
@@ -1459,13 +1434,12 @@ describe("completion-aware task loading", () => {
   });
 
   it("updates search and welcome components from partial to complete task lists", async () => {
-    container = document.createElement("div");
-    document.body.appendChild(container);
+    const container = roots.create();
     state.connected = true;
     state.tasksLoaded = false;
 
     await act(async () => {
-      render(h(App, {}), container!);
+      render(h(App, {}), container);
       await Promise.resolve();
     });
     expect(latest(componentProps.welcomePage)).toEqual({ tasksLoaded: false });
@@ -1484,7 +1458,7 @@ describe("completion-aware task loading", () => {
 
     state.tasksLoaded = true;
     await act(async () => {
-      render(h(App, {}), container!);
+      render(h(App, {}), container);
       await Promise.resolve();
     });
 

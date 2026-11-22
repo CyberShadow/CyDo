@@ -1,8 +1,8 @@
 /** @vitest-environment jsdom */
 
-import { h, render } from "preact";
-import { act } from "preact/test-utils";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { h } from "preact";
+import { beforeEach, describe, expect, it } from "vitest";
+import { ownedRoots } from "../test-support/preactAct";
 import { makeTaskState, type TaskState } from "../types";
 import type { WorkspaceInfo } from "../useSessionManager";
 import { sortFilteredWorkspaceGroups, WelcomePage } from "./WelcomePage";
@@ -133,6 +133,7 @@ describe("sortFilteredWorkspaceGroups", () => {
 });
 
 describe("WelcomePage task loading", () => {
+  const roots = ownedRoots();
   let container: HTMLDivElement;
   const workspace: WorkspaceInfo = {
     name: "Workspace",
@@ -140,37 +141,27 @@ describe("WelcomePage task loading", () => {
   };
 
   const mount = (tasks: Map<string, TaskState>, tasksLoaded: boolean) => {
-    void act(() => {
-      render(
-        h(WelcomePage, {
-          workspaces: [workspace],
-          tasks,
-          tasksLoaded,
-          attention: new Set<number>(),
-          onSelectTask: () => {},
-          onNavigateToProject: () => {},
-          getProjectHref: () => "/workspace/project",
-          getTaskHref: (id: string) => `/task/${id}`,
-          taskTypes: [],
-          notices: {},
-          onRefreshWorkspaces: () => {},
-          scanState: "idle",
-        }),
-        container,
-      );
-    });
+    roots.render(
+      h(WelcomePage, {
+        workspaces: [workspace],
+        tasks,
+        tasksLoaded,
+        attention: new Set<number>(),
+        onSelectTask: () => {},
+        onNavigateToProject: () => {},
+        getProjectHref: () => "/workspace/project",
+        getTaskHref: (id: string) => `/task/${id}`,
+        taskTypes: [],
+        notices: {},
+        onRefreshWorkspaces: () => {},
+        scanState: "idle",
+      }),
+      container,
+    );
   };
 
   beforeEach(() => {
-    container = document.createElement("div");
-    document.body.appendChild(container);
-  });
-
-  afterEach(() => {
-    void act(() => {
-      render(null, container);
-    });
-    container.remove();
+    container = roots.create();
   });
 
   it("labels an empty project as loading while task discovery is partial", () => {

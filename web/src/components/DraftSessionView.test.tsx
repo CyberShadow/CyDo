@@ -2,8 +2,8 @@
  * @vitest-environment jsdom
  * @vitest-environment-options { "pretendToBeVisual": true }
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render } from "preact";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { actStep, ownedRoots } from "../test-support/preactAct";
 import { act } from "preact/test-utils";
 import type {
   DraftView,
@@ -46,14 +46,6 @@ const agents = [
   { name: "codex", driver: "codex" },
   { name: "claude", driver: "claude" },
 ];
-
-const flush = (update: () => void) =>
-  act(async () => {
-    update();
-    await Promise.resolve();
-    await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve));
-  });
 
 function pasteImage(textarea: HTMLTextAreaElement) {
   const file = new File(["image"], "image.png", { type: "image/png" });
@@ -108,25 +100,24 @@ function mockImageReader() {
 }
 
 describe("DraftSessionView draft availability", () => {
+  const roots = ownedRoots();
   let container: HTMLDivElement;
 
   const mount = (draftView: DraftView) => {
-    void act(() => {
-      render(
-        <DraftSessionView
-          draftView={draftView}
-          connected={true}
-          tasksLoading={false}
-          entryPoints={entryPoints}
-          agents={agents}
-          defaultAgent="codex"
-          theme="dark"
-          onToggleTheme={() => {}}
-          onToggleSidebar={() => {}}
-        />,
-        container,
-      );
-    });
+    roots.render(
+      <DraftSessionView
+        draftView={draftView}
+        connected={true}
+        tasksLoading={false}
+        entryPoints={entryPoints}
+        agents={agents}
+        defaultAgent="codex"
+        theme="dark"
+        onToggleTheme={() => {}}
+        onToggleSidebar={() => {}}
+      />,
+      container,
+    );
   };
 
   const controls = () => ({
@@ -153,15 +144,7 @@ describe("DraftSessionView draft availability", () => {
   };
 
   beforeEach(() => {
-    container = document.createElement("div");
-    document.body.appendChild(container);
-  });
-
-  afterEach(() => {
-    void act(() => {
-      render(null, container);
-    });
-    container.remove();
+    container = roots.create();
   });
 
   it("rejects pasted attachments while route metadata is unresolved", async () => {
@@ -186,7 +169,7 @@ describe("DraftSessionView draft availability", () => {
       mount(draftView);
 
       expectFullyDisabledControls();
-      await flush(() => {
+      await actStep(() => {
         pasteImage(controls().textarea);
         imageReader.complete();
       });
@@ -234,7 +217,7 @@ describe("DraftSessionView draft availability", () => {
     expect(textarea.disabled).toBe(false);
     expect(send.disabled).toBe(true);
 
-    await flush(() => {
+    await actStep(() => {
       textarea.value = "updated before metadata";
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
     });
@@ -291,7 +274,7 @@ describe("DraftSessionView draft availability", () => {
       });
       expect(onEntryPointChange).not.toHaveBeenCalled();
 
-      await flush(() => {
+      await actStep(() => {
         dropImage(container.querySelector<HTMLElement>(".input-box")!);
         imageReader.complete();
       });

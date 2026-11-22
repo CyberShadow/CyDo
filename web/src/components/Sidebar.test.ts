@@ -1,8 +1,8 @@
 /** @vitest-environment jsdom */
 
-import { h, render } from "preact";
-import { act } from "preact/test-utils";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { h } from "preact";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ownedRoots } from "../test-support/preactAct";
 
 import sidebarStyles from "../styles.css?inline";
 
@@ -425,6 +425,7 @@ describe("Sidebar child loading", () => {
 });
 
 describe("Sidebar loading marker markup", () => {
+  const roots = ownedRoots();
   let container: HTMLDivElement;
 
   const mount = (
@@ -432,33 +433,23 @@ describe("Sidebar loading marker markup", () => {
     tasksLoading: boolean,
     onSelect = vi.fn(),
   ) => {
-    void act(() => {
-      render(
-        h(Sidebar, {
-          tasks,
-          tasksLoading,
-          activeTaskId: null,
-          attention: new Set<number>(),
-          onSelectTask: onSelect,
-          getTaskHref: (id: string) => `/task/${id}`,
-          taskTypes: [],
-        }),
-        container,
-      );
-    });
+    roots.render(
+      h(Sidebar, {
+        tasks,
+        tasksLoading,
+        activeTaskId: null,
+        attention: new Set<number>(),
+        onSelectTask: onSelect,
+        getTaskHref: (id: string) => `/task/${id}`,
+        taskTypes: [],
+      }),
+      container,
+    );
     return onSelect;
   };
 
   beforeEach(() => {
-    container = document.createElement("div");
-    document.body.appendChild(container);
-  });
-
-  afterEach(() => {
-    void act(() => {
-      render(null, container);
-    });
-    container.remove();
+    container = roots.create();
   });
 
   it("renders an expected child marker as a noninteractive tree row", () => {

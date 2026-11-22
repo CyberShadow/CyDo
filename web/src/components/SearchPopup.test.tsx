@@ -1,31 +1,29 @@
 /** @vitest-environment jsdom */
 
-import { render } from "preact";
-import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ownedRoots } from "../test-support/preactAct";
 import { makeTaskState, type TaskState } from "../types";
 import { SearchPopup } from "./SearchPopup";
 
 describe("SearchPopup task loading", () => {
+  const roots = ownedRoots();
   let container: HTMLDivElement;
   let scrollIntoView: PropertyDescriptor | undefined;
 
   const mount = (tasks: Map<string, TaskState>, tasksLoaded: boolean) => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
-    void act(() => {
-      render(
-        <SearchPopup
-          tasks={tasks}
-          tasksLoaded={tasksLoaded}
-          taskTypes={[]}
-          onSelect={onSelect}
-          onClose={onClose}
-          getTaskHref={(tid) => `/task/${tid}`}
-        />,
-        container,
-      );
-    });
+    roots.render(
+      <SearchPopup
+        tasks={tasks}
+        tasksLoaded={tasksLoaded}
+        taskTypes={[]}
+        onSelect={onSelect}
+        onClose={onClose}
+        getTaskHref={(tid) => `/task/${tid}`}
+      />,
+      container,
+    );
     return { onSelect, onClose };
   };
 
@@ -38,15 +36,10 @@ describe("SearchPopup task loading", () => {
       configurable: true,
       value: () => {},
     });
-    container = document.createElement("div");
-    document.body.appendChild(container);
+    container = roots.create();
   });
 
   afterEach(() => {
-    void act(() => {
-      render(null, container);
-    });
-    container.remove();
     if (scrollIntoView) {
       Object.defineProperty(
         HTMLElement.prototype,
