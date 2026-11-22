@@ -3,7 +3,8 @@
  * @vitest-environment-options { "pretendToBeVisual": true }
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render } from "preact";
+import { options, render } from "preact";
+import { act } from "preact/test-utils";
 import { InputBox } from "./InputBox";
 import {
   createOrdinaryDraftStore,
@@ -19,13 +20,31 @@ const RECOVERED = 'Please reply with "CODEX_ROLLBACK_DEAD"';
 const TYPED =
   "Reply exactly with CODEX_FALLBACK_RESPONSE. CODEX_FALLBACK_PROMPT";
 
-const flushPaintEffects = () =>
-  new Promise((resolve) => setTimeout(resolve, 80));
-const flushRenderQueue = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-};
+function actSync(update: () => void) {
+  // Preact flushes synchronous callbacks before returning from act.
+  void act(update);
+}
+
+// Keep assertions that previously ran after the render queue, but before
+// paint, inside act so passive hydration cannot mask a missed store delivery.
+function actBeforePaint(update: () => void, assert: () => void) {
+  actSync(() => {
+    // Preact calls this scheduler as a standalone function.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const schedule = options.debounceRendering;
+    let drain = () => {};
+    options.debounceRendering = (render) => {
+      drain = render;
+    };
+    try {
+      update();
+      drain();
+      assert();
+    } finally {
+      options.debounceRendering = schedule;
+    }
+  });
+}
 
 function fill(textarea: HTMLTextAreaElement, value: string) {
   textarea.value = value;
@@ -83,22 +102,26 @@ describe("recovered input draft vs. a concurrently typed message", () => {
   });
 
   afterEach(() => {
-    render(null, container);
+    actSync(() => {
+      render(null, container);
+    });
     container.remove();
   });
 
-  it("keeps typed text when recovery and input arrive in the same frame", async () => {
-    mount();
-    await flushPaintEffects();
-    mount(RECOVERED);
-    fill(textarea(), TYPED);
-    await flushRenderQueue();
-    await flushPaintEffects();
+  it("keeps typed text when recovery and input arrive in the same frame", () => {
+    actSync(() => {
+      mount();
+    });
+    actSync(() => {
+      mount(RECOVERED);
+      fill(textarea(), TYPED);
+    });
 
     expect(textarea().value).toBe(TYPED);
     expect(store.read(SESSION)).toBe(TYPED);
-    sendButton().click();
-    await flushRenderQueue();
+    actSync(() => {
+      sendButton().click();
+    });
     expect(sent).toEqual([TYPED]);
   });
 });
@@ -124,90 +147,112 @@ describe("ordinary draft scalar delivery", () => {
   });
 
   afterEach(() => {
-    render(null, container);
+    actSync(() => {
+      render(null, container);
+    });
     container.remove();
   });
 
-  it("applies same-frame A to B to C transitions in order", async () => {
-    mount("A");
-    store.applyRemote(SESSION, { old_draft: "A", new_draft: "B" });
-    store.applyRemote(SESSION, { old_draft: "B", new_draft: "C" });
-    await flushRenderQueue();
-
-    expect(store.read(SESSION)).toBe("C");
-    expect(textarea().value).toBe("C");
+  it("applies same-frame A to B to C transitions in order", () => {
+    actBeforePaint(
+      () => {
+        mount("A");
+        store.applyRemote(SESSION, { old_draft: "A", new_draft: "B" });
+        store.applyRemote(SESSION, { old_draft: "B", new_draft: "C" });
+      },
+      () => {
+        expect(store.read(SESSION)).toBe("C");
+        expect(textarea().value).toBe("C");
+      },
+    );
   });
 
-  it("applies a same-frame clear after an accepted peer update", async () => {
-    mount("A");
-    store.applyRemote(SESSION, { old_draft: "A", new_draft: "B" });
-    store.applyRemote(SESSION, { old_draft: "B", new_draft: "" });
-    await flushRenderQueue();
-
-    expect(store.read(SESSION)).toBe("");
-    expect(textarea().value).toBe("");
+  it("applies a same-frame clear after an accepted peer update", () => {
+    actBeforePaint(
+      () => {
+        mount("A");
+        store.applyRemote(SESSION, { old_draft: "A", new_draft: "B" });
+        store.applyRemote(SESSION, { old_draft: "B", new_draft: "" });
+      },
+      () => {
+        expect(store.read(SESSION)).toBe("");
+        expect(textarea().value).toBe("");
+      },
+    );
   });
 
-  it("accepts sender-excluded non-contiguous compare-and-swap updates", async () => {
-    mount("A");
-    store.write(SESSION, "A");
-    store.applyRemote(SESSION, { old_draft: "A", new_draft: "B" });
-    store.write(SESSION, "B");
-    store.applyRemote(SESSION, { old_draft: "B", new_draft: "C" });
-    await flushRenderQueue();
-
-    expect(textarea().value).toBe("C");
+  it("accepts sender-excluded non-contiguous compare-and-swap updates", () => {
+    actBeforePaint(
+      () => {
+        mount("A");
+        store.write(SESSION, "A");
+        store.applyRemote(SESSION, { old_draft: "A", new_draft: "B" });
+        store.write(SESSION, "B");
+        store.applyRemote(SESSION, { old_draft: "B", new_draft: "C" });
+      },
+      () => {
+        expect(textarea().value).toBe("C");
+      },
+    );
   });
 
-  it("preserves a locally divergent draft", async () => {
-    mount("server text");
-    fill(textarea(), "local text");
-    await flushRenderQueue();
-    store.applyRemote(SESSION, {
-      old_draft: "server text",
-      new_draft: "peer text",
+  it("preserves a locally divergent draft", () => {
+    actSync(() => {
+      mount("server text");
+      fill(textarea(), "local text");
     });
-    await flushRenderQueue();
+    actSync(() => {
+      store.applyRemote(SESSION, {
+        old_draft: "server text",
+        new_draft: "peer text",
+      });
+    });
 
     expect(store.read(SESSION)).toBe("local text");
     expect(textarea().value).toBe("local text");
   });
 
-  it("flushes the current draft on pagehide", async () => {
+  it("flushes the current draft on pagehide", () => {
     const saved: string[] = [];
-    render(
-      ordinaryInput(store, sent, {
-        onSaveDraft: (draft) => {
-          saved.push(draft);
-        },
-      }),
-      container,
-    );
-    await flushPaintEffects();
-    fill(textarea(), "draft typed before reload");
-    window.dispatchEvent(new window.Event("pagehide"));
-
-    expect(saved).toEqual(["draft typed before reload"]);
+    actSync(() => {
+      render(
+        ordinaryInput(store, sent, {
+          onSaveDraft: (draft) => {
+            saved.push(draft);
+          },
+        }),
+        container,
+      );
+    });
+    actSync(() => {
+      fill(textarea(), "draft typed before reload");
+      window.dispatchEvent(new window.Event("pagehide"));
+      expect(saved).toEqual(["draft typed before reload"]);
+    });
   });
 
-  it("does not resurrect a submitted draft on pagehide", async () => {
+  it("does not resurrect a submitted draft on pagehide", () => {
     const saved: string[] = [];
-    render(
-      ordinaryInput(store, sent, {
-        onSaveDraft: (draft) => {
-          saved.push(draft);
-        },
-      }),
-      container,
-    );
-    await flushPaintEffects();
-    fill(textarea(), "submitted draft");
-    await flushRenderQueue();
-    sendButton().click();
-    await flushRenderQueue();
-    window.dispatchEvent(new window.Event("pagehide"));
-
-    expect(saved).toEqual([""]);
+    actSync(() => {
+      render(
+        ordinaryInput(store, sent, {
+          onSaveDraft: (draft) => {
+            saved.push(draft);
+          },
+        }),
+        container,
+      );
+    });
+    actSync(() => {
+      fill(textarea(), "submitted draft");
+    });
+    actSync(() => {
+      sendButton().click();
+    });
+    actSync(() => {
+      window.dispatchEvent(new window.Event("pagehide"));
+      expect(saved).toEqual([""]);
+    });
   });
 
   it("preserves absent-composer compare-and-swap results across remount", () => {
@@ -218,50 +263,69 @@ describe("ordinary draft scalar delivery", () => {
     store.applyRemote("equal", { old_draft: "A", new_draft: "B" });
     store.applyRemote("divergent", { old_draft: "A", new_draft: "B" });
 
-    mount(undefined, "blank");
-    expect(textarea().value).toBe("B");
-    render(null, container);
-    mount(undefined, "equal");
-    expect(textarea().value).toBe("B");
-    render(null, container);
-    mount(undefined, "divergent");
-    expect(textarea().value).toBe("local");
+    actSync(() => {
+      mount(undefined, "blank");
+      expect(textarea().value).toBe("B");
+      render(null, container);
+      mount(undefined, "equal");
+      expect(textarea().value).toBe("B");
+      render(null, container);
+      mount(undefined, "divergent");
+      expect(textarea().value).toBe("local");
+    });
   });
 
-  it("reflects controls before render, between render and layout, and after registration", async () => {
+  it("reflects controls before render, between render and layout, and after registration", () => {
     store.applyRemote("before", { old_draft: "A", new_draft: "B" });
-    mount(undefined, "before");
-    expect(textarea().value).toBe("B");
+    actSync(() => {
+      mount(undefined, "before");
+      expect(textarea().value).toBe("B");
+      render(null, container);
+    });
 
-    render(null, container);
     const betweenStore = createOrdinaryDraftStore();
-    render(
-      <>
-        {ordinaryInput(betweenStore, sent, {
-          sessionId: "between",
-          serverDraft: "A",
-        })}
-        <RemoteUpdate
-          store={betweenStore}
-          sessionId="between"
-          oldDraft="A"
-          newDraft="B"
-        />
-      </>,
-      container,
+    actBeforePaint(
+      () => {
+        render(
+          <>
+            {ordinaryInput(betweenStore, sent, {
+              sessionId: "between",
+              serverDraft: "A",
+            })}
+            <RemoteUpdate
+              store={betweenStore}
+              sessionId="between"
+              oldDraft="A"
+              newDraft="B"
+            />
+          </>,
+          container,
+        );
+      },
+      () => {
+        expect(textarea().value).toBe("B");
+      },
     );
-    await flushRenderQueue();
-    expect(textarea().value).toBe("B");
 
-    render(null, container);
+    actSync(() => {
+      render(null, container);
+    });
     const afterStore = createOrdinaryDraftStore();
-    render(
-      ordinaryInput(afterStore, sent, { sessionId: "after", serverDraft: "A" }),
-      container,
+    actBeforePaint(
+      () => {
+        render(
+          ordinaryInput(afterStore, sent, {
+            sessionId: "after",
+            serverDraft: "A",
+          }),
+          container,
+        );
+        afterStore.applyRemote("after", { old_draft: "A", new_draft: "B" });
+      },
+      () => {
+        expect(textarea().value).toBe("B");
+      },
     );
-    afterStore.applyRemote("after", { old_draft: "A", new_draft: "B" });
-    await flushRenderQueue();
-    expect(textarea().value).toBe("B");
   });
 });
 
