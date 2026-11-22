@@ -4,6 +4,7 @@ import std.logger : warningf;
 
 import cydo.domain.task_types.definition : TaskTypeDef, UserEntryPointDef, SingletonDef, byName, computeReachesWorktree,
 	computeTreeReadOnly, loadTaskTypes, validateTaskTypes;
+import cydo.runtime.config.paths : userDefsDir, userTaskTypesPath;
 
 private struct ProjectTypeCache
 {
@@ -36,26 +37,26 @@ class TaskTypeCatalog
 
 	string[] promptSearchPath(string projectPath)
 	{
-		import std.path : buildPath, expandTilde;
+		import std.path : buildPath;
 
 		string[] dirs;
 		if (projectPath.length > 0)
 			dirs ~= buildPath(projectPath, ".cydo/defs");
-		dirs ~= buildPath(expandTilde("~/.config/cydo"), "defs");
+		dirs ~= userDefsDir();
 		dirs ~= taskTypesDir;
 		return dirs;
 	}
 
 	TaskTypeDef[] getTaskTypesForProject(string projectPath)
 	{
-		import std.path : buildPath, expandTilde;
+		import std.path : buildPath;
 
 		if (auto p = projectPath in taskTypesByProject)
 			return p.types;
 
 		try
 		{
-			auto userTypesPath = buildPath(expandTilde("~/.config/cydo"), "task-types.yaml");
+			auto userTypesPath = userTaskTypesPath();
 			auto projectTypesPath = projectPath.length > 0
 				? buildPath(projectPath, ".cydo/task-types.yaml") : "";
 			auto config = loadTaskTypes(taskTypesPath, userTypesPath, projectTypesPath);
@@ -176,6 +177,71 @@ version (unittest) private void writeProjectTaskTypes(string projectPath, string
 version (unittest) private bool isKnownTestAgent(string name)
 {
 	return ["claude", "codex", "copilot"].canFind(name);
+}
+
+unittest
+{
+	auto tmp = makeTempRoot("cydo-test-task-type-catalog-user-project-precedence");
+	scope (exit)
+	{
+		if (exists(tmp))
+			rmdirRecurse(tmp);
+	}
+	mkdirRecurse(tmp);
+
+	auto oldHome = environment.get("HOME", "");
+	auto hadHome = "HOME" in environment;
+	scope (exit)
+	{
+		if (hadHome)
+			environment["HOME"] = oldHome;
+		else
+			environment.remove("HOME");
+	}
+	auto home = buildPath(tmp, "home");
+	mkdirRecurse(home);
+	environment["HOME"] = home;
+
+	auto defsDir = buildPath(tmp, "built-in-defs");
+	auto globalPath = buildPath(defsDir, "task-types.yaml");
+	writeGlobalTaskTypes(defsDir,
+		"task_types:\n"
+		~ "  alpha:\n"
+		~ "    model_class: global\n"
+		~ "user_entry_points:\n"
+		~ "  start:\n"
+		~ "    task_type: alpha\n"
+		~ "    description: Start\n"
+		~ "    prompt_template: prompts/start.md\n");
+
+	mkdirRecurse(userDefsDir());
+	writePromptFixture(userDefsDir());
+	write(userTaskTypesPath(),
+		"task_types:\n"
+		~ "  alpha:\n"
+		~ "    model_class: user\n");
+
+	auto projectPath = buildPath(tmp, "project");
+	writeProjectTaskTypes(projectPath,
+		"task_types:\n"
+		~ "  alpha:\n"
+		~ "    model_class: project\n");
+
+	auto catalog = new TaskTypeCatalog(defsDir, globalPath, &isKnownTestAgent);
+	auto alpha = catalog.getTaskTypesForProject(projectPath).byName("alpha");
+	assert(alpha !is null);
+	assert(alpha.model_class.source == "project");
+	assert(catalog.promptSearchPath(projectPath) == [
+		buildPath(projectPath, ".cydo/defs"),
+		userDefsDir(),
+		defsDir,
+	]);
+
+	catalog.invalidateProject(projectPath);
+	alpha = catalog.getTaskTypesForProject("").byName("alpha");
+	assert(alpha !is null);
+	assert(alpha.model_class.source == "user");
+	assert(catalog.promptSearchPath("") == [userDefsDir(), defsDir]);
 }
 
 unittest

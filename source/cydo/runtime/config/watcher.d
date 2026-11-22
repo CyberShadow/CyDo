@@ -7,6 +7,7 @@ import std.path : baseName, buildPath, dirName;
 import ae.sys.inotify : INotify, iNotify;
 
 import cydo.runtime.config : configPath;
+import cydo.runtime.config.paths : userTaskTypesPath;
 import cydo.foundation.platform.inotify : RefCountedINotify;
 
 package(cydo):
@@ -41,7 +42,7 @@ class ConfigWatcher
 		auto cfgPath = configPath;
 		auto cfgDir = dirName(cfgPath);
 		auto cfgFileName = baseName(cfgPath);
-		auto userTaskTypesPath = buildPath(cfgDir, "task-types.yaml");
+		auto userTypesPath = userTaskTypesPath();
 		enum userTaskTypesFileName = "task-types.yaml";
 
 		if (!exists(cfgDir))
@@ -53,8 +54,8 @@ class ConfigWatcher
 		if (exists(cfgPath))
 			watchConfigFile(cfgPath);
 
-		if (exists(userTaskTypesPath))
-			watchUserTaskTypesFile(userTaskTypesPath);
+		if (exists(userTypesPath))
+			watchUserTaskTypesFile(userTypesPath);
 
 		configDirWatch_ = iNotify.add(cfgDir, INotify.Mask.create | INotify.Mask.movedTo,
 			(in char[] name, INotify.Mask mask, uint cookie)
@@ -66,7 +67,7 @@ class ConfigWatcher
 						iNotify.remove(userTaskTypesFileWatch_);
 						userTaskTypesFileWatchActive_ = false;
 					}
-					watchUserTaskTypesFile(userTaskTypesPath);
+					watchUserTaskTypesFile(userTypesPath);
 					host_.onUserTaskTypesChanged();
 					return;
 				}

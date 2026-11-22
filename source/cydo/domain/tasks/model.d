@@ -1,6 +1,6 @@
 module cydo.domain.tasks.model;
 
-private struct ProjectRepoResolution
+struct ProjectRepoResolution
 {
 	string repoPath;
 	bool isGitCheckout;
@@ -66,7 +66,7 @@ TaskStatus parseTaskStatus(string value)
 	assert(0);
 }
 
-private ProjectRepoResolution resolveProjectRepo(string projectPath)
+ProjectRepoResolution resolveProjectRepo(string projectPath)
 {
 	if (projectPath.length == 0)
 		return ProjectRepoResolution("", false);
@@ -74,9 +74,9 @@ private ProjectRepoResolution resolveProjectRepo(string projectPath)
 		return *cached;
 
 	import std.process : execute;
-	import std.string : strip;
+	import std.string : chomp;
 	auto repoResult = execute(["git", "-C", projectPath, "rev-parse", "--show-toplevel"]);
-	auto repoRoot = repoResult.output.strip();
+	auto repoRoot = repoResult.output.chomp("\n");
 	auto resolution = repoResult.status == 0 && repoRoot.length > 0
 		? ProjectRepoResolution(repoRoot, true)
 		: ProjectRepoResolution(projectPath, false);

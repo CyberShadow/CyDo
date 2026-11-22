@@ -7,6 +7,8 @@ import dyaml.node : NodeID;
 
 import std.typecons : Nullable;
 
+public import cydo.runtime.config.paths : configPath;
+
 enum PathMode { ro, rw, always_rw, tmpfs, empty_dir, empty_file }
 
 struct GitIdentityConfig
@@ -184,12 +186,6 @@ struct CydoConfig
 	}
 }
 
-string configPath()
-{
-	import std.path : buildPath, expandTilde;
-	return buildPath(expandTilde("~/.config/cydo"), "config.yaml");
-}
-
 CydoConfig loadConfig()
 {
 	auto result = parseConfigFileSimple!CydoConfig(configPath);
@@ -247,6 +243,31 @@ version (unittest)
 	import std.exception : assertThrown;
 	import std.file : exists, mkdirRecurse, rmdirRecurse, symlink, write;
 	import std.path : buildPath, buildNormalizedPath;
+	import std.process : environment;
+
+	unittest // Runtime config paths expand HOME and the package re-exports configPath.
+	{
+		import cydo.runtime.config.paths : configDir, pathsConfigPath = configPath,
+			userTaskTypesPath, userDefsDir;
+
+		auto oldHome = environment.get("HOME", "");
+		auto hadHome = "HOME" in environment;
+		scope (exit)
+		{
+			if (hadHome)
+				environment["HOME"] = oldHome;
+			else
+				environment.remove("HOME");
+		}
+
+		environment["HOME"] = "/tmp/cydo-test-runtime-config-paths-home";
+		auto expectedDir = buildPath(environment["HOME"], ".config", "cydo");
+		assert(configDir() == expectedDir);
+		assert(configPath() == buildPath(expectedDir, "config.yaml"));
+		assert(pathsConfigPath() == configPath());
+		assert(userTaskTypesPath() == buildPath(expectedDir, "task-types.yaml"));
+		assert(userDefsDir() == buildPath(expectedDir, "defs"));
+	}
 
 	unittest
 	{
