@@ -1072,21 +1072,20 @@ public:
 			bool hasOnYield = taskHasOnYield(current);
 			bool consumerWaiting = host_.hasBatchChild(tid)
 				|| current.pendingContinuation !is null || hasOnYield;
-			if (consumerWaiting)
+			bool completesOnIdle = !consumerWaiting && current.relationType == "subtask"
+				&& !host_.shuttingDown();
+			bool canRemind = completesOnIdle || (consumerWaiting
+				&& current.pendingContinuation is null && !current.lastTurnFailed);
+			if (canRemind && host_.hasPendingChildQuestion(tid))
+				host_.sendPendingChildAnswerReminder(tid);
+			else if (consumerWaiting)
 			{
-				bool hasPendingChildQuestion = current.pendingContinuation is null
-					&& !current.lastTurnFailed && host_.hasPendingChildQuestion(tid);
-				if (hasPendingChildQuestion)
-					host_.sendPendingChildAnswerReminder(tid);
-				else
-				{
-					current.processQueue.setGoal(ProcessState.Dead).ignoreResult();
-					session.closeStdin();
-					session.killAfterTimeout(5.seconds);
-				}
+				current.processQueue.setGoal(ProcessState.Dead).ignoreResult();
+				session.closeStdin();
+				session.killAfterTimeout(5.seconds);
 			}
 			else if (host_.shuttingDown()) return;
-			else if (current.relationType == "subtask")
+			else if (completesOnIdle)
 			{
 				completeIdleSubtask(current);
 				session.closeStdin();
@@ -2842,7 +2841,8 @@ version (unittest) private void assertYieldGateRunnerCase(
 	string staleMode = null, bool rejectScan = false,
 	bool bothNagged = false, bool diskFirstThenMissing = false,
 	bool laterHigh = false, bool laterMissing = false,
-	bool diskRetryFails = false, bool heldEventAtIdle = false)
+	bool diskRetryFails = false, bool heldEventAtIdle = false,
+	bool unansweredFollowUp = false)
 {
 	import ae.net.asockets : onNextTick, socketManager;
 	import ae.utils.statequeue : StateQueue;
@@ -2935,6 +2935,9 @@ version (unittest) private void assertYieldGateRunnerCase(
 					backend is null ? consumerWaiting : backend.hasBatchChild(tid),
 				hasPendingChildQuestion: (int tid) =>
 					backend !is null && backend.hasPendingChildQuestion(tid),
+				sendPendingChildAnswerReminder: (int tid) {
+					backend.sendPendingChildAnswerReminder(tid);
+				},
 				checkOutputGate: (int tid) {
 					checks++;
 					return YieldGateFinding(YieldGate.outputs,
@@ -3003,7 +3006,7 @@ version (unittest) private void assertYieldGateRunnerCase(
 				taskTypeCatalog: catalog,
 			));
 
-			if (heldEventAtIdle)
+			if (heldEventAtIdle || unansweredFollowUp)
 			{
 				assert(persistence.createTask("local", fixture.linkedCheckout) == 2);
 				persistence.setParentTid(1, 2);
@@ -3012,6 +3015,64 @@ version (unittest) private void assertYieldGateRunnerCase(
 				tasks[2].status = TaskStatus.active;
 				tasks[1].parentTid = 2;
 				tasks[1].relationType = "subtask";
+			}
+
+			if (unansweredFollowUp)
+			{
+				enum question = "What did you verify?";
+				tasks[1].status = TaskStatus.completed;
+				string[] presented, reminders;
+				backend = new WorkflowToolsBackend(WorkflowToolsHost(
+					getTask: (int tid) => tid in tasks,
+					shuttingDown: () => false,
+					tasksShareWorkspace: (int asker, int answerer) => true,
+					persistInsertQuestion: &persistence.insertQuestion,
+					transitionTaskFrom: (int tid, TaskStatus[] from, TaskStatus to,
+						TaskNotificationChange change) {
+						assert(from.canFind(tasks[tid].status));
+						tasks[tid].status = to;
+					},
+					broadcastFocusHint: (int asker, int answerer) {},
+					ensureProcessQueueAlive: (int tid) {
+						assert(tid == 1 && tasks[tid].status == TaskStatus.completed);
+						runner.spawnTaskSession(tid);
+						return tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {});
+					},
+					systemKeyword: () => "SYSTEM",
+					readPromptFile: (string path, string projectPath, string[string] vars) =>
+						vars[path == "prompts/follow_up_from_parent.md" ? "message" : "question"],
+					buildKnownSystemMessageMeta: (KnownSystemMessageKind kind,
+						string subject, string[string] vars, string bodyVar) => "{}",
+					sendPreparedKnownSystemMessage: (int tid, const(ContentBlock)[] blocks,
+						string meta, string nonce) {
+						assert(tid == 1 && blocks.length == 1);
+						tasks[tid].status = TaskStatus.active;
+						presented ~= blocks[0].text;
+						return resolve();
+					},
+					sendTaskMessage: (int tid, const(ContentBlock)[] blocks,
+						const(ContentBlock)[] broadcastContent, string meta, string nonce) {
+						assert(tid == 1 && blocks.length == 1);
+						reminders ~= blocks[0].text;
+						return resolve();
+					},
+				));
+
+				backend.handleAsk("2", question, 1).ignoreResult();
+				socketManager.loop();
+				assert(presented.length == 1 && presented[0].canFind(question));
+				assert(backend.hasPendingChildQuestion(1));
+				assert(!backend.hasLiveBatchOwner(1) && !backend.hasBatchChild(1));
+				assert(reminders.length == 0);
+
+				agent.session.result();
+				socketManager.loop();
+				assert(tasks[1].status == TaskStatus.active,
+					"an unanswered follow-up must keep the reawakened subtask active");
+				assert(reminders.length == 1 && reminders[0].canFind(question),
+					"idle must send the existing answer reminder");
+				assert(!agent.session.stdinClosed);
+				return;
 			}
 
 			runner.spawnTaskSession(1);
@@ -3315,6 +3376,13 @@ unittest
 
 unittest
 {
+	assertYieldGateRunnerCase("unanswered-follow-up", false, false, false, 0,
+		false, false, false, false, false, false, null, false, false, false,
+		false, false, false, false, true);
+}
+
+unittest
+{
 	assertYieldGateRunnerCase("missing", false, true, false, 0, false, false, true);
 	assertYieldGateRunnerCase("retry-fails", false, true, false, 0, false, false, true, true);
 	assertYieldGateRunnerCase("present", true, true, false, 0, false, false, false);
@@ -3396,7 +3464,7 @@ version (unittest) void finishFollowUpSession(TaskData* child, TaskSessionRunner
 	withGitMetadataLaunchFixture("cydo-follow-up-exit",
 		(GitMetadataLaunchFixture fixture) {
 			host.taskTypeCatalog = gitMetadataTaskCatalog(fixture,
-				"task_types:\n  runner:\n    model_class: large\n");
+				"task_types:\n  " ~ child.taskType ~ ":\n    model_class: large\n");
 			auto agent = new YieldGateTestAgent;
 			host.agentForTask = (int tid) => cast(Agent) agent;
 			host.tryAgentForTask = host.agentForTask;
@@ -3426,9 +3494,19 @@ version (unittest) void finishFollowUpSession(TaskData* child, TaskSessionRunner
 				(ProcessState state) => resolve(state), ProcessState.Alive);
 			auto runner = new FollowUpExitRunner(host);
 			runner.spawnTaskSession(child.tid);
+			auto awaitingAnswer = host.hasPendingChildQuestion(child.tid);
 			agent.session.result();
-			assert(child.status == TaskStatus.completed);
-			assert(child.processQueue.goalState == ProcessState.Dead);
+			if (awaitingAnswer)
+			{
+				assert(child.status == TaskStatus.active);
+				assert(child.processQueue.goalState == ProcessState.Alive);
+				child.processQueue.setGoal(ProcessState.Dead).ignoreResult();
+			}
+			else
+			{
+				assert(child.status == TaskStatus.completed);
+				assert(child.processQueue.goalState == ProcessState.Dead);
+			}
 			agent.session.exit(0);
 			socketManager.loop();
 			assert(child.status == TaskStatus.completed);

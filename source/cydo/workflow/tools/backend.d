@@ -3322,6 +3322,7 @@ unittest
 		f.tasks[2].relationType = "subtask";
 		auto b = f.makeBackend();
 		McpResult batchResult, askResult, answerResult;
+		int askOutcomes, reminders;
 		b.registerBatchAndAwait("1", [LaunchedTask(2)]).then((McpResult r) {
 			batchResult = r;
 		}).ignoreResult();
@@ -3335,6 +3336,7 @@ unittest
 		auto firstFollowUpHint = f.focusHints.length;
 		b.handleAsk("1", "follow up", 2).then((McpResult r) {
 			askResult = r;
+			askOutcomes++;
 		}).ignoreResult();
 		drainPromiseNextTicks();
 		auto qid = b.presentedQuestionFor(2);
@@ -3359,6 +3361,13 @@ unittest
 			hasLiveBatchOwner: &b.hasLiveBatchOwner,
 			hasBatchChild: &b.hasBatchChild,
 			hasPendingChildQuestion: &b.hasPendingChildQuestion,
+			sendPendingChildAnswerReminder: (int tid) {
+				auto hintsBeforeReminder = f.focusHints.length;
+				b.sendPendingChildAnswerReminder(tid);
+				assert(f.focusHints.length == hintsBeforeReminder);
+				assert(askOutcomes == 0);
+				reminders++;
+			},
 			recordChildTerminal: &b.recordChildTerminal,
 			transitionTaskFrom: (int tid, TaskStatus[] from, TaskStatus to,
 				TaskNotificationChange notification) {
@@ -3370,6 +3379,7 @@ unittest
 		if (!answer)
 			b.onToolCallDelivered("1", askResult);
 		assert(f.focusHints[firstFollowUpHint .. $].filter!(hint => hint == [2, 1]).array == [[2, 1]]);
+		assert(askOutcomes == 1 && reminders == (answer ? 0 : 1));
 		if (!answer)
 			assert(askResult.isError
 				&& askResult.text.canFind("Session ended while waiting for Ask response"));
