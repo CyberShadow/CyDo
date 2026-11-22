@@ -687,7 +687,7 @@ test("waiting parent with completed children gets results after restart", async 
       `UPDATE tasks SET status='waiting' WHERE tid=1; ` +
       `INSERT INTO tasks (workspace, project_path, agent_type, status, description, task_type, parent_tid, relation_type) ` +
       `VALUES ('local', '/tmp/cydo-test-workspace', 'claude', 'completed', 'fake child', 'research', 1, 'subtask'); ` +
-      `INSERT OR IGNORE INTO task_deps VALUES(1, 2);"`,
+      `INSERT OR IGNORE INTO task_deps (parent_tid, child_tid, batch_id, ordinal) VALUES (1, 2, 2, 0);"`,
   );
 
   // Start fresh — the backend should find parent="waiting" with child="completed"

@@ -21,6 +21,7 @@ import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, Dj
 	UserEntryPointDef, SingletonDef, WorktreeMode, byName, isInteractive, singletonsOfferedTo,
 	loadProjectMemory, renderContinuationPrompt, renderPrompt, resolveAgent,
 	substituteVars;
+import cydo.domain.storage.persistence : PersistedBatch, QuestionRecord, QuestionState;
 import cydo.domain.tasks.model;
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
 import cydo.foundation.system.known_messages : KnownSystemMessageKind,
@@ -40,7 +41,17 @@ import cydo.workflow.questions.router : makeQuestionMessage;
 import cydo.workflow.tasks.subtask_delivery : SubtaskResultDelivery,
 	SubtaskResultDeliveryHost, renderBatchResults;
 
+import cydo.workflow.workspace.worktree_allocator : WorktreePreparationFailure;
+
 package(cydo):
+
+final class AgentSubmissionRejected : Exception
+{
+	this(Exception cause)
+	{
+		super(cause.msg, __FILE__, __LINE__, cause);
+	}
+}
 
 struct WorkflowToolsHost
 {
@@ -107,10 +118,15 @@ struct WorkflowToolsHost
 	Promise!void delegate(int tid, const(ContentBlock)[] blocks,
 		string cydoMeta, string nonce) sendPreparedKnownSystemMessage;
 
-	void delegate(int parentTid, int childTid) persistAddTaskDep;
+	void delegate(int parentTid, int childTid, ulong batchId, size_t ordinal) persistAddTaskDep;
 	void delegate(int parentTid, int childTid) persistRemoveTaskDep;
-	void delegate(int childTid) persistRemoveAllChildDeps;
-	int[][int] delegate() loadTaskDeps;
+	void delegate(ulong batchId, int oldTid, int newTid) persistReplaceTaskDepChild;
+	void delegate(ulong batchId) persistRemoveTaskBatch;
+	PersistedBatch[] delegate() loadTaskDeps;
+	int delegate(int askerTid, int answererTid, string text) persistInsertQuestion;
+	void delegate(int qid, string answer) persistAnswerQuestion;
+	void delegate(int qid) persistCancelQuestion;
+	void delegate(int qid) persistDeleteQuestion;
 
 	void delegate(int tid) broadcastTaskUpdate;
 	void delegate(int fromTid, int toTid) broadcastFocusHint;
@@ -174,6 +190,7 @@ unittest
 	tasks[1].agentName = "fake";
 	int nextTid = 2;
 
+	int lastQid;
 	auto backend = new WorkflowToolsBackend(WorkflowToolsHost(
 		getTask: (int tid) { auto td = tid in tasks; return td is null ? null : td; },
 		createTask: (string workspace, string projectPath, string agentName) {
@@ -213,7 +230,11 @@ unittest
 		taskProducesCommitOutput: (string projectPath, string taskTypeName) => false,
 		setupWorktreeForEdge: (int childTid, int parentTid, WorktreeMode mode) {},
 		shuttingDown: () => false,
-		ensureProcessQueueAlive: (int tid) => tid == 2 ? reject!void(new Exception("simulated child session startup failure")) : resolve(),
+		ensureProcessQueueAlive: (int tid) {
+			if (tasks[tid].status == TaskStatus.pending)
+				tasks[tid].status = TaskStatus.active;
+			return tid == 2 ? reject!void(new Exception("simulated child session startup failure")) : resolve();
+		},
 		sendTaskMessage: (int tid, const(ContentBlock)[] content, const(ContentBlock)[] broadcastContent, string cydoMeta, string nonce) { assert(tid == 3); return resolve(); },
 		emitTaskReload: (int tid, string reason, string excludedUserUuid) {},
 		appendTaskDiagnostic: (int tid, string subject, string body) {},
@@ -221,8 +242,14 @@ unittest
 		taskWorkspaceLabel: (int tid) => "local",
 		reactivateTask: (int tid) => resolve(),
 		sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind, string body) { return resolve(); },
-		persistAddTaskDep: (int parentTid, int childTid) {}, persistRemoveTaskDep: (int parentTid, int childTid) {},
-		persistRemoveAllChildDeps: (int childTid) {}, loadTaskDeps: () => cast(int[][int]) null,
+		persistAddTaskDep: (int parentTid, int childTid, ulong batchId, size_t ordinal) {}, persistRemoveTaskDep: (int parentTid, int childTid) {},
+		persistReplaceTaskDepChild: (ulong, int, int) {},
+		persistRemoveTaskBatch: (ulong) {},
+		loadTaskDeps: () => cast(PersistedBatch[]) null,
+		persistInsertQuestion: (int, int, string) => ++lastQid,
+		persistAnswerQuestion: (int, string) {},
+		persistCancelQuestion: (int) {},
+		persistDeleteQuestion: (int) {},
 		broadcastTaskUpdate: (int tid) {}, broadcastFocusHint: (int fromTid, int toTid) {},
 		sendAskUserQuestionPrompt: (int tid, JSONFragment questions, string toolUseId) {},
 		clearAskUserQuestionPrompt: (int tid) {},
@@ -268,16 +295,7 @@ private:
 		if ((tid in mailboxes_) is null) mailboxes_[tid] = Mailbox.init;
 		return mailboxes_[tid];
 	}
-	enum QuestionState { open, answered, failed, cancelled }
-
-	struct QuestionRecord
-	{
-		int qid, askerTid, answererTid;
-		string text, answer;
-		QuestionState state;
-	}
 	QuestionRecord[int] questions_;
-	int nextQid_ = 1;
 	SubtaskResultDelivery subtaskResultDelivery_;
 	TerminalProcess[] activeTerminals_;
 
@@ -399,18 +417,21 @@ public:
 			host_.persistRelationType(childTid, "subtask");
 			host_.persistTitle(childTid, childTd.title);
 
-			host_.persistAddTaskDep(parentTid, childTid);
-			taskDeps_[childTid] = parentTid;
-			if (pd.status != TaskStatus.waiting)
-				host_.transitionTaskFrom(parentTid,
-					[TaskStatus.pending, TaskStatus.active], TaskStatus.waiting,
-					TaskNotificationChange.preserve);
-
 			host_.broadcastTaskCreated(TaskCreatedMessage("task_created",
 				childTid, pd.workspace, pd.projectPath, parentTid, "subtask"));
 			host_.broadcastTaskUpdate(childTid);
 			host_.broadcastFocusHint(parentTid, childTid);
 			host_.appendTaskSpawnedEvent(parentTid, childTid, specIndex);
+
+			void failLaunch(TaskData* child, string message)
+			{
+				child.error = message;
+				child.resultText = message;
+				host_.persistResultText(childTid, message);
+				host_.transitionTaskFrom(childTid,
+					[TaskStatus.pending, TaskStatus.active], TaskStatus.failed,
+					TaskNotificationChange.preserve);
+			}
 
 			string edgeTemplate;
 			if (ptd !is null)
@@ -418,43 +439,66 @@ public:
 				if (auto edge = ptd.creatable_tasks.byName(taskType))
 				{
 					edgeTemplate = edge.prompt_template;
-					childTd.resultNote = substituteVars(edge.result_note,
-						["output_dir": host_.taskDir(pd)]);
-					host_.setupWorktreeForEdge(childTid, parentTid,
-						edge.worktree);
+					try
+						childTd.resultNote = substituteVars(edge.result_note,
+							["output_dir": host_.taskDir(pd)]);
+					catch (Exception e)
+					{
+						failLaunch(childTd, e.msg);
+						return LaunchedTask(childTid);
+					}
+					try
+						host_.setupWorktreeForEdge(childTid, parentTid, edge.worktree);
+					catch (WorktreePreparationFailure e)
+					{
+						failLaunch(childTd, e.msg);
+						return LaunchedTask(childTid);
+					}
 				}
 			}
 
 			if (host_.taskProducesCommitOutput(childTd.projectPath,
 				childTd.taskType) && childTd.hasWorktree)
 			{
-				auto headResult = execute(["git", "-C", host_.worktreePath(childTd),
-					"rev-parse", "HEAD"]);
+				string worktreePath;
+				typeof(execute(["git"])) headResult;
+				try
+				{
+					worktreePath = host_.worktreePath(childTd);
+					headResult = execute(["git", "-C", worktreePath, "rev-parse", "HEAD"]);
+				}
+				catch (Exception e)
+				{
+					failLaunch(childTd, e.msg);
+					return LaunchedTask(childTid);
+				}
 				auto taskStartHead = headResult.output.strip;
 				if (headResult.status != 0 || taskStartHead.length == 0)
 				{
-					childTd.error = "Failed to capture task start HEAD in "
-						~ host_.worktreePath(childTd) ~ " (status "
-						~ format!"%d"(headResult.status) ~ "): "
-						~ headResult.output.strip;
-					childTd.resultText = childTd.error;
-					host_.persistResultText(childTid, childTd.resultText);
-					host_.transitionTaskFrom(childTid,
-						[TaskStatus.pending, TaskStatus.active], TaskStatus.failed,
-						TaskNotificationChange.preserve);
+					failLaunch(childTd, format!"Failed to capture task start HEAD in %s (status %d): %s"(
+						worktreePath, headResult.status, taskStartHead));
 					return LaunchedTask(childTid);
 				}
 				childTd.taskStartHead = taskStartHead;
 				host_.persistTaskStartHead(childTid, childTd.taskStartHead);
 			}
 
-			auto renderedPrompt = renderPrompt(*ctd, prompt,
-				host_.promptSearchPath(childTd.projectPath),
-				host_.outputPath(childTd), edgeTemplate);
-			renderedPrompt = prependTaskFraming(renderedPrompt,
-				host_.taskSystemPromptForMessage(childTid, ctd),
-				loadProjectMemory(ctd, childTd.repoPath,
-					host_.promptSearchPath(childTd.projectPath)));
+			string renderedPrompt;
+			try
+			{
+				renderedPrompt = renderPrompt(*ctd, prompt,
+					host_.promptSearchPath(childTd.projectPath),
+					host_.outputPath(childTd), edgeTemplate);
+				renderedPrompt = prependTaskFraming(renderedPrompt,
+					host_.taskSystemPromptForMessage(childTid, ctd),
+					loadProjectMemory(ctd, childTd.repoPath,
+						host_.promptSearchPath(childTd.projectPath)));
+			}
+			catch (Exception e)
+			{
+				failLaunch(childTd, e.msg);
+				return LaunchedTask(childTid);
+			}
 			auto parentTypeForSubject =
 				(ptd !is null && ptd.creatable_tasks.length > 0)
 					? pd.taskType : "";
@@ -464,28 +508,14 @@ public:
 				KnownSystemMessageKind.taskPrompt,
 				taskPromptMsgSubject,
 				["task_description": prompt], "task_description");
-			host_.ensureProcessQueueAlive(childTid).then(() {
-				return host_.sendTaskMessage(childTid,
-					[ContentBlock("text", wrapKnownSystemMessage(
-						host_.systemKeyword(),
-						KnownSystemMessageKind.taskPrompt,
-						renderedPrompt,
-						taskPromptMsgSubject))],
-					null, subtaskMeta, null);
-			}).except((Exception e) {
-				auto failedChild = requireTask(childTid,
-					"Created child task must exist when launch fails");
-				if (failedChild.status != TaskStatus.failed)
-				{
-					failedChild.error = e.msg;
-					failedChild.resultText = e.msg;
-					host_.persistResultText(childTid, failedChild.resultText);
-					host_.transitionTaskFrom(childTid,
-						[TaskStatus.pending, TaskStatus.active], TaskStatus.failed,
-						TaskNotificationChange.preserve);
-				}
-				recordChildTerminal(childTid);
-			}).ignoreResult();
+			submitInitialTaskMessage(childTid, KnownSystemMessageKind.taskPrompt,
+				renderedPrompt, taskPromptMsgSubject, subtaskMeta, (Exception e) {
+					auto failed = requireTask(childTid,
+						"Created child task must exist when launch fails");
+					if (failed.status != TaskStatus.failed)
+						failLaunch(failed, e.msg);
+					recordChildTerminal(childTid);
+				});
 
 			if (description.length == 0)
 			{
@@ -763,6 +793,20 @@ public:
 		if (!batchRegistry_.create(parentTid, childTids, handle, batchError))
 			return resolve(makeInternalBatchError(batchError));
 
+		foreach (ordinal, childTid; childTids)
+		{
+			auto child = requireTask(childTid, "Registered child must exist");
+			assert(child.status != TaskStatus.pending, "Cannot register an unstarted child");
+			host_.persistAddTaskDep(parentTid, childTid, handle.batchId, ordinal);
+			taskDeps_[childTid] = parentTid;
+		}
+
+		auto parent = requireTask(parentTid, "Registered parent must exist");
+		if (parent.status != TaskStatus.waiting)
+			host_.transitionTaskFrom(parentTid,
+				[TaskStatus.pending, TaskStatus.active], TaskStatus.waiting,
+				TaskNotificationChange.preserve);
+
 		foreach (childTid; childTids)
 		{
 			auto child = requireTask(childTid, "Registered child must exist");
@@ -809,7 +853,7 @@ public:
 					"Sub-task has a pending question (qid=" ~ to!string(pendingQid)
 					~ "). Use Answer(qid, message) instead.", true));
 		}
-		auto qid = nextQid_++;
+		auto qid = host_.persistInsertQuestion(askerTid, targetTid, message);
 		questions_[qid] = QuestionRecord(qid, askerTid, targetTid, message);
 		mailbox(targetTid).push(MailboxEvent(MailboxEvent.Kind.question, 0, qid));
 		pump(targetTid);
@@ -846,6 +890,7 @@ public:
 		case QuestionState.cancelled:
 			return resolve(McpResult(format!"Question %s was cancelled: the asking task has ended"(qid), true));
 		}
+		host_.persistAnswerQuestion(qid, message);
 		q.state = QuestionState.answered;
 		q.answer = message;
 		mailbox(q.askerTid).push(MailboxEvent(MailboxEvent.Kind.answer, 0, qid));
@@ -1399,9 +1444,9 @@ public:
 
 	void loadPersistedTaskDeps()
 	{
-		foreach (parentTid, children; host_.loadTaskDeps())
-			foreach (childTid; children)
-				taskDeps_[childTid] = parentTid;
+		foreach (batch; host_.loadTaskDeps())
+			foreach (childTid; batch.childTids)
+				taskDeps_[childTid] = batch.parentTid;
 	}
 
 	WaitingTaskDependencyState waitingTaskDependencyState(int parentTid)
@@ -1444,6 +1489,30 @@ private:
 		return td;
 	}
 
+	void submitInitialTaskMessage(int tid, KnownSystemMessageKind kind, string prompt,
+		string subject, string meta, void delegate(Exception) failed,
+		void delegate() accepted = null)
+	{
+		host_.ensureProcessQueueAlive(tid).then(() {
+			auto message = wrapKnownSystemMessage(host_.systemKeyword(), kind, prompt, subject);
+			return host_.sendTaskMessage(tid, [ContentBlock("text", message)],
+				null, meta, null).then(() {
+				if (accepted !is null)
+					accepted();
+			}, (Exception e) {
+				if (auto rejection = cast(AgentSubmissionRejected) e)
+					failed(rejection);
+				else
+					throw e;
+			});
+		}, (Exception e) {
+			failed(e);
+			return resolve();
+		}).except((Exception e) {
+			host_.onNextTick({ throw e; });
+		}).ignoreResult();
+	}
+
 	int[] childrenOf(int parentTid)
 	{
 		int[] children;
@@ -1457,6 +1526,12 @@ private:
 	{
 		host_.persistRemoveTaskDep(parentTid, childTid);
 		taskDeps_.remove(childTid);
+	}
+
+	void removeQuestion(int qid)
+	{
+		host_.persistDeleteQuestion(qid);
+		questions_.remove(qid);
 	}
 
 	void cleanUpAskedQuestions(int tid)
@@ -1473,6 +1548,7 @@ private:
 					removeQids ~= qid;
 				else
 				{
+					host_.persistCancelQuestion(qid);
 					q.state = QuestionState.cancelled;
 				}
 				break;
@@ -1488,7 +1564,7 @@ private:
 				break;
 			}
 		}
-		foreach (qid; removeQids) questions_.remove(qid);
+		foreach (qid; removeQids) removeQuestion(qid);
 		foreach (qid; failedQids) questions_.remove(qid);
 	}
 
@@ -1502,6 +1578,7 @@ private:
 		auto q = qid in questions_;
 		assert(q !is null && q.state == QuestionState.open);
 		removeQuestionEvent(q.answererTid, MailboxEvent.Kind.question, qid);
+		host_.persistDeleteQuestion(qid);
 		q.state = QuestionState.failed;
 		mailbox(q.askerTid).push(MailboxEvent(MailboxEvent.Kind.failed, 0, qid, notice, q.answererTid));
 		return q.askerTid;
@@ -1594,16 +1671,16 @@ private:
 					case MailboxEvent.Kind.batch:
 						auto handle = BatchHandle(tid, event.batchId);
 						foreach (childTid; batchChildren[event.batchId])
-						{
 							host_.broadcastFocusHint(childTid, tid);
-							removeTaskDependency(tid, childTid);
-						}
+						host_.persistRemoveTaskBatch(handle.batchId);
+						foreach (childTid; batchChildren[event.batchId])
+							taskDeps_.remove(childTid);
 						string error;
 						auto removed = batchRegistry_.remove(handle, error);
 						assert(removed, error);
 						break;
 					case MailboxEvent.Kind.answer:
-						questions_.remove(event.qid);
+						removeQuestion(event.qid);
 						break;
 					case MailboxEvent.Kind.failed:
 						host_.broadcastFocusHint(event.answererTid, tid);
@@ -1645,7 +1722,7 @@ private:
 				break;
 			}
 		}
-		foreach (qid; removeQids) questions_.remove(qid);
+		foreach (qid; removeQids) removeQuestion(qid);
 		return askers;
 	}
 
@@ -1696,11 +1773,12 @@ public:
 			else
 				subtaskResultDelivery_.recoveryDeliveryFailed(tid, e);
 		}
+		void failFast(Exception e) { host_.onNextTick({ throw e; }); }
 		try host_.ensureProcessQueueAlive(tid).then(() {
 			if (host_.shuttingDown() || mailbox(tid).empty)
 			{
 				releaseClaim();
-				return resolve();
+				return;
 			}
 			auto drained = mailbox(tid).events;
 			mailbox(tid).events = null;
@@ -1768,11 +1846,11 @@ public:
 				if (firstMeta.length == 0) firstMeta = meta;
 				nonces ~= nonce;
 			}
-			return host_.sendPreparedKnownSystemMessage(tid, blocks,
-				firstMeta, nonces.join(";")).then(() {
-				settleDelivery(true);
-			});
-		}).except(&deliveryFailed).ignoreResult();
+			host_.sendPreparedKnownSystemMessage(tid, blocks,
+				firstMeta, nonces.join(";"))
+				.then(() { settleDelivery(true); }, &deliveryFailed)
+				.except(&failFast).ignoreResult();
+		}).except(&deliveryFailed).except(&failFast).ignoreResult();
 		catch (Exception e)
 			deliveryFailed(e);
 		return true;
@@ -2014,8 +2092,7 @@ private:
 			if (batchRegistry_.findOwnerOfChild(tid, owner, slot))
 			{
 				batchRegistry_.replaceChild(tid, childTid);
-				host_.persistRemoveAllChildDeps(tid);
-				host_.persistAddTaskDep(owner.parentTid, childTid);
+				host_.persistReplaceTaskDepChild(owner.batchId, tid, childTid);
 				taskDeps_.remove(tid);
 				taskDeps_[childTid] = owner.parentTid;
 			}
@@ -2123,6 +2200,8 @@ unittest
 	tasks[1].taskType = "parent";
 	tasks[1].agentName = "fake";
 	int nextTid = 2;
+	import cydo.domain.storage.persistence : Persistence;
+	auto persistence = Persistence(":memory:");
 	string persistedTaskStartHead;
 	int launchCalls;
 	bool producesCommitOutput = true;
@@ -2130,6 +2209,7 @@ unittest
 	bool initializeWorktree;
 	string expectedTaskStartHead;
 
+	int lastQid;
 	auto backend = new WorkflowToolsBackend(WorkflowToolsHost(
 		getTask: (int tid) {
 			auto td = tid in tasks;
@@ -2208,6 +2288,7 @@ unittest
 			if (tid == 1)
 				return resolve();
 			launchCalls++;
+			tasks[tid].status = TaskStatus.active;
 			if (tid == 4)
 			{
 				assert(tasks[tid].taskStartHead == expectedTaskStartHead);
@@ -2237,10 +2318,15 @@ unittest
 			assert(0, "results must reach the parent through its awaiting Task call, not a system message");
 			return resolve();
 		},
-		persistAddTaskDep: (int parentTid, int childTid) {},
+		persistAddTaskDep: &persistence.addTaskDep,
 		persistRemoveTaskDep: (int parentTid, int childTid) {},
-		persistRemoveAllChildDeps: (int childTid) {},
-		loadTaskDeps: () => cast(int[][int]) null,
+		persistReplaceTaskDepChild: (ulong, int, int) {},
+		persistRemoveTaskBatch: (ulong) {},
+		loadTaskDeps: () => cast(PersistedBatch[]) null,
+		persistInsertQuestion: (int, int, string) => ++lastQid,
+		persistAnswerQuestion: (int, string) {},
+		persistCancelQuestion: (int) {},
+		persistDeleteQuestion: (int) {},
 		broadcastTaskUpdate: (int tid) {},
 		broadcastFocusHint: (int fromTid, int toTid) {},
 		sendAskUserQuestionPrompt: (int tid, JSONFragment questions,
@@ -2249,7 +2335,10 @@ unittest
 		sendPermissionPrompt: (int tid, const PendingPermission pending) {},
 		clearPermissionPrompt: (int tid) {},
 		appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
-		broadcastTaskCreated: (TaskCreatedMessage message) {},
+		broadcastTaskCreated: (TaskCreatedMessage message) {
+			foreach (batch; persistence.loadTaskDeps())
+				assert(!batch.childTids.canFind(message.tid));
+		},
 		permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 		onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); },
 		generateTitle: (int tid, string prompt) {},
@@ -2353,15 +2442,13 @@ unittest
 	assert(!validated.error.isError);
 }
 
-unittest
+version (unittest)
 {
 	import ae.net.asockets : onNextTick, socketManager;
 	import ae.utils.promise : reject;
 	import ae.utils.promise.await : async;
-	import core.exception : AssertError;
+	import cydo.domain.storage.persistence : Persistence;
 	import std.algorithm.searching : canFind;
-	import std.exception : assertThrown;
-	import cydo.domain.task_types.definition : SingletonAudience;
 
 	void drainPromiseNextTicks()
 	{
@@ -2377,11 +2464,10 @@ unittest
 		}
 	}
 
-	alias QuestionState = WorkflowToolsBackend.QuestionState;
-
 	final class BatchInvariantFixture
 	{
 		TaskData[int] tasks;
+		Persistence persistence;
 		TaskTypeDef[] taskTypes;
 		SingletonDef[] singletons;
 		size_t singletonForTaskCalls;
@@ -2405,6 +2491,7 @@ unittest
 		string sendFailure;
 		string[] diagnosticSubjects;
 		string[] diagnosticBodies;
+		string[] recoveryDiagnosticBodies;
 		int reloadTid = -1;
 		string reloadReason;
 		string reloadExcludedUserUuid;
@@ -2412,6 +2499,7 @@ unittest
 
 		this()
 		{
+			persistence = Persistence(":memory:");
 			TaskTypeDef parentType;
 			parentType.name = "parent";
 			parentType.agent = "fake";
@@ -2495,11 +2583,11 @@ unittest
 				},
 				ensureProcessQueueAlive: (int tid) {
 					wakeCalls++;
+						if (tasks[tid].status == TaskStatus.pending)
+						tasks[tid].status = TaskStatus.active;
 					if (failEnsure)
 						return reject!void(new Exception("wake failed"));
 					if (wakeGate !is null) return wakeGate;
-					if (tasks[tid].status == TaskStatus.pending)
-						tasks[tid].status = TaskStatus.active;
 					return resolve();
 				},
 				sendTaskMessage: (int tid, const(ContentBlock)[] content,
@@ -2520,7 +2608,7 @@ unittest
 					diagnosticBodies ~= body;
 				},
 				appendAndBroadcastRecoveryDeliveryDiagnostic:
-					(int tid, string subject, string body) {},
+					(int tid, string subject, string body) { recoveryDiagnosticBodies ~= body; },
 				transitionTask: (int tid, TaskStatus expectedFrom,
 					TaskStatus to,
 					TaskNotificationChange notification) {
@@ -2551,15 +2639,20 @@ unittest
 					assert(tid == 2);
 					return reactivationGate;
 				},
-				persistAddTaskDep: (int parentTid, int childTid) {
+				persistAddTaskDep: (int parentTid, int childTid, ulong batchId, size_t ordinal) {
 					persistAddDependencyCalls++;
 				},
 				persistRemoveTaskDep: (int parentTid, int childTid) {
 					persistRemoveDependencyCalls++;
 					removedChildren ~= childTid;
 				},
-				persistRemoveAllChildDeps: (int childTid) {},
-				loadTaskDeps: () => cast(int[][int]) null,
+				persistReplaceTaskDepChild: (ulong, int, int) {},
+				persistRemoveTaskBatch: (ulong) {},
+				loadTaskDeps: () => cast(PersistedBatch[]) null,
+				persistInsertQuestion: &persistence.insertQuestion,
+				persistAnswerQuestion: &persistence.answerQuestion,
+				persistCancelQuestion: &persistence.cancelQuestion,
+				persistDeleteQuestion: &persistence.deleteQuestion,
 				broadcastTaskUpdate: (int tid) {
 					if (!tasks[tid].isProcessing)
 						releasedTids ~= tid;
@@ -2589,6 +2682,13 @@ unittest
 			));
 		}
 	}
+}
+
+unittest
+{
+	import core.exception : AssertError;
+	import std.exception : assertThrown;
+	import cydo.domain.task_types.definition : SingletonAudience;
 
 	// Request releases the asker at Answer while the integrator's turn continues.
 	foreach (status; [TaskStatus.active, TaskStatus.waiting])
@@ -2610,6 +2710,7 @@ unittest
 		drainPromiseNextTicks();
 		auto question = presented.text.jsonParse!QuestionResult;
 		assert(question.message == "land this");
+		assert(f.persistence.loadQuestions() == [b.questions_[question.qid]]);
 		f.tasks[2].status = status;
 		b.handleAnswer("2", question.qid, "landed").then((McpResult r) {
 			delivered = r;
@@ -2619,7 +2720,10 @@ unittest
 		assert(!requested.isError && requested.text.jsonParse!AnswerResult.message == "landed");
 		assert(!delivered.isError && delivered.text.jsonParse!AnswerResult.status == "delivered");
 		assert(f.focusHints[$ - 1] == [2, 1]);
+		assert(b.questions_[question.qid].state == QuestionState.answered);
+		assert(f.persistence.loadQuestions() == [b.questions_[question.qid]]);
 		b.onToolCallDelivered("1", requested);
+		assert(f.persistence.loadQuestions().length == 0);
 		assert(f.tasks[1].status == TaskStatus.active && b.questions_.length == 0);
 		assert(f.tasks[2].status == status && f.tasks[2].isProcessing);
 	}
@@ -3020,7 +3124,7 @@ unittest
 		f.tasks[1].isProcessing = true;
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
-		auto qid = b.nextQid_;
+		enum qid = 1;
 		McpResult askResult, earlyAnswer, answerResult;
 		b.handleAsk("1", "held question", 2).then((McpResult r) {
 			askResult = r;
@@ -3111,11 +3215,13 @@ unittest
 		b.onTaskTerminal(1);
 		assert((qid in b.questions_) !is null);
 		assert(b.questions_[qid].state == QuestionState.cancelled);
+		assert(f.persistence.loadQuestions() == [b.questions_[qid]]);
 		auto sendCalls = f.sendCalls;
 		f.tasks[2].status = TaskStatus.failed;
 		b.onTaskTerminal(2);
 		drainPromiseNextTicks();
 		assert((qid in b.questions_) is null);
+		assert(f.persistence.loadQuestions().length == 0);
 		assert(b.mailbox(1).empty && !b.mailbox(1).hasWaiter);
 		assert(f.sendCalls == sendCalls);
 		assert(f.tasks[1].status == TaskStatus.failed);
@@ -3528,7 +3634,7 @@ unittest
 		auto f = new BatchInvariantFixture;
 		f.tasks[1].isProcessing = true;
 		auto b = f.makeBackend();
-		b.questions_[1] = WorkflowToolsBackend.QuestionRecord(1, 1, 2, "asked", "answered", QuestionState.answered);
+		b.questions_[1] = QuestionRecord(1, 1, 2, "asked", "answered", QuestionState.answered);
 		b.mailbox(1).push(MailboxEvent(MailboxEvent.Kind.answer, 0, 1));
 		McpResult result;
 		b.awaitEvent(1).then((McpResult r) { result = r; }).ignoreResult();
@@ -3547,8 +3653,8 @@ unittest
 		auto f = new BatchInvariantFixture;
 		auto b = f.makeBackend();
 		f.shuttingDown = true;
-		b.questions_[1] = WorkflowToolsBackend.QuestionRecord(1, 1, 2, "older", null, QuestionState.failed);
-		b.questions_[2] = WorkflowToolsBackend.QuestionRecord(2, 1, 2, "newer", null, QuestionState.failed);
+		b.questions_[1] = QuestionRecord(1, 1, 2, "older", null, QuestionState.failed);
+		b.questions_[2] = QuestionRecord(2, 1, 2, "newer", null, QuestionState.failed);
 		auto front = MailboxEvent(MailboxEvent.Kind.failed, 0, 1, "older");
 		auto back = MailboxEvent(MailboxEvent.Kind.failed, 0, 2, "newer");
 		McpResult result;
@@ -3591,7 +3697,7 @@ unittest
 		McpResult result;
 		b.awaitEvent(1).then((McpResult r) { result = r; }).ignoreResult();
 		drainPromiseNextTicks();
-		b.host_.persistRemoveTaskDep = (int, int) {
+		b.host_.persistRemoveTaskBatch = (ulong) {
 			throw new Exception("dependency removal failed");
 		};
 		assertThrown!Exception(b.onToolCallDelivered("1", result));
@@ -3667,7 +3773,7 @@ unittest
 		present(b, 2);
 		f.tasks[3].status = TaskStatus.failed;
 		b.onTaskTerminal(3);
-		assert(b.questions_.length == 1 && b.questions_[1].state == QuestionState.cancelled);
+		assert(b.questions_.length == 1 && f.persistence.loadQuestions().length == 1);
 		f.tasks[3].status = TaskStatus.active;
 		f.tasks[3].isProcessing = true;
 		b.handleAsk("1", "incoming", 3).ignoreResult();
@@ -3767,12 +3873,34 @@ unittest
 		}
 	}
 
+	void acceptedPump()
+	{
+		import std.exception : collectException;
+		auto f = new BatchInvariantFixture;
+		auto b = f.makeBackend();
+		BatchHandle handle;
+		string error;
+		assert(b.batchRegistry_.create(1, [2], handle, error), error);
+		b.host_.persistRemoveTaskBatch = (ulong) {
+			throw new Exception("dependency removal failed");
+		};
+		assert(b.finalizeCompletedSubTask(2));
+		auto thrown = collectException!Exception(drainPromiseNextTicks());
+		assert(thrown !is null && thrown.msg == "dependency removal failed");
+		assert(f.acceptedPreparedTids == [1]);
+		assert(f.recoveryDiagnosticBodies.length == 0 && b.mailbox(1).empty);
+		auto settle = b.deliveryAttempt(1, [MailboxEvent(MailboxEvent.Kind.batch, handle.batchId)]);
+		assertThrown!Exception(settle(true));
+		assertThrown!AssertError(settle(false));
+	}
+
 	liveAnswer();
 	rejectedFailure(false);
 	heldFailure();
 	rejectedFailure(true);
 	rejectedReminder(false);
 	rejectedReminder(true);
+	acceptedPump();
 
 }
 
@@ -3829,4 +3957,197 @@ unittest
 	assert(decisions[2].canFind(`"behavior":"deny"`));
 	assert(decisions[2].canFind("denied: Dangerous rm operation"));
 	assert(promptVars["denial"] == "Permission denied by policy");
+}
+
+unittest
+{
+	import cydo.mcp.tools : CydoToolsImpl, TaskSpec;
+	import cydo.workflow.workspace.worktree_allocator : WorktreeAllocator, WorktreeAllocatorHost;
+	import std.file : exists, mkdirRecurse, rmdirRecurse, write, tempDir;
+	import std.path : buildPath;
+	import std.conv : to;
+
+	auto root = buildPath(tempDir(), "cydo-task-worktree-failure");
+	assert(!exists(root));
+	mkdirRecurse(root);
+	scope(exit) rmdirRecurse(root);
+	auto repo = buildPath(root, "repo");
+	mkdirRecurse(repo);
+	assert(execute(["git", "-C", repo, "init"]).status == 0);
+	assert(execute(["git", "-C", repo, "-c", "user.name=Verifier",
+		"-c", "user.email=verifier@example.org", "commit", "--allow-empty", "-m", "init"]).status == 0);
+	string taskDir(const TaskData* td) { return buildPath(root, td.tid.to!string); }
+	string worktreePath(const TaskData* td) { return buildPath(root, td.worktreeTid.to!string, "worktree"); }
+
+	auto f = new BatchInvariantFixture;
+	f.tasks[1].projectPath = repo;
+	f.tasks[1].isProcessing = true;
+	f.taskTypes[0].creatable_tasks[0].worktree = WorktreeMode.fork;
+	mkdirRecurse(buildPath(root, "4", "worktree"));
+	write(buildPath(root, "4", "worktree", "collision"), "keep");
+	auto b = f.makeBackend();
+	b.host_.persistAddTaskDep = &f.persistence.addTaskDep;
+	auto allocator = new WorktreeAllocator(WorktreeAllocatorHost(
+		getTask: b.host_.getTask,
+		taskDir: &taskDir,
+		worktreePath: &worktreePath,
+		persistWorktreeTid: (int, int) {},
+	));
+	b.host_.setupWorktreeForEdge = &allocator.setupForEdge;
+	int[] sent;
+	b.host_.sendTaskMessage = (int tid, const(ContentBlock)[] content,
+		const(ContentBlock)[] broadcastContent, string meta, string nonce) {
+			sent ~= tid;
+			return resolve();
+		};
+	auto tools = new CydoToolsImpl(b, "1");
+	McpResult[] results;
+	async({
+		return tools.createTasks([TaskSpec("one", "child", "first"),
+			TaskSpec("two", "child", "second")]);
+	}).then((McpResult result) { results ~= result; }).ignoreResult();
+	drainPromiseNextTicks();
+	assert(f.tasks[3].worktreeTid == 3 && f.tasks[3].status == TaskStatus.active);
+	assert(f.tasks[4].worktreeTid == 0 && f.tasks[4].status == TaskStatus.failed);
+	assert(sent == [3]);
+	assert(f.persistence.loadTaskDeps() == [PersistedBatch(1, 3, [3, 4])]);
+	f.tasks[3].resultText = "first agent returned";
+	assert(b.finalizeCompletedSubTask(3));
+	drainPromiseNextTicks();
+	assert(results.length == 1 && results[0].isError);
+	auto batch = results[0].text.jsonParse!BatchResultEnvelope;
+	auto first = batch.tasks[0].json.jsonParse!TaskResult;
+	auto second = batch.tasks[1].json.jsonParse!TaskResult;
+	assert(first.status == "success" && first.summary == "first agent returned");
+	assert(second.status == "error" && second.error.canFind("already exists"));
+
+	import std.exception : collectException;
+	auto ownerFailure = new Exception("worktree ownership write failed");
+	auto failingAllocator = new WorktreeAllocator(WorktreeAllocatorHost(
+		getTask: b.host_.getTask,
+		taskDir: &taskDir,
+		worktreePath: &worktreePath,
+		persistWorktreeTid: (int, int) { throw ownerFailure; },
+	));
+	b.host_.setupWorktreeForEdge = &failingAllocator.setupForEdge;
+	auto launch = b.handleCreateTask("1", 0, "write failure", "child", "prompt");
+	assert(collectException(launch.launch()) is ownerFailure);
+	assert(f.tasks[5].status == TaskStatus.pending && f.tasks[5].worktreeTid == 0);
+}
+
+unittest
+{
+	import cydo.mcp.tools : CydoToolsImpl, TaskSpec;
+
+	enum Failure { none, prompt, outputPath, submission, commit }
+	foreach (failure; [Failure.none, Failure.prompt, Failure.outputPath, Failure.submission, Failure.commit])
+	{
+		auto f = new BatchInvariantFixture;
+		f.taskTypes[0].creatable_tasks[0].worktree = WorktreeMode.fork;
+		f.tasks[1].isProcessing = true;
+		auto b = f.makeBackend();
+		b.host_.persistRemoveTaskBatch = &f.persistence.removeTaskBatch;
+		b.host_.persistAddTaskDep = (int parent, int child, ulong batch, size_t ordinal) {
+			assert(f.tasks[child].status == ((failure == Failure.prompt || failure == Failure.outputPath) && child == 4
+				? TaskStatus.failed : TaskStatus.active));
+			f.persistence.addTaskDep(parent, child, batch, ordinal);
+		};
+		if (failure == Failure.prompt)
+			b.host_.taskSystemPromptForMessage = (int tid, TaskTypeDef* typeDef) {
+				if (tid == 4)
+				{
+					assert(f.tasks[3].status == TaskStatus.active);
+					throw new Exception("second child system prompt unavailable");
+				}
+				return "";
+			};
+
+		if (failure == Failure.outputPath)
+			b.subtaskResultDelivery_ = new SubtaskResultDelivery(SubtaskResultDeliveryHost(
+				getTask: b.host_.getTask,
+				outputPath: b.host_.outputPath = (const TaskData* task) {
+					if (task.tid == 4)
+						throw new Exception("second child output path unavailable");
+					return "";
+				},
+				taskProducesCommitOutput: b.host_.taskProducesCommitOutput,
+			));
+		auto commitFailure = new Exception("accepted submission publication failed");
+		if (failure == Failure.submission || failure == Failure.commit)
+			b.host_.sendTaskMessage = (int tid, const(ContentBlock)[] content,
+				const(ContentBlock)[] broadcastContent, string meta, string nonce) {
+				if (tid == 3)
+					return resolve();
+				return reject!void(failure == Failure.submission
+					? new AgentSubmissionRejected(new Exception("second child submission rejected"))
+					: commitFailure);
+			};
+
+		auto tools = new CydoToolsImpl(b, "1");
+		McpResult[] results;
+		async({
+			return tools.createTasks([
+				TaskSpec("first", "child", "first prompt"),
+				TaskSpec("second", "child", "second prompt"),
+			]);
+		}).then((McpResult result) { results ~= result; }).ignoreResult();
+		if (failure == Failure.commit)
+		{
+			import std.exception : collectException;
+			assert(collectException(drainPromiseNextTicks()) is commitFailure);
+			assert(f.tasks[4].status == TaskStatus.active);
+			continue;
+		}
+		drainPromiseNextTicks();
+		assert(results.length == 0, results.length ? results[0].text : null);
+		assert(f.tasks[1].status == TaskStatus.waiting);
+		assert(f.persistence.loadTaskDeps() == [PersistedBatch(1, 3, [3, 4])]);
+
+		if (failure == Failure.none)
+		{
+			f.tasks[4].resultText = "second child result";
+			assert(b.finalizeCompletedSubTask(4));
+		}
+		f.tasks[3].resultText = "first child result";
+		assert(b.finalizeCompletedSubTask(3));
+		drainPromiseNextTicks();
+		assert(results.length == 1 && results[0].isError == (failure != Failure.none));
+		auto batch = results[0].text.jsonParse!BatchResultEnvelope;
+		assert(batch.tasks.length == 2);
+		auto first = batch.tasks[0].json.jsonParse!TaskResult;
+		auto second = batch.tasks[1].json.jsonParse!TaskResult;
+		assert(first.tid == 3 && first.summary == "first child result");
+		assert(second.tid == 4);
+		final switch (failure)
+		{
+		case Failure.none: assert(second.summary == "second child result"); break;
+		case Failure.prompt: assert(second.error == "second child system prompt unavailable"); break;
+		case Failure.outputPath: assert(second.error == "second child output path unavailable"); break;
+		case Failure.submission: assert(second.error == "second child submission rejected"); break;
+		case Failure.commit: assert(0);
+		}
+		b.onToolCallDelivered("1", results[0]);
+		assert(f.persistence.loadTaskDeps().length == 0);
+	}
+
+	// The launch phase leaves no dependency until registry creation succeeds.
+	{
+		auto f = new BatchInvariantFixture;
+		auto b = f.makeBackend();
+		auto first = b.handleCreateTask("1", 0, "first", "child", "first prompt").launch();
+		auto second = b.handleCreateTask("1", 1, "second", "child", "second prompt").launch();
+		assert(f.tasks[first.childTid].status == TaskStatus.active);
+		assert(f.tasks[second.childTid].status == TaskStatus.active);
+		assert(f.tasks[1].status == TaskStatus.active);
+		assert(f.persistence.loadTaskDeps().length == 0);
+
+		McpResult result;
+		b.registerBatchAndAwait("1", [first, first]).then((McpResult r) {
+			result = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(result.isError && result.text.canFind("duplicate child"));
+		assert(f.tasks[1].status == TaskStatus.active);
+		assert(f.persistence.loadTaskDeps().length == 0);
+	}
 }

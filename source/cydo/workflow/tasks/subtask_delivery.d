@@ -188,9 +188,20 @@ public:
 	}
 
 private:
+	// A failed child can only have produced artifacts after native session
+	// initialization. A process that exits before init has no session ID.
+	bool hasArtifactPaths(const TaskData* task)
+	{
+		return task.status != TaskStatus.failed || task.agentSessionId.length > 0;
+	}
+
 	TaskResult buildTaskResult(int tid)
 	{
 		auto td = requireTask(tid, "Task must exist when building sub-task result");
+		if (!hasArtifactPaths(td))
+			return TaskResult(tid: tid, summary: td.resultText, error: td.resultText,
+				status: "error");
+
 		auto tdOut = host_.outputPath(td);
 		bool hasOutput = tdOut.length > 0 && exists(tdOut);
 		bool hasWorktree = td.hasWorktree;
@@ -703,6 +714,8 @@ unittest
 	tasks[2].taskType = "implementation";
 	tasks[2].worktreeTid = 2;
 	tasks[2].resultText = "legacy summary";
+	tasks[2].status = TaskStatus.failed;
+	tasks[2].agentSessionId = "initialized-session";
 
 	auto delivery = new SubtaskResultDelivery(SubtaskResultDeliveryHost(
 		getTask: (int tid) {

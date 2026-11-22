@@ -62,7 +62,7 @@ import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
 	SystemMessageNormalizerHost;
 import cydo.workflow.tasks.derived_text : DerivedTextJobs, DerivedTextJobsHost;
 import cydo.workflow.tasks.mutations : TaskMutationService, TaskMutationServiceHost;
-import cydo.workflow.tools.backend : WorkflowToolsBackend, WorkflowToolsHost;
+import cydo.workflow.tools.backend : AgentSubmissionRejected, WorkflowToolsBackend, WorkflowToolsHost;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
@@ -506,16 +506,15 @@ class App
 			sendPreparedKnownSystemMessage: (int tid, const(ContentBlock)[] blocks,
 				string cydoMeta, string nonce) =>
 				sendPreparedKnownSystemMessage(tid, blocks, cydoMeta, nonce),
-			persistAddTaskDep: (int parentTid, int childTid) {
-				persistence.addTaskDep(parentTid, childTid);
-			},
-			persistRemoveTaskDep: (int parentTid, int childTid) {
-				persistence.removeTaskDep(parentTid, childTid);
-			},
-			persistRemoveAllChildDeps: (int childTid) {
-				persistence.removeAllChildDeps(childTid);
-			},
-			loadTaskDeps: () => persistence.loadTaskDeps(),
+			persistAddTaskDep: &persistence.addTaskDep,
+			persistRemoveTaskDep: &persistence.removeTaskDep,
+			persistReplaceTaskDepChild: &persistence.replaceTaskDepChild,
+			persistRemoveTaskBatch: &persistence.removeTaskBatch,
+			loadTaskDeps: &persistence.loadTaskDeps,
+			persistInsertQuestion: &persistence.insertQuestion,
+			persistAnswerQuestion: &persistence.answerQuestion,
+			persistCancelQuestion: &persistence.cancelQuestion,
+			persistDeleteQuestion: &persistence.deleteQuestion,
 			broadcastTaskUpdate: &broadcastTaskUpdate,
 			broadcastFocusHint: &broadcastFocusHint,
 			sendAskUserQuestionPrompt: (int tid, JSONFragment questions,
@@ -2132,7 +2131,7 @@ class App
 		// Fail-closed backstop for internal and already-scheduled sends: a
 		// refused submission was never accepted, so it must reject.
 		if (auto refusal = nativeUndoDeliveryRefusal(td))
-			return reject!void(new Exception(refusal));
+			return reject!(void, Exception)(new AgentSubmissionRejected(new Exception(refusal)));
 
 		// --- send to agent ---
 		// Snapshot the JSONL before the agent processes the new message.
@@ -2162,7 +2161,7 @@ class App
 		{
 			removeUnobservedNativeSubmissionReservation(td, nativeSubmissionUuid,
 				submissionGeneration);
-			return reject!void(e);
+			return reject!(void, Exception)(new AgentSubmissionRejected(e));
 		}
 
 		return submission.then((AgentSubmissionReceipt receipt) {
@@ -2205,6 +2204,8 @@ class App
 			broadcastTaskUpdate(tid);
 			if (receipt == AgentSubmissionReceipt.appServerAccepted)
 				sendAgentAck(tid, nonce);
+		}, (Exception e) {
+			throw new AgentSubmissionRejected(e);
 		}).except((Exception e) {
 			if (auto current = tid in tasks)
 				removeUnobservedNativeSubmissionReservation(current, nativeSubmissionUuid,

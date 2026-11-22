@@ -26,6 +26,28 @@ Persistence openDatabase()
 	return Persistence(dbPath);
 }
 
+enum QuestionState
+{
+	open,
+	answered,
+	failed, // In memory only while the failure notice is owed.
+	cancelled,
+}
+
+struct QuestionRecord
+{
+	int qid, askerTid, answererTid;
+	string text, answer;
+	QuestionState state;
+}
+
+struct PersistedBatch
+{
+	int parentTid;
+	ulong batchId;
+	int[] childTids;
+}
+
 struct Persistence
 {
 	Database db;
@@ -139,6 +161,23 @@ struct Persistence
 			"DELETE FROM session_meta_cache WHERE driver = 'claude';",
 			// Migration 23: durable independent pre-yield retry opportunities.
 			"ALTER TABLE tasks ADD COLUMN yield_gates_nagged INTEGER NOT NULL DEFAULT 0;",
+			// Migration 24: retain outstanding questions and Task batch grouping.
+			"CREATE TABLE questions (" ~
+			"qid INTEGER PRIMARY KEY AUTOINCREMENT, asker_tid INTEGER NOT NULL, " ~
+			"answerer_tid INTEGER NOT NULL, text TEXT NOT NULL, answer TEXT, " ~
+			"cancelled INTEGER NOT NULL DEFAULT 0);" ~
+			"ALTER TABLE task_deps ADD COLUMN batch_id INTEGER NOT NULL DEFAULT 0;" ~
+			"ALTER TABLE task_deps ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;" ~
+			"DELETE FROM task_deps " ~
+			"WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE tid = task_deps.parent_tid " ~
+			"AND status NOT IN ('completed', 'failed')) " ~
+			"OR NOT EXISTS (SELECT 1 FROM tasks WHERE tid = task_deps.child_tid);" ~
+			"WITH ranked AS (" ~
+			"SELECT parent_tid, child_tid, MIN(child_tid) OVER (PARTITION BY parent_tid) AS batch_id, " ~
+			"ROW_NUMBER() OVER (PARTITION BY parent_tid ORDER BY child_tid) - 1 AS ordinal " ~
+			"FROM task_deps) " ~
+			"UPDATE task_deps AS dep SET batch_id = ranked.batch_id, ordinal = ranked.ordinal " ~
+			"FROM ranked WHERE dep.parent_tid = ranked.parent_tid AND dep.child_tid = ranked.child_tid;",
 		]);
 
 		// In CI, disable durability to speed up tests. This trades crash-safety
@@ -153,9 +192,9 @@ struct Persistence
 		}
 	}
 
-	void addTaskDep(int parentTid, int childTid)
+	void addTaskDep(int parentTid, int childTid, ulong batchId, size_t ordinal)
 	{
-		db.stmt!"INSERT OR IGNORE INTO task_deps (parent_tid, child_tid) VALUES (?, ?)".exec(parentTid, childTid);
+		db.stmt!"INSERT INTO task_deps (parent_tid, child_tid, batch_id, ordinal) VALUES (?, ?, ?, ?)".exec(parentTid, childTid, batchId, ordinal);
 	}
 
 	void removeTaskDep(int parentTid, int childTid)
@@ -163,36 +202,60 @@ struct Persistence
 		db.stmt!"DELETE FROM task_deps WHERE parent_tid = ? AND child_tid = ?".exec(parentTid, childTid);
 	}
 
-	void removeAllChildDeps(int childTid)
+	void removeTaskBatch(ulong batchId)
 	{
-		db.stmt!"DELETE FROM task_deps WHERE child_tid = ?".exec(childTid);
+		db.stmt!"DELETE FROM task_deps WHERE batch_id = ?".exec(batchId);
 	}
 
-	/// Load all dependency rows. Returns parentTid → [childTids].
-	int[][int] loadTaskDeps()
+	void replaceTaskDepChild(ulong batchId, int oldTid, int newTid)
 	{
-		int[][int] deps;
-		foreach (int parentTid, int childTid;
-			db.stmt!"SELECT parent_tid, child_tid FROM task_deps".iterate())
+		db.stmt!"UPDATE task_deps SET child_tid = ? WHERE batch_id = ? AND child_tid = ?".exec(newTid, batchId, oldTid);
+	}
+
+	PersistedBatch[] loadTaskDeps()
+	{
+		PersistedBatch[] batches;
+		foreach (int parentTid, int childTid, long batchId;
+			db.stmt!"SELECT parent_tid, child_tid, batch_id FROM task_deps ORDER BY batch_id, ordinal".iterate())
 		{
-			deps.require(parentTid) ~= childTid;
+			if (!batches.length || batches[$ - 1].batchId != cast(ulong) batchId)
+				batches ~= PersistedBatch(parentTid, cast(ulong) batchId);
+			batches[$ - 1].childTids ~= childTid;
 		}
-		return deps;
+		return batches;
 	}
 
-	int[] loadChildDeps(int parentTid)
+	int insertQuestion(int askerTid, int answererTid, string text)
 	{
-		int[] children;
-		foreach (int childTid; db.stmt!"SELECT child_tid FROM task_deps WHERE parent_tid = ?".iterate(parentTid))
-			children ~= childTid;
-		return children;
+		db.stmt!"INSERT INTO questions (asker_tid, answerer_tid, text) VALUES (?, ?, COALESCE(?, ''))".exec(askerTid, answererTid, text);
+		return cast(int) db.db.lastInsertRowID;
 	}
 
-	int findParentForChild(int childTid)
+	void answerQuestion(int qid, string answer)
 	{
-		foreach (int parentTid; db.stmt!"SELECT parent_tid FROM task_deps WHERE child_tid = ?".iterate(childTid))
-			return parentTid;
-		return 0;
+		db.stmt!"UPDATE questions SET answer = COALESCE(?, '') WHERE qid = ?".exec(answer, qid);
+	}
+
+	void cancelQuestion(int qid)
+	{
+		db.stmt!"UPDATE questions SET cancelled = 1 WHERE qid = ?".exec(qid);
+	}
+
+	void deleteQuestion(int qid)
+	{
+		db.stmt!"DELETE FROM questions WHERE qid = ?".exec(qid);
+	}
+
+	QuestionRecord[] loadQuestions()
+	{
+		QuestionRecord[] questions;
+		foreach (int qid, int askerTid, int answererTid, string text, string answer,
+			bool answered, bool cancelled;
+			db.stmt!"SELECT qid, asker_tid, answerer_tid, text, COALESCE(answer, ''), answer IS NOT NULL, cancelled FROM questions ORDER BY qid".iterate())
+			questions ~= QuestionRecord(qid, askerTid, answererTid, text, answer,
+				answered ? QuestionState.answered
+					: cancelled ? QuestionState.cancelled : QuestionState.open);
+		return questions;
 	}
 
 	int createTask(string workspace = "", string projectPath = "", string agentName = "claude",
@@ -367,6 +430,7 @@ struct Persistence
 	void deleteTask(int tid)
 	{
 		db.stmt!"DELETE FROM task_deps WHERE parent_tid = ? OR child_tid = ?".exec(tid, tid);
+		db.stmt!"DELETE FROM questions WHERE asker_tid = ? OR answerer_tid = ?".exec(tid, tid);
 		db.stmt!"DELETE FROM tasks WHERE tid = ?".exec(tid);
 	}
 
@@ -567,6 +631,9 @@ unittest
 			"has_messages INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (agent_type, session_id));"
 		);
 		legacy.db.exec("INSERT INTO tasks (tid, workspace, project_path) VALUES (1, 'ws', 'project');");
+		legacy.db.exec("CREATE TABLE task_deps (" ~
+			"parent_tid INTEGER NOT NULL, child_tid INTEGER NOT NULL, " ~
+			"PRIMARY KEY (parent_tid, child_tid));");
 		legacy.db.exec("PRAGMA user_version = 18;");
 	}
 
@@ -614,6 +681,9 @@ unittest
 			"(agent_type, session_id, mtime, project_path, title, has_messages) " ~
 			"VALUES ('claude', 'ambiguous-id', 1, 'project', 'old cache row', 1);"
 		);
+		legacy.db.exec("CREATE TABLE task_deps (" ~
+			"parent_tid INTEGER NOT NULL, child_tid INTEGER NOT NULL, " ~
+			"PRIMARY KEY (parent_tid, child_tid));");
 		legacy.db.exec("PRAGMA user_version = 21;");
 	}
 
@@ -621,7 +691,7 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 24);
+	assert(userVersion == 25);
 
 	auto rows = persistence.loadTasks();
 	assert(rows.length == 1);
@@ -724,8 +794,9 @@ unittest
 			"('claude', '/profiles/one', 'same-id', 1, '/guessed', 'Claude session', 1), " ~
 			"('codex', '/profiles/one', 'same-id', 2, '/recorded', 'Codex session', 1);"
 		);
-		// Later migrations alter the tasks table.
-		legacy.db.exec("CREATE TABLE tasks (tid INTEGER PRIMARY KEY);");
+		// Later migrations alter the tasks and task_deps tables.
+		legacy.db.exec("CREATE TABLE tasks (tid INTEGER PRIMARY KEY, status TEXT NOT NULL);");
+		legacy.db.exec("CREATE TABLE task_deps (parent_tid INTEGER, child_tid INTEGER);");
 		legacy.db.exec("PRAGMA user_version = 22;");
 	}
 
@@ -733,7 +804,7 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 24);
+	assert(userVersion == 25);
 
 	auto rows = persistence.loadSessionMetaCache();
 	assert(rows == [Persistence.CacheRow("codex", "/profiles/one", "same-id", 2,
@@ -757,6 +828,9 @@ unittest
 		auto old = Persistence(path);
 		old.createTask("workspace", "project");
 		old.db.db.exec("ALTER TABLE tasks DROP COLUMN yield_gates_nagged;");
+		old.db.db.exec("DROP TABLE questions;");
+		old.db.db.exec("ALTER TABLE task_deps DROP COLUMN batch_id;");
+		old.db.db.exec("ALTER TABLE task_deps DROP COLUMN ordinal;");
 		old.db.db.exec("PRAGMA user_version = 23;");
 	}
 	auto upgraded = Persistence(path);
@@ -765,4 +839,99 @@ unittest
 	assert(rows[0].workspace == "workspace");
 	assert(rows[0].projectPath == "project");
 	assert(rows[0].naggedYieldGates.bits == 0);
+}
+
+unittest
+{
+	import std.file : exists, remove, tempDir;
+	import std.path : buildPath;
+
+	auto dbPath = buildPath(tempDir(), "cydo-task-batch-migration.sqlite");
+	if (exists(dbPath))
+		remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+
+	{
+		auto legacy = Database(dbPath);
+		legacy.db.exec("CREATE TABLE tasks (" ~
+			"tid INTEGER PRIMARY KEY, status TEXT NOT NULL, parent_tid INTEGER);");
+		legacy.db.exec("INSERT INTO tasks (tid, status) VALUES " ~
+			"(1, 'completed'), (2, 'completed'), (3, 'completed'), (4, 'completed'), " ~
+			"(5, 'failed'), (6, 'pending'), " ~
+			"(7, 'waiting'), (8, 'active'), (9, 'completed');");
+		legacy.db.exec("CREATE TABLE task_deps (" ~
+			"parent_tid INTEGER NOT NULL, child_tid INTEGER NOT NULL, " ~
+			"PRIMARY KEY (parent_tid, child_tid));");
+		legacy.db.exec("INSERT INTO task_deps VALUES " ~
+			"(1, 2), (1, 3), (1, 4), (5, 6), (7, 9), (7, 8), (7, 10), (11, 6);");
+		legacy.db.exec("PRAGMA user_version = 24;");
+	}
+
+	auto persistence = Persistence(dbPath);
+	assert(persistence.loadTaskDeps() == [PersistedBatch(7, 8, [8, 9])]);
+	int[] ordinals;
+	foreach (int ordinal; persistence.db.stmt!"SELECT ordinal FROM task_deps ORDER BY child_tid".iterate())
+		ordinals ~= ordinal;
+	assert(ordinals == [0, 1]);
+}
+
+unittest
+{
+	import std.file : exists, remove, tempDir;
+	import std.path : buildPath;
+
+	auto dbPath = buildPath(tempDir(), "cydo-question-id-reopen.sqlite");
+	if (exists(dbPath))
+		remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+
+	int first, deleted;
+	{
+		auto persistence = Persistence(dbPath);
+		first = persistence.insertQuestion(1, 2, "keep");
+		deleted = persistence.insertQuestion(2, 1, "delete");
+		assert(deleted > first);
+		persistence.deleteQuestion(deleted);
+	}
+
+	auto persistence = Persistence(dbPath);
+	auto next = persistence.insertQuestion(1, 2, "after reopen");
+	assert(next > deleted);
+	assert(persistence.loadQuestions() == [
+		QuestionRecord(first, 1, 2, "keep"),
+		QuestionRecord(next, 1, 2, "after reopen"),
+	]);
+}
+
+unittest
+{
+	auto persistence = Persistence(":memory:");
+	persistence.addTaskDep(1, 4, 3, 1);
+	persistence.addTaskDep(1, 8, 8, 0);
+	persistence.addTaskDep(1, 3, 3, 0);
+	assert(persistence.loadTaskDeps() == [
+		PersistedBatch(1, 3, [3, 4]), PersistedBatch(1, 8, [8]),
+	]);
+
+	// Handoff replaces the first child without changing the batch ID or slot.
+	persistence.replaceTaskDepChild(3, 3, 9);
+	assert(persistence.loadTaskDeps() == [
+		PersistedBatch(1, 3, [9, 4]), PersistedBatch(1, 8, [8]),
+	]);
+}
+
+unittest
+{
+	auto persistence = Persistence(":memory:");
+	auto tid = persistence.createTask();
+	auto other = persistence.createTask();
+	auto third = persistence.createTask();
+	persistence.insertQuestion(tid, other, "outgoing");
+	persistence.insertQuestion(other, tid, "incoming");
+	auto unrelated = persistence.insertQuestion(other, third, "unrelated");
+
+	persistence.deleteTask(tid);
+	assert(persistence.loadQuestions() == [
+		QuestionRecord(unrelated, other, third, "unrelated"),
+	]);
 }
