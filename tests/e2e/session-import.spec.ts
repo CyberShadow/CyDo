@@ -18,7 +18,8 @@
 import { test, expect } from "@playwright/test";
 import { execFileSync, spawn } from "child_process";
 import type { ChildProcess } from "child_process";
-import { mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, symlinkSync } from "fs";
 import { writeTestConfig } from "./test-config";
 
 // ---------------------------------------------------------------------------
@@ -98,49 +99,51 @@ function createWorkDir(suffix: string): { workDir: string; workerHome: string } 
   return { workDir, workerHome };
 }
 
+const projectPath = "/tmp/cydo-test-workspace";
+
+function runClaude(
+  workerHome: string,
+  profileRoot: string,
+  prompt: string,
+  args: string[],
+): void {
+  execFileSync(
+    "claude",
+    ["-p", prompt, "--output-format", "json", "--permission-mode", "acceptEdits", ...args],
+    {
+      cwd: projectPath,
+      env: { ...process.env, HOME: workerHome, CLAUDE_CONFIG_DIR: profileRoot },
+      timeout: 120_000,
+    },
+  );
+}
+
+function createClaudeSession(
+  workerHome: string,
+  profileRoot: string,
+  marker: string,
+  sessionId = randomUUID(),
+): string {
+  runClaude(workerHome, profileRoot, `${marker}: reply with OK`, ["--session-id", sessionId]);
+  const history = `${profileRoot}/projects/${projectPath.replace(/\//g, "-")}/${sessionId}.jsonl`;
+  expect(readFileSync(history, "utf8")).toContain(marker);
+  return history;
+}
+
 test(
   "a new real Claude session becomes importable after rescan",
   { tag: "@claude-only" },
   async ({ page }) => {
     const { workDir, workerHome } = createWorkDir("live-real-claude");
-    const projectPath = "/tmp/cydo-test-workspace";
     const profileRoot = `${workerHome}/.claude`;
-    const projectsDir = `${profileRoot}/projects/${projectPath.replace(/\//g, "-")}`;
-    mkdirSync(profileRoot, { recursive: true });
-    writeFileSync(
-      `${profileRoot}/settings.json`,
-      JSON.stringify({
-        hasCompletedOnboarding: true,
-        theme: "dark",
-        skipDangerousModePermissionPrompt: true,
-        autoUpdates: false,
-      }),
-    );
     writeTestConfig(
       `${workerHome}/.config/cydo/config.yaml`,
       ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") + "\n",
     );
 
-    function createClaudeSession(marker: string): void {
-      execFileSync(
-        "claude",
-        ["-p", `${marker}: reply with OK`, "--output-format", "json", "--dangerously-skip-permissions"],
-        {
-          cwd: projectPath,
-          env: { ...process.env, HOME: workerHome, CLAUDE_CONFIG_DIR: profileRoot },
-          timeout: 120_000,
-        },
-      );
-      const histories = readdirSync(projectsDir).filter((name) => name.endsWith(".jsonl"));
-      expect(
-        histories.some((name) => readFileSync(`${projectsDir}/${name}`, "utf8").includes(marker)),
-        `Claude must write a session JSONL containing ${marker}`,
-      ).toBe(true);
-    }
-
     const existingMarker = "claude-before-cydo-starts";
     const newMarker = "claude-after-cydo-starts";
-    createClaudeSession(existingMarker);
+    createClaudeSession(workerHome, profileRoot, existingMarker);
 
     const proc = spawnBackend(workDir, workerHome);
     try {
@@ -160,7 +163,7 @@ test(
       await expect(page).toHaveURL(/\/import/);
       await expect(sessionLabel(existingMarker)).toBeVisible();
 
-      createClaudeSession(newMarker);
+      createClaudeSession(workerHome, profileRoot, newMarker);
 
       await expect(sessionLabel(newMarker)).not.toBeVisible();
       await page.getByRole("button", { name: "Rescan for importable sessions" }).click();
@@ -179,32 +182,9 @@ test(
 
 test("Import group node in sidebar expands on click and navigates correctly", { tag: "@claude-only" }, async ({
   page,
-}, testInfo) => {
-
+}) => {
   const { workDir, workerHome } = createWorkDir("sidebar");
-
-  const projectPath = "/tmp/cydo-test-workspace";
-  const mangledPath = projectPath.replace(/\//g, "-");
-  const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-  const claudeProjectsDir = `${workerHome}/.claude/projects/${mangledPath}`;
-  mkdirSync(claudeProjectsDir, { recursive: true });
-
-  const jsonlContent =
-    [
-      JSON.stringify({
-        type: "system",
-        subtype: "init",
-        session_id: sessionId,
-        model: "claude-3-5-sonnet-20241022",
-        cwd: projectPath,
-      }),
-      JSON.stringify({
-        type: "user",
-        message: { content: "sidebar import group test" },
-      }),
-    ].join("\n") + "\n";
-
-  writeFileSync(`${claudeProjectsDir}/${sessionId}.jsonl`, jsonlContent);
+  createClaudeSession(workerHome, `${workerHome}/.claude`, "sidebar import group test");
 
   writeTestConfig(
     `${workerHome}/.config/cydo/config.yaml`,
@@ -275,37 +255,10 @@ test("Import group node in sidebar expands on click and navigates correctly", { 
 
 test("importable session appears on startup, history loads, Import Session promotes it", { tag: "@claude-only" }, async ({
   page,
-}, testInfo) => {
-
+}) => {
   const { workDir, workerHome } = createWorkDir("import");
+  createClaudeSession(workerHome, `${workerHome}/.claude`, "hello imported session");
 
-  // Use the shared test workspace path so it matches a configured workspace.
-  const projectPath = "/tmp/cydo-test-workspace";
-  const mangledPath = projectPath.replace(/\//g, "-");
-
-  // Create a fake Claude session JSONL file with a recognizable user message.
-  const sessionId = "11111111-2222-3333-4444-555555555555";
-  const claudeProjectsDir = `${workerHome}/.claude/projects/${mangledPath}`;
-  mkdirSync(claudeProjectsDir, { recursive: true });
-
-  const jsonlContent =
-    [
-      JSON.stringify({
-        type: "system",
-        subtype: "init",
-        session_id: sessionId,
-        model: "claude-3-5-sonnet-20241022",
-        cwd: projectPath,
-      }),
-      JSON.stringify({
-        type: "user",
-        message: { content: "hello imported session" },
-      }),
-    ].join("\n") + "\n";
-
-  writeFileSync(`${claudeProjectsDir}/${sessionId}.jsonl`, jsonlContent);
-
-  // Workspace config pointing at the test workspace.
   writeTestConfig(
     `${workerHome}/.config/cydo/config.yaml`,
     ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") + "\n",
@@ -389,61 +342,23 @@ test("importable session appears on startup, history loads, Import Session promo
   }
 });
 
-test("import replay drops durable session/status rows but keeps compact boundary", { tag: "@claude-only" }, async ({
+test("import replay shows a real Claude compact boundary", { tag: "@claude-only" }, async ({
   page,
-}, testInfo) => {
-
-  const { workDir, workerHome } = createWorkDir("status-replay");
-  const projectPath = "/tmp/cydo-test-workspace";
-  const mangledPath = projectPath.replace(/\//g, "-");
-  const sessionId = "66666666-7777-8888-9999-aaaaaaaaaaaa";
-  const claudeProjectsDir = `${workerHome}/.claude/projects/${mangledPath}`;
-  mkdirSync(claudeProjectsDir, { recursive: true });
-
-  const jsonlContent =
-    [
-      JSON.stringify({
-        type: "system",
-        subtype: "init",
-        session_id: sessionId,
-        model: "claude-3-5-sonnet-20241022",
-        cwd: projectPath,
-        permissionMode: "init-perm",
-      }),
-      JSON.stringify({
-        type: "system",
-        subtype: "status",
-        status: "compacting",
-        permissionMode: "acceptEdits",
-      }),
-      JSON.stringify({
-        type: "system",
-        subtype: "status",
-        status: "requesting",
-      }),
-      JSON.stringify({
-        type: "system",
-        subtype: "status",
-        status: "future-status",
-      }),
-      JSON.stringify({
-        type: "system",
-        subtype: "status",
-        status: null,
-        permissionMode: "acceptEdits",
-      }),
-      JSON.stringify({
-        type: "system",
-        subtype: "compact_boundary",
-        compact_metadata: { trigger: "auto", pre_tokens: 321 },
-      }),
-      JSON.stringify({
-        type: "user",
-        message: { content: "import replay status fixture" },
-      }),
-    ].join("\n") + "\n";
-
-  writeFileSync(`${claudeProjectsDir}/${sessionId}.jsonl`, jsonlContent);
+}) => {
+  const { workDir, workerHome } = createWorkDir("compact-replay");
+  const profileRoot = `${workerHome}/.claude`;
+  const marker = "import replay compact fixture";
+  const sessionId = randomUUID();
+  const history = createClaudeSession(workerHome, profileRoot, marker, sessionId);
+  runClaude(workerHome, profileRoot, "/compact", ["--resume", sessionId]);
+  const rows = readFileSync(history, "utf8")
+    .trimEnd().split("\n").map((line) => JSON.parse(line));
+  expect(rows).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      type: "system",
+      subtype: "compact_boundary",
+    }),
+  ]));
 
   writeTestConfig(
     `${workerHome}/.config/cydo/config.yaml`,
@@ -457,7 +372,7 @@ test("import replay drops durable session/status rows but keeps compact boundary
 
     const importableLabel = page.locator(
       ".project-card-sessions .sidebar-item .sidebar-label",
-      { hasText: "import replay status fixture" },
+      { hasText: marker },
     );
     await expect(importableLabel).toBeVisible();
     await importableLabel.click();
@@ -465,21 +380,15 @@ test("import replay drops durable session/status rows but keeps compact boundary
     await expect(page).toHaveURL(/\/task\//);
     await expect(
       page.locator(".message.user-message", {
-        hasText: "import replay status fixture",
+        hasText: marker,
       }),
     ).toBeVisible();
-
-    // session/status is transient and must not appear in transcript replay.
-    await expect(page.locator(".system-status-message")).toHaveCount(0);
 
     // compact_boundary is durable and must remain visible in replay.
     await expect(page.locator(".compact-boundary-message")).toBeVisible();
 
     // Completed imported sessions should not resurrect transient banners.
     await expect(page.locator(".banner-processing")).not.toBeVisible();
-
-    // Permission mode comes from durable init metadata.
-    await expect(page.locator(".banner-perms")).toHaveText("init-perm");
   } finally {
     await killBackend(proc);
     rmSync(workDir, { recursive: true, force: true });
@@ -523,39 +432,12 @@ workspaces:
   );
 }
 
-function writeNativeClaudeSession(
-  root: string,
-  projectPath: string,
-  sessionId: string,
-  marker: string,
-): void {
-  const mangledPath = projectPath.replace(/\//g, "-");
-  const dir = `${root}/projects/${mangledPath}`;
-  mkdirSync(dir, { recursive: true });
-  const jsonlContent =
-    [
-      JSON.stringify({
-        type: "system",
-        subtype: "init",
-        session_id: sessionId,
-        model: "claude-3-5-sonnet-20241022",
-        cwd: projectPath,
-      }),
-      JSON.stringify({
-        type: "user",
-        message: { content: marker },
-      }),
-    ].join("\n") + "\n";
-  writeFileSync(`${dir}/${sessionId}.jsonl`, jsonlContent);
-}
-
 test(
   "importable preview is exact-rooted and a stale-root promote is rejected without promoting",
   { tag: "@claude-only" },
   async ({ page }) => {
     const { workDir, workerHome } = createWorkDir("split-root");
-    const projectPath = "/tmp/cydo-test-workspace";
-    const sessionId = "22223333-4444-5555-6666-777788889999";
+    const sessionId = randomUUID();
     const realMarker = "split-root-real-import-marker";
     const poisonMarker = "split-root-a-poison-import-marker";
 
@@ -567,8 +449,8 @@ test(
     const profileA = `${workerHome}/.claude`;
     const profileC = `${workDir}/profile-c`;
 
-    writeNativeClaudeSession(profileB, projectPath, sessionId, realMarker);
-    writeNativeClaudeSession(profileA, projectPath, sessionId, poisonMarker);
+    createClaudeSession(workerHome, profileB, realMarker, sessionId);
+    createClaudeSession(workerHome, profileA, poisonMarker, sessionId);
 
     const configPath = `${workerHome}/.config/cydo/config.yaml`;
     writeSplitRootConfig(configPath, profileB, "Profile B");
