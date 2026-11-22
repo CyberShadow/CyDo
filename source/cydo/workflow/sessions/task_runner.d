@@ -12,7 +12,7 @@ import std.typecons : Nullable;
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise, reject, resolve;
 
-import cydo.agent.contract : Agent, SessionConfig;
+import cydo.agent.contract : Agent, DriverHistory, DriverHistoryLaunch, SessionConfig;
 import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork,
 	MessageSource;
 import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
@@ -631,6 +631,9 @@ private:
 		const ref NativeHistoryProfile profile, string sessionId,
 		string agentName, NativeHistoryRule rule)
 	{
+		if (auto driver = HistoryAccess.driverServingHistory(agent))
+			return TaskHistoryResolution.access(HistoryAccess.driverServed(driver,
+				profile, sessionId));
 		auto path = agent.historyPath(sessionId, profile);
 		if (path.length == 0 || !isAbsolute(path))
 			return TaskHistoryResolution.unavailable(UnavailableHistory(
@@ -659,6 +662,17 @@ private:
 	}
 
 public:
+
+	Promise!DriverHistory loadDriverHistory(int tid, HistoryAccess access)
+	{
+		auto owner = sessionForTask(tid);
+		return access.historyDriver.loadHistory(access.sessionId, access.profile, owner, () {
+			assert(owner is null, "Live driver history must use its owner");
+			auto td = requireTask(tid, "History launch requires an existing task");
+			auto launch = prepareOperationSessionLaunch(tid, access.agent, currentTaskTypeDef(td));
+			return DriverHistoryLaunch(launch.processLaunch, launch.sessionConfig);
+		});
+	}
 
 	void shutdownSessions()
 	{
@@ -1195,8 +1209,11 @@ public:
 			if (exitCode != 0 && current.status != TaskStatus.completed
 				&& current.status != TaskStatus.failed)
 				current.error = lastStderr;
-			auto historyResolution = host_.ensureHistoryLoadedForExit(tid);
-			host_.finalReconcileJsonlIfPresent(tid, historyResolution);
+			if (HistoryAccess.driverServingHistory(taskAgent) is null)
+			{
+				auto historyResolution = host_.ensureHistoryLoadedForExit(tid);
+				host_.finalReconcileJsonlIfPresent(tid, historyResolution);
+			}
 			host_.stopJsonlWatch(tid);
 			repairInterruptedContinuationOnExit(tid, current, cleanExit);
 			liveHistoryBindings_.remove(tid);
@@ -3451,4 +3468,20 @@ unittest
 		},
 	));
 	assert(recordCalls == 1);
+}
+
+unittest
+{
+	import cydo.workflow.history.native_history : DriverHistoryTestAgent;
+
+	auto runner = new TaskSessionRunner(TaskSessionRunnerHost.init);
+	auto agent = new DriverHistoryTestAgent();
+	auto profile = NativeHistoryProfile(agent.driver, "/unused-profile");
+	auto resolution = runner.resolveHistoryAccess(agent, profile,
+		"driver-session", "test-agent", agent.nativeHistoryRule);
+	auto access = resolution.requireAccess();
+	assert(access.isDriverServed);
+	assert(access.agent is agent);
+	assert(access.profile == profile);
+	assert(access.sessionId == "driver-session");
 }

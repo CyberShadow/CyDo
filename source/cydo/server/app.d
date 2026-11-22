@@ -71,7 +71,7 @@ import cydo.workflow.sessions.yield_gates : YieldGateFinding;
 import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
 import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
-	TransportAdapter, WebSocketCallbacks;
+	RawSourceReady, TransportAdapter, WebSocketCallbacks;
 import cydo.domain.usage.tracker : AgentUsageTracker;
 
 import cydo.agent.resolver : createConfiguredAgent, displayNameForDriver,
@@ -595,6 +595,8 @@ class App
 			onHistorySubscribed: &onHistorySubscribed,
 			updateClaudeUsageFromEvent: &updateClaudeUsageFromEvent,
 			planBroadcast: &planHistoryBroadcast,
+			loadDriverHistory: (int tid, HistoryAccess access) =>
+				taskSessionRunner.loadDriverHistory(tid, access),
 		));
 		derivedTextJobs = new DerivedTextJobs(DerivedTextJobsHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
@@ -602,9 +604,7 @@ class App
 			snapshotTaskIds: &snapshotTaskIdsForResume,
 			agentForTask: &agentForTask,
 			hasSubscribers: (int tid) => clientHub.hasSubscribers(tid),
-			ensureHistoryLoaded: (int tid) {
-				historyPipeline.ensureHistoryLoaded(tid);
-			},
+			whenHistoryLoaded: &historyPipeline.whenHistoryLoaded,
 			readPromptFile: (int tid, string relativePath, string[string] vars) {
 				auto td = tid in tasks;
 				assert(td !is null,
@@ -829,7 +829,7 @@ class App
 			jsonlTracker.invalidateLineage(tid);
 			auto resolution = resolveTaskHistory(tid);
 			if (resolution.kind == TaskHistoryResolutionKind.access)
-				td.history.reset(watermarkFromPath(resolution.requireAccess().path));
+				td.history.reset(historyWatermark(resolution.requireAccess()));
 			else if (resolution.kind == TaskHistoryResolutionKind.unavailable)
 			{
 				reportUnavailableHistory(tid, resolution);
@@ -926,7 +926,7 @@ class App
 				{
 					auto resolution = resolveTaskHistory(rowTid);
 					if (resolution.kind == TaskHistoryResolutionKind.access)
-						wm = watermarkFromPath(resolution.requireAccess().path);
+						wm = historyWatermark(resolution.requireAccess());
 					else
 						wm = Watermark.unreadable();
 				}
@@ -957,32 +957,7 @@ class App
 
 		resumeInFlightTasks();
 
-		// Recover last_active from .jsonl mtime for tasks that were alive
-		// when the backend crashed (last_active was cleared on session start).
-		foreach (ref td; tasks)
-		{
-			if (td.lastActive == 0 && td.agentSessionId.length > 0)
-			{
-				try
-				{
-					auto resolution = resolveTaskHistory(td.tid);
-					if (resolution.kind == TaskHistoryResolutionKind.access)
-					{
-						auto jp = resolution.requireAccess().path;
-						import std.file : exists, timeLastModified;
-						if (exists(jp))
-						{
-							td.lastActive = timeLastModified(jp).stdTime;
-							persistence.setLastActive(td.tid, td.lastActive);
-						}
-					}
-				}
-				catch (Exception) {} // best-effort
-			}
-			// Final fallback: if still no lastActive but has createdAt, use that
-			if (td.lastActive == 0 && td.createdAt != 0)
-				td.lastActive = td.createdAt;
-		}
+		recoverLastActive();
 
 		discoveryService.enumerateSessions();
 
@@ -1169,17 +1144,48 @@ class App
 		clientHub.remove(ws);
 	}
 
-	private RawSourceLookupResult lookupRawSource(int tid, size_t seq)
+	private void recoverLastActive()
 	{
-		if (tid !in tasks)
-			return RawSourceLookupResult(RawSourceLookupStatus.taskNotFound, null);
+		// Recover last_active from .jsonl mtime for tasks that were alive
+		// when the backend crashed (last_active was cleared on session start).
+		foreach (ref td; tasks)
+		{
+			if (td.lastActive == 0 && td.agentSessionId.length > 0)
+			{
+				try
+				{
+					auto resolution = resolveTaskHistory(td.tid);
+					if (resolution.kind == TaskHistoryResolutionKind.access
+						&& !resolution.requireAccess().isDriverServed)
+					{
+						auto jp = resolution.requireAccess().path;
+						import std.file : exists, timeLastModified;
+						if (exists(jp))
+						{
+							td.lastActive = timeLastModified(jp).stdTime;
+							persistence.setLastActive(td.tid, td.lastActive);
+						}
+					}
+				}
+				catch (Exception) {} // best-effort
+			}
+			// Final fallback: if still no lastActive but has createdAt, use that
+			if (td.lastActive == 0 && td.createdAt != 0)
+				td.lastActive = td.createdAt;
+		}
+	}
 
-		auto td = &tasks[tid];
-		historyPipeline.ensureHistoryLoaded(tid);
-		if (seq >= td.history.length)
-			return RawSourceLookupResult(RawSourceLookupStatus.seqOutOfRange, null);
-
-		return RawSourceLookupResult(RawSourceLookupStatus.ok, td.history.rawAt(seq));
+	private void lookupRawSource(int tid, size_t seq, RawSourceReady ready)
+	{
+		historyPipeline.whenHistoryLoaded(tid, () {
+			auto td = tid in tasks;
+			if (td is null)
+				ready(RawSourceLookupResult(RawSourceLookupStatus.taskNotFound, null));
+			else if (seq >= td.history.length)
+				ready(RawSourceLookupResult(RawSourceLookupStatus.seqOutOfRange, null));
+			else
+				ready(RawSourceLookupResult(RawSourceLookupStatus.ok, td.history.rawAt(seq)));
+		});
 	}
 
 	private bool interruptForPendingContinuation(string tidStr)
@@ -2689,8 +2695,11 @@ class App
 		}
 		else
 			body = unavailable.detail;
-		td.history.reset(Watermark.unreadable());
-		td.history.load((ulong) => LoadedHistory.init);
+		if (unavailable.kind != UnavailableHistoryKind.driverRead)
+		{
+			td.history.reset(Watermark.unreadable());
+			td.history.load((ulong) => LoadedHistory.init);
+		}
 		historyPipeline.appendTaskDiagnostic(tid, "Failed to load session history", body);
 		emitTaskReload(tid, "history_unavailable");
 	}
@@ -2929,9 +2938,26 @@ class App
 		auto td = &tasks[tid];
 		td.needsAttention = true;
 		persistence.setNeedsAttention(tid, true);
-		td.notificationBody = td.resultText.length > 0
-			? truncateTitle(td.resultText, 200)
-			: extractLastAssistantText(tid);
+		if (td.resultText.length > 0)
+			td.notificationBody = truncateTitle(td.resultText, 200);
+		else
+		{
+			// Only the text waits for history. It belongs to the notification
+			// this turn raises, on the history lineage the turn ran on.
+			td.notificationBody = "";
+			auto lineage = td.history.generation;
+			bool announced;
+			historyPipeline.whenHistoryLoaded(tid, () {
+				auto current = tid in tasks;
+				if (current is null || current.history.generation != lineage
+					|| !current.needsAttention || current.notificationBody.length > 0)
+					return;
+				current.notificationBody = extractLastAssistantText(tid);
+				if (announced)
+					broadcastTaskUpdate(tid);
+			});
+			announced = true;
+		}
 		touchAndPersistLastActive(tid);
 		if (td.status != TaskStatus.alive)
 				transitionTask(tid, [TaskStatus.active, TaskStatus.waiting, TaskStatus.completed,
@@ -2969,6 +2995,11 @@ class App
 		derivedTextJobs.cancelSessionBackgroundWork(tid);
 	}
 
+	private static Watermark historyWatermark(HistoryAccess access)
+	{
+		return access.isDriverServed ? Watermark.driverServed() : watermarkFromPath(access.path);
+	}
+
 	/// Returns true when the reset already emitted a task reload (unavailable
 	/// history), so the caller must not emit a redundant one.
 	private bool resetHistoryWatermarkAfterExit(int tid)
@@ -2993,7 +3024,7 @@ class App
 			auto resolution = resolveTaskHistory(tid);
 			if (resolution.kind == TaskHistoryResolutionKind.access)
 			{
-				wm = watermarkFromPath(resolution.requireAccess().path);
+				wm = historyWatermark(resolution.requireAccess());
 				tasks[tid].history.reset(wm);
 			}
 			else if (resolution.kind == TaskHistoryResolutionKind.unavailable)
@@ -3866,9 +3897,6 @@ class App
 	/// Used for notification body when a task needs attention.
 	private string extractLastAssistantText(int tid)
 	{
-		if (tid !in tasks)
-			return "";
-		historyPipeline.ensureHistoryLoaded(tid);
 		foreach_reverse (ref d; tasks[tid].history)
 		{
 			auto envelope = cast(string) d.toGC();
@@ -4209,7 +4237,11 @@ version (unittest) private final class GatedSubmissionRunner : TaskSessionRunner
 	}
 }
 
-version (unittest) private final class GatedSubmissionCodexAgent : CodexAgent
+version (unittest)
+	import cydo.agent.contract : DriverHistory, DriverHistoryLaunch, DriverServedHistoryAgent;
+
+version (unittest) private final class GatedSubmissionCodexAgent : CodexAgent,
+	DriverServedHistoryAgent
 {
 	GatedSubmissionSession session;
 
@@ -4218,6 +4250,13 @@ version (unittest) private final class GatedSubmissionCodexAgent : CodexAgent
 	{
 		session = new GatedSubmissionSession;
 		return session;
+	}
+
+	override Promise!DriverHistory loadHistory(string sessionId,
+		const ref NativeHistoryProfile profile, AgentSession owner,
+		DriverHistoryLaunch delegate() obtainLaunch)
+	{
+		assert(0, "Exit fixture does not request driver history");
 	}
 }
 
@@ -5231,6 +5270,7 @@ unittest
 
 	auto agent = new GatedSubmissionCodexAgent;
 	fixture.app.agentsByName["codex"] = agent;
+	bool historyReset;
 	auto runner = new PreparedSubmissionExitRunner(TaskSessionRunnerHost(
 		getTask: (int tid) {
 			auto task = tid in fixture.app.tasks;
@@ -5259,7 +5299,10 @@ unittest
 			JSONFragment input) { assert(0, "unexpected call"); },
 		withdrawToolPermissionPrompt: (int tid, string toolUseId) {},
 		cancelExitBackgroundWork: (int tid) {},
-		resetHistoryWatermarkAfterExit: (int tid) => false,
+		resetHistoryWatermarkAfterExit: (int tid) {
+			historyReset = true;
+			return false;
+		},
 		touchAndPersistLastActive: (int tid) {},
 		transitionTask: (int tid, TaskStatus expectedFrom, TaskStatus to,
 			TaskNotificationChange notification) {
@@ -5275,10 +5318,12 @@ unittest
 			fixture.app.persistence.setResultText(tid, resultText);
 		},
 		emitTaskReload: (int tid) {},
-		ensureHistoryLoadedForExit: (int tid) =>
-			Nullable!TaskHistoryResolution.init,
-		finalReconcileJsonlIfPresent: (int tid,
-			Nullable!TaskHistoryResolution resolution) {},
+		ensureHistoryLoadedForExit: delegate Nullable!TaskHistoryResolution(int tid) {
+			assert(0, "Driver-served exit must skip file history loading");
+		},
+		finalReconcileJsonlIfPresent: (int tid, Nullable!TaskHistoryResolution resolution) {
+			assert(0, "Driver-served exit must skip file reconciliation");
+		},
 		stopJsonlWatch: (int tid) {},
 		shuttingDown: () => false,
 		taskTypeCatalog: fixture.app.taskTypeCatalog,
@@ -5313,6 +5358,8 @@ unittest
 	// If the app-server subsequently exits, the production runner callback must
 	// accept that the task is already failed and leave it failed without throwing.
 	agent.session.deliverServerExit(17);
+	assert(runner.sessionForTask(createdTid) is null);
+	assert(historyReset);
 	assert(task.status == TaskStatus.failed
 		&& task.error == "Codex turn/start rejected initial submission"
 		&& task.resultText == "Codex turn/start rejected initial submission");
@@ -6532,4 +6579,138 @@ unittest
 			claudeParentLinkedQueueFixture(queueType, "enqueue", reminder), cast(int) i + 1);
 		assert(td.compactionReminderInFlight, queueType ~ ": parent-linked reminder was ignored");
 	}
+}
+
+// Startup recovery of last_active: a driver-served history has no file whose
+// mtime could stand in, so the task falls back to its creation time.
+unittest
+{
+	import cydo.workflow.history.native_history : DriverHistoryTestAgent;
+
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	auto runner = cast(GatedSubmissionRunner) fixture.app.taskSessionRunner;
+	auto agent = new DriverHistoryTestAgent;
+	runner.resolveTaskHistoryOverride = (int tid) => TaskHistoryResolution.access(
+		HistoryAccess.driverServed(agent,
+			NativeHistoryProfile(agent.driver, "/unused-profile"), "driver-session"));
+	auto td = &fixture.app.tasks[fixture.tid];
+	td.agentSessionId = "driver-session";
+	td.lastActive = 0;
+	td.createdAt = 42;
+	fixture.app.recoverLastActive();
+	assert(td.lastActive == 42);
+}
+
+version (unittest) private final class DriverHistoryTurnFixture
+{
+	GatedSubmissionFixture base;
+	Promise!DriverHistory[] reads;
+	TaskData* td;
+
+	this()
+	{
+		import cydo.workflow.history.native_history : DriverHistoryTestAgent;
+
+		base = new GatedSubmissionFixture(":memory:");
+		auto app = base.app;
+		app.config.suggestions = false;
+		auto agent = new DriverHistoryTestAgent;
+		auto access = HistoryAccess.driverServed(agent,
+			NativeHistoryProfile(agent.driver, "/unused-profile"), "driver-session");
+		app.historyPipeline = new HistoryEventPipeline(HistoryEventPipelineHost(
+			getTask: (int tid) => tid in app.tasks,
+			resolveTaskHistory: (int tid) => TaskHistoryResolution.access(access),
+			injectAgentNameIntoSessionInit: (string translated, string agentName) => translated,
+			loadDriverHistory: (int tid, HistoryAccess resolved) {
+				auto read = new Promise!DriverHistory;
+				reads ~= read;
+				return read;
+			},
+		));
+		app.taskLifecycle = TaskLifecycle(
+			getTask: (int tid) => tid in app.tasks,
+			persistStatus: (int tid, string status) => app.persistence.setStatus(tid, status),
+			persistNeedsAttention: (int tid, bool needsAttention) =>
+				app.persistence.setNeedsAttention(tid, needsAttention),
+			publishSnapshot: (int tid) => app.broadcastTaskUpdate(tid),
+		);
+		td = &app.tasks[base.tid];
+		td.agentName = "claude";
+		td.history.reset(Watermark.driverServed());
+	}
+}
+
+// A turn that ends without result text becomes alive at once; only the
+// notification text waits for the history read.
+unittest
+{
+	auto fixture = new DriverHistoryTurnFixture;
+	auto td = fixture.td;
+	fixture.base.app.onTaskTurnCompletedAlive(fixture.base.tid);
+	assert(td.status == TaskStatus.alive && td.needsAttention);
+	assert(td.notificationBody.length == 0 && fixture.reads.length == 1);
+
+	auto updates = fixture.base.publicationOrder.length;
+	fixture.reads[0].fulfill(DriverHistory([TranslatedEvent(
+		`{"type":"item/started","item_id":"a","item_type":"text","text":"last words"}`, null)], 0));
+	drainSubmissionNextTicks();
+	assert(td.notificationBody == "last words");
+	assert(fixture.base.publicationOrder[updates .. $] == ["task_update"]);
+}
+
+// The session exits while the text is being read: the stale read and its
+// replacement settle without touching the failed task.
+unittest
+{
+	auto fixture = new DriverHistoryTurnFixture;
+	auto td = fixture.td;
+	fixture.base.app.onTaskTurnCompletedAlive(fixture.base.tid);
+	assert(fixture.reads.length == 1);
+
+	td.history.reset(Watermark.driverServed());
+	td.status = TaskStatus.failed;
+	auto updates = fixture.base.publicationOrder.length;
+	fixture.reads[0].fulfill(DriverHistory.init);
+	drainSubmissionNextTicks();
+	assert(fixture.reads.length == 2);
+	fixture.reads[1].fulfill(DriverHistory([TranslatedEvent(
+		`{"type":"item/started","item_id":"a","item_type":"text","text":"last words"}`, null)], 0));
+	drainSubmissionNextTicks();
+	assert(td.status == TaskStatus.failed && td.notificationBody.length == 0);
+	assert(fixture.base.publicationOrder.length == updates);
+}
+
+// Editing rewrites a history file. A driver-served history has none: both
+// edits are refused, and nothing is loaded for them.
+unittest
+{
+	import cydo.workflow.history.native_history : DriverHistoryTestAgent;
+	import cydo.workflow.tasks.mutations : TaskMutationService, TaskMutationServiceHost;
+
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	auto app = fixture.app;
+	auto agent = new DriverHistoryTestAgent;
+	auto access = HistoryAccess.driverServed(agent,
+		NativeHistoryProfile(agent.driver, "/unused-profile"), "driver-session");
+	auto service = new TaskMutationService(TaskMutationServiceHost(
+		getTask: (int tid) => tid in app.tasks,
+		taskAlive: (int tid) => false,
+		resolveTaskHistory: (int tid) => TaskHistoryResolution.access(access),
+		ensureHistoryLoaded: (int tid) {
+			assert(0, "A refused edit must not load history");
+		},
+	));
+	auto td = &app.tasks[fixture.tid];
+	td.agentSessionId = "driver-session";
+	td.history.reset(Watermark.driverServed());
+
+	WsMessage message;
+	message.tid = fixture.tid;
+	message.seq = 0;
+	message.anchor = "enqueue-1";
+	service.handleEditRawEvent(fixture.socket, message);
+	assert(fixture.socket.sent[$ - 1].canFind("Editing events is not supported for this agent"));
+	service.handleEditMessage(fixture.socket, message);
+	assert(fixture.socket.sent[$ - 1].canFind("Editing messages is not supported for this agent"));
+	assert(!td.history.isLoaded);
 }

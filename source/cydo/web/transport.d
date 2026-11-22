@@ -26,6 +26,7 @@ version (unittest) import std.format : format;
 version (unittest) import std.process : thisProcessID;
 version (unittest) import std.socket : AddressFamily, AddressInfo, ProtocolType,
 	SocketType, UnixAddress;
+version (unittest) import ae.net.asockets : SocketConnection;
 version (unittest) import ae.net.http.client : HttpClient, UnixConnector;
 version (unittest) import ae.net.http.common : HttpResponse;
 version (unittest) import ae.sys.timing : setTimeout;
@@ -62,6 +63,8 @@ struct McpCallbacks
 	void delegate(string tid) onDelivered;
 }
 
+alias RawSourceReady = void delegate(RawSourceLookupResult);
+
 class TransportAdapter
 {
 	private static immutable pwaPublicFiles = [
@@ -79,13 +82,13 @@ class TransportAdapter
 	private string authUser_;
 	private string authPass_;
 	private WebSocketCallbacks websocketCallbacks_;
-	private RawSourceLookupResult delegate(int tid, size_t seq) rawSourceLookup_;
+	private void delegate(int tid, size_t seq, RawSourceReady ready) rawSourceLookup_;
 	private McpCallbacks mcpCallbacks_;
 
 	this(
 		string webDistDir,
 		WebSocketCallbacks websocketCallbacks,
-		RawSourceLookupResult delegate(int tid, size_t seq) rawSourceLookup,
+		void delegate(int tid, size_t seq, RawSourceReady ready) rawSourceLookup,
 		McpCallbacks mcpCallbacks,
 	)
 	{
@@ -275,23 +278,30 @@ class TransportAdapter
 			return;
 		}
 
-		auto result = rawSourceLookup_(tid, seq);
-		final switch (result.status)
-		{
-			case RawSourceLookupStatus.taskNotFound:
-				response.setStatus(HttpStatusCode.NotFound);
-				conn.sendResponse(response.serveData("Task not found"));
+		// The reply may come later, and ae keeps reading requests off a
+		// keep-alive connection while a bodyless one is unanswered. Hold the
+		// next one back; sending the response resumes reading.
+		conn.conn.handleReadData = null;
+		rawSourceLookup_(tid, seq, (RawSourceLookupResult result) {
+			if (!conn.connected)
 				return;
-			case RawSourceLookupStatus.seqOutOfRange:
-				response.setStatus(HttpStatusCode.NotFound);
-				conn.sendResponse(response.serveData("Seq out of range"));
-				return;
-			case RawSourceLookupStatus.ok:
-				break;
-		}
+			final switch (result.status)
+			{
+				case RawSourceLookupStatus.taskNotFound:
+					response.setStatus(HttpStatusCode.NotFound);
+					conn.sendResponse(response.serveData("Task not found"));
+					return;
+				case RawSourceLookupStatus.seqOutOfRange:
+					response.setStatus(HttpStatusCode.NotFound);
+					conn.sendResponse(response.serveData("Seq out of range"));
+					return;
+				case RawSourceLookupStatus.ok:
+					break;
+			}
 
-		response.headers["Content-Type"] = "application/json";
-		conn.sendResponse(response.serveData(result.raw !is null ? result.raw : "null"));
+			response.headers["Content-Type"] = "application/json";
+			conn.sendResponse(response.serveData(result.raw !is null ? result.raw : "null"));
+		});
 	}
 
 	private void handleMcpCall(HttpRequest request, HttpServerConnection conn)
@@ -702,6 +712,69 @@ version (unittest) private void assertMcpCleanupFailureEscapes(
 	assert(deliveryFailedCalls == (delivered ? 0 : 1));
 }
 
+/// A second request reaching a keep-alive connection while a raw-source
+/// reply is pending must wait: ae would otherwise answer it first and send
+/// the pending reply with the second request's method and headers.
+version (unittest) private void assertDeferredRawSourceReplyOwnsItsRequest()
+{
+	import std.algorithm.searching : endsWith;
+	import std.string : indexOf;
+
+	auto socketPath = mcpTransportTestSocketPath("raw-source");
+	if (exists(socketPath))
+		remove(socketPath);
+	scope (exit)
+		if (exists(socketPath))
+			remove(socketPath);
+
+	int[] lookups;
+	auto client = new SocketConnection();
+	auto adapter = new TransportAdapter(
+		"",
+		WebSocketCallbacks.init,
+		(int tid, size_t seq, RawSourceReady ready) {
+			lookups ~= tid;
+			if (tid == 2)
+			{
+				ready(RawSourceLookupResult(RawSourceLookupStatus.taskNotFound, null));
+				return;
+			}
+			client.send(Data(("HEAD /api/raw-source?tid=2&seq=0 HTTP/1.1\r\n"
+				~ "Host: localhost\r\nConnection: close\r\n\r\n").asBytes));
+			setTimeout({
+				assert(lookups == [1], "second request handled while the first was unanswered");
+				ready(RawSourceLookupResult(RawSourceLookupStatus.ok, `{"first":true}`));
+			}, 100.msecs);
+		},
+		McpCallbacks.init,
+	);
+
+	auto server = new HttpServer();
+	server.handleRequest = (HttpRequest request, HttpServerConnection conn) {
+		adapter.handleRawSourceRequest(request, conn);
+	};
+	server.listen([AddressInfo(AddressFamily.UNIX, SocketType.STREAM,
+		cast(ProtocolType) 0, new UnixAddress(socketPath), socketPath)]);
+
+	string received;
+	client.handleConnect = {
+		client.send(Data(("GET /api/raw-source?tid=1&seq=0 HTTP/1.1\r\n"
+			~ "Host: localhost\r\n\r\n").asBytes));
+	};
+	client.handleReadData = (Data data) { received ~= cast(string) data.toGC(); };
+	client.handleDisconnect = (string reason, DisconnectType type) { server.close(); };
+	client.connect([AddressInfo(AddressFamily.UNIX, SocketType.STREAM,
+		cast(ProtocolType) 0, new UnixAddress(socketPath), socketPath)]);
+
+	socketManager.loop();
+
+	assert(lookups == [1, 2]);
+	auto second = received.indexOf("HTTP/1.1 404");
+	assert(received.indexOf("HTTP/1.1 200") == 0 && second > 0, received);
+	assert(received[0 .. second].endsWith(`{"first":true}`), received);
+	assert(received[second .. $].endsWith("\r\n\r\n"), received);
+}
+
 unittest
 {
 	assertMcpDispatchFailureIsTerminal(false);
@@ -712,4 +785,5 @@ unittest
 	assertMcpCleanupFailureEscapes(true, true);
 	assertMcpCleanupFailureEscapes(false, false);
 	assertMcpCleanupFailureEscapes(false, true);
+	assertDeferredRawSourceReplyOwnsItsRequest();
 }

@@ -22,7 +22,7 @@ struct DerivedTextJobsHost
 	int[] delegate() snapshotTaskIds;
 	Agent delegate(int tid) agentForTask;
 	bool delegate(int tid) hasSubscribers;
-	void delegate(int tid) ensureHistoryLoaded;
+	void delegate(int tid, void delegate() ready) whenHistoryLoaded;
 	string delegate(int tid, string relativePath, string[string] vars) readPromptFile;
 	void delegate(int tid, string title) persistTitle;
 	void delegate(int tid, string title) broadcastTitleUpdate;
@@ -173,9 +173,18 @@ public:
 			return;
 		}
 
-		host_.ensureHistoryLoaded(tid);
-		td = host_.getTask(tid);
-		assert(td !is null, format!"Suggestion generation requested for missing task %d"(tid));
+		// The request is the job from here on: whatever discards in-flight
+		// suggestions while history is being read discards it too.
+		td.suggestGeneration++;
+		auto requested = td.suggestGeneration;
+		host_.whenHistoryLoaded(tid, () => generateSuggestionsFromHistory(tid, requested));
+	}
+
+	private void generateSuggestionsFromHistory(int tid, uint capturedGen)
+	{
+		auto td = host_.getTask(tid);
+		if (td is null || td.suggestGeneration != capturedGen)
+			return;
 		string[] envelopes;
 		foreach (ref d; td.history)
 			envelopes ~= cast(string) d.toGC();
@@ -226,9 +235,6 @@ public:
 				toJson(DebugMeta(tid, td.agentName, td.taskType, timestamp)));
 		}
 
-		td.suggestGeneration++;
-		auto capturedGen = td.suggestGeneration;
-
 		auto suggestHandle = host_.agentForTask(tid).completeOneShot(prompt, "small", td.launch);
 		td.suggestGenHandle = suggestHandle.promise;
 		td.suggestGenKill = suggestHandle.cancel;
@@ -274,4 +280,39 @@ public:
 			}
 		}).ignoreResult();
 	}
+}
+
+// A suggestion request is the job from the moment it is made: discarding
+// in-flight suggestions while its history is being read discards it.
+unittest
+{
+	import ae.sys.data : Data;
+	import std.string : representation;
+	import cydo.domain.tasks.model : Watermark;
+
+	auto task = TaskData(1, "local", "/tmp");
+	task.history.reset(Watermark.none());
+	task.history.appendLive(Data((`{"tid":1,"timestamp":0,"event":{"type":"item/started",`
+		~ `"item_type":"user_message","text":"hello"}}`).representation), null);
+	void delegate()[] ready;
+	size_t promptReads;
+	auto jobs = new DerivedTextJobs(DerivedTextJobsHost(
+		getTask: (int tid) => &task,
+		suggestionsEnabled: () => true,
+		hasSubscribers: (int tid) => true,
+		whenHistoryLoaded: (int tid, void delegate() dg) { ready ~= dg; },
+		readPromptFile: (int tid, string relativePath, string[string] vars) {
+			promptReads++;
+			return "";
+		},
+	));
+
+	jobs.generateSuggestions(1);
+	ready[0]();
+	assert(promptReads == 1);
+
+	jobs.generateSuggestions(1);
+	jobs.discardInFlightSuggestions(1);
+	ready[1]();
+	assert(promptReads == 1);
 }

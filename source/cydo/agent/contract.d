@@ -255,6 +255,27 @@ interface Agent
 		ProcessLaunch launch);
 }
 
+struct DriverHistoryLaunch
+{
+	ProcessLaunch processLaunch;
+	SessionConfig sessionConfig;
+}
+
+struct DriverHistory
+{
+	/// Boundaries are embedded in the translated event JSON.
+	TranslatedEvent[] events;
+	ubyte mode;
+}
+
+interface DriverServedHistoryAgent : Agent
+{
+	/// Reject with the detail to display when history is unavailable.
+	Promise!DriverHistory loadHistory(string sessionId,
+		const ref NativeHistoryProfile profile, AgentSession owner,
+		DriverHistoryLaunch delegate() obtainLaunch);
+}
+
 /// Handle returned by completeOneShot, containing the result promise and a
 /// cancel delegate that sends SIGTERM to the subprocess (no-op after exit).
 struct OneShotHandle

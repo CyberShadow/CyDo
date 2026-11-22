@@ -9,13 +9,15 @@ import std.string : representation;
 import std.typecons : Nullable;
 import std.uuid : randomUUID;
 
+import ae.net.asockets : ConnectionState, onNextTick, socketManager;
 import ae.net.http.websocket : WebSocketAdapter;
 import ae.sys.data : Data;
 import ae.utils.array : as;
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
+import ae.utils.promise : Promise;
 import ae.utils.time.types : AbsTime;
 
-import cydo.agent.contract : Agent, PersistedHistoryBoundaryKind;
+import cydo.agent.contract : Agent, DriverHistory, PersistedHistoryBoundaryKind;
 import cydo.agent.drivers.claude_queue : ClaudeQueueOutcome, ClaudeQueueOutcomeKind,
 	classifyClaudeQueueRecords;
 import cydo.protocol : ContentBlock, ItemStartedEvent, TaskEventEnvelope,
@@ -28,7 +30,8 @@ import cydo.domain.tasks.model : QueueOperationProbe, TaskData, TaskHistoryEndMe
 	TaskHistoryStartMessage, Watermark, buildSyntheticUserEvent, extractEventFromEnvelope,
 	extractTsFromEnvelope, isQueueOperation, watermarkFromPath;
 import cydo.workflow.history.native_history : HistoryAccess,
-	TaskHistoryResolution, TaskHistoryResolutionKind;
+	TaskHistoryResolution, TaskHistoryResolutionKind, UnavailableHistory,
+	UnavailableHistoryKind;
 import cydo.workflow.history.jsonl_store : completeJsonlPrefix, loadTaskHistoryContent;
 
 package(cydo):
@@ -42,6 +45,8 @@ struct HistoryBroadcastPlan
 }
 
 enum LocalUserProvenance { ordinary, registeredLocal }
+
+alias HistoryLoaded = void delegate();
 
 struct HistoryEventPipelineHost
 {
@@ -64,6 +69,7 @@ struct HistoryEventPipelineHost
 	void delegate(int tid) onHistorySubscribed;
 	bool delegate(int tid, string translated) updateClaudeUsageFromEvent;
 	HistoryBroadcastPlan delegate(int tid, TranslatedEvent ev) planBroadcast;
+	Promise!DriverHistory delegate(int tid, HistoryAccess access) loadDriverHistory;
 }
 
 /// The user_message/consumed confirmations recorded at `lineNum`.
@@ -97,6 +103,24 @@ private TranslatedEvent[] queueConfirmations(const ClaudeQueueOutcome[int] outco
 class HistoryEventPipeline
 {
 	private HistoryEventPipelineHost host_;
+	/// A driver read and the continuations waiting for it. They belong to the
+	/// store generation the read was started for.
+	private static final class DriverLoad
+	{
+		ulong generation;
+		HistoryAccess access;
+		HistoryLoaded[] waiters;
+
+		this(ulong generation, HistoryAccess access, HistoryLoaded[] waiters)
+		{
+			this.generation = generation;
+			this.access = access;
+			this.waiters = waiters;
+		}
+	}
+
+	/// The most recently started driver read of each task.
+	private DriverLoad[int] driverLoads_;
 
 	this(HistoryEventPipelineHost host)
 	{
@@ -107,7 +131,7 @@ class HistoryEventPipeline
 	/// already loaded and no resolution was performed.
 	Nullable!TaskHistoryResolution ensureHistoryLoaded(int tid)
 	{
-		return ensureHistoryLoadedImpl(tid, true);
+		return whenHistoryLoadedImpl(tid, () {}, true, true);
 	}
 
 	/// Exit-path variant of `ensureHistoryLoaded`. On exit, the live binding
@@ -117,17 +141,111 @@ class HistoryEventPipeline
 	/// sequence, so this variant loads history the same way but never reports.
 	Nullable!TaskHistoryResolution ensureHistoryLoadedForExit(int tid)
 	{
-		return ensureHistoryLoadedImpl(tid, false);
+		return whenHistoryLoadedImpl(tid, () {}, true, false);
 	}
 
-	private Nullable!TaskHistoryResolution ensureHistoryLoadedImpl(int tid,
-		bool reportUnavailable)
+	void whenHistoryLoaded(int tid, HistoryLoaded dg)
+	{
+		whenHistoryLoadedImpl(tid, dg, false, true);
+	}
+
+	private Nullable!TaskHistoryResolution whenHistoryLoadedImpl(int tid,
+		HistoryLoaded dg, bool fileOnly, bool reportUnavailable)
 	{
 		auto td = host_.getTask(tid);
+		assert(!fileOnly || td is null || !td.history.isDriverServed,
+			"Synchronous load requires file-backed history");
 		if (td is null || td.history.isLoaded)
+		{
+			dg();
 			return Nullable!TaskHistoryResolution.init;
+		}
+		if (td.history.isLoading)
+		{
+			auto load = driverLoads_[tid];
+			assert(load.generation == td.history.generation,
+				"A loading store belongs to the read of its own generation");
+			load.waiters ~= dg;
+			return Nullable!TaskHistoryResolution.init;
+		}
 
 		auto resolution = host_.resolveTaskHistory(tid);
+		if (resolution.kind != TaskHistoryResolutionKind.access
+			|| !resolution.requireAccess().isDriverServed)
+		{
+			loadFileHistory(tid, td, resolution, reportUnavailable);
+			dg();
+			return Nullable!TaskHistoryResolution(resolution);
+		}
+		assert(!fileOnly, "Synchronous load requires file-backed history");
+		auto access = resolution.requireAccess();
+		auto load = new DriverLoad(td.history.beginDriverLoad(), access, [dg]);
+		// A read of an earlier generation keeps its own waiters until it settles.
+		driverLoads_[tid] = load;
+
+		// Settle on a tick of its own: the promise would turn an exception
+		// escaping a continuation into a rejection nobody observes.
+		host_.loadDriverHistory(tid, access).then(
+			(DriverHistory value) {
+				onNextTick(socketManager, () { finishDriverLoad(tid, load, value, null); });
+			},
+			(Exception failure) {
+				onNextTick(socketManager, () {
+					finishDriverLoad(tid, load, DriverHistory.init, failure);
+				});
+			}).ignoreResult();
+		return Nullable!TaskHistoryResolution.init;
+	}
+
+	private void finishDriverLoad(int tid, DriverLoad load, DriverHistory value,
+		Exception failure)
+	{
+		if (auto latest = tid in driverLoads_)
+			if (*latest is load)
+				driverLoads_.remove(tid);
+		auto td = host_.getTask(tid);
+		if (td !is null && td.history.generation == load.generation)
+		{
+			LoadedHistory loaded;
+			foreach (event; filterTransientSessionStatusEvents(value.events))
+			{
+				auto translated = host_.injectAgentNameIntoSessionInit(event.translated,
+					td.agentName);
+				loaded.history ~= Data(toJson(TaskEventEnvelope(tid,
+					event.ts.stdTime, JSONFragment(translated))).representation);
+				loaded.rawSource ~= event.raw;
+				loaded.sourceLine ~= event.sourceLine;
+			}
+			import std.algorithm.mutation : move;
+			td.history.completeDriverLoad(load.generation, move(loaded), value.mode);
+			if (failure !is null)
+			{
+				auto unavailable = TaskHistoryResolution.unavailable(UnavailableHistory(
+					UnavailableHistoryKind.driverRead, td.agentName,
+					load.access.sessionId, failure.msg, load.access.agent.nativeHistoryRule,
+					load.access.profile));
+				host_.reportUnavailableHistory(tid, unavailable);
+			}
+			rebuildVisibleTurnAnchors(tid);
+		}
+		deliver(tid, load.waiters);
+	}
+
+	/// Each continuation asks again, so one that follows a reset waits for
+	/// the next load instead of running against an unloaded store. An
+	/// exception leaves through the event loop once the rest have been served.
+	private void deliver(int tid, HistoryLoaded[] waiters)
+	{
+		if (waiters.length == 0)
+			return;
+		scope (exit)
+			deliver(tid, waiters[1 .. $]);
+		whenHistoryLoaded(tid, waiters[0]);
+	}
+
+	private void loadFileHistory(int tid, TaskData* td,
+		TaskHistoryResolution resolution, bool reportUnavailable)
+	{
 		bool orphan = resolution.kind == TaskHistoryResolutionKind.orphanAgent;
 		string jsonlPath;
 		Agent ta;
@@ -152,7 +270,7 @@ class HistoryEventPipeline
 			td.history.load((ulong) => LoadedHistory.init);
 			if (reportUnavailable)
 				host_.reportUnavailableHistory(tid, resolution);
-			return Nullable!TaskHistoryResolution(resolution);
+			return;
 		}
 
 		bool hasQueueOps = false;
@@ -348,7 +466,6 @@ class HistoryEventPipeline
 		}
 		if (ta !is null)
 			host_.broadcastHistoryOperations(tid);
-		return Nullable!TaskHistoryResolution(resolution);
 	}
 
 	/// Find the boundary `requestedAnchor` names in the task's session file
@@ -356,6 +473,7 @@ class HistoryEventPipeline
 	bool resolveFreshPersistedBoundary(int tid, const ref HistoryAccess access,
 		string requestedAnchor, out HistoryBoundary boundary, out bool opensConversation)
 	{
+		assert(!access.isDriverServed, "Fresh boundary resolution requires file-backed history");
 		if (requestedAnchor.length == 0)
 			return false;
 		auto source = host_.getTask(tid);
@@ -416,7 +534,14 @@ class HistoryEventPipeline
 	{
 		if (tid < 0)
 			return;
-		ensureHistoryLoaded(tid);
+		whenHistoryLoaded(tid, () {
+			if (ws.state == ConnectionState.connected)
+				sendHistory(ws, tid);
+		});
+	}
+
+	private void sendHistory(WebSocketAdapter ws, int tid)
+	{
 		auto td = host_.getTask(tid);
 		if (td is null)
 			return;
@@ -476,13 +601,16 @@ class HistoryEventPipeline
 			userEvent = userEvent[0 .. $ - 1] ~ `,"meta":` ~ cydoMeta ~ `}`;
 		auto envelope = UnconfirmedUserEventEnvelope(tid, JSONFragment(userEvent), nonce);
 		auto data = Data(toJson(envelope).representation);
-		ensureHistoryLoaded(tid);
+		// File-backed history loads here. A driver read only starts: the
+		// message takes its place among the live events buffered behind it,
+		// which reach clients through the replay.
+		whenHistoryLoaded(tid, () {});
 		td = host_.getTask(tid);
 		if (td is null)
 			return;
-		td.history.appendLive(data, null);
-		host_.sendToSubscribed(tid, data);
-		td.pendingSteeringTexts ~= extractContentText(uiContent);
+		if (td.history.appendLive(data, null) != cast(size_t) -1)
+			host_.sendToSubscribed(tid, data);
+		td.pendingSteeringTexts ~= ev.text;
 	}
 
 	string appendTaskDiagnostic(int tid, string subject, string body)
@@ -1132,9 +1260,12 @@ unittest
 	auto pipeline = new HistoryEventPipeline(host);
 
 	// Before the fix this throws object.Exception "Unknown field tool_result".
-	pipeline.ensureHistoryLoaded(tid);
-
-	assert(td.history.isLoaded, "history must load without throwing");
+	bool completed;
+	pipeline.whenHistoryLoaded(tid, () {
+		assert(td.history.isLoaded, "history must load without throwing");
+		completed = true;
+	});
+	assert(completed, "file-backed history must complete inline");
 
 	// The tool_result must survive translation as an item/result event rather
 	// than being dropped by the (mis)parse as a steering echo.
@@ -1772,4 +1903,234 @@ unittest
 		if (s.canFind(`"user_message"`) && s.canFind("withdrawn steer"))
 			assert(!s.canFind(`"history_boundary"`),
 				"withdrawn message must not keep a provisional boundary");
+}
+
+version (unittest) private final class DriverHistoryPipelineFixture
+{
+	enum tid = 1;
+	enum sessionId = "driver-session";
+	TaskData task;
+	HistoryEventPipeline pipeline;
+	TaskHistoryResolution resolution;
+	Promise!DriverHistory[] reads;
+	UnavailableHistory[] reports;
+	string[] sent;
+
+	this()
+	{
+		import cydo.runtime.launch.types : NativeHistoryProfile;
+		import cydo.workflow.history.native_history : DriverHistoryTestAgent;
+
+		auto agent = new DriverHistoryTestAgent();
+		auto profile = NativeHistoryProfile(agent.driver, "/unused-profile");
+		auto access = HistoryAccess.driverServed(agent, profile, sessionId);
+		task = TaskData(tid, "local", "/tmp");
+		task.agentName = "driver";
+		task.agentSessionId = sessionId;
+		task.history.reset(Watermark.driverServed());
+
+		HistoryEventPipelineHost host;
+		host.getTask = (int t) => t == tid ? &task : null;
+		resolution = TaskHistoryResolution.access(access);
+		host.resolveTaskHistory = (int t) => resolution;
+		host.sendToSubscribed = (int t, Data data) { sent ~= cast(string) data.toGC(); };
+		host.loadDriverHistory = (int t, HistoryAccess resolved) {
+			assert(t == tid && resolved.sessionId == sessionId);
+			auto pending = new Promise!DriverHistory;
+			reads ~= pending;
+			return pending;
+		};
+		host.injectAgentNameIntoSessionInit = (string translated, string agentName) => translated;
+		host.reportUnavailableHistory = (int t, const ref TaskHistoryResolution resolution) {
+			assert(t == tid);
+			reports ~= resolution.requireUnavailable();
+		};
+		pipeline = new HistoryEventPipeline(host);
+	}
+}
+
+version (unittest) private void drainHistoryNextTicks()
+{
+	// These fixtures create no sockets or timers. Dispatch the ae promise
+	// callbacks without running other unit tests' scheduled I/O.
+	for (;;)
+	{
+		auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
+		if (handlers.length == 0)
+			return;
+		mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
+		foreach (handler; handlers)
+			handler();
+	}
+}
+
+unittest
+{
+	auto fixture = new DriverHistoryPipelineFixture;
+	size_t[] called;
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () {
+		assert(fixture.task.history.isLoaded);
+		assert(fixture.task.history.rawAt(0) == "driver raw");
+		called ~= 1;
+	});
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () {
+		assert(fixture.task.history.isLoaded);
+		called ~= 2;
+	});
+	assert(called.length == 0 && fixture.reads.length == 1);
+	fixture.reads[0].fulfill(DriverHistory(
+		[TranslatedEvent(`{"type":"turn/stop"}`, "driver raw")], 2));
+	assert(called.length == 0, "driver callbacks run on the next event-loop tick");
+	drainHistoryNextTicks();
+	assert(called == [1, 2]);
+	assert(fixture.reads.length == 1 && fixture.reports.length == 0);
+
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () { called ~= 3; });
+	assert(called == [1, 2, 3]);
+	assert(fixture.reads.length == 1);
+}
+
+unittest
+{
+	auto fixture = new DriverHistoryPipelineFixture;
+	enum detail = "driver read failed";
+	size_t[] called;
+	void observeFailure(size_t waiter)
+	{
+		assert(fixture.task.history.isLoaded);
+		assert(fixture.reports.length == 1);
+		auto unavailable = fixture.reports[0];
+		assert(unavailable.detail == detail);
+		assert(unavailable.sessionId == fixture.sessionId);
+		called ~= waiter;
+	}
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () => observeFailure(1));
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () => observeFailure(2));
+	assert(called.length == 0 && fixture.reports.length == 0 && fixture.reads.length == 1);
+	fixture.reads[0].reject(new Exception(detail));
+	drainHistoryNextTicks();
+	assert(called == [1, 2]);
+	assert(fixture.reports.length == 1);
+}
+
+unittest
+{
+	auto fixture = new DriverHistoryPipelineFixture;
+	size_t[] called;
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () { called ~= 1; });
+	assert(fixture.reads.length == 1);
+	fixture.task.history.reset(Watermark.driverServed());
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () { called ~= 2; });
+
+	fixture.reads[0].fulfill(DriverHistory(
+		[TranslatedEvent(`{"type":"turn/stop"}`, "stale")], 1));
+	drainHistoryNextTicks();
+	assert(fixture.reads.length == 2 && called.length == 0);
+	assert(!fixture.task.history.isLoaded);
+	fixture.reads[1].fulfill(DriverHistory(
+		[TranslatedEvent(`{"type":"turn/stop"}`, "fresh")], 2));
+	drainHistoryNextTicks();
+	// The first continuation joined the second read when the stale one settled.
+	assert(called == [2, 1]);
+	assert(fixture.task.history.length == 1);
+	assert(fixture.task.history.rawAt(0) == "fresh");
+	assert(fixture.task.history.historyMode == 2);
+}
+
+// A continuation that resets the store leaves the next one waiting for the
+// next load.
+unittest
+{
+	auto fixture = new DriverHistoryPipelineFixture;
+	size_t[] called;
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () {
+		called ~= 1;
+		fixture.task.history.reset(Watermark.driverServed());
+	});
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () {
+		assert(fixture.task.history.isLoaded);
+		assert(fixture.task.history.rawAt(0) == "fresh");
+		called ~= 2;
+	});
+	fixture.reads[0].fulfill(DriverHistory(
+		[TranslatedEvent(`{"type":"turn/stop"}`, "first")], 1));
+	drainHistoryNextTicks();
+	assert(called == [1] && fixture.reads.length == 2);
+	fixture.reads[1].fulfill(DriverHistory(
+		[TranslatedEvent(`{"type":"turn/stop"}`, "fresh")], 1));
+	drainHistoryNextTicks();
+	assert(called == [1, 2] && fixture.reads.length == 2);
+}
+
+// A store reset to the file-backed shape during a driver read loads inline,
+// for both forms; the stale read's continuation is served when it settles.
+unittest
+{
+	auto fixture = new DriverHistoryPipelineFixture;
+	size_t[] called;
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () { called ~= 1; });
+	fixture.task.history.reset(Watermark.atBytes(0));
+	fixture.resolution = TaskHistoryResolution.noSession();
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () {
+		assert(fixture.task.history.isLoaded);
+		called ~= 2;
+	});
+	assert(called == [2]);
+
+	fixture.task.history.reset(Watermark.atBytes(0));
+	fixture.pipeline.ensureHistoryLoaded(fixture.tid);
+	assert(fixture.task.history.isLoaded);
+
+	fixture.reads[0].fulfill(DriverHistory(
+		[TranslatedEvent(`{"type":"turn/stop"}`, "stale")], 1));
+	drainHistoryNextTicks();
+	assert(called == [2, 1]);
+	assert(fixture.reads.length == 1 && fixture.task.history.length == 0);
+}
+
+// An exception escaping a continuation leaves through the event loop, after
+// the other continuations have run.
+unittest
+{
+	import std.exception : collectExceptionMsg;
+
+	auto fixture = new DriverHistoryPipelineFixture;
+	size_t[] called;
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () {
+		throw new Exception("consumer error");
+	});
+	fixture.pipeline.whenHistoryLoaded(fixture.tid, () { called ~= 2; });
+	fixture.reads[0].fulfill(DriverHistory.init);
+	assert(collectExceptionMsg(drainHistoryNextTicks()) == "consumer error");
+	assert(called == [2]);
+}
+
+// A message accepted while history is being read keeps its place among the
+// live events, and goes with them when the store is reset.
+unittest
+{
+	auto fixture = new DriverHistoryPipelineFixture;
+	fixture.pipeline.appendUnconfirmedUserMessage(fixture.tid,
+		[ContentBlock("text", "provisional")], null, null, "nonce");
+	assert(fixture.reads.length == 1 && fixture.sent.length == 0);
+	assert(fixture.task.pendingSteeringTexts == ["provisional"]);
+	fixture.task.history.appendLive(Data("later agent event".representation), "agent raw");
+	fixture.reads[0].fulfill(DriverHistory(
+		[TranslatedEvent(`{"type":"turn/stop"}`, "driver raw")], 1));
+	drainHistoryNextTicks();
+	assert(fixture.task.history.length == 3);
+	assert(fixture.task.history.rawAt(0) == "driver raw");
+	assert((cast(string) fixture.task.history[1].toGC()).canFind("provisional"));
+	assert(fixture.task.history.rawAt(2) == "agent raw");
+
+	fixture = new DriverHistoryPipelineFixture;
+	fixture.pipeline.appendUnconfirmedUserMessage(fixture.tid,
+		[ContentBlock("text", "provisional")], null, null, "nonce");
+	fixture.task.history.reset(Watermark.driverServed());
+	fixture.reads[0].fulfill(DriverHistory.init);
+	drainHistoryNextTicks();
+	assert(fixture.reads.length == 2);
+	fixture.reads[1].fulfill(DriverHistory.init);
+	drainHistoryNextTicks();
+	assert(fixture.task.history.length == 0 && fixture.sent.length == 0);
 }

@@ -8,7 +8,7 @@ import std.file : exists, isFile;
 import std.path : isAbsolute;
 import std.stdio : File;
 
-import cydo.agent.contract : Agent;
+import cydo.agent.contract : Agent, DriverServedHistoryAgent;
 import cydo.agent.resolver : resolveConfiguredAgent;
 import cydo.runtime.config : CydoConfig, SandboxConfig;
 import cydo.runtime.launch.environment : resolveNativeHistoryProfile;
@@ -46,13 +46,51 @@ struct HistoryAccess
 	Agent agent;
 	NativeHistoryProfile profile;
 	string sessionId;
-	string path;
+	private string path_;
+	private DriverServedHistoryAgent historyDriver_;
+
+	this(Agent agent, NativeHistoryProfile profile, string sessionId, string path)
+	{
+		this.agent = agent;
+		this.profile = profile;
+		this.sessionId = sessionId;
+		path_ = path;
+	}
+
+	static DriverServedHistoryAgent driverServingHistory(Agent agent)
+	{
+		return cast(DriverServedHistoryAgent) agent;
+	}
+
+	static HistoryAccess driverServed(DriverServedHistoryAgent driver,
+		NativeHistoryProfile profile, string sessionId)
+	{
+		assert(driver !is null);
+		auto access = HistoryAccess(driver, profile, sessionId, null);
+		access.historyDriver_ = driver;
+		return access;
+	}
+
+	@property bool isDriverServed() const { return historyDriver_ !is null; }
+
+	@property DriverServedHistoryAgent historyDriver()
+	{
+		assert(isDriverServed);
+		return historyDriver_;
+	}
+
+	@property string path() const
+	{
+		assert(!isDriverServed, "Driver-served history has no file path");
+		return path_;
+	}
 }
 
 enum UnavailableHistoryKind
 {
 	context,
 	profilePath,
+	driverRead,
 }
 
 struct UnavailableHistory
@@ -309,6 +347,8 @@ private void validateHistoryAccess(ref HistoryAccess value)
 {
 	auto context = LiveHistoryContext(value.agent, value.profile, value.sessionId);
 	validateLiveHistoryContext(context);
+	if (value.isDriverServed)
+		return;
 	enforce(value.path.length > 0 && isAbsolute(value.path),
 		"History access requires an absolute path");
 	enforce(isReadableRegularFile(value.path),
@@ -873,5 +913,28 @@ unittest
 			isolatedHome);
 		assert(!isolatedLaunch.cmdPrefix.canFind(backendProfileSentinel));
 		environment.remove(golden.profileEnvName);
+	}
+}
+
+version (unittest)
+{
+	import ae.utils.promise : Promise;
+	import cydo.agent.contract : DriverHistory, DriverHistoryLaunch;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.agent.session : AgentSession;
+
+	package(cydo) final class DriverHistoryTestAgent : ClaudeCodeAgent, DriverServedHistoryAgent
+	{
+		override string historyPath(string sessionId, const ref NativeHistoryProfile profile)
+		{
+			assert(0, "Driver-served history must not look up a path");
+		}
+
+		override Promise!DriverHistory loadHistory(string sessionId,
+			const ref NativeHistoryProfile profile, AgentSession owner,
+			DriverHistoryLaunch delegate() obtainLaunch)
+		{
+			assert(0, "Unexpected driver history read");
+		}
 	}
 }

@@ -651,6 +651,12 @@ public:
 		if (!requireHistoryAccess(MutationReplySocket((Data data) => ws.send(data)), tid,
 			"Message UUID not found in history", access))
 			return;
+		if (access.isDriverServed)
+		{
+			ws.send(Data(toJson(ErrorMessage("error",
+				"Editing messages is not supported for this agent", tid)).representation));
+			return;
+		}
 		auto ta = access.agent;
 		auto jsonlPath = access.path;
 		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
@@ -713,6 +719,12 @@ public:
 			return;
 		}
 
+		if (td.history.isDriverServed)
+		{
+			ws.send(Data(toJson(ErrorMessage("error",
+				"Editing events is not supported for this agent", tid)).representation));
+			return;
+		}
 		host_.ensureHistoryLoaded(tid);
 		if (seq >= td.history.length || td.history.rawAt(seq) is null)
 		{

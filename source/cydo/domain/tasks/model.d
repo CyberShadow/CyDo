@@ -183,17 +183,23 @@ struct Watermark
 private:
     ulong bytes_;
     bool deferred_;
+    bool driverServed_;
 
-    this(ulong bytes, bool deferred) pure nothrow @safe @nogc
+    this(ulong bytes, bool deferred, bool driverServed = false) pure nothrow @safe @nogc
     {
         bytes_ = bytes;
         deferred_ = deferred;
+        driverServed_ = driverServed;
     }
 
 public:
     static Watermark none() pure nothrow @safe @nogc { return Watermark(0, false); }
     static Watermark atBytes(ulong bytes) pure nothrow @safe @nogc { return Watermark(bytes, true); }
     static Watermark unreadable() pure nothrow @safe @nogc { return Watermark(0, true); }
+
+    static Watermark driverServed() pure nothrow @safe @nogc { return Watermark(0, true, true); }
+
+    @property bool isDriverServed() const pure nothrow @safe @nogc { return driverServed_; }
 
     /// Bytes the load() delegate is allowed to read. 0 for none() and unreadable().
     @property ulong maxBytes() const pure nothrow @safe @nogc { return bytes_; }
@@ -217,7 +223,7 @@ Watermark watermarkFromPath(string path)
 
 /// Encapsulates per-task history with a watermark/buffer state machine.
 ///
-/// The three states:
+/// The states:
 ///   - uninitialized: initial default; every public op (except reset and isLoaded)
 ///     asserts. Callers must call reset() before any other operation.
 ///   - loaded: history_ holds the canonical event sequence; pendingEvents_ is empty.
@@ -225,6 +231,8 @@ Watermark watermarkFromPath(string path)
 ///   - deferred: the on-disk JSONL has not been read yet. Live events are buffered
 ///     in pendingEvents_ until load() is called. Read operations (length, opIndex,
 ///     opApply, ...) assert isLoaded — callers must call ensureHistoryLoaded first.
+///
+///   - loading: a driver read is in flight. Live events remain buffered.
 ///
 /// Design rationale:
 ///   - appendLive routes new events between history_ (loaded) and pendingEvents_
@@ -244,9 +252,10 @@ private:
     int[]    sourceLine_;
     DataVec  pendingEvents_;
     string[] pendingRaw_;
-    enum State : ubyte { uninitialized, loaded, deferred }
+    enum State : ubyte { uninitialized, loaded, deferred, loading }
     State     state_ = State.uninitialized;
     Watermark watermark_;
+    ubyte historyMode_;
 
     void assertInitialized() const
     {
@@ -258,6 +267,14 @@ public:
     // -------- queries (any initialized state) --------
 
     @property bool isLoaded() const { return state_ == State.loaded; }
+    @property bool isLoading() const { return state_ == State.loading; }
+    @property bool isDriverServed() const { return watermark_.isDriverServed; }
+
+    @property ubyte historyMode() const
+    {
+        assert(isLoaded && isDriverServed);
+        return historyMode_;
+    }
 
     /// Contents of the most recently appended event (pending if deferred, history
     /// if loaded). Returns empty slice if nothing has been appended yet.
@@ -265,7 +282,7 @@ public:
     const(char)[] lastEventContents() const
     {
         assertInitialized();
-        if (state_ == State.deferred)
+        if (state_ != State.loaded)
             return pendingEvents_.length > 0
                 ? cast(const(char)[]) pendingEvents_[$ - 1].unsafeContents
                 : null;
@@ -353,7 +370,7 @@ public:
     size_t appendLive(Data event, string raw)
     {
         assertInitialized();
-        if (state_ == State.deferred)
+        if (state_ != State.loaded)
         {
             pendingEvents_ ~= event;
             pendingRaw_ ~= raw;
@@ -370,7 +387,7 @@ public:
     void replaceLastEvent(Data event)
     {
         assertInitialized();
-        if (state_ == State.deferred)
+        if (state_ != State.loaded)
         {
             assert(pendingEvents_.length > 0, "replaceLastEvent: no pending events");
             pendingEvents_[$ - 1] = event;
@@ -405,6 +422,7 @@ public:
         sourceLine_ = null;
         pendingEvents_ = DataVec();
         pendingRaw_ = null;
+        historyMode_ = 0;
         watermark_ = wm;
         state_ = wm.isDeferred ? State.deferred : State.loaded;
     }
@@ -416,7 +434,29 @@ public:
     void load(scope LoadedHistory delegate(ulong maxBytes) loader)
     {
         assert(state_ == State.deferred, "HistoryStore.load requires deferred state");
+        assert(!isDriverServed);
         auto loaded = loader(watermark_.maxBytes);
+        install(loaded);
+    }
+
+    ulong beginDriverLoad()
+    {
+        assert(state_ == State.deferred && isDriverServed);
+        state_ = State.loading;
+        return generation_;
+    }
+
+    void completeDriverLoad(ulong generation, LoadedHistory loaded, ubyte mode)
+    {
+        assert(generation == generation_, "Driver load completed for a reset store");
+        assert(state_ == State.loading && isDriverServed);
+        historyMode_ = mode;
+        install(loaded);
+    }
+
+private:
+    void install(ref LoadedHistory loaded)
+    {
         foreach (i, ref ev; loaded.history)
         {
             history_ ~= ev;
@@ -454,6 +494,9 @@ public:
             case State.loaded:
                 assert(pendingEvents_.length == 0,
                        "loaded state must have empty pending buffer");
+                break;
+            case State.loading:
+                assert(watermark_.isDriverServed);
                 break;
             case State.deferred:
                 break;
@@ -1746,4 +1789,30 @@ unittest
         assert(hs.isLoaded);
         assert(hs.length == 0);
     }
+}
+
+unittest
+{
+    import std.algorithm : move;
+
+    HistoryStore store;
+    store.reset(Watermark.driverServed());
+    assert(store.isDriverServed && !store.isLoaded);
+    store.appendLive(Data("first live"), "first raw");
+    auto generation = store.beginDriverLoad();
+    assert(!store.isLoaded);
+    store.appendLive(Data("second live"), "second raw");
+
+    LoadedHistory persisted;
+    persisted.history ~= Data("persisted");
+    persisted.rawSource = ["persisted raw"];
+    persisted.sourceLine = [7];
+    store.completeDriverLoad(generation, move(persisted), 3);
+    assert(store.isLoaded && store.isDriverServed && store.historyMode == 3);
+    assert(store.length == 3);
+    assert(cast(string) store[0].unsafeContents == "persisted");
+    assert(cast(string) store[1].unsafeContents == "first live");
+    assert(cast(string) store[2].unsafeContents == "second live");
+    assert(store.rawAt(0) == "persisted raw" && store.sourceLineAt(0) == 7);
+    assert(store.rawAt(1) == "first raw" && store.rawAt(2) == "second raw");
 }
