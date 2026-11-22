@@ -1481,7 +1481,6 @@ test("Ask/Answer: held question reaches a busy child at idle as a system message
     event.type === "item/started" &&
     event.item_type === "user_message" &&
     eventText(event).includes("held non-direct question?");
-  expect(childEvents.some(questionReached)).toBe(false);
   const busyTurnEnd = await waitForTaskEvent(
     childEvents,
     ({ tid, event }) => tid === 2 && event.type === "turn/stop",
@@ -1490,8 +1489,9 @@ test("Ask/Answer: held question reaches a busy child at idle as a system message
   const delivered = await waitForTaskEvent(
     childEvents,
     questionReached,
-    { sinceIndex: busyTurnEnd.index },
+    { sinceIndex: askIndex },
   );
+  expect(busyTurnEnd.index).toBeLessThan(delivered.index);
   expect(eventText(delivered.event)).toContain(
     "[SYSTEM: Question from task 1 (qid=",
   );
