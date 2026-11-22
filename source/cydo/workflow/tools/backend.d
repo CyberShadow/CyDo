@@ -851,17 +851,7 @@ public:
 		mailbox(q.askerTid).push(MailboxEvent(MailboxEvent.Kind.answer, 0, qid));
 		pump(q.askerTid);
 		host_.broadcastFocusHint(answererTid, q.askerTid);
-		bool pendingOwnQuestion;
-		foreach (ref candidate; questions_)
-			if (candidate.askerTid == answererTid)
-				pendingOwnQuestion = true;
-		bool owesPresentedQuestion;
-		foreach (id, ref candidate; questions_)
-			if (candidate.answererTid == answererTid && candidate.state == QuestionState.open
-				&& !hasEvent(answererTid, MailboxEvent.Kind.question, id))
-				owesPresentedQuestion = true;
-		if ((batchRegistry_.hasBatches(answererTid) || pendingOwnQuestion)
-			&& !owesPresentedQuestion)
+		if (hasOutstandingWait(answererTid) && presentedQuestionFor(answererTid) == 0)
 		{
 			if (answerer.status != TaskStatus.waiting)
 				host_.transitionTaskFrom(answererTid,
@@ -1558,6 +1548,16 @@ private:
 		return earliest == int.max ? 0 : earliest;
 	}
 
+	bool hasOutstandingWait(int tid)
+	{
+		if (batchRegistry_.hasBatches(tid))
+			return true;
+		foreach (q; questions_)
+			if (q.askerTid == tid && q.state != QuestionState.cancelled)
+				return true;
+		return false;
+	}
+
 	bool deliverable(int tid, in MailboxEvent event)
 	{
 		auto q = event.qid in questions_;
@@ -1859,18 +1859,11 @@ private:
 	bool findPendingChildQuestion(int tid, out int childTid,
 		out string question, out int qid)
 	{
-		int earliest = int.max;
-		foreach (id, q; questions_)
-			if (q.answererTid == tid && q.state == QuestionState.open
-				&& !hasEvent(tid, MailboxEvent.Kind.question, id)
-				&& host_.getTask(q.askerTid) !is null
-				&& id < earliest)
-				earliest = id;
-		if (earliest == int.max) return false;
-		auto q = questions_[earliest];
+		qid = presentedQuestionFor(tid);
+		if (qid == 0) return false;
+		auto q = questions_[qid];
 		childTid = q.askerTid;
 		question = q.text;
-		qid = earliest;
 		return true;
 	}
 
@@ -3654,6 +3647,34 @@ unittest
 		return result;
 	}
 
+	void assertDelivered(WorkflowToolsBackend b, int qid)
+	{
+		McpResult result;
+		b.handleAnswer("3", qid, "x").then((McpResult r) { result = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(!result.isError && result.text.length, "Answer remained blocked or returned an error");
+		assert(result.text.jsonParse!AnswerResult.status == "delivered");
+		assert(!b.mailbox(3).hasWaiter);
+	}
+
+	void liveAnswer()
+	{
+		auto f = new BatchInvariantFixture;
+		addThirdTask(f);
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		b.handleAsk("3", "outgoing", 2).ignoreResult();
+		present(b, 2);
+		f.tasks[3].status = TaskStatus.failed;
+		b.onTaskTerminal(3);
+		assert(b.questions_.length == 1 && b.questions_[1].state == QuestionState.cancelled);
+		f.tasks[3].status = TaskStatus.active;
+		f.tasks[3].isProcessing = true;
+		b.handleAsk("1", "incoming", 3).ignoreResult();
+		auto question = present(b, 3).text.jsonParse!QuestionResult;
+		assertDelivered(b, question.qid);
+	}
+
 	void rejectedFailure(bool revive)
 	{
 		auto f = new BatchInvariantFixture;
@@ -3746,6 +3767,7 @@ unittest
 		}
 	}
 
+	liveAnswer();
 	rejectedFailure(false);
 	heldFailure();
 	rejectedFailure(true);
