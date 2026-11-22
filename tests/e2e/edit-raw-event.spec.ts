@@ -307,22 +307,14 @@ isolatedTest("editing the second identical raw line rewrites that physical JSONL
     });
   const duplicateRawLine = JSON.stringify({
     type: "user",
-    message: { content: duplicatePrompt },
+    cwd: projectPath,
+    sessionId,
+    message: { role: "user", content: duplicatePrompt },
   });
   const historyPath = `${claudeProjectsDir}/${sessionId}.jsonl`;
   writeFileSync(
     historyPath,
-    [
-      JSON.stringify({
-        type: "system",
-        subtype: "init",
-        session_id: sessionId,
-        model: "claude-3-5-sonnet-20241022",
-        cwd: projectPath,
-      }),
-      duplicateRawLine,
-      duplicateRawLine,
-    ].join("\n") + "\n",
+    [duplicateRawLine, duplicateRawLine].join("\n") + "\n",
   );
   writeTestConfig(
     `${workerHome}/.config/cydo/config.yaml`,
@@ -413,18 +405,16 @@ isolatedTest("editing replayed steering raw JSON rewrites the earlier enqueue li
   });
   const discoverabilityRawLine = JSON.stringify({
     type: "user",
-    message: { content: "import discovery anchor" },
+    cwd: projectPath,
+    sessionId,
+    message: { role: "user", content: "import discovery anchor" },
   });
   const historyPath = `${claudeProjectsDir}/${sessionId}.jsonl`;
   writeFileSync(
     historyPath,
     [
       JSON.stringify({
-        type: "system",
-        subtype: "init",
-        session_id: sessionId,
-        model: "claude-3-5-sonnet-20241022",
-        cwd: projectPath,
+        type: "file-history-snapshot",
       }),
       enqueueRawLine,
       dequeueRawLine,

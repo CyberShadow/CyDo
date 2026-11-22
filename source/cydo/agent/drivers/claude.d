@@ -236,7 +236,6 @@ class ClaudeCodeAgent : Agent
 					DiscoveredSession ds;
 					ds.sessionId = sessionId;
 					ds.mtime = fileEntry.timeLastModified.stdTime;
-					ds.projectPath = "";
 					ds.exactHistoryPath = fileEntry.name;
 					if (auto index = sessionId in sessionIndices)
 					{
@@ -272,59 +271,26 @@ class ClaudeCodeAgent : Agent
 				if (lineCount++ > 50)
 					break;
 				string lineStr = cast(string) line.idup;
-				// Extract cwd from init event (first line is typically system/init)
-				if (meta.projectPath.length == 0 && lineStr.length > 0)
+				auto text = extractUserText(lineStr);
+				if (text.length == 0)
+					continue;
+
+				@JSONPartial
+				static struct CwdProbe
 				{
-					import std.algorithm : canFind;
-					if (lineStr.canFind(`"type":"system"`) && lineStr.canFind(`"subtype":"init"`))
-					{
-						@JSONPartial
-						static struct InitProbe
-						{
-							string type;
-							string subtype;
-							string cwd;
-						}
-						try
-						{
-							auto probe = jsonParse!InitProbe(lineStr);
-							if (probe.type == "system" && probe.subtype == "init" && probe.cwd.length > 0)
-								meta.projectPath = probe.cwd;
-						}
-						catch (Exception) {}
-					}
+					string cwd;
 				}
-				// Extract title from first user message
-				if (meta.title.length == 0)
-				{
-					auto text = extractUserText(lineStr);
-					if (text.length > 0)
-						meta.title = truncateTitle(text, 80);
-				}
-				if (meta.title.length > 0 && meta.projectPath.length > 0)
-					break;
+				auto probe = jsonParse!CwdProbe(lineStr);
+				enforce(probe.cwd.length > 0, "Missing cwd in Claude session " ~ session.sessionId);
+				meta.title = truncateTitle(text, 80);
+				meta.projectPath = probe.cwd;
+				break;
 			}
 		}
 		catch (Exception e)
 		{ tracef("readSessionMeta(%s): error: %s", session.sessionId, e.msg); }
 		meta.hasMessages = meta.title.length > 0;
 		return meta;
-	}
-
-	string matchProject(const ref DiscoveredSession session,
-		const string[] knownProjectPaths)
-	{
-		import std.path : baseName, dirName;
-
-		if (session.exactHistoryPath.length == 0)
-			return "";
-		auto dirName_ = baseName(dirName(session.exactHistoryPath));
-		foreach (known; knownProjectPaths)
-		{
-			if (mangleProjectPath(known) == dirName_)
-				return known;
-		}
-		return "";
 	}
 
 	void setModelAliases(ModelSpec[string] aliases)
@@ -5439,4 +5405,104 @@ unittest
 	assert(translated.length == 1);
 	assert(translated[0].translated
 		== makeUnrecognizedEvent("unknown system subtype: cydo-test-unknown-system-subtype"));
+}
+
+version (unittest)
+{
+	private enum metaTestSessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+	private enum metaTestUser = `{"type":"user","parentUuid":null,"isSidechain":false,"userType":"external",`
+		~ `"sessionId":"` ~ metaTestSessionId ~ `","version":"2.1.292",`;
+	private enum metaTestHello = metaTestUser
+		~ `"cwd":"/some/project","message":{"role":"user","content":"hello"}}`;
+
+	private SessionMeta readTestSessionMeta(string[] lines...)
+	{
+		import std.array : join;
+		import std.file : remove, tempDir, write;
+		import std.path : buildPath;
+
+		auto path = buildPath(tempDir(), "cydo-claude-read-session-meta.jsonl");
+		write(path, lines.join("\n") ~ "\n");
+		scope (exit) remove(path);
+
+		DiscoveredSession session;
+		session.sessionId = metaTestSessionId;
+		session.exactHistoryPath = path;
+		return (new ClaudeCodeAgent()).readSessionMeta(session);
+	}
+}
+
+// Skip the bookkeeping records Claude writes before the first message.
+unittest
+{
+	auto meta = readTestSessionMeta(
+		`{"type":"mode","mode":"normal"}`,
+		`{"type":"permission-mode","permissionMode":"default"}`,
+		`{"type":"file-history-snapshot","snapshot":{}}`,
+		`{"type":"queue-operation","operation":"enqueue"}`,
+		metaTestHello,
+		`{"type":"assistant","cwd":"/some/project","message":{"role":"assistant","content":[]}}`);
+	assert(meta.projectPath == "/some/project");
+	assert(meta.title == "hello");
+	assert(meta.hasMessages);
+}
+
+// A later working directory does not change the session's starting directory.
+unittest
+{
+	auto meta = readTestSessionMeta(
+		metaTestHello,
+		metaTestUser ~ `"cwd":"/some/project/sub","message":{"role":"user","content":"next"}}`,
+		`{"type":"assistant","cwd":"/some/project/sub","message":{"role":"assistant","content":[]}}`);
+	assert(meta.projectPath == "/some/project");
+}
+
+// Only the user record supplying the title supplies the project path.
+unittest
+{
+	auto meta = readTestSessionMeta(
+		`{"type":"system","subtype":"local_command","cwd":"/command"}`,
+		metaTestUser ~ `"cwd":"/tool","message":{"role":"user","content":[{"type":"tool_result",`
+			~ `"tool_use_id":"toolu_test","content":"result"}]}}`,
+		metaTestHello);
+	assert(meta.title == "hello");
+	assert(meta.projectPath == "/some/project");
+}
+
+unittest
+{
+	auto meta = readTestSessionMeta(metaTestUser
+		~ `"cwd":"/some/project","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`);
+	assert(meta.projectPath == "/some/project");
+	assert(meta.title == "hello");
+	assert(meta.hasMessages);
+}
+
+unittest
+{
+	auto meta = readTestSessionMeta(
+		`{"type":"ai-title","aiTitle":"generated title"}`,
+		`{"type":"file-history-snapshot","snapshot":{}}`);
+	assert(!meta.hasMessages);
+	assert(meta.title == "");
+	assert(meta.projectPath == "");
+}
+
+unittest
+{
+	auto meta = readTestSessionMeta(
+		`{"type":"system","subtype":"init","cwd":"/x"}`,
+		metaTestUser ~ `"message":{"role":"user","content":"hello"}}`);
+	assert(!meta.hasMessages);
+	assert(meta.projectPath == "");
+}
+
+unittest
+{
+	import std.array : array;
+	import std.range : repeat;
+
+	auto lines = `{"type":"ai-title","aiTitle":"generated title"}`.repeat(60).array;
+	auto meta = readTestSessionMeta(lines ~ metaTestHello);
+	assert(!meta.hasMessages);
 }

@@ -899,7 +899,6 @@ class CodexAgent : Agent
 			DiscoveredSession session;
 			session.sessionId = sessionId;
 			session.mtime = entry.timeLastModified.stdTime;
-			session.projectPath = "";
 			session.exactHistoryPath = entry.name;
 			result ~= session;
 		}
@@ -1117,9 +1116,6 @@ class CodexAgent : Agent
 		{ tracef("readSessionMeta(codex, %s): error: %s", session.sessionId, e.msg); }
 		return meta;
 	}
-
-	string matchProject(const ref DiscoveredSession session,
-		const string[] knownProjectPaths) { return ""; }
 
 	private string prepareIsolatedOneShotHome(ProcessLaunch launch)
 	{

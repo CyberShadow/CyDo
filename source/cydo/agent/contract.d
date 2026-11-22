@@ -42,7 +42,6 @@ struct DiscoveredSession
 {
 	string sessionId;   /// Opaque agent-meaningful identifier (UUID, path-based ID, etc.)
 	long mtime;         /// Modification time (SysTime.stdTime) — for cache invalidation
-	string projectPath; /// Project path if cheaply derivable from directory structure (empty otherwise)
 	string exactHistoryPath; /// Transient absolute locator from this discovery scan
 }
 
@@ -50,7 +49,7 @@ struct DiscoveredSession
 struct SessionMeta
 {
 	string title;       /// First user message text (truncated)
-	string projectPath; /// Working directory from init/meta event (empty if not found)
+	string projectPath; /// Starting working directory as recorded in the session content
 	bool hasMessages;   /// Whether the session contains any user messages
 }
 
@@ -249,12 +248,6 @@ interface Agent
 	/// The agent reads only as much as needed (e.g., first few lines via byLine).
 	/// Must be safe to call from a background thread (pure I/O, no shared mutable state).
 	SessionMeta readSessionMeta(const ref DiscoveredSession session);
-
-	/// Cheaply match a session to a project path using directory structure only — no file reads.
-	/// Returns the matching project path, or "" if not determinable without reading content.
-	/// Must be safe to call from a background thread (no shared mutable state).
-	string matchProject(const ref DiscoveredSession session,
-		const string[] knownProjectPaths);
 
 	/// Run a one-shot LLM completion using the supplied process launch context.
 	OneShotHandle completeOneShot(string prompt, string modelClass,

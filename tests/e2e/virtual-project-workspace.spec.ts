@@ -227,15 +227,10 @@ test(
       `${claudeProjectsDir}/${sessionId}.jsonl`,
       [
         JSON.stringify({
-          type: "system",
-          subtype: "init",
-          session_id: sessionId,
-          model: "claude-3-5-sonnet-20241022",
-          cwd: sharedProject,
-        }),
-        JSON.stringify({
           type: "user",
-          message: { content: "importable shared task" },
+          cwd: sharedProject,
+          sessionId,
+          message: { role: "user", content: "importable shared task" },
         }),
       ].join("\n") + "\n",
     );

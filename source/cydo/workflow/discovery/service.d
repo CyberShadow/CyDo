@@ -109,7 +109,6 @@ struct DiscoveryScanInput
 	DiscoveryGroup[] groups;
 	bool[string] knownSessionKeys;
 	Persistence.CacheRow[string] cacheMap;
-	string[] knownProjectPaths;
 	ulong scanGeneration;
 }
 
@@ -117,7 +116,6 @@ struct ScannedSessionRecord
 {
 	ImportableScanRecord scanRecord;
 	long mtime;
-	string enumProjectPath;
 	string title;
 	string projectPath;
 	bool fromCache;
@@ -237,16 +235,10 @@ class DiscoveryService
 		foreach (ref group; groups)
 			producedGroups[groupKey(group.agent.driver, group.profile.root)] = true;
 
-		string[] knownProjectPaths;
-		foreach (ref wi; workspacesInfo_)
-			foreach (ref pi; wi.projects)
-				knownProjectPaths ~= pi.path;
-
 		auto scanInput = DiscoveryScanInput(
 			groups,
 			knownSessionKeys,
 			cacheMap,
-			knownProjectPaths,
 			generation,
 		);
 
@@ -296,8 +288,7 @@ class DiscoveryService
 					if (key in currentKnownSessions)
 						continue;
 
-					string finalProjectPath = bestEffortProjectPathIdentity(
-						r.projectPath.length > 0 ? r.projectPath : r.enumProjectPath);
+					string finalProjectPath = bestEffortProjectPathIdentity(r.projectPath);
 
 					if (!r.hasMessages)
 					{
@@ -573,9 +564,6 @@ private:
 						record.scanRecord = ImportableScanRecord(nativeKey, discoveredSession,
 							group.importAgentName, group.producingContexts, input.scanGeneration);
 						record.mtime = discoveredSession.mtime;
-						record.enumProjectPath = discoveredSession.projectPath.length > 0
-							? discoveredSession.projectPath
-							: group.agent.matchProject(discoveredSession, input.knownProjectPaths);
 						if (cachedp !is null && cachedp.mtime == discoveredSession.mtime)
 						{
 							record.title = cachedp.title;
@@ -596,7 +584,6 @@ private:
 								warningf("enumerateSessions: error reading meta for %s/%s: %s",
 									to!string(group.agent.driver), discoveredSession.sessionId, e.msg);
 						}
-						record.enumProjectPath = bestEffortProjectPathIdentity(record.enumProjectPath);
 						record.projectPath = bestEffortProjectPathIdentity(record.projectPath);
 						groupResults ~= record;
 					}
@@ -653,17 +640,17 @@ private ResolvedNativeHistoryContext testResolvedNativeHistoryContext(
 
 version (unittest)
 private ScannedSessionRecord testScannedSession(Agent agent, string agentName,
-	string sessionId, long mtime, string enumProjectPath, string title,
+	string sessionId, long mtime, string title,
 	string projectPath, bool hasMessages = true)
 {
 	import std.file : thisExePath;
 
 	auto context = ConfiguredNativeHistoryContext(agentName, "", "", false);
 	auto resolved = testResolvedNativeHistoryContext(agent, context);
-	auto discovered = DiscoveredSession(sessionId, mtime, enumProjectPath, thisExePath());
+	auto discovered = DiscoveredSession(sessionId, mtime, thisExePath());
 	auto record = ImportableScanRecord(NativeSessionKey(agent.driver,
 		resolved.profile.root, sessionId), discovered, agentName, [context], 1);
-	return ScannedSessionRecord(record, mtime, enumProjectPath, title, projectPath,
+	return ScannedSessionRecord(record, mtime, title, projectPath,
 		false, hasMessages);
 }
 
@@ -759,8 +746,7 @@ unittest
 		),
 		(DiscoveryScanInput input) {
 			ScannedSessionRecord[] results = [
-				testScannedSession(agent, "work-claude", "session-1", 1, "",
-					"Imported", ""),
+				testScannedSession(agent, "work-claude", "session-1", 1, "Imported", ""),
 			];
 			return resolve(testScanOutput(results));
 		},
@@ -828,8 +814,8 @@ unittest
 				bool hasMessages) { cachedPaths ~= projectPath; },
 		),
 		(DiscoveryScanInput input) => resolve(testScanOutput([
-			testScannedSession(agent, "claude", "existing", 1, "", "Existing", projectLink),
-			testScannedSession(agent, "claude", "missing", 1, missing, "Missing", ""),
+			testScannedSession(agent, "claude", "existing", 1, "Existing", projectLink),
+			testScannedSession(agent, "claude", "missing", 1, "Missing", missing),
 		])),
 	);
 
@@ -915,7 +901,7 @@ unittest
 		),
 		(DiscoveryScanInput input) {
 			return resolve(testScanOutput([
-				testScannedSession(agent, "claude", "session-1", 1, "", "Imported", ""),
+				testScannedSession(agent, "claude", "session-1", 1, "Imported", ""),
 			]));
 		},
 	);

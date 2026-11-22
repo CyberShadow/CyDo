@@ -134,6 +134,8 @@ struct Persistence
 			"    has_messages INTEGER NOT NULL DEFAULT 1," ~
 			"    PRIMARY KEY (driver, profile_root, session_id)" ~
 			");",
+			// Migration 22: Claude rows cached a directory-name guess and must be rescanned.
+			"DELETE FROM session_meta_cache WHERE driver = 'claude';",
 		]);
 
 		// In CI, disable durability to speed up tests. This trades crash-safety
@@ -610,7 +612,7 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 22);
+	assert(userVersion == 23);
 
 	auto rows = persistence.loadTasks();
 	assert(rows.length == 1);
@@ -672,4 +674,40 @@ unittest
 	}
 	assert(promoted);
 	assert(pendingUnchanged);
+}
+
+unittest
+{
+	import std.file : exists, remove, tempDir;
+	import std.path : buildPath;
+
+	auto dbPath = buildPath(tempDir(), "cydo-claude-cache-migration.sqlite");
+	if (exists(dbPath))
+		remove(dbPath);
+	scope (exit) remove(dbPath);
+
+	{
+		auto legacy = Database(dbPath);
+		legacy.db.exec("CREATE TABLE session_meta_cache (" ~
+			"driver TEXT NOT NULL, profile_root TEXT NOT NULL, session_id TEXT NOT NULL, " ~
+			"mtime INTEGER NOT NULL, project_path TEXT NOT NULL DEFAULT '', " ~
+			"title TEXT NOT NULL DEFAULT '', has_messages INTEGER NOT NULL DEFAULT 1, " ~
+			"PRIMARY KEY (driver, profile_root, session_id));"
+		);
+		legacy.db.exec("INSERT INTO session_meta_cache VALUES " ~
+			"('claude', '/profiles/one', 'same-id', 1, '/guessed', 'Claude session', 1), " ~
+			"('codex', '/profiles/one', 'same-id', 2, '/recorded', 'Codex session', 1);"
+		);
+		legacy.db.exec("PRAGMA user_version = 22;");
+	}
+
+	auto persistence = Persistence(dbPath);
+	int userVersion;
+	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
+		userVersion = value;
+	assert(userVersion == 23);
+
+	auto rows = persistence.loadSessionMetaCache();
+	assert(rows == [Persistence.CacheRow("codex", "/profiles/one", "same-id", 2,
+		"/recorded", "Codex session", true)]);
 }

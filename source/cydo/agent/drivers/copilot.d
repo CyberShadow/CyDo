@@ -214,7 +214,6 @@ class CopilotAgent : Agent
 				ds.sessionId = sessionId;
 				import std.file : timeLastModified;
 				ds.mtime = timeLastModified(eventsFile).stdTime;
-				ds.projectPath = ""; // not derivable
 				ds.exactHistoryPath = eventsFile;
 				result ~= ds;
 			}
@@ -286,9 +285,6 @@ class CopilotAgent : Agent
 		}
 		return meta;
 	}
-
-	string matchProject(const ref DiscoveredSession session,
-		const string[] knownProjectPaths) { return ""; }
 
 	void setModelAliases(ModelSpec[string] aliases)
 	{

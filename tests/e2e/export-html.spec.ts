@@ -1094,15 +1094,10 @@ function writeSameIdPoison(
   const content =
     [
       JSON.stringify({
-        type: "system",
-        subtype: "init",
-        session_id: sessionId,
-        model: "claude-3-5-sonnet-20241022",
-        cwd,
-      }),
-      JSON.stringify({
         type: "user",
-        message: { content: marker },
+        cwd,
+        sessionId,
+        message: { role: "user", content: marker },
       }),
     ].join("\n") + "\n";
   writeFileSync(fullPath, content);
