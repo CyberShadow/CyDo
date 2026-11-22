@@ -1,8 +1,8 @@
 {
   "dependencies": {
     "ae": {
-      "version": "0.0.3921",
-      "sha256": "032wxkskyqsxkwl0bf8ahrfmjdz54dfkidkvj85s6gqqzkrqc3h5"
+      "version": "0.0.3964",
+      "sha256": "1flj003yfvx2sccjrv8ldxdqayl74s0ww7ibsg3b4qikqfv0zavq"
     },
     "bolts": {
       "version": "1.7.0",
