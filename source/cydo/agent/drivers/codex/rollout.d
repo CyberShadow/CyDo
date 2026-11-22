@@ -1106,7 +1106,7 @@ string[] translateRolloutResponseItem(string line, string forkId = null, bool fo
 		results = translateRolloutReasoning(
 			probe.payload.summary.json !is null ? probe.payload.summary.json : "[]",
 			probe.payload.content.json);
-	else if (ptype == "ghost_snapshot")
+	else if (ptype == "ghost_snapshot" || ptype == "additional_tools")
 		return [];
 	else
 		return [makeUnrecognizedEvent("unknown Codex response_item payload type: " ~ ptype)];
@@ -1468,6 +1468,10 @@ unittest
 		`{"type":"response_item","payload":{"type":"future_codex_payload"}}`);
 	assert(unrecognizedPayload.length == 1);
 	assert(unrecognizedPayload[0].canFind(`"type":"agent/unrecognized"`));
+
+	auto additionalTools = translateRolloutResponseItem(
+		`{"timestamp":"2026-11-21T18:54:07.856Z","ordinal":21,"type":"response_item","payload":{"type":"additional_tools","id":"at_01a1ff75-6bef-7eb2-b03d-96588d1d8762","role":"developer","tools":[{"type":"namespace","name":"mcp__cydo","description":"Tools in the mcp__cydo namespace.","tools":[{"type":"function","name":"SwitchMode","description":"Switch this task to a different mode within the same session.\n\nThe current conversation context is preserved, you will receive new instructions, and the available tool set may change. Detailed mode guidance lives in the session instructions.\n\n**This is a terminal action.** After calling mcp__cydo__SwitchMode, yield your turn immediately — do not call any other tools or generate further output. The mode has not switched yet; you will receive new instructions when your session resumes.\n\nAvailable modes:\n\n- back\n\nRefer to the session instructions for when to use each.","strict":false,"parameters":{"type":"object","properties":{"continuation":{"type":"string","description":"The mode to switch to (e.g., 'done', 'implement', 'decompose')"}},"required":["continuation"]}}]}]},"metadata":{"history_sequence":11,"sampled_through_sequence":7,"client_authored":false,"model_search_state":"unused"}}`);
+	assert(additionalTools.length == 0);
 
 	auto ignoredPayload = translateRolloutResponseItem(
 		`{"type":"response_item","payload":{"type":"ghost_snapshot"}}`);
