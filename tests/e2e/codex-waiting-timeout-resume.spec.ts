@@ -1,18 +1,24 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
+import type { AgnosticEvent } from "../../web/src/protocol";
 
 type Event =
   | { kind: "status"; status: string; isProcessing: boolean }
-  | { kind: "output"; type: string; deltaType?: string; itemType?: string };
+  | { kind: "output"; event: AgnosticEvent };
 
 function isAssistantTurnWork(event: Event): boolean {
+  if (event.kind !== "output") return false;
+  const output = event.event;
+  if (output.type === "item/delta") {
+    return ["text_delta", "thinking_delta", "input_json_delta"].includes(
+      output.delta_type,
+    );
+  }
+  if (output.type !== "item/started") return false;
+  if (output.is_replay || output.is_synthetic || output.is_meta) return false;
   return (
-    event.kind === "output" &&
-    ((event.type === "item/started" &&
-      ["text", "thinking", "tool_use"].includes(event.itemType ?? "")) ||
-      (event.type === "item/delta" &&
-        ["text_delta", "thinking_delta", "input_json_delta"].includes(
-          event.deltaType ?? "",
-        )))
+    output.item_type === "text" ||
+    output.item_type === "thinking" ||
+    (output.item_type === "tool_use" && output.tool_server !== "cydo")
   );
 }
 
@@ -31,7 +37,7 @@ test(
           type?: string;
           task?: { tid?: number; status?: string; isProcessing?: boolean };
           tid?: number;
-          event?: { type?: string; delta_type?: string; item_type?: string };
+          event?: AgnosticEvent;
         };
         if (
           data.type === "task_updated" &&
@@ -45,12 +51,7 @@ test(
             isProcessing: data.task.isProcessing,
           });
         } else if (data.tid === 1 && data.event?.type) {
-          events.push({
-            kind: "output",
-            type: data.event.type,
-            deltaType: data.event.delta_type,
-            itemType: data.event.item_type,
-          });
+          events.push({ kind: "output", event: data.event });
         }
       });
     });
