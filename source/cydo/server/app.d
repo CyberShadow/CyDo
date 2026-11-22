@@ -460,7 +460,7 @@ class App
 				broadcastTaskUpdate(tid);
 			},
 			taskAlive: &taskAlive,
-			integratorForTask: &integratorForTask,
+			singletonForTask: &singletonForTask,
 			effectiveCwd: &taskPathResolver.effectiveCwd,
 			tasksShareWorkspace: (int aTid, int bTid) {
 				auto aTd = aTid in tasks;
@@ -1445,19 +1445,15 @@ class App
 		return tid;
 	}
 
-	/// The task that lands work for the project of `callerTid`, started if the
-	/// project has none; 0 if the project's task types name no integrator.
-	/// Fulfills once a new integrator has accepted its first message.
-	///
-	/// A project has one integrator at a time, so that it sees everything
-	/// that is being landed: the newest unarchived task at the integrator
-	/// entry point.
-	private Promise!int integratorForTask(int callerTid)
+	/// Find the newest available singleton in the caller's project and workspace.
+	/// If none exists, start one and wait until it accepts its first message.
+	private Promise!int singletonForTask(int callerTid, string name)
 	{
 		auto caller = &tasks[callerTid];
-		auto ep = taskTypeCatalog.integratorEntryPointForProject(caller.projectPath);
-		if (ep is null)
+		auto singleton = taskTypeCatalog.singletonsForProject(caller.projectPath).byName(name);
+		if (singleton is null)
 			return resolve(0);
+		auto ep = taskTypeCatalog.getEntryPointsForProject(caller.projectPath).byName(name);
 
 		int found;
 		foreach (tid, ref td; tasks)
@@ -1470,23 +1466,23 @@ class App
 
 		auto typeDef = taskTypeCatalog.getTaskTypesForProject(caller.projectPath)
 			.byName(ep.resolvedType);
-		enforce(typeDef !is null, "Integrator entry point '" ~ ep.name
+		enforce(typeDef !is null, "Singleton entry point '" ~ ep.name
 			~ "' has unknown task type '" ~ ep.resolvedType ~ "'");
 		auto workspace = caller.workspace;
 		auto projectPath = caller.projectPath;
 		auto agentName = resolveAgent(typeDef.agent, caller.agentName, workspace);
 		// `caller` dangles from here on: creating a task grows `tasks`.
 		auto tid = createEntryPointTask(workspace, projectPath, agentName, ep);
-		tasks[tid].title = "Integrator";
+		tasks[tid].title = singleton.title;
 		persistence.setTitle(tid, tasks[tid].title);
 		clientHub.broadcast(toJson(TaskCreatedMessage("task_created", tid, workspace,
 			projectPath, 0, "")));
 		broadcastTaskUpdate(tid);
 		return submitInitialMessage(tid, [ContentBlock("text", readPromptFile(
-			"prompts/integrator_started_by_land.md", projectPath, null))],
+			"prompts/singleton_started_by_request.md", projectPath, null))],
 			MessageSource.harness).then((bool accepted) {
-				enforce(accepted, format!"Could not start the integrator (task %d): %s"(
-					tid, tasks[tid].error));
+				enforce(accepted, format!"Could not start singleton %s (task %d): %s"(
+					name, tid, tasks[tid].error));
 				return tid;
 			});
 	}

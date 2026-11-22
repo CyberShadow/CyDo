@@ -38,7 +38,7 @@ import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.workspace.worktree : linkCheckoutFiles;
-import cydo.domain.task_types.definition : TaskTypeDef,
+import cydo.domain.task_types.definition : integratorSingletonName, TaskTypeDef,
 	formatCompactCreatableTaskTypeToolSummary, formatCompactHandoffToolSummary,
 	isInteractive, formatCompactSwitchModeToolSummary, loadTaskTypeSystemPrompt, byName;
 import cydo.workflow.history.jsonl_store : repairInterruptedToolCallFile;
@@ -780,9 +780,10 @@ public:
 		sessionConfig.includeTools ~= "Answer";
 		// Interactive sessions are the ones that hand finished work to the
 		// user; the integrator itself is the one Land asks.
-		auto integrator = host_.taskTypeCatalog.integratorEntryPointForProject(td.projectPath);
+		auto integrator = host_.taskTypeCatalog.singletonsForProject(td.projectPath)
+			.byName(integratorSingletonName);
 		bool offersLand = integrator !is null && interactive
-			&& td.taskType != integrator.resolvedType;
+			&& td.taskType != integrator.task_type;
 		if (offersLand)
 			sessionConfig.includeTools ~= "Land";
 		if (typeDef !is null && typeDef.allow_native_subagents)

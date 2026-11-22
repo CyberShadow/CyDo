@@ -17,7 +17,7 @@ import cydo.agent.terminal : TerminalProcess;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallDecision, ToolCallRuling, evaluatePermissionPolicy,
 	makePermissionAllowJson, makePermissionDenyJson;
-import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, DjinjaTemplate, TaskTypeDef,
+import cydo.domain.task_types.definition : integratorSingletonName, ContinuationDef, CreatableTaskDef, DjinjaTemplate, TaskTypeDef,
 	UserEntryPointDef, WorktreeMode, byName, isInteractive,
 	loadProjectMemory, renderContinuationPrompt, renderPrompt, resolveAgent,
 	substituteVars;
@@ -92,10 +92,8 @@ struct WorkflowToolsHost
 		string body) appendAndBroadcastRecoveryDeliveryDiagnostic;
 
 	bool delegate(int tid) taskAlive;
-	/// The task that lands work for the project of `callerTid`, started if
-	/// the project has none and then ready to be asked; 0 if the project
-	/// has no integrator.
-	Promise!int delegate(int callerTid) integratorForTask;
+	/// Find or start the named singleton. Returns 0 if it is disabled.
+	Promise!int delegate(int callerTid, string name) singletonForTask;
 	string delegate(const TaskData* td) effectiveCwd;
 	bool delegate(int aTid, int bTid) tasksShareWorkspace;
 	string delegate(int tid) taskWorkspaceLabel;
@@ -880,7 +878,7 @@ public:
 				"message": message,
 				"directory": host_.effectiveCwd(callerTd),
 			]);
-		return host_.integratorForTask(callerTid).then((int integratorTid) {
+		return host_.singletonForTask(callerTid, integratorSingletonName).then((int integratorTid) {
 			if (integratorTid == 0)
 				return resolve(McpResult("This project has no integrator", true));
 			return handleAsk(callerTidStr, request, integratorTid);
@@ -2416,7 +2414,7 @@ unittest
 					WorktreeMode mode) {},
 				shuttingDown: () => shuttingDown,
 				effectiveCwd: (const TaskData* task) => task.projectPath,
-				integratorForTask: (int tid) => resolve(integratorTid),
+				singletonForTask: (int tid, string name) => resolve(integratorTid),
 				ensureProcessQueueAlive: (int tid) {
 					wakeCalls++;
 					if (failEnsure)

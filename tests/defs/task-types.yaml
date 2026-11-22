@@ -31,12 +31,11 @@ user_entry_points:
     description: "Session with system prompt mode A"
     prompt_template: prompts/blank.md
 
-# The task that lands other tasks' work. Interactive sessions get a Land tool
-# that submits work to the project's integrator, which CyDo starts when the
-# project has none. Set task_type to "" to have no integrator.
-integrator:
-  task_type: integrator
-  prompt_template: prompts/integrator.md
+singletons:
+  integrator:
+    task_type: integrator
+    prompt_template: prompts/integrator.md
+    title: Integrator
 
 task_types:
   integrator:

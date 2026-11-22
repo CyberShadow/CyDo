@@ -163,27 +163,25 @@ struct TaskTypesFile
 {
 	@Key("name") TaskTypeDef[] task_types;
 	@Optional @Key("name") UserEntryPointDef[] user_entry_points;
-	@Optional IntegratorDef integrator;
+	@Optional @Key("name") SingletonDef[] singletons;
 }
 
-/// The task that lands other tasks' work: the target of the Land tool, which
-/// starts one when the project has none. A project whose `task_type` is empty
-/// has no integrator, and no task is offered Land.
-struct IntegratorDef
+struct SingletonDef
 {
-	@Optional string task_type;
-	@Optional string prompt_template;
+	string name;
+	string task_type;
+	string prompt_template;
+	string title;
 }
 
-/// The system entry point the loader derives from `IntegratorDef`.
-enum integratorEntryPoint = "integrator";
+enum integratorSingletonName = "integrator";
 
 /// Combined result of loading task types (types + entry points).
 struct TaskTypeConfig
 {
 	TaskTypeDef[] types;
 	UserEntryPointDef[] entryPoints;
-	bool hasIntegrator; /// entryPoints has the `integratorEntryPoint`
+	SingletonDef[] singletons;
 }
 
 /// Look up a task type by name. Returns a pointer into the array, or null.
@@ -206,6 +204,14 @@ inout(CreatableTaskDef)* byName(inout CreatableTaskDef[] defs, string name)
 
 /// Look up a user entry point def by name.
 inout(UserEntryPointDef)* byName(inout UserEntryPointDef[] defs, string name)
+{
+	foreach (ref d; defs)
+		if (d.name == name)
+			return &d;
+	return null;
+}
+
+inout(SingletonDef)* byName(inout SingletonDef[] defs, string name)
 {
 	foreach (ref d; defs)
 		if (d.name == name)
@@ -298,50 +304,83 @@ TaskTypeConfig loadTaskTypes(string[] paths...)
 		result.user_entry_points = ep ~ result.user_entry_points;
 	}
 
-	if (result.user_entry_points.byName(integratorEntryPoint) !is null)
-		throw new Exception("user_entry_points: '" ~ integratorEntryPoint
-			~ "' is reserved for the integrator");
-	bool hasIntegrator = result.integrator.task_type.length > 0;
-	if (hasIntegrator)
+	SingletonDef[] singletons;
+	foreach (ref singleton; result.singletons)
 	{
-		if (result.task_types.byName(result.integrator.task_type) is null)
-			throw new Exception("integrator: unknown task type '"
-				~ result.integrator.task_type ~ "'");
+		enforce(result.user_entry_points.byName(singleton.name) is null,
+			"singletons: '" ~ singleton.name ~ "' is already an entry point");
+		if (singleton.task_type.length == 0)
+			continue;
+		enforce(result.task_types.byName(singleton.task_type) !is null,
+			"singletons: '" ~ singleton.name ~ "' has unknown task type '" ~ singleton.task_type ~ "'");
 		UserEntryPointDef ep;
-		ep.name = integratorEntryPoint;
-		ep.task_type = result.integrator.task_type;
-		ep.prompt_template = result.integrator.prompt_template;
+		ep.name = singleton.name;
+		ep.task_type = singleton.task_type;
+		ep.prompt_template = singleton.prompt_template;
 		ep.system = true;
 		result.user_entry_points ~= ep;
+		singletons ~= singleton;
 	}
 
-	return TaskTypeConfig(result.task_types, result.user_entry_points, hasIntegrator);
+	return TaskTypeConfig(result.task_types, result.user_entry_points, singletons);
 }
 
 unittest
 {
-	import std.exception : assertThrown;
+	import std.exception : assertThrown, collectException;
 	import std.file : remove, write;
 
-	enum path = "/tmp/cydo-task-types-integrator-test.yaml";
+	enum path = "/tmp/cydo-task-types-singleton-test.yaml";
 	scope(exit) remove(path);
 	enum types = "task_types:\n  lander:\n    model_class: large\n";
+	enum singletonFields = "    prompt_template: p.md\n    title: Integrator\n";
+	enum singleton = "singletons:\n  integrator:\n    task_type: lander\n" ~ singletonFields;
 
 	write(path, types);
-	assert(!loadTaskTypes(path).hasIntegrator);
-
-	write(path, types ~ "integrator:\n  task_type: lander\n  prompt_template: p.md\n");
 	auto config = loadTaskTypes(path);
-	assert(config.hasIntegrator);
-	auto ep = config.entryPoints.byName(integratorEntryPoint);
-	assert(ep.resolvedType == "lander" && ep.prompt_template == "p.md" && ep.system);
-	// It never ends its session, like the tasks users start.
+	assert(config.singletons.length == 0);
+	assert(config.entryPoints.byName("integrator") is null);
+
+	write(path, types ~ singleton);
+	config = loadTaskTypes(path);
+	assert(config.singletons.length == 1);
+	assert(config.singletons[0].name == "integrator");
+	assert(config.singletons[0].title == "Integrator");
+	auto ep = config.entryPoints.byName("integrator");
+	assert(ep !is null);
+	assert(ep.name == "integrator" && ep.resolvedType == "lander"
+		&& ep.prompt_template == "p.md" && ep.system);
 	assert(isInteractive(config.types, config.entryPoints, "lander"));
 
-	write(path, types ~ "integrator:\n  task_type: missing\n");
-	assertThrown(loadTaskTypes(path));
-	write(path, types ~ "user_entry_points:\n  integrator:\n    task_type: lander\n"
-		~ "    description: Lands\n");
+	write(path, types ~ "singletons:\n  integrator:\n    task_type: missing\n" ~ singletonFields);
+	auto error = collectException(loadTaskTypes(path));
+	assert(error !is null && error.msg == "singletons: 'integrator' has unknown task type 'missing'");
+
+	enum collidingEntryPoint = "user_entry_points:\n  integrator:\n    task_type: lander\n"
+		~ "    description: Lands\n";
+	enum disabledSingleton = "singletons:\n  integrator:\n    task_type: \"\"\n" ~ singletonFields;
+	foreach (declaration; [singleton, disabledSingleton])
+	{
+		write(path, types ~ collidingEntryPoint ~ declaration);
+		error = collectException(loadTaskTypes(path));
+		assert(error !is null && error.msg == "singletons: 'integrator' is already an entry point");
+	}
+
+	write(path, types ~ disabledSingleton);
+	config = loadTaskTypes(path);
+	assert(config.singletons.length == 0);
+	assert(config.entryPoints.byName("integrator") is null);
+
+	write(path, types ~ singleton ~ "  reviewer:\n    task_type: blank\n"
+		~ "    prompt_template: review.md\n    title: Reviewer\n");
+	config = loadTaskTypes(path);
+	assert(config.singletons.length == 2);
+	ep = config.entryPoints.byName("integrator");
+	assert(ep !is null && ep.system);
+	ep = config.entryPoints.byName("reviewer");
+	assert(ep !is null && ep.system && ep.resolvedType == "blank" && ep.prompt_template == "review.md");
+
+	write(path, types ~ "integrator:\n  task_type: lander\n  prompt_template: p.md\n");
 	assertThrown(loadTaskTypes(path));
 }
 
