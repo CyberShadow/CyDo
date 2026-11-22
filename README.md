@@ -193,143 +193,41 @@ Task type definitions are customizable and extensible with per-project or global
 ### Via Nix (recommended)
 
 1. Install Nix, e.g. using the [Determinate Nix Installer](https://determinate.systems/nix-installer/).
-2. Run: `nix run github:CyberShadow/CyDo`.
+2. Install the documented first-run configuration: `nix run github:CyberShadow/CyDo -- init`.
+3. Start CyDo: `nix run github:CyberShadow/CyDo`.
 
 ### From source
 
-1. Install prerequisites:
+Install a [D compiler](https://dlang.org/download.html), [Dub](https://dub.pm/),
+Node.js, and npm. Then build and start CyDo:
 
-   - A [D compiler](https://dlang.org/download.html)
-   - The [Dub Package Manager](https://dub.pm/), if it was not included with your D compiler
-   - Node.js and npm
-
-2. Clone this repository:
-
-   ```bash
-   git clone https://github.com/CyberShadow/CyDo.git
-   cd CyDo
-   ```
-
-3. Build the back-end:
-
-   ```bash
-   dub build
-   ```
-
-4. Generate shared protocol types (TypeScript interfaces from D structs):
-
-   ```bash
-   cd web
-   npm run generate
-   ```
-
-   This runs the protocol codegen tool (`dub run cydo:protocol-codegen`), which
-   generates `web/src/generated/protocol.ts`. Re-run after modifying
-   `source/cydo/agent/protocol.d`.
-
-5. Build the front-end:
-
-   ```bash
-   npm ci
-   npm run build
-   ```
-
-6. Run the back-end:
-
-   ```bash
-   cd ..
-   build/cydo
-   ```
+```bash
+git clone https://github.com/CyberShadow/CyDo.git
+cd CyDo
+dub build
+npm --prefix web ci
+npm --prefix web run generate
+npm --prefix web run build
+build/cydo init
+build/cydo
+```
 
 ### Development setup
 
-```bash
-# Enter the dev shell (provides D compiler, Node.js 22, npm, etc.)
-nix develop
-
-# One-time: gate updates of master on nix flake check
-git config core.hooksPath .githooks
-
-# Build and run the backend (serves on http://localhost:3940)
-dub run
-
-# In another terminal — install frontend deps, generate protocol types, and build
-cd web
-npm ci
-npm run generate
-npm run build
-
-# Or for frontend development with hot reload:
-npm run generate   # once, or after changing protocol.d
-npm run dev
-
-# Run all tests
-nix flake check
-```
+Run `nix develop` to get the build dependencies and
+`git config core.hooksPath .githooks` to gate updates of master on the full test suite.
+Use the build steps above for first-run setup. `dub run` starts the backend at
+http://localhost:3940. For frontend hot reload, use `npm --prefix web run dev`.
+Regenerate protocol types after changing the shared D definitions in
+`source/cydo/protocol/`. Run the full test suite with `nix flake check`.
 
 ## Configuration
 
-CyDo reads its configuration from `~/.config/cydo/config.yaml`:
-
-```yaml
-# Which agent backend to use by default
-default_agent: claude
-
-# Workspace definitions — CyDo discovers projects under these roots
-workspaces:
-  my-projects:
-    root: ~/projects
-
-# Sandbox configuration (optional)
-sandbox:
-  paths:
-    /nix: ro           # Read-only system paths
-    ~/projects: rw     # Read-write workspace
-  env:
-    PATH: "..."        # Environment for sandboxed agents
-
-# Per-driver launch parameters (optional)
-agents:
-  claude:
-    model_aliases:
-      small: haiku                          # scalar form: just the model name
-      large:                                # mapping form: model and/or effort
-        model: opus
-        effort: high
-  codex:
-    model_aliases:
-      large:
-        effort: high    # accepted by claude and codex; codex maps this to model_reasoning_effort
-  copilot:
-    model_aliases:
-      large: claude-opus-4.6   # copilot has no reasoning-effort knob; `effort` here is rejected at config load
-```
-
-`effort` values are passed to the underlying CLI verbatim, so the accepted values are whatever that CLI accepts.
-
-`sandbox` and `permissions` can be set globally, per agent entry, and per workspace; each layer replaces what it sets, in that order. Several entries can share a driver, so an agent entry is how to give some task types (via their `agent:` field) a different sandbox or permission setup:
-
-```yaml
-permissions:
-  # "allow", "deny", "ask", "auto", or a Djinja expression rendering one of
-  # them (variables: tool_name, input, auto_mode, dangerous, interactive).
-  # `dangerous`: Claude Code's own safety checks want the call confirmed;
-  # `interactive`: the task is one a person works in. Default:
-  # {{ ("ask" if interactive else "deny") if dangerous else ("auto" if auto_mode else "allow") }}
-  policy: ask
-  prompt_timeout: 120   # seconds an unanswered prompt waits before denying; 0 = forever
-
-agents:
-  claude-auto:
-    driver: claude
-    permissions:
-      auto_mode: true   # Claude Code's classifier judges what the policy leaves to "auto"
-    sandbox:
-      isolate_filesystem: false   # no bubblewrap
-      isolate_processes: false
-```
-
-Only the Claude driver consults `permissions` (Codex and Copilot run with their own approvals off), so setting it on an entry of another driver is a config error.
+CyDo reads `~/.config/cydo/config.yaml` and `~/.config/cydo/task-types.yaml`.
+Run `cydo init` to generate fully commented versions. If you already have
+configuration, see the [config.yaml template](source/cydo/cli/init_templates/config.yaml)
+and the [task-types.yaml template](source/cydo/cli/init_templates/task-types.yaml).
+Run `cydo --help` for commands and see [docs/](docs/) for further documentation.
 
 ## Project Status
 

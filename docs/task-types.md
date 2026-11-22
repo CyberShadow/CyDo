@@ -74,6 +74,9 @@ which task happened to send the first request does not decide its agent.
 To replace a singleton, stop and archive its
 task. The next request starts a fresh one.
 
+See the [generated task-type template](../source/cydo/cli/init_templates/task-types.yaml)
+for the complete example and singleton field reference.
+
 A singleton can receive questions while blocked in a CyDo tool call. Long
 work should run in sub-tasks or background commands so it can keep receiving
 requests. The integrator follows the project's instructions for checking and
