@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { h, render } from "preact";
+import { h } from "preact";
 import { act } from "preact/test-utils";
 import renderToString from "preact-render-to-string";
 import type { ShellSemanticResult } from "../lib/shellSemantic";
@@ -9,6 +9,7 @@ import type { ParseResult } from "../lib/shellParser";
 import { configureShellParserAssets } from "../lib/shellParser";
 import { loadParsedShellDocument } from "../lib/shellParser";
 import type { ToolResult } from "../types";
+import { ownedRoots } from "../test-support/preactAct";
 import bashEditDiff from "../testFixtures/claude-bash-edit-diff.json";
 import {
   ToolCall,
@@ -837,9 +838,11 @@ describe("ToolCall shell source tree rendering", () => {
   });
 });
 
-function mountedShellInput(root: HTMLElement, command: string): void {
-  void act(() => {
-    render(
+describe("ToolCall asynchronous shell source tree", () => {
+  const roots = ownedRoots();
+
+  function mountedShellInput(root: HTMLDivElement, command: string): void {
+    roots.render(
       h(ToolCall, {
         name: "Bash",
         driver: "claude",
@@ -849,17 +852,15 @@ function mountedShellInput(root: HTMLElement, command: string): void {
       }),
       root,
     );
-  });
-}
+  }
 
-describe("ToolCall asynchronous shell source tree", () => {
   it("keeps uncached commands raw and highlighted while parsing", async () => {
     const command = "printf pending-shell-source-tree";
     const pending = deferred<ParseResult>();
     const load = vi
       .spyOn(shellParser, "loadParsedShellDocument")
       .mockReturnValue(pending.promise);
-    const root = document.createElement("div");
+    const root = roots.create();
 
     await act(() => {
       mountedShellInput(root, command);
@@ -879,7 +880,7 @@ describe("ToolCall asynchronous shell source tree", () => {
 
   it("switches from raw fallback to a structured tree after parsing", async () => {
     const command = "python3 -c 'print(ready)'";
-    const root = document.createElement("div");
+    const root = roots.create();
 
     await act(() => {
       mountedShellInput(root, command);
@@ -897,7 +898,7 @@ describe("ToolCall asynchronous shell source tree", () => {
 
   it("keeps typed parser failures usable as raw command text", async () => {
     const command = "cat <<EOF\nunclosed";
-    const root = document.createElement("div");
+    const root = roots.create();
 
     await act(async () => {
       mountedShellInput(root, command);
@@ -921,7 +922,7 @@ describe("ToolCall asynchronous shell source tree", () => {
         return result;
       });
 
-    const root = document.createElement("div");
+    const root = roots.create();
     await act(() => {
       mountedShellInput(root, command);
     });
@@ -935,7 +936,7 @@ describe("ToolCall asynchronous shell source tree", () => {
     ).not.toBeNull();
 
     await act(() => {
-      render(null, root);
+      roots.render(null, root);
       mountedShellInput(root, command);
       expect(load).toHaveBeenCalledTimes(1);
       expect(
@@ -954,7 +955,7 @@ describe("ToolCall asynchronous shell source tree", () => {
       .mockImplementation((command) =>
         command === first ? firstPending.promise : secondPending.promise,
       );
-    const root = document.createElement("div");
+    const root = roots.create();
 
     await act(() => {
       mountedShellInput(root, first);
@@ -990,9 +991,9 @@ describe("ToolCall asynchronous shell source tree", () => {
     ] as const;
 
     for (const [command, selector] of cases) {
-      await loadParsedShellDocument(command);
-      const root = document.createElement("div");
-      await act(() => {
+      const root = roots.create();
+      await act(async () => {
+        await loadParsedShellDocument(command);
         mountedShellInput(root, command);
         expect(
           root.querySelector(`[data-testid="${selector}"]`),
@@ -1014,10 +1015,10 @@ describe("ToolCall asynchronous shell source tree", () => {
     );
     expect(raw).toContain("print(1)\r\nEOF");
 
-    const root = document.createElement("div");
+    const root = roots.create();
     await act(async () => {
       await loadParsedShellDocument(command);
-      render(
+      roots.render(
         h(ToolCall, {
           name: "Bash",
           driver: "claude",
@@ -1041,7 +1042,7 @@ describe("ToolCall asynchronous shell source tree", () => {
       "bash -c 'zsh -lc \"cat $HOME/README.md\"' && python3 -c 'print(1)'",
     ];
     for (const command of commands) {
-      const root = document.createElement("div");
+      const root = roots.create();
       const load = vi.spyOn(shellParser, "loadParsedShellDocument");
       await act(async () => {
         mountedShellInput(root, command);
@@ -1059,7 +1060,7 @@ describe("ToolCall asynchronous shell source tree", () => {
       );
 
       await act(() => {
-        render(null, root);
+        roots.render(null, root);
         mountedShellInput(root, command);
         expect(load).toHaveBeenCalledTimes(1);
         expect(

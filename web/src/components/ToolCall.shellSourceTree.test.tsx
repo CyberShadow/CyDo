@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { act } from "preact/test-utils";
+import { actPoll, actStep, type PollStage } from "../test-support/preactAct";
 import { describe, expect, it, vi } from "vitest";
 
 type FsPromisesLike = {
@@ -83,6 +85,7 @@ async function importFreshGraph(): Promise<FreshGraph> {
       import("web-tree-sitter"),
       import("./ToolCall"),
     ]);
+  expect(testUtils.act).toBe(act);
   return { preact, testUtils, theme, parser, treeSitter, toolCall };
 }
 
@@ -171,35 +174,25 @@ function directPreColors(root: HTMLElement, selector: string): string[] {
     .filter((color) => color.length > 0);
 }
 
-async function nextMacrotask(): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+function coloredPre(root: HTMLElement, selector: string): PollStage {
+  return {
+    description: `Shiki colors in ${selector}`,
+    ready: () => directPreColors(root, selector).length > 1,
+  };
 }
 
-async function waitForColoredPre(
-  graph: FreshGraph,
-  root: HTMLElement,
-  selector: string,
-): Promise<string[]> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const colors = directPreColors(root, selector);
-    if (colors.length > 1) return colors;
-    await graph.testUtils.act(nextMacrotask);
-  }
-  throw new Error(`timed out waiting for Shiki colors in ${selector}`);
-}
-
-async function waitForChangedColors(
-  graph: FreshGraph,
+function changedColors(
   root: HTMLElement,
   selector: string,
   previous: readonly string[],
-): Promise<string[]> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const colors = directPreColors(root, selector);
-    if (colors.length > 1 && !sameColors(colors, previous)) return colors;
-    await graph.testUtils.act(nextMacrotask);
-  }
-  throw new Error(`timed out waiting for changed Shiki colors in ${selector}`);
+): PollStage {
+  return {
+    description: `changed Shiki colors in ${selector}`,
+    ready: () => {
+      const colors = directPreColors(root, selector);
+      return colors.length > 1 && !sameColors(colors, previous);
+    },
+  };
 }
 
 function sameColors(
@@ -288,11 +281,8 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           null,
         );
 
-        const pendingColors = await waitForColoredPre(
-          graph,
-          root,
-          "pre.write-content",
-        );
+        await actPoll(coloredPre(root, "pre.write-content"));
+        const pendingColors = directPreColors(root, "pre.write-content");
         expectHighlightedPre(root, "pre.write-content");
         expect(new Set(pendingColors).size).toBeGreaterThan(1);
 
@@ -346,8 +336,13 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           expect(load).toHaveBeenCalledTimes(1);
         });
 
-        const darkColors = await waitForColoredPre(
-          graph,
+        await actPoll(
+          coloredPre(
+            root,
+            '[data-testid="source-tree-input"] pre.write-content',
+          ),
+        );
+        const darkColors = directPreColors(
           root,
           '[data-testid="source-tree-input"] pre.write-content',
         );
@@ -359,11 +354,16 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
         void graph.testUtils.act(() => {
           graph.preact.render(toolInput(graph, command, "light"), root);
         });
-        const lightColors = await waitForChangedColors(
-          graph,
+        await actPoll(
+          changedColors(
+            root,
+            '[data-testid="source-tree-input"] pre.write-content',
+            darkColors,
+          ),
+        );
+        const lightColors = directPreColors(
           root,
           '[data-testid="source-tree-input"] pre.write-content',
-          darkColors,
         );
         expect(lightColors).not.toEqual(darkColors);
         expect(parse).toHaveBeenCalledTimes(1);
@@ -393,8 +393,23 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
         void graph.testUtils.act(() => {
           graph.preact.render(toolInput(graph, command, "dark"), root);
         });
-        const darkColors = await waitForColoredPre(
-          graph,
+        await actPoll(
+          {
+            description: "semantic shell script selector",
+            ready: () =>
+              !!root.querySelector('[data-testid="semantic-shell-script"]'),
+          },
+          {
+            description: "source-tree input selector",
+            ready: () =>
+              !!root.querySelector('[data-testid="source-tree-input"]'),
+          },
+          coloredPre(
+            root,
+            '[data-testid="source-tree-input"] pre.write-content',
+          ),
+        );
+        const darkColors = directPreColors(
           root,
           '[data-testid="source-tree-input"] pre.write-content',
         );
@@ -419,11 +434,16 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
         expect(
           root.querySelector('[data-testid="source-tree-input"]'),
         ).not.toBeNull();
-        const lightColors = await waitForChangedColors(
-          graph,
+        await actPoll(
+          changedColors(
+            root,
+            '[data-testid="source-tree-input"] pre.write-content',
+            darkColors,
+          ),
+        );
+        const lightColors = directPreColors(
           root,
           '[data-testid="source-tree-input"] pre.write-content',
-          darkColors,
         );
         expect(lightColors).not.toEqual(darkColors);
         expect(
@@ -434,7 +454,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
         ).not.toBeNull();
         expect(parse).toHaveBeenCalledTimes(1);
 
-        await graph.testUtils.act(nextMacrotask);
+        await actStep();
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -523,7 +543,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
               reason: "parser_initialization_failed",
             });
           });
-          await waitForColoredPre(graph, root, "pre.write-content");
+          await actPoll(coloredPre(root, "pre.write-content"));
 
           expectHighlightedPre(root, "pre.write-content");
           expect(root.querySelector('[data-testid="source-tree-input"]')).toBe(
@@ -531,7 +551,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           );
           expect(parse).not.toHaveBeenCalled();
 
-          await graph.testUtils.act(nextMacrotask);
+          await actStep();
           expect(unhandled).toEqual([]);
         } finally {
           processLike.off("unhandledRejection", listener);
@@ -572,7 +592,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
         void graph.testUtils.act(() => {
           graph.preact.render(toolInput(graph, command, "dark"), root);
         });
-        await waitForColoredPre(graph, root, "pre.write-content");
+        await actPoll(coloredPre(root, "pre.write-content"));
         expect(root.querySelector("pre.write-content")?.textContent).toBe(
           command,
         );
@@ -583,7 +603,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           null,
         );
         expect(loadRuntime).toHaveBeenCalled();
-        await graph.testUtils.act(nextMacrotask);
+        await actStep();
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -622,7 +642,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
         await graph.testUtils.act(async () => {
           await firstLoad.catch(() => undefined);
         });
-        await waitForColoredPre(graph, root, "pre.write-content");
+        await actPoll(coloredPre(root, "pre.write-content"));
 
         const raw = root.querySelector<HTMLPreElement>("pre.write-content");
         expect(raw).not.toBeNull();
@@ -635,7 +655,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           null,
         );
 
-        await graph.testUtils.act(nextMacrotask);
+        await actStep();
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -679,7 +699,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           await graph.testUtils.act(async () => {
             await result;
           });
-          await waitForColoredPre(graph, root, "pre.write-content");
+          await actPoll(coloredPre(root, "pre.write-content"));
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -691,7 +711,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             graph.preact.render(null, root);
           });
         }
-        await graph.testUtils.act(nextMacrotask);
+        await actStep();
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -744,7 +764,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           await graph.testUtils.act(async () => {
             await result;
           });
-          await waitForColoredPre(graph, root, "pre.write-content");
+          await actPoll(coloredPre(root, "pre.write-content"));
           expect(root.querySelector("pre.write-content")?.textContent).toBe(
             source,
           );
@@ -759,7 +779,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             graph.preact.render(null, root);
           });
         }
-        await graph.testUtils.act(nextMacrotask);
+        await actStep();
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -802,7 +822,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           await graph.testUtils.act(async () => {
             await result;
           });
-          await waitForColoredPre(graph, root, "pre.write-content");
+          await actPoll(coloredPre(root, "pre.write-content"));
           expectHighlightedPre(root, "pre.write-content");
           expect(
             root.querySelector('[data-testid="source-tree-input"]'),
@@ -814,7 +834,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             graph.preact.render(null, root);
           });
         }
-        await graph.testUtils.act(nextMacrotask);
+        await actStep();
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -871,7 +891,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             reason: "unsafe_shell_syntax",
             issue: "error_node",
           });
-          await waitForColoredPre(graph, root, "pre.write-content");
+          await actPoll(coloredPre(root, "pre.write-content"));
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -887,7 +907,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             graph.preact.render(null, root);
           });
         }
-        await graph.testUtils.act(nextMacrotask);
+        await actStep();
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -942,7 +962,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             reason: "unsafe_shell_syntax",
             issue: "error_node",
           });
-          await waitForColoredPre(graph, root, "pre.write-content");
+          await actPoll(coloredPre(root, "pre.write-content"));
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -958,7 +978,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             graph.preact.render(null, root);
           });
         }
-        await graph.testUtils.act(nextMacrotask);
+        await actStep();
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -1026,7 +1046,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             code: "unsafe_shell_syntax",
           });
 
-          await waitForColoredPre(graph, root, "pre.write-content");
+          await actPoll(coloredPre(root, "pre.write-content"));
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -1049,7 +1069,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             graph.preact.render(null, root);
           });
         }
-        await graph.testUtils.act(nextMacrotask);
+        await actStep();
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -1123,7 +1143,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             code: "unsafe_shell_syntax",
           });
 
-          await waitForColoredPre(graph, root, "pre.write-content");
+          await actPoll(coloredPre(root, "pre.write-content"));
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -1146,7 +1166,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             graph.preact.render(null, root);
           });
         }
-        await graph.testUtils.act(nextMacrotask);
+        await actStep();
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -1232,7 +1252,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             code: "unsafe_shell_syntax",
           });
 
-          await waitForColoredPre(graph, root, "pre.write-content");
+          await actPoll(coloredPre(root, "pre.write-content"));
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -1255,7 +1275,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             graph.preact.render(null, root);
           });
         }
-        await graph.testUtils.act(nextMacrotask);
+        await actStep();
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
