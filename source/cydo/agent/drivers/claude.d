@@ -4077,7 +4077,9 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 		// Remote-runner activity, remote checkpoints and transient UI rows
 		// stay outside CyDo's local stream and history. Classify their literals
 		// so the binary coverage check can probe every system constructor.
+		case "alive_before_init":
 		case "checkpoint_done":
+		case "init_milestone":
 		case "placed":
 		case "start_folder":
 		case "turn_began_before_init":
@@ -5234,31 +5236,95 @@ unittest
 	assert(stdoutTypes.length >= 19 && stdoutSystem.length >= 54,
 		"too few distinct entries in the Claude StdoutMessage union");
 
-	// Constructors can sit outside the stdout schema. The literal spelling
-	// identifies the subtype independently of the constructor's other fields.
-	enum systemPrefix = `{type:"system",subtype:"`;
-	bool[string] literalSystem;
-	for (size_t cursor; cursor < image.length;)
+	// Constructors outside the stdout schema can have intervening JS fields
+	// or be written as serialized JSON.
+	bool[string] literalSystem, adjacentSystem, interveningSystem, serializedSystem;
+	auto subtypeKey = regex(`^\s*(subtype|"subtype"|'subtype')(?=\s|:|$)`);
+	auto subtypeLiteral = regex(`^\s*:\s*"(` ~ eventName ~ `)"\s*$`);
+	auto dynamicSubtype = regex(`^\s*:\s*` ~ ident ~ `\s*$`);
+	foreach (prefix; [`{type:"system",`, `{"type":"system",`])
 	{
-		auto offset = image[cursor .. $].countUntil(cast(const(ubyte)[]) systemPrefix);
-		if (offset < 0)
-			break;
-		cursor += cast(size_t) offset + systemPrefix.length;
-		auto end = image[cursor .. $].countUntil(cast(ubyte) '"');
-		assert(end >= 0, "unterminated Claude system subtype literal");
-		auto name = ascii(cursor, cursor + end);
-		assert(validEventName(name), "invalid Claude system subtype literal: " ~ name);
-		literalSystem[name] = true;
-		cursor += end + 1;
+		bool serialized = prefix[1] == '"';
+		for (size_t cursor; cursor < image.length;)
+		{
+			auto offset = image[cursor .. $].countUntil(cast(const(ubyte)[]) prefix);
+			if (offset < 0)
+				break;
+			cursor += cast(size_t) offset + prefix.length;
+
+			enum windowLength = 4096;
+			auto end = cursor + windowLength < image.length ? cursor + windowLength : image.length;
+			auto fields = ascii(cursor, end);
+			size_t start, position;
+			char[] closers = ['}'];
+			bool finished, sawSubtype;
+			foreach (part; fields.matchAll(token))
+			{
+				auto value = part[0];
+				assert(value.ptr == fields.ptr + position,
+					"unrecognized Claude system constructor token: " ~ fields[0 .. position]);
+				if (closers.length == 1 && (value == "," || value == "}"))
+				{
+					auto field = fields[start .. position];
+					auto key = field.matchFirst(subtypeKey);
+					if (!key.empty)
+					{
+						assert(!sawSubtype, "duplicate Claude system subtype: " ~ fields[0 .. position]);
+						sawSubtype = true;
+						assert(!serialized || key[1] == `"subtype"`,
+							"unquoted Claude serialized system subtype key: " ~ field);
+						auto name = key.post.matchFirst(subtypeLiteral);
+						if (!name.empty)
+						{
+							literalSystem[name[1]] = true;
+							if (serialized)
+								serializedSystem[name[1]] = true;
+							else if (start == 0)
+								adjacentSystem[name[1]] = true;
+							else
+								interveningSystem[name[1]] = true;
+						}
+						else
+							assert(!serialized && !key.post.matchFirst(dynamicSubtype).empty,
+								"unrecognized Claude system subtype: " ~ field);
+					}
+					if (value == "}")
+					{
+						finished = true;
+						break;
+					}
+					start = position + 1;
+				}
+				if (value.length == 1)
+					switch (value[0])
+					{
+						case '(': closers ~= ')'; break;
+						case '[': closers ~= ']'; break;
+						case '{': closers ~= '}'; break;
+						case ')', ']', '}':
+							assert(closers[$ - 1] == value[0],
+								"unbalanced Claude system constructor: " ~ fields[0 .. position + 1]);
+							closers.length--;
+							break;
+						default: break;
+					}
+				position += value.length;
+			}
+			assert(finished, "unterminated Claude system constructor in scan window: " ~ fields);
+			assert(sawSubtype, "missing Claude system subtype: " ~ fields[0 .. position + 1]);
+		}
 	}
-	assert(literalSystem.length >= 74, "too few distinct Claude system subtype literals");
+	assert(adjacentSystem.length >= 74, "too few adjacent JavaScript system subtype literals");
+	assert(interveningSystem.length >= 1, "missing JavaScript system subtype literals with intervening fields");
+	assert(serializedSystem.length >= 1, "missing serialized JSON system subtype literals");
 
 	bool[string] historyRows;
 	size_t readPolicyTable(size_t anchor, size_t minimumKeys)
 	{
 		auto start = anchor;
-		while (image[start] != '{')
+		while (start > 0 && image[start] != '{')
 			--start;
+		assert(image[start] == '{', "missing Claude history row policy table opener");
 		auto end = image[anchor .. $].countUntil(cast(ubyte) '}');
 		assert(end >= 0, "unterminated Claude history row policy table");
 		auto field = regex(`^(?:"(` ~ eventName ~ `)"|(` ~ ident ~ `)):"` ~ eventName ~ `"$`);
