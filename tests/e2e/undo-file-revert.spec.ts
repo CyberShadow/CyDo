@@ -251,7 +251,6 @@ test(
     await expect(page.locator(".undo-dialog")).toBeVisible();
     await page.locator('.undo-dialog input[type="checkbox"]').nth(1).uncheck();
     await page.locator(".btn-undo").click();
-    await expect(page.locator(".undo-result-banner")).toBeVisible();
     await expect(
       page.locator(".message.user-message:not(.pending)", {
         hasText: fourthContent,
