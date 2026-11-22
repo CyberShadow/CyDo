@@ -56,7 +56,6 @@ struct TaskMutationServiceHost
 {
 	TaskData* delegate(int tid) getTask;
 	void delegate(int tid, TaskData td) putTask;
-	void delegate(int tid) removeTask;
 
 	Agent delegate(int tid) agentForTask;
 	AgentSession delegate(int tid) sessionForTask;
@@ -610,7 +609,6 @@ private:
 			cleanupChildLaunch();
 			if (childTid >= 0)
 			{
-				host_.removeTask(childTid);
 				host_.deleteTask(childTid);
 				childTid = -1;
 			}

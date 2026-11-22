@@ -722,10 +722,6 @@ class App
 			putTask: (int tid, TaskData td) {
 				tasks[tid] = move(td);
 			},
-			removeTask: (int tid) {
-				taskSessionRunner.discardPendingExit(tid);
-				tasks.remove(tid);
-			},
 			agentForTask: &agentForTask,
 			sessionForTask: &sessionForTask,
 			taskAlive: &taskAlive,
@@ -744,9 +740,7 @@ class App
 			makeProcessQueueSF: &makeProcessQueueSF,
 			makeArchiveQueueSF: &makeArchiveQueueSF,
 			persistence: () => &persistence,
-			deleteTask: (int tid) {
-				persistence.deleteTask(tid);
-			},
+			deleteTask: &deleteWorkflowTask,
 			setAgentSessionId: (int tid, string agentSessionId) {
 				persistence.setAgentSessionId(tid, agentSessionId);
 			},
@@ -2054,13 +2048,18 @@ class App
 			return;
 		// Clean up subscriptions
 		clientHub.unsubscribeAll(tid);
-		// Remove from in-memory state
-		taskSessionRunner.discardPendingExit(tid);
-		tasks.remove(tid);
-		// Remove from database
-		persistence.deleteTask(tid);
+		deleteWorkflowTask(tid);
 		// Broadcast deletion to all clients
 		clientHub.broadcast(toJson(TaskDeletedMessage("task_deleted", tid)));
+	}
+
+	private void deleteWorkflowTask(int tid)
+	{
+		workflowTools.onTaskTerminal(tid, true);
+		persistence.deleteTask(tid);
+		taskSessionRunner.discardPendingExit(tid);
+		tasks.remove(tid);
+		workflowTools.removeDeletedBatchChild(tid);
 	}
 
 	private void handleForkTaskMsg(WebSocketAdapter ws, WsMessage json)
@@ -4558,6 +4557,169 @@ version (unittest) private void drainSubmissionNextTicks()
 		mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
 		foreach (handler; handlers)
 			handler();
+	}
+}
+
+unittest
+{
+	import std.conv : to;
+
+	auto app = new App;
+	app.persistence = Persistence(":memory:");
+	auto asker = app.persistence.createTask();
+	auto target = app.persistence.createTask();
+	app.tasks[asker] = TaskData(asker, "local", "/tmp/cydo-app-delete-ask");
+	app.tasks[asker].status = TaskStatus.waiting;
+	app.tasks[target] = TaskData(target, "local", "/tmp/cydo-app-delete-ask");
+	app.taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost.init);
+	app.workflowTools = new WorkflowToolsBackend(WorkflowToolsHost(
+		getTask: (int tid) => tid in app.tasks,
+		tasksShareWorkspace: (int, int) => true,
+		shuttingDown: () => false,
+		persistInsertQuestion: &app.persistence.insertQuestion,
+		persistDeleteQuestion: &app.persistence.deleteQuestion,
+		broadcastFocusHint: (int, int) {},
+	));
+
+	McpResult[] results;
+	app.workflowTools.handleAsk(asker.to!string, "question for pending task", target)
+		.then((McpResult result) { results ~= result; }).ignoreResult();
+	drainSubmissionNextTicks();
+	auto questions = app.persistence.loadQuestions();
+	assert(questions.length == 1);
+	assert(questions[0].askerTid == asker && questions[0].answererTid == target);
+	assert(questions[0].text == "question for pending task");
+	assert(results.length == 0);
+
+	WsMessage deletion;
+	deletion.type = "delete_task";
+	deletion.tid = target;
+	app.handleDeleteTaskMsg(deletion);
+	drainSubmissionNextTicks();
+
+	assert(target !in app.tasks);
+	auto remaining = app.persistence.loadTasks();
+	assert(remaining.length == 1 && remaining[0].tid == asker);
+	assert(results.length == 1, "Deleting the target must settle the blocked Ask once");
+	assert(results[0].isError);
+	assert(results[0].text == "Question " ~ questions[0].qid.to!string
+		~ ": Session ended while waiting for Ask response");
+	assert(app.persistence.loadQuestions().length == 0);
+}
+
+version (unittest) private final class PendingBatchDeletionFixture
+{
+	App app;
+	int parent, deleted, survivor;
+	string[] deliveries;
+	int[2][] focusHints;
+
+	this(bool hasSibling)
+	{
+		app = new App;
+		app.persistence = Persistence(":memory:");
+		parent = app.persistence.createTask();
+		deleted = app.persistence.createTask();
+		app.tasks[parent] = TaskData(parent, "local", "/tmp/cydo-app-delete-batch");
+		addChild(deleted, 0);
+		if (hasSibling)
+		{
+			survivor = app.persistence.createTask();
+			addChild(survivor, 1);
+			app.tasks[survivor].status = TaskStatus.active;
+		}
+		app.taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost.init);
+		app.workflowTools = new WorkflowToolsBackend(WorkflowToolsHost(
+			getTask: (int tid) => tid in app.tasks,
+			broadcastFocusHint: (int fromTid, int toTid) {
+				focusHints ~= [fromTid, toTid];
+			},
+			loadTaskDeps: &app.persistence.loadTaskDeps,
+			loadQuestions: &app.persistence.loadQuestions,
+			persistRemoveTaskBatch: &app.persistence.removeTaskBatch,
+			shuttingDown: () => false,
+			systemKeyword: () => "SYSTEM",
+			buildKnownSystemMessageMeta: (KnownSystemMessageKind kind, string subject,
+				string[string] vars, string bodyVar) => "{}",
+			sendPreparedKnownSystemMessage: (int tid, const(ContentBlock)[] blocks,
+				string meta, string nonce) {
+				assert(tid == parent && blocks.length == 1);
+				deliveries ~= blocks[0].text;
+				return resolve();
+			},
+			ensureProcessQueueAlive: (int tid) => resolve(),
+			outputPath: (const TaskData* td) => "",
+			taskProducesCommitOutput: (string path, string typ) => false,
+		));
+	}
+
+	private void addChild(int tid, size_t ordinal)
+	{
+		app.tasks[tid] = TaskData(tid, "local", "/tmp/cydo-app-delete-batch");
+		app.tasks[tid].parentTid = parent;
+		app.tasks[tid].relationType = "subtask";
+		app.persistence.addTaskDep(parent, tid, cast(ulong) deleted, ordinal);
+	}
+
+	void deletePendingChild()
+	{
+		app.handleDeleteTaskMsg(WsMessage(type: "delete_task", tid: deleted));
+		assert(deleted !in app.tasks);
+		drainSubmissionNextTicks();
+	}
+
+	void completeSibling()
+	{
+		app.tasks[survivor].status = TaskStatus.completed;
+		app.tasks[survivor].resultText = "survivor-result";
+		assert(app.workflowTools.recordChildTerminal(survivor));
+		drainSubmissionNextTicks();
+	}
+
+	void assertBatchCleared()
+	{
+		assert(!app.workflowTools.hasRestoredWork(parent));
+		assert(app.persistence.loadTaskDeps().length == 0);
+	}
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	enum Sibling { completesAfterDeletion, alreadyRecorded, none }
+
+	foreach (sibling; [Sibling.completesAfterDeletion, Sibling.alreadyRecorded, Sibling.none])
+	{
+		auto f = new PendingBatchDeletionFixture(sibling != Sibling.none);
+		f.app.tasks[f.parent].status = TaskStatus.waiting;
+		f.app.workflowTools.rebuildWaits();
+
+		if (sibling == Sibling.alreadyRecorded)
+			f.completeSibling();
+		assert(f.deliveries.length == 0 && f.focusHints.length == 0);
+
+		f.deletePendingChild();
+		if (sibling == Sibling.completesAfterDeletion)
+		{
+			auto batches = f.app.persistence.loadTaskDeps();
+			assert(batches.length == 1 && batches[0].childTids == [f.survivor]);
+			assert(f.deliveries.length == 0 && f.focusHints.length == 0);
+			f.completeSibling();
+		}
+
+		assert(f.deliveries.length == 1, "Deleting the legacy pending slot must let the batch settle");
+		if (sibling == Sibling.none)
+		{
+			assert(f.deliveries[0].canFind("<task_results>\n[]\n</task_results>"));
+			assert(f.focusHints.length == 0);
+		}
+		else
+		{
+			assert(f.deliveries[0].canFind("survivor-result"));
+			assert(f.focusHints == [[f.survivor, f.parent]]);
+		}
+		f.assertBatchCleared();
 	}
 }
 

@@ -121,6 +121,22 @@ public:
 		return batch.complete;
 	}
 
+	bool dropPendingChild(int childTid, out BatchHandle handle)
+	{
+		size_t slot;
+		if (!findOwnerOfChild(childTid, handle, slot))
+		{
+			assert(!hasChild(childTid), "Deleted batch child cannot have recorded a result");
+			return false;
+		}
+		auto batch = &batches_[handle.batchId];
+		batch.childTids = batch.childTids[0 .. slot] ~ batch.childTids[slot + 1 .. $];
+		batch.results = batch.results[0 .. slot] ~ batch.results[slot + 1 .. $];
+		batch.done = batch.done[0 .. slot] ~ batch.done[slot + 1 .. $];
+		ownerByChild_.remove(childTid);
+		return batch.complete;
+	}
+
 	bool hasChild(int childTid) const
 	{
 		return (childTid in ownerByChild_) !is null;

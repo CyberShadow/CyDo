@@ -1272,12 +1272,22 @@ public:
 		if (!batchRegistry_.findOwnerOfChild(tid, handle, slot))
 			return batchRegistry_.isRecorded(tid);
 		if (batchRegistry_.recordChildDone(handle, slot, tid, childResult(tid)))
-		{
-			mailbox(handle.parentTid).push(MailboxEvent(
-				MailboxEvent.Kind.batch, handle.batchId));
-			pump(handle.parentTid);
-		}
+			deliverCompletedBatch(handle);
 		return true;
+	}
+
+	void removeDeletedBatchChild(int tid)
+	{
+		BatchHandle handle;
+		if (batchRegistry_.dropPendingChild(tid, handle))
+			deliverCompletedBatch(handle);
+	}
+
+	private void deliverCompletedBatch(BatchHandle handle)
+	{
+		mailbox(handle.parentTid).push(MailboxEvent(
+			MailboxEvent.Kind.batch, handle.batchId));
+		pump(handle.parentTid);
 	}
 
 	Promise!void sendSystemRestartNudge(int tid, bool retryToolCall)
@@ -1328,7 +1338,7 @@ public:
 		}
 	}
 
-	void onTaskTerminal(int tid)
+	void onTaskTerminal(int tid, bool deleting = false)
 	{
 		cleanUpAskedQuestions(tid);
 		auto askers = failQuestionsForAnswerer(tid,
@@ -1337,7 +1347,10 @@ public:
 			"Session ended while waiting for Ask response"));
 		foreach (askerTid; askers)
 			pump(askerTid);
-		pump(tid);
+		if (deleting)
+			mailboxes_.remove(tid);
+		else
+			pump(tid);
 	}
 
 	void spawnContinuation(int tid)
