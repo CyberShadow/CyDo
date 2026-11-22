@@ -96,10 +96,13 @@ test("codex reconnect during active turn does not replay stale compacting status
   const historyEndIdx = findTaskHistoryEndIndex(activeReplayFrames);
   expect(historyEndIdx).toBeGreaterThanOrEqual(0);
 
-  const resultIdx = activeReplayFrames.findIndex(
-    (msg, idx) => idx > historyEndIdx && msg?.event?.type === "turn/result",
-  );
-  expect(resultIdx).toBeGreaterThan(historyEndIdx);
+  await expect
+    .poll(
+      () => frames.slice(beforeReloadIdx + historyEndIdx + 1)
+        .some((msg) => msg?.event?.type === "turn/result"),
+      { timeout },
+    )
+    .toBe(true);
 
   // session/status is transient and must not appear in durable history.
   const compactingInHistory = activeReplayFrames
