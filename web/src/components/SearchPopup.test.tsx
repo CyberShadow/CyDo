@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { render } from "preact";
+import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTaskState, type TaskState } from "../types";
 import { SearchPopup } from "./SearchPopup";
@@ -12,17 +13,19 @@ describe("SearchPopup task loading", () => {
   const mount = (tasks: Map<string, TaskState>, tasksLoaded: boolean) => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
-    render(
-      <SearchPopup
-        tasks={tasks}
-        tasksLoaded={tasksLoaded}
-        taskTypes={[]}
-        onSelect={onSelect}
-        onClose={onClose}
-        getTaskHref={(tid) => `/task/${tid}`}
-      />,
-      container,
-    );
+    void act(() => {
+      render(
+        <SearchPopup
+          tasks={tasks}
+          tasksLoaded={tasksLoaded}
+          taskTypes={[]}
+          onSelect={onSelect}
+          onClose={onClose}
+          getTaskHref={(tid) => `/task/${tid}`}
+        />,
+        container,
+      );
+    });
     return { onSelect, onClose };
   };
 
@@ -40,7 +43,9 @@ describe("SearchPopup task loading", () => {
   });
 
   afterEach(() => {
-    render(null, container);
+    void act(() => {
+      render(null, container);
+    });
     container.remove();
     if (scrollIntoView) {
       Object.defineProperty(

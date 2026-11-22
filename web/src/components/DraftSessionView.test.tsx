@@ -4,6 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "preact";
+import { act } from "preact/test-utils";
 import type {
   DraftView,
   DraftViewSnapshot,
@@ -46,11 +47,13 @@ const agents = [
   { name: "claude", driver: "claude" },
 ];
 
-const flush = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
-  await new Promise((resolve) => setTimeout(resolve));
-};
+const flush = (update: () => void) =>
+  act(async () => {
+    update();
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve));
+  });
 
 function pasteImage(textarea: HTMLTextAreaElement) {
   const file = new File(["image"], "image.png", { type: "image/png" });
@@ -108,20 +111,22 @@ describe("DraftSessionView draft availability", () => {
   let container: HTMLDivElement;
 
   const mount = (draftView: DraftView) => {
-    render(
-      <DraftSessionView
-        draftView={draftView}
-        connected={true}
-        tasksLoading={false}
-        entryPoints={entryPoints}
-        agents={agents}
-        defaultAgent="codex"
-        theme="dark"
-        onToggleTheme={() => {}}
-        onToggleSidebar={() => {}}
-      />,
-      container,
-    );
+    void act(() => {
+      render(
+        <DraftSessionView
+          draftView={draftView}
+          connected={true}
+          tasksLoading={false}
+          entryPoints={entryPoints}
+          agents={agents}
+          defaultAgent="codex"
+          theme="dark"
+          onToggleTheme={() => {}}
+          onToggleSidebar={() => {}}
+        />,
+        container,
+      );
+    });
   };
 
   const controls = () => ({
@@ -153,7 +158,9 @@ describe("DraftSessionView draft availability", () => {
   });
 
   afterEach(() => {
-    render(null, container);
+    void act(() => {
+      render(null, container);
+    });
     container.remove();
   });
 
@@ -179,9 +186,10 @@ describe("DraftSessionView draft availability", () => {
       mount(draftView);
 
       expectFullyDisabledControls();
-      pasteImage(controls().textarea);
-      imageReader.complete();
-      await flush();
+      await flush(() => {
+        pasteImage(controls().textarea);
+        imageReader.complete();
+      });
 
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
     } finally {
@@ -226,15 +234,18 @@ describe("DraftSessionView draft availability", () => {
     expect(textarea.disabled).toBe(false);
     expect(send.disabled).toBe(true);
 
-    textarea.value = "updated before metadata";
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    await flush();
+    await flush(() => {
+      textarea.value = "updated before metadata";
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     expect(onTextChange).toHaveBeenCalledWith("updated before metadata");
 
-    taskTypeButtons[1]!.click();
-    agentPicker.value = "claude";
-    agentPicker.dispatchEvent(new Event("change", { bubbles: true }));
-    send.click();
+    await act(() => {
+      taskTypeButtons[1]!.click();
+      agentPicker.value = "claude";
+      agentPicker.dispatchEvent(new Event("change", { bubbles: true }));
+      send.click();
+    });
     expect(onEntryPointChange).not.toHaveBeenCalled();
     expect(onAgentChange).not.toHaveBeenCalled();
     expect(onSubmit).not.toHaveBeenCalled();
@@ -270,18 +281,20 @@ describe("DraftSessionView draft availability", () => {
       expectFullyDisabledControls();
 
       const { taskTypePicker, taskTypeButtons } = controls();
-      taskTypePicker.dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }),
-      );
-      taskTypeButtons[1]!.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-
+      await act(() => {
+        taskTypePicker.dispatchEvent(
+          new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }),
+        );
+        taskTypeButtons[1]!.dispatchEvent(
+          new MouseEvent("click", { bubbles: true }),
+        );
+      });
       expect(onEntryPointChange).not.toHaveBeenCalled();
 
-      dropImage(container.querySelector<HTMLElement>(".input-box")!);
-      imageReader.complete();
-      await flush();
+      await flush(() => {
+        dropImage(container.querySelector<HTMLElement>(".input-box")!);
+        imageReader.complete();
+      });
 
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
     } finally {

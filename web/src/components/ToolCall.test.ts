@@ -838,16 +838,18 @@ describe("ToolCall shell source tree rendering", () => {
 });
 
 function mountedShellInput(root: HTMLElement, command: string): void {
-  render(
-    h(ToolCall, {
-      name: "Bash",
-      driver: "claude",
-      toolUseId: "tool-mounted-shell",
-      input: { command },
-      result: undefined,
-    }),
-    root,
-  );
+  void act(() => {
+    render(
+      h(ToolCall, {
+        name: "Bash",
+        driver: "claude",
+        toolUseId: "tool-mounted-shell",
+        input: { command },
+        result: undefined,
+      }),
+      root,
+    );
+  });
 }
 
 describe("ToolCall asynchronous shell source tree", () => {
@@ -868,8 +870,8 @@ describe("ToolCall asynchronous shell source tree", () => {
       command,
     );
 
-    pending.resolve(successfulParse(command));
     await act(async () => {
+      pending.resolve(successfulParse(command));
       await pending.promise;
     });
     load.mockRestore();
@@ -932,12 +934,14 @@ describe("ToolCall asynchronous shell source tree", () => {
       root.querySelector('[data-testid="source-tree-input"]'),
     ).not.toBeNull();
 
-    render(null, root);
-    mountedShellInput(root, command);
-    expect(load).toHaveBeenCalledTimes(1);
-    expect(
-      root.querySelector('[data-testid="source-tree-input"]'),
-    ).not.toBeNull();
+    await act(() => {
+      render(null, root);
+      mountedShellInput(root, command);
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(
+        root.querySelector('[data-testid="source-tree-input"]'),
+      ).not.toBeNull();
+    });
   });
 
   it("ignores a stale completion when the command changes", async () => {
@@ -959,15 +963,15 @@ describe("ToolCall asynchronous shell source tree", () => {
       mountedShellInput(root, second);
     });
 
-    firstPending.resolve(successfulParse(first));
     await act(async () => {
+      firstPending.resolve(successfulParse(first));
       await firstPending.promise;
     });
     expect(root.querySelector('[data-testid="source-tree-input"]')).toBeNull();
     expect(root.querySelector(".write-content")?.textContent).toContain(second);
 
-    secondPending.resolve(successfulParse(second));
     await act(async () => {
+      secondPending.resolve(successfulParse(second));
       await secondPending.promise;
     });
     expect(
@@ -988,8 +992,12 @@ describe("ToolCall asynchronous shell source tree", () => {
     for (const [command, selector] of cases) {
       await loadParsedShellDocument(command);
       const root = document.createElement("div");
-      mountedShellInput(root, command);
-      expect(root.querySelector(`[data-testid="${selector}"]`)).not.toBeNull();
+      await act(() => {
+        mountedShellInput(root, command);
+        expect(
+          root.querySelector(`[data-testid="${selector}"]`),
+        ).not.toBeNull();
+      });
     }
   });
 
@@ -1050,18 +1058,20 @@ describe("ToolCall asynchronous shell source tree", () => {
         command,
       );
 
-      render(null, root);
-      mountedShellInput(root, command);
-      expect(load).toHaveBeenCalledTimes(1);
-      expect(
-        root.querySelector('[data-testid="source-tree-input"]'),
-      ).toBeNull();
-      expect(
-        root.querySelector('[data-testid="source-projected-inline"]'),
-      ).toBeNull();
-      expect(root.querySelector(".write-content")?.textContent).toContain(
-        command,
-      );
+      await act(() => {
+        render(null, root);
+        mountedShellInput(root, command);
+        expect(load).toHaveBeenCalledTimes(1);
+        expect(
+          root.querySelector('[data-testid="source-tree-input"]'),
+        ).toBeNull();
+        expect(
+          root.querySelector('[data-testid="source-projected-inline"]'),
+        ).toBeNull();
+        expect(root.querySelector(".write-content")?.textContent).toContain(
+          command,
+        );
+      });
       load.mockRestore();
     }
   });

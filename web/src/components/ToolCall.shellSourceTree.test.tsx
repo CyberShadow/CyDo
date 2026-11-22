@@ -112,7 +112,12 @@ async function runFreshRow<T>(
     graph = await importFreshGraph();
     return await body(graph, root);
   } finally {
-    if (graph) graph.preact.render(null, root);
+    if (graph) {
+      const { preact, testUtils } = graph;
+      await testUtils.act(() => {
+        preact.render(null, root);
+      });
+    }
     vi.restoreAllMocks();
     vi.doUnmock("../lib/shellSemantic");
     vi.resetModules();
@@ -129,7 +134,12 @@ async function runFreshRealHookRow<T>(
     graph = await importFreshRealHookGraph();
     return await body(graph, root);
   } finally {
-    if (graph) graph.preact.render(null, root);
+    if (graph) {
+      const { preact, testUtils } = graph;
+      await testUtils.act(() => {
+        preact.render(null, root);
+      });
+    }
     vi.restoreAllMocks();
     vi.resetModules();
   }
@@ -166,18 +176,20 @@ async function nextMacrotask(): Promise<void> {
 }
 
 async function waitForColoredPre(
+  graph: FreshGraph,
   root: HTMLElement,
   selector: string,
 ): Promise<string[]> {
   for (let attempt = 0; attempt < 100; attempt++) {
     const colors = directPreColors(root, selector);
     if (colors.length > 1) return colors;
-    await nextMacrotask();
+    await graph.testUtils.act(nextMacrotask);
   }
   throw new Error(`timed out waiting for Shiki colors in ${selector}`);
 }
 
 async function waitForChangedColors(
+  graph: FreshGraph,
   root: HTMLElement,
   selector: string,
   previous: readonly string[],
@@ -185,21 +197,9 @@ async function waitForChangedColors(
   for (let attempt = 0; attempt < 100; attempt++) {
     const colors = directPreColors(root, selector);
     if (colors.length > 1 && !sameColors(colors, previous)) return colors;
-    await nextMacrotask();
+    await graph.testUtils.act(nextMacrotask);
   }
   throw new Error(`timed out waiting for changed Shiki colors in ${selector}`);
-}
-
-async function waitForSelector(
-  root: HTMLElement,
-  selector: string,
-): Promise<Element> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const element = root.querySelector(selector);
-    if (element) return element;
-    await nextMacrotask();
-  }
-  throw new Error(`timed out waiting for selector ${selector}`);
 }
 
 function sameColors(
@@ -279,7 +279,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           });
         }
 
-        await graph.testUtils.act(() => {
+        void graph.testUtils.act(() => {
           graph.preact.render(toolInput(graph, command, "dark"), root);
         });
         expect(load).toHaveBeenCalledTimes(1);
@@ -289,30 +289,12 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
         );
 
         const pendingColors = await waitForColoredPre(
+          graph,
           root,
           "pre.write-content",
         );
         expectHighlightedPre(root, "pre.write-content");
         expect(new Set(pendingColors).size).toBeGreaterThan(1);
-
-        if (mode === "urls") {
-          expect(init).toBeDefined();
-          if (!init) return;
-          expect(init).toHaveBeenCalledTimes(1);
-          const options = init.mock.calls[0]?.[0] as
-            | { locateFile(fileName: string): string }
-            | undefined;
-          expect(options).toBeDefined();
-          if (!options) return;
-          expect(options.locateFile("web-tree-sitter.wasm")).toBe(runtimeUrl);
-          expect(() => options.locateFile("unexpected.wasm")).toThrow();
-          initGate.resolve(undefined);
-        } else {
-          expect(loadRuntime).toHaveBeenCalledTimes(1);
-          expect(loadBashLanguage).toHaveBeenCalledTimes(1);
-          runtimeGate.resolve(installed.runtime);
-          bashLanguageGate.resolve(installed.bashLanguage);
-        }
 
         const firstLoad = load.mock.results[0]?.value as
           | Promise<unknown>
@@ -320,6 +302,24 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
         expect(firstLoad).toBeDefined();
         if (!firstLoad) return;
         await graph.testUtils.act(async () => {
+          if (mode === "urls") {
+            expect(init).toBeDefined();
+            if (!init) return;
+            expect(init).toHaveBeenCalledTimes(1);
+            const options = init.mock.calls[0]?.[0] as
+              | { locateFile(fileName: string): string }
+              | undefined;
+            expect(options).toBeDefined();
+            if (!options) return;
+            expect(options.locateFile("web-tree-sitter.wasm")).toBe(runtimeUrl);
+            expect(() => options.locateFile("unexpected.wasm")).toThrow();
+            initGate.resolve(undefined);
+          } else {
+            expect(loadRuntime).toHaveBeenCalledTimes(1);
+            expect(loadBashLanguage).toHaveBeenCalledTimes(1);
+            runtimeGate.resolve(installed.runtime);
+            bashLanguageGate.resolve(installed.bashLanguage);
+          }
           await firstLoad;
         });
 
@@ -336,15 +336,18 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           expect(languageLoad).toHaveBeenCalledWith(bashLanguageUrl);
         }
 
-        graph.preact.render(null, root);
-        graph.preact.render(toolInput(graph, command, "dark"), root);
-        expect(
-          root.querySelector('[data-testid="source-tree-input"]'),
-        ).not.toBe(null);
-        expect(parse).toHaveBeenCalledTimes(1);
-        expect(load).toHaveBeenCalledTimes(1);
+        void graph.testUtils.act(() => {
+          graph.preact.render(null, root);
+          graph.preact.render(toolInput(graph, command, "dark"), root);
+          expect(
+            root.querySelector('[data-testid="source-tree-input"]'),
+          ).not.toBe(null);
+          expect(parse).toHaveBeenCalledTimes(1);
+          expect(load).toHaveBeenCalledTimes(1);
+        });
 
         const darkColors = await waitForColoredPre(
+          graph,
           root,
           '[data-testid="source-tree-input"] pre.write-content',
         );
@@ -353,10 +356,11 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           '[data-testid="source-tree-input"] pre.write-content',
         );
 
-        await graph.testUtils.act(() => {
+        void graph.testUtils.act(() => {
           graph.preact.render(toolInput(graph, command, "light"), root);
         });
         const lightColors = await waitForChangedColors(
+          graph,
           root,
           '[data-testid="source-tree-input"] pre.write-content',
           darkColors,
@@ -386,28 +390,27 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
 
       processLike.on("unhandledRejection", listener);
       try {
-        await graph.testUtils.act(() => {
+        void graph.testUtils.act(() => {
           graph.preact.render(toolInput(graph, command, "dark"), root);
         });
-        await waitForSelector(root, '[data-testid="semantic-shell-script"]');
-        await waitForSelector(root, '[data-testid="source-tree-input"]');
+        const darkColors = await waitForColoredPre(
+          graph,
+          root,
+          '[data-testid="source-tree-input"] pre.write-content',
+        );
         expect(
           root.querySelector('[data-testid="semantic-shell-script"]'),
         ).not.toBeNull();
         expect(
           root.querySelector('[data-testid="source-tree-input"]'),
         ).not.toBeNull();
-        const darkColors = await waitForColoredPre(
-          root,
-          '[data-testid="source-tree-input"] pre.write-content',
-        );
         expectHighlightedPre(
           root,
           '[data-testid="source-tree-input"] pre.write-content',
         );
         expect(parse).toHaveBeenCalledTimes(1);
 
-        await graph.testUtils.act(() => {
+        void graph.testUtils.act(() => {
           graph.preact.render(toolInput(graph, command, "light"), root);
         });
         expect(
@@ -417,6 +420,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           root.querySelector('[data-testid="source-tree-input"]'),
         ).not.toBeNull();
         const lightColors = await waitForChangedColors(
+          graph,
           root,
           '[data-testid="source-tree-input"] pre.write-content',
           darkColors,
@@ -430,7 +434,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
         ).not.toBeNull();
         expect(parse).toHaveBeenCalledTimes(1);
 
-        await nextMacrotask();
+        await graph.testUtils.act(nextMacrotask);
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -489,7 +493,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             });
           }
 
-          await graph.testUtils.act(() => {
+          void graph.testUtils.act(() => {
             graph.preact.render(toolInput(graph, command, "dark"), root);
           });
           expect(load).toHaveBeenCalledTimes(1);
@@ -501,26 +505,25 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           expect(firstLoad).toBeDefined();
           if (!firstLoad) return;
 
-          if (mode === "urls") {
-            expect(init).toBeDefined();
-            if (!init) return;
-            expect(init).toHaveBeenCalledTimes(1);
-            initGate.reject(failure);
-          } else {
-            expect(loadRuntime).toHaveBeenCalledTimes(1);
-            expect(loadBashLanguage).toHaveBeenCalledTimes(1);
-            runtimeGate.reject(failure);
-            bashLanguageGate.resolve(installed.bashLanguage);
-          }
-
-          await expect(firstLoad).resolves.toEqual({
-            ok: false,
-            reason: "parser_initialization_failed",
-          });
           await graph.testUtils.act(async () => {
-            await firstLoad;
+            if (mode === "urls") {
+              expect(init).toBeDefined();
+              if (!init) return;
+              expect(init).toHaveBeenCalledTimes(1);
+              initGate.reject(failure);
+            } else {
+              expect(loadRuntime).toHaveBeenCalledTimes(1);
+              expect(loadBashLanguage).toHaveBeenCalledTimes(1);
+              runtimeGate.reject(failure);
+              bashLanguageGate.resolve(installed.bashLanguage);
+            }
+
+            await expect(firstLoad).resolves.toEqual({
+              ok: false,
+              reason: "parser_initialization_failed",
+            });
           });
-          await waitForColoredPre(root, "pre.write-content");
+          await waitForColoredPre(graph, root, "pre.write-content");
 
           expectHighlightedPre(root, "pre.write-content");
           expect(root.querySelector('[data-testid="source-tree-input"]')).toBe(
@@ -528,7 +531,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           );
           expect(parse).not.toHaveBeenCalled();
 
-          await nextMacrotask();
+          await graph.testUtils.act(nextMacrotask);
           expect(unhandled).toEqual([]);
         } finally {
           processLike.off("unhandledRejection", listener);
@@ -566,10 +569,10 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           reason: "shell parser initialization failed",
         });
 
-        await graph.testUtils.act(() => {
+        void graph.testUtils.act(() => {
           graph.preact.render(toolInput(graph, command, "dark"), root);
         });
-        await waitForColoredPre(root, "pre.write-content");
+        await waitForColoredPre(graph, root, "pre.write-content");
         expect(root.querySelector("pre.write-content")?.textContent).toBe(
           command,
         );
@@ -580,7 +583,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           null,
         );
         expect(loadRuntime).toHaveBeenCalled();
-        await nextMacrotask();
+        await graph.testUtils.act(nextMacrotask);
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -606,7 +609,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
 
       processLike.on("unhandledRejection", listener);
       try {
-        await graph.testUtils.act(() => {
+        void graph.testUtils.act(() => {
           graph.preact.render(toolInput(graph, command, "dark"), root);
         });
 
@@ -619,7 +622,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
         await graph.testUtils.act(async () => {
           await firstLoad.catch(() => undefined);
         });
-        await waitForColoredPre(root, "pre.write-content");
+        await waitForColoredPre(graph, root, "pre.write-content");
 
         const raw = root.querySelector<HTMLPreElement>("pre.write-content");
         expect(raw).not.toBeNull();
@@ -632,7 +635,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           null,
         );
 
-        await nextMacrotask();
+        await graph.testUtils.act(nextMacrotask);
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -665,7 +668,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
       processLike.on("unhandledRejection", listener);
       try {
         for (const source of sources) {
-          await graph.testUtils.act(() => {
+          void graph.testUtils.act(() => {
             graph.preact.render(toolInput(graph, source, "dark"), root);
           });
           const result = load.mock.results.at(-1)?.value as
@@ -676,7 +679,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           await graph.testUtils.act(async () => {
             await result;
           });
-          await waitForColoredPre(root, "pre.write-content");
+          await waitForColoredPre(graph, root, "pre.write-content");
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -684,9 +687,11 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             root.querySelector('[data-testid^="semantic-shell-"]'),
             source,
           ).toBeNull();
-          graph.preact.render(null, root);
+          await graph.testUtils.act(() => {
+            graph.preact.render(null, root);
+          });
         }
-        await nextMacrotask();
+        await graph.testUtils.act(nextMacrotask);
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -728,7 +733,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
       processLike.on("unhandledRejection", listener);
       try {
         for (const source of sources) {
-          await graph.testUtils.act(() => {
+          void graph.testUtils.act(() => {
             graph.preact.render(toolInput(graph, source, "dark"), root);
           });
           const result = load.mock.results.at(-1)?.value as
@@ -739,7 +744,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           await graph.testUtils.act(async () => {
             await result;
           });
-          await waitForColoredPre(root, "pre.write-content");
+          await waitForColoredPre(graph, root, "pre.write-content");
           expect(root.querySelector("pre.write-content")?.textContent).toBe(
             source,
           );
@@ -750,9 +755,11 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           expect(root.querySelector('[data-testid^="semantic-shell-"]')).toBe(
             null,
           );
-          graph.preact.render(null, root);
+          await graph.testUtils.act(() => {
+            graph.preact.render(null, root);
+          });
         }
-        await nextMacrotask();
+        await graph.testUtils.act(nextMacrotask);
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -784,7 +791,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
       processLike.on("unhandledRejection", listener);
       try {
         for (const source of sources) {
-          await graph.testUtils.act(() => {
+          void graph.testUtils.act(() => {
             graph.preact.render(toolInput(graph, source, "dark"), root);
           });
           const result = load.mock.results.at(-1)?.value as
@@ -795,7 +802,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           await graph.testUtils.act(async () => {
             await result;
           });
-          await waitForColoredPre(root, "pre.write-content");
+          await waitForColoredPre(graph, root, "pre.write-content");
           expectHighlightedPre(root, "pre.write-content");
           expect(
             root.querySelector('[data-testid="source-tree-input"]'),
@@ -803,9 +810,11 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           expect(root.querySelector('[data-testid^="semantic-shell-"]')).toBe(
             null,
           );
-          graph.preact.render(null, root);
+          await graph.testUtils.act(() => {
+            graph.preact.render(null, root);
+          });
         }
-        await nextMacrotask();
+        await graph.testUtils.act(nextMacrotask);
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -842,7 +851,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
       processLike.on("unhandledRejection", listener);
       try {
         for (const source of sources) {
-          await graph.testUtils.act(() => {
+          void graph.testUtils.act(() => {
             graph.preact.render(toolInput(graph, source, "dark"), root);
           });
           const result = load.mock.results.at(-1)?.value as
@@ -862,7 +871,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             reason: "unsafe_shell_syntax",
             issue: "error_node",
           });
-          await waitForColoredPre(root, "pre.write-content");
+          await waitForColoredPre(graph, root, "pre.write-content");
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -874,9 +883,11 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             root.querySelector('[data-testid^="semantic-shell-"]'),
             source,
           ).toBeNull();
-          graph.preact.render(null, root);
+          await graph.testUtils.act(() => {
+            graph.preact.render(null, root);
+          });
         }
-        await nextMacrotask();
+        await graph.testUtils.act(nextMacrotask);
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -912,7 +923,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
       processLike.on("unhandledRejection", listener);
       try {
         for (const source of sources) {
-          await graph.testUtils.act(() => {
+          void graph.testUtils.act(() => {
             graph.preact.render(toolInput(graph, source, "dark"), root);
           });
           const result = load.mock.results.at(-1)?.value as
@@ -931,7 +942,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             reason: "unsafe_shell_syntax",
             issue: "error_node",
           });
-          await waitForColoredPre(root, "pre.write-content");
+          await waitForColoredPre(graph, root, "pre.write-content");
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -943,9 +954,11 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             root.querySelector('[data-testid^="semantic-shell-"]'),
             source,
           ).toBeNull();
-          graph.preact.render(null, root);
+          await graph.testUtils.act(() => {
+            graph.preact.render(null, root);
+          });
         }
-        await nextMacrotask();
+        await graph.testUtils.act(nextMacrotask);
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -978,7 +991,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
       processLike.on("unhandledRejection", listener);
       try {
         for (const source of sources) {
-          await graph.testUtils.act(() => {
+          void graph.testUtils.act(() => {
             graph.preact.render(toolInput(graph, source, "dark"), root);
           });
 
@@ -1013,7 +1026,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             code: "unsafe_shell_syntax",
           });
 
-          await waitForColoredPre(root, "pre.write-content");
+          await waitForColoredPre(graph, root, "pre.write-content");
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -1032,9 +1045,11 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           expect(root.querySelector(".source-tree-rich-block"), source).toBe(
             null,
           );
-          graph.preact.render(null, root);
+          await graph.testUtils.act(() => {
+            graph.preact.render(null, root);
+          });
         }
-        await nextMacrotask();
+        await graph.testUtils.act(nextMacrotask);
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -1073,7 +1088,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
       processLike.on("unhandledRejection", listener);
       try {
         for (const source of sources) {
-          await graph.testUtils.act(() => {
+          void graph.testUtils.act(() => {
             graph.preact.render(toolInput(graph, source, "dark"), root);
           });
 
@@ -1108,7 +1123,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             code: "unsafe_shell_syntax",
           });
 
-          await waitForColoredPre(root, "pre.write-content");
+          await waitForColoredPre(graph, root, "pre.write-content");
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -1127,9 +1142,11 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           expect(root.querySelector(".source-tree-rich-block"), source).toBe(
             null,
           );
-          graph.preact.render(null, root);
+          await graph.testUtils.act(() => {
+            graph.preact.render(null, root);
+          });
         }
-        await nextMacrotask();
+        await graph.testUtils.act(nextMacrotask);
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);
@@ -1180,7 +1197,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
       processLike.on("unhandledRejection", listener);
       try {
         for (const source of sources) {
-          await graph.testUtils.act(() => {
+          void graph.testUtils.act(() => {
             graph.preact.render(toolInput(graph, source, "dark"), root);
           });
 
@@ -1215,7 +1232,7 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
             code: "unsafe_shell_syntax",
           });
 
-          await waitForColoredPre(root, "pre.write-content");
+          await waitForColoredPre(graph, root, "pre.write-content");
           const raw = root.querySelector<HTMLPreElement>("pre.write-content");
           expect(raw?.textContent, source).toBe(source);
           expectHighlightedPre(root, "pre.write-content");
@@ -1234,9 +1251,11 @@ describe.sequential("ToolCall shell source tree lifecycle", () => {
           expect(root.querySelector(".source-tree-rich-block"), source).toBe(
             null,
           );
-          graph.preact.render(null, root);
+          await graph.testUtils.act(() => {
+            graph.preact.render(null, root);
+          });
         }
-        await nextMacrotask();
+        await graph.testUtils.act(nextMacrotask);
         expect(unhandled).toEqual([]);
       } finally {
         processLike.off("unhandledRejection", listener);

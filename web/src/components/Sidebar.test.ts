@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { h, render } from "preact";
+import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import sidebarStyles from "../styles.css?inline";
@@ -431,18 +432,20 @@ describe("Sidebar loading marker markup", () => {
     tasksLoading: boolean,
     onSelect = vi.fn(),
   ) => {
-    render(
-      h(Sidebar, {
-        tasks,
-        tasksLoading,
-        activeTaskId: null,
-        attention: new Set<number>(),
-        onSelectTask: onSelect,
-        getTaskHref: (id: string) => `/task/${id}`,
-        taskTypes: [],
-      }),
-      container,
-    );
+    void act(() => {
+      render(
+        h(Sidebar, {
+          tasks,
+          tasksLoading,
+          activeTaskId: null,
+          attention: new Set<number>(),
+          onSelectTask: onSelect,
+          getTaskHref: (id: string) => `/task/${id}`,
+          taskTypes: [],
+        }),
+        container,
+      );
+    });
     return onSelect;
   };
 
@@ -452,7 +455,9 @@ describe("Sidebar loading marker markup", () => {
   });
 
   afterEach(() => {
-    render(null, container);
+    void act(() => {
+      render(null, container);
+    });
     container.remove();
   });
 

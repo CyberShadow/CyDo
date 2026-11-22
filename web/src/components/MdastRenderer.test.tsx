@@ -33,6 +33,18 @@ async function flushPromises() {
   await Promise.resolve();
 }
 
+async function waitForMermaid(root: HTMLElement, selector: string) {
+  const deadline = performance.now() + 1000;
+  while (!root.querySelector(selector)) {
+    if (performance.now() >= deadline) {
+      throw new Error(`Timed out waiting for Mermaid markup: ${selector}`);
+    }
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  }
+}
+
 async function importRenderer() {
   vi.resetModules();
   return import("./MdastRenderer");
@@ -95,30 +107,28 @@ describe("MdastRenderer export fallback boundaries", () => {
     const { MdastRenderer } = await importRenderer();
 
     try {
-      await act(async () => {
+      void act(() => {
         render(
           h(MdastRenderer, { ast: ast("mermaid", "graph TD; A-->B") }),
           root,
         );
-        await flushPromises();
       });
 
-      await vi.waitFor(() => {
-        expect(mermaid.initialize).toHaveBeenCalledWith({
-          startOnLoad: false,
-          theme: "dark",
-        });
-        expect(mermaid.render).toHaveBeenCalledWith(
-          expect.stringMatching(/^mermaid-/),
-          "graph TD; A-->B",
-        );
-        expect(root.querySelector(".mermaid-error code")?.textContent).toBe(
-          "graph TD; A-->B",
-        );
-        expect(root.querySelector(".mermaid-error-msg")?.textContent).toBe(
-          "failed to import mermaid-root from CDN candidates",
-        );
+      await waitForMermaid(root, ".mermaid-error-msg");
+      expect(mermaid.initialize).toHaveBeenCalledWith({
+        startOnLoad: false,
+        theme: "dark",
       });
+      expect(mermaid.render).toHaveBeenCalledWith(
+        expect.stringMatching(/^mermaid-/),
+        "graph TD; A-->B",
+      );
+      expect(root.querySelector(".mermaid-error code")?.textContent).toBe(
+        "graph TD; A-->B",
+      );
+      expect(root.querySelector(".mermaid-error-msg")?.textContent).toBe(
+        "failed to import mermaid-root from CDN candidates",
+      );
     } finally {
       await act(() => {
         render(null, root);
@@ -140,27 +150,25 @@ describe("MdastRenderer export fallback boundaries", () => {
     const { MdastRenderer } = await importRenderer();
 
     try {
-      await act(async () => {
+      void act(() => {
         render(
           h(MdastRenderer, { ast: ast("mermaid", "graph TD; A-->B") }),
           root,
         );
-        await flushPromises();
       });
 
-      await vi.waitFor(() => {
-        expect(mermaid.initialize).toHaveBeenCalledWith({
-          startOnLoad: false,
-          theme: "dark",
-        });
-        expect(mermaid.render).not.toHaveBeenCalled();
-        expect(root.querySelector(".mermaid-error code")?.textContent).toBe(
-          "graph TD; A-->B",
-        );
-        expect(root.querySelector(".mermaid-error-msg")?.textContent).toBe(
-          "failed to import mermaid-root from CDN candidates",
-        );
+      await waitForMermaid(root, ".mermaid-error-msg");
+      expect(mermaid.initialize).toHaveBeenCalledWith({
+        startOnLoad: false,
+        theme: "dark",
       });
+      expect(mermaid.render).not.toHaveBeenCalled();
+      expect(root.querySelector(".mermaid-error code")?.textContent).toBe(
+        "graph TD; A-->B",
+      );
+      expect(root.querySelector(".mermaid-error-msg")?.textContent).toBe(
+        "failed to import mermaid-root from CDN candidates",
+      );
       expect(unhandledRejection).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener("unhandledrejection", unhandledRejection);
@@ -187,7 +195,7 @@ describe("MdastRenderer export fallback boundaries", () => {
     const { MdastRenderer, ThemeContext } = await importRendererWithTheme();
 
     try {
-      await act(async () => {
+      void act(() => {
         render(
           h(
             ThemeContext.Provider,
@@ -196,23 +204,21 @@ describe("MdastRenderer export fallback boundaries", () => {
           ),
           root,
         );
-        await flushPromises();
       });
 
-      await vi.waitFor(() => {
-        expect(mermaid.initialize).toHaveBeenCalledWith({
-          startOnLoad: false,
-          theme: "dark",
-        });
-        expect(mermaid.render).toHaveBeenCalledWith(
-          expect.stringMatching(/^mermaid-/),
-          "graph TD; A-->B",
-        );
+      await waitForMermaid(root, ".mermaid-diagram svg");
+      expect(mermaid.initialize).toHaveBeenCalledWith({
+        startOnLoad: false,
+        theme: "dark",
       });
+      expect(mermaid.render).toHaveBeenCalledWith(
+        expect.stringMatching(/^mermaid-/),
+        "graph TD; A-->B",
+      );
 
       mermaid.render.mockClear();
 
-      await act(async () => {
+      void act(() => {
         render(
           h(
             ThemeContext.Provider,
@@ -221,22 +227,20 @@ describe("MdastRenderer export fallback boundaries", () => {
           ),
           root,
         );
-        await flushPromises();
       });
 
-      await vi.waitFor(() => {
-        expect(mermaid.initialize).toHaveBeenLastCalledWith({
-          startOnLoad: false,
-          theme: "default",
-        });
-        expect(mermaid.render).not.toHaveBeenCalled();
-        expect(root.querySelector(".mermaid-error code")?.textContent).toBe(
-          "graph TD; A-->B",
-        );
-        expect(root.querySelector(".mermaid-error-msg")?.textContent).toBe(
-          "failed to import mermaid-root from CDN candidates",
-        );
+      await waitForMermaid(root, ".mermaid-error-msg");
+      expect(mermaid.initialize).toHaveBeenLastCalledWith({
+        startOnLoad: false,
+        theme: "default",
       });
+      expect(mermaid.render).not.toHaveBeenCalled();
+      expect(root.querySelector(".mermaid-error code")?.textContent).toBe(
+        "graph TD; A-->B",
+      );
+      expect(root.querySelector(".mermaid-error-msg")?.textContent).toBe(
+        "failed to import mermaid-root from CDN candidates",
+      );
       expect(unhandledRejection).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener("unhandledrejection", unhandledRejection);

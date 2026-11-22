@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { h, render } from "preact";
+import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeTaskState, type TaskState } from "../types";
 import type { WorkspaceInfo } from "../useSessionManager";
@@ -139,23 +140,25 @@ describe("WelcomePage task loading", () => {
   };
 
   const mount = (tasks: Map<string, TaskState>, tasksLoaded: boolean) => {
-    render(
-      h(WelcomePage, {
-        workspaces: [workspace],
-        tasks,
-        tasksLoaded,
-        attention: new Set<number>(),
-        onSelectTask: () => {},
-        onNavigateToProject: () => {},
-        getProjectHref: () => "/workspace/project",
-        getTaskHref: (id: string) => `/task/${id}`,
-        taskTypes: [],
-        notices: {},
-        onRefreshWorkspaces: () => {},
-        scanState: "idle",
-      }),
-      container,
-    );
+    void act(() => {
+      render(
+        h(WelcomePage, {
+          workspaces: [workspace],
+          tasks,
+          tasksLoaded,
+          attention: new Set<number>(),
+          onSelectTask: () => {},
+          onNavigateToProject: () => {},
+          getProjectHref: () => "/workspace/project",
+          getTaskHref: (id: string) => `/task/${id}`,
+          taskTypes: [],
+          notices: {},
+          onRefreshWorkspaces: () => {},
+          scanState: "idle",
+        }),
+        container,
+      );
+    });
   };
 
   beforeEach(() => {
@@ -164,7 +167,9 @@ describe("WelcomePage task loading", () => {
   });
 
   afterEach(() => {
-    render(null, container);
+    void act(() => {
+      render(null, container);
+    });
     container.remove();
   });
 

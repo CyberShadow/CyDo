@@ -37,8 +37,9 @@ const animationFrames = vi.hoisted(() => {
   };
 });
 
-const flush = async () => {
+const flush = async (update?: () => void) => {
   await act(async () => {
+    update?.();
     await Promise.resolve();
     await Promise.resolve();
 
@@ -128,25 +129,27 @@ describe("controlled InputBox", () => {
     composerResetToken = 0,
     extras: Record<string, unknown> = {},
   ) => {
-    render(
-      <InputBox
-        mode="controlled"
-        value={value}
-        onChange={(next) => {
-          changes.push(next);
-        }}
-        onBlur={() => {}}
-        onSubmit={(text, images) => {
-          submits.push({ text, images });
-        }}
-        composerResetToken={composerResetToken}
-        onInterrupt={() => {}}
-        isProcessing={false}
-        disabled={false}
-        {...extras}
-      />,
-      container,
-    );
+    void act(() => {
+      render(
+        <InputBox
+          mode="controlled"
+          value={value}
+          onChange={(next) => {
+            changes.push(next);
+          }}
+          onBlur={() => {}}
+          onSubmit={(text, images) => {
+            submits.push({ text, images });
+          }}
+          composerResetToken={composerResetToken}
+          onInterrupt={() => {}}
+          isProcessing={false}
+          disabled={false}
+          {...extras}
+        />,
+        container,
+      );
+    });
   };
 
   const textarea = () =>
@@ -172,9 +175,10 @@ describe("controlled InputBox", () => {
     mount("first value");
     expect(textarea().value).toBe("first value");
 
-    textarea().value = "typed value";
-    textarea().dispatchEvent(new Event("input", { bubbles: true }));
-    await flush();
+    await flush(() => {
+      textarea().value = "typed value";
+      textarea().dispatchEvent(new Event("input", { bubbles: true }));
+    });
     expect(changes).toEqual(["typed value"]);
 
     mount("server snapshot");
@@ -192,9 +196,10 @@ describe("controlled InputBox", () => {
     });
 
     expect(textarea().value).toBe("controlled text");
-    textarea().value = "new controlled text";
-    textarea().dispatchEvent(new Event("input", { bubbles: true }));
-    await flush();
+    await flush(() => {
+      textarea().value = "new controlled text";
+      textarea().dispatchEvent(new Event("input", { bubbles: true }));
+    });
 
     expect(changes).toEqual(["new controlled text"]);
     expect(ordinaryDraftStore.read("ordinary-session")).toBe(
@@ -206,7 +211,9 @@ describe("controlled InputBox", () => {
     const ordinaryDraftStore = createOrdinaryDraftStore();
     ordinaryDraftStore.ensure("ordinary-session", "stale cache");
     mount("slot snapshot", 0, { ordinaryDraftStore });
-    render(null, container);
+    void act(() => {
+      render(null, container);
+    });
     mount("slot snapshot", 0, { ordinaryDraftStore });
 
     expect(textarea().value).toBe("slot snapshot");
@@ -285,12 +292,14 @@ describe("controlled InputBox", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "image-id" });
     try {
       mount("  send this  ");
-      pasteImage(textarea());
-      await flush();
+      await flush(() => {
+        pasteImage(textarea());
+      });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
 
-      send().click();
-      await flush();
+      await flush(() => {
+        send().click();
+      });
 
       expect(changes).toEqual([]);
       expect(submits).toEqual([
@@ -326,10 +335,12 @@ describe("controlled InputBox", () => {
     vi.stubGlobal("FileReader", Reader);
     try {
       mount("");
-      pasteImage(textarea());
-      await flush();
-      send().click();
-      await flush();
+      await flush(() => {
+        pasteImage(textarea());
+      });
+      await flush(() => {
+        send().click();
+      });
 
       expect(submits).toHaveLength(1);
       expect(submits[0]?.text).toBe("");
@@ -344,10 +355,11 @@ describe("controlled InputBox", () => {
     const imageReader = mockImageReader();
     try {
       mount("", 0, { disabled: true });
-      pasteImage(textarea());
-      dropImage(container.querySelector<HTMLElement>(".input-box")!);
-      imageReader.complete();
-      await flush();
+      await flush(() => {
+        pasteImage(textarea());
+        dropImage(container.querySelector<HTMLElement>(".input-box")!);
+        imageReader.complete();
+      });
 
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
 
@@ -357,9 +369,10 @@ describe("controlled InputBox", () => {
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
       expect(send().disabled).toBe(true);
 
-      dropImage(container.querySelector<HTMLElement>(".input-box")!);
-      imageReader.complete();
-      await flush();
+      await flush(() => {
+        dropImage(container.querySelector<HTMLElement>(".input-box")!);
+        imageReader.complete();
+      });
 
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
       expect(send().disabled).toBe(false);
@@ -372,16 +385,20 @@ describe("controlled InputBox", () => {
     const imageReader = mockImageReader();
     try {
       mount("draft A", 7);
-      pasteImage(textarea());
+      void act(() => {
+        pasteImage(textarea());
+      });
       mount("", 8);
-      imageReader.completeNext();
-      await flush();
+      await flush(() => {
+        imageReader.completeNext();
+      });
 
       expect(textarea().value).toBe("");
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
       expect(send().disabled).toBe(true);
-      send().click();
-      await flush();
+      await flush(() => {
+        send().click();
+      });
       expect(submits).toEqual([]);
     } finally {
       imageReader.restore();
@@ -392,23 +409,30 @@ describe("controlled InputBox", () => {
     const imageReader = mockImageReader();
     try {
       mount("", 0);
-      pasteImage(textarea());
+      void act(() => {
+        pasteImage(textarea());
+      });
       mount("", 0, { disabled: true });
-      imageReader.completeNext();
-      await flush();
+      await flush(() => {
+        imageReader.completeNext();
+      });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
 
       mount("", 0);
-      pasteImage(textarea());
+      void act(() => {
+        pasteImage(textarea());
+      });
       mount("", 0, { disabled: true });
       mount("", 0);
-      imageReader.completeNext();
-      await flush();
+      await flush(() => {
+        imageReader.completeNext();
+      });
 
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
       expect(send().disabled).toBe(true);
-      send().click();
-      await flush();
+      await flush(() => {
+        send().click();
+      });
       expect(submits).toEqual([]);
     } finally {
       imageReader.restore();
@@ -419,26 +443,30 @@ describe("controlled InputBox", () => {
     const imageReader = mockImageReader();
     const sent: Array<{ text: string; images?: ImageAttachment[] }> = [];
     try {
-      render(
-        <InputBox
-          onSend={(text, images) => {
-            sent.push({ text, images });
-          }}
-          onInterrupt={() => {}}
-          isProcessing={false}
-          disabled={false}
-          sessionId="ordinary-image-session"
-          ordinaryDraftStore={createOrdinaryDraftStore()}
-        />,
-        container,
-      );
-      pasteImage(textarea());
-      imageReader.completeNext();
-      await flush();
+      void act(() => {
+        render(
+          <InputBox
+            onSend={(text, images) => {
+              sent.push({ text, images });
+            }}
+            onInterrupt={() => {}}
+            isProcessing={false}
+            disabled={false}
+            sessionId="ordinary-image-session"
+            ordinaryDraftStore={createOrdinaryDraftStore()}
+          />,
+          container,
+        );
+      });
+      await flush(() => {
+        pasteImage(textarea());
+        imageReader.completeNext();
+      });
 
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
-      send().click();
-      await flush();
+      await flush(() => {
+        send().click();
+      });
       expect(sent).toHaveLength(1);
       expect(sent[0]?.text).toBe("");
       expect(sent[0]?.images).toHaveLength(1);
@@ -451,17 +479,21 @@ describe("controlled InputBox", () => {
     const imageReader = mockImageReader();
     try {
       mount("replacement B", 7);
-      pasteImage(textarea());
-      imageReader.completeNext();
-      await flush();
+      await flush(() => {
+        pasteImage(textarea());
+        imageReader.completeNext();
+      });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
-      pasteImage(textarea());
+      void act(() => {
+        pasteImage(textarea());
+      });
 
       mount("replacement B", 7);
       await flush();
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
-      imageReader.completeNext();
-      await flush();
+      await flush(() => {
+        imageReader.completeNext();
+      });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
 
       mount("replacement B", 8);
