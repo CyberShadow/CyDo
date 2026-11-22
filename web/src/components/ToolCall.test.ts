@@ -107,7 +107,6 @@ vi.mock("../lib/shellSemantic", async () => {
             commandName: "cat",
             command,
             filePath: "README.md",
-            writeMode: "overwrite",
             heredoc: {
               delimiter: "EOF",
               quoted: false,
@@ -130,7 +129,6 @@ vi.mock("../lib/shellSemantic", async () => {
             commandName: "cat",
             command,
             filePath: "/tmp/a/output.svg",
-            writeMode: "overwrite",
             heredoc: {
               delimiter: "EOF",
               quoted: true,

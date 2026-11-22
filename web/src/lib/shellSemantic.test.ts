@@ -2438,6 +2438,9 @@ describe("Unit 2 public shell semantic contracts", () => {
     ["cat 2>error.log >output.py <<EOF\nbody\nEOF", "output.py"],
     ["cat &>all.log <<EOF\nbody\nEOF", "all.log"],
     ["cat 2>$ERR >output.py <<EOF\nbody\nEOF", "output.py"],
+    ["cat >> out.md <<'EOF'\nx\nEOF", "out.md"],
+    ["cat >&all.log <<EOF\nbody\nEOF", "all.log"],
+    ["cat 2>&1 >out.md <<EOF\nbody\nEOF", "out.md"],
   ] as const)(
     "uses the literal stdout redirect for cat heredoc: %s",
     async (command, filePath) => {
@@ -2449,6 +2452,25 @@ describe("Unit 2 public shell semantic contracts", () => {
         (result.value as ShellHeredocWriteSemantic).filePath,
         command,
       ).toBe(filePath);
+    },
+  );
+
+  it.each([
+    "cat >&1- <<EOF\nx\nEOF",
+    "cat >out.md 2>&$((1))- <<EOF\nx\nEOF",
+    "cat >out.md 3>&$fd- <<EOF\nx\nEOF",
+    "cat >out.md 2>&$fd- <<EOF\nx\nEOF",
+    "cat >out.md <&$fd- <<EOF\nx\nEOF",
+    "cat <&file >out.md <<EOF\nx\nEOF",
+    "cat >out.md >&+1- <<EOF\nx\nEOF",
+    "cat >out.md 2>&file <<EOF\nx\nEOF",
+  ])(
+    "rejects unmodeled descriptor operands in a cat heredoc: %j",
+    async (source) => {
+      await expect(parseShellSemantic(source)).resolves.toMatchObject({
+        ok: false,
+        code: "unsafe_shell_syntax",
+      });
     },
   );
 

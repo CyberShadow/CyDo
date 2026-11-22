@@ -1272,6 +1272,30 @@ function nativeFileRedirectLayout(
   };
 }
 
+// Bash resolves a >& or <& operand after expansion: digits duplicate a
+// descriptor, "-" closes it, a trailing "-" moves it, and any other word
+// names a file only for >& on stdout (>&word, 1>&word); everywhere else
+// it is an ambiguous-redirect error. Only duplication and that stdout file
+// target are modeled, so only literal operands of those two shapes pass.
+function isModeledDescriptorOperand(
+  redirect: Node,
+  operator: ">&" | "<&",
+  source: string,
+): boolean {
+  const { destinationNodes } = nativeFileRedirectLayout(redirect, source);
+  if (destinationNodes.length === 0) return false;
+  let value = "";
+  for (const node of destinationNodes) {
+    const word = decodeRedirectWordNode(node, source);
+    if (word.kind !== "literal") return false;
+    value += word.value;
+  }
+  if (/^[0-9]+$/.test(value)) return true;
+  if (operator === "<&" || value.endsWith("-")) return false;
+  const descriptor = nativeRedirectDescriptor(redirect)?.text ?? null;
+  return descriptor === null || descriptor === "1";
+}
+
 function unsupportedRedirectFailure(
   source: string,
   root: Node,
@@ -1292,6 +1316,16 @@ function unsupportedRedirectFailure(
         reason: "unsafe_shell_syntax",
         issue: "error_node",
         span: nodeSpan(operatorNode),
+      };
+    if (
+      (operator === ">&" || operator === "<&") &&
+      !isModeledDescriptorOperand(redirect, operator, source)
+    )
+      return {
+        ok: false,
+        reason: "unsafe_shell_syntax",
+        issue: "error_node",
+        span: nodeSpan(redirect),
       };
     if (operator !== "&>" && operator !== "&>>")
       variableDescriptorStarts.add(redirect.startIndex);

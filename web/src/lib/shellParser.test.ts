@@ -1786,12 +1786,6 @@ describe.sequential("shell parser service", () => {
         destination: { syntax: "concatenation", value: "02" },
       },
       {
-        source: 'cat >&"-"',
-        operator: ">&",
-        descriptor: null,
-        destination: { syntax: "string", value: "-" },
-      },
-      {
         source: 'cat 10>/tmp/output.py 4<&"03"',
         operator: ">",
         descriptor: "10",
@@ -1935,6 +1929,60 @@ describe.sequential("shell parser service", () => {
         issue: "error_node",
       });
     }
+  });
+
+  it.each([
+    "cat >&1-",
+    "cat 2>&1-",
+    "cat <&0-",
+    "cat 3<&4-",
+    "cat >& 1-",
+    "cat >&1\\\n-",
+    "cat >& -",
+    'cat >&"-"',
+    'cat 4<&"-"',
+    'cat >&"1-"',
+    'cat >&1-""',
+    "cat >&+1-",
+    "cat 2>&$((1))-",
+    "cat 3>&$fd-",
+    "cat 2>&${v}-",
+    "cat <&$fd-",
+    "cat 2>&$'1'-",
+    "cat 2>&[1]-",
+    "cat >&$target",
+    'cat 1>&"$FD"',
+    "cat 2>&file",
+    "cat 3>&file",
+    "cat <&file",
+  ])(
+    "rejects unmodeled descriptor operands as unsafe shell syntax: %j",
+    async (source) => {
+      const service = await freshRealByteService();
+      await expect(
+        service.loadParsedShellDocument(source),
+      ).resolves.toMatchObject({
+        ok: false,
+        reason: "unsafe_shell_syntax",
+      });
+    },
+  );
+
+  it.each([
+    "cat 2>&1",
+    "cat >&2",
+    'cat >&"1"',
+    "cat <&0",
+    "cat 1<&3",
+    "cat >&file",
+    "cat 1>&file",
+  ])("accepts descriptor duplication and file targets: %s", async (source) => {
+    const service = await freshRealByteService();
+    await expect(
+      service.loadParsedShellDocument(source),
+    ).resolves.toMatchObject({
+      ok: true,
+    });
   });
 
   it("keeps malformed atomic-close error fragments typed raw", async () => {

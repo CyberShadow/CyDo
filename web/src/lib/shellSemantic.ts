@@ -60,7 +60,6 @@ export interface ShellHeredocWriteSemantic {
   commandName: "cat";
   command: string;
   filePath: string;
-  writeMode: "overwrite";
   heredoc: {
     delimiter: string;
     quoted: boolean;
@@ -1988,7 +1987,6 @@ function classifyCatHeredoc(
       command: originalCommand,
       commandName: "cat",
       filePath: state.literalStdoutPath,
-      writeMode: "overwrite",
       heredoc: {
         delimiter: redirect.delimiter.value,
         quoted: redirect.delimiter.quoted,
