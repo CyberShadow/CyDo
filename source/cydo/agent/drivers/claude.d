@@ -3540,6 +3540,7 @@ private mixin template ClaudeAssistantUnhandledFields()
 	@JSONOptional JSONFragment wire_tool_inputs;
 	// Session file only
 	@JSONOptional string requestedModel;
+	@JSONOptional string madeBy;
 	@JSONOptional string requestRef;
 	@JSONOptional string promptCacheRequested;
 	@JSONOptional JSONFragment apiBlockIndex;
@@ -4070,6 +4071,7 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 		case "ui_toast":
 		case "upgrade_relay_marker":
 		case "vcs_state_changed":
+		case "voice_call_talk":
 		case "worker_shutting_down":
 			return null;
 		// Remote-runner activity, remote checkpoints and transient UI rows
