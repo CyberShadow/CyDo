@@ -6,45 +6,9 @@ has, and what happens when it finishes.
 
 Concrete definitions are in [task-types.yaml](../defs/task-types.yaml).
 
-## Schema
-
-```yaml
-name: string                          # unique key (the YAML map key)
-description: string                   # human-readable comment
-agent_description: string             # LLM-visible; explains when to use this type
-prompt_template: string | path        # template used to wrap the task description in the rendered task prompt
-system_prompt_template: string | path # optional startup system/developer prompt for agents that support it
-model_class: string                   # Djinja expression; workspace and resolved agent are available;
-                                      # the rendered open-ended label uses small/medium/large per-driver defaults,
-                                      # any other label resolves to itself unless mapped in the
-                                      # agent's model_aliases (see README.md)
-read_only: bool                   # sandbox mounts project dir as ro (default false)
-output_type: [commit | worktree | report]  # what the task produces (empty = no output)
-allow_native_subagents: bool  # use Claude's built-in Task tool instead of CyDo's (default false)
-
-# Flow control
-creatable_tasks: string[]             # task types this agent can spawn (modal)
-continuations:                        # successors on completion (exec-style)
-  <name>:                             # agent picks one on completion
-    task_type: string
-    requires_approval: bool           # all stewards must approve first
-
-# Execution
-serial: bool                          # one at a time, queued (steward pattern)
-max_turns: int?                       # resource limit
-agent: string                         # Djinja expression; parent_agent_type and workspace are available
-
-# Visibility
-user_visible: bool                    # can users create this type directly
-
-# Memory
-memory: bool                          # inject project memory preamble (default false)
-
-# Steward
-steward: bool                         # registers as an approver
-steward_domain: string                # what this steward cares about
-knowledge_base: path?                 # persistent state directory
-```
+Use the [commented task-type template](../source/cydo/cli/init_templates/task-types.yaml)
+for the full option reference and a walkthrough for defining a type. The
+packaged definitions are the starting point for project and user overrides.
 
 ## Prompt Templates
 
@@ -115,19 +79,6 @@ work should run in sub-tasks or background commands so it can keep receiving
 requests. The integrator follows the project's instructions for checking and
 landing work.
 
-## Output Types
-
-- **commit** — A reviewable commit in an isolated worktree. Goes through CI
-  and steward review before landing. Enforced: worktree must contain at least
-  one commit ahead of its base.
-- **worktree** — Working tree changes that the parent may adopt. Used when a
-  task produces code changes alongside a report (e.g., spike, reproduce).
-  Enforced: worktree must have changes (committed or uncommitted).
-- **report** — A text artifact at `<taskDir>/output.md`. Plans, analyses,
-  verdicts, investigation reports. Enforced: file must exist and be non-empty.
-- **Empty `[]`** — No structured output. Used by interactive types and types
-  that modify an inherited worktree (e.g., test).
-
 ## Read-Only Mode
 
 When `read_only: true`, the sandbox mounts the project directory as read-only
@@ -179,104 +130,20 @@ See `docs/memory.md` for content conventions.
 
 ## Flow Control
 
-Two mechanisms for chaining tasks:
+A user entry point starts an interactive session. Interactive sessions can
+change roles through keep-context continuations while retaining the current
+conversation. They can delegate work and remain available to the user.
 
-**Continuation (exec-style):** The agent completes and declares which successor
-should take over. Defined in the task type's `continuations` field. The current
-session ends — failures propagate to the parent. Approval gates can block the
-successor until stewards approve.
+A child tool starts a separate task with its own prompt. The caller receives
+its result and decides whether to retry, delegate more work, or proceed. A
+handoff ends the current task and starts a successor. Tasks reachable from a
+user entry point through keep-context transitions must remain interactive.
 
-**Modal sub-task (fork+exec-style):** The agent creates sub-tasks via a tool
-during execution. The agent's session is suspended and resumed when sub-tasks
-complete. The agent sees results and can retry on failure, create more
-sub-tasks, or eventually complete (possibly picking a continuation).
+The shipped workflow lets a conversation delegate planning and execution.
+Execution can decompose a large request or pass a focused change to an
+overseer. The overseer delegates implementation, review, and verification
+and feeds objections back to the implementer. See the shipped definitions
+for the actual edges and the instructions each task receives.
 
-The two compose: an agent can do modal work during its lifetime, then use a
-continuation when it's truly done.
-
-## Approval
-
-When a continuation has `requires_approval: true`, the system finds all task
-types with `steward: true` and creates one approval task per steward. Steward
-agents use `approve()` / `reject(reason)` tools to deliver verdicts. All
-stewards must approve before the successor spawns.
-
-Adding a steward to a project requires no changes to core workflow definitions —
-just add the steward type definition and it's automatically included in all
-approval gates.
-
-On rejection: feedback propagates to the caller (the task that completed and
-triggered the continuation). The caller's session is resumed with the rejection
-context. It can revise and retry, or propagate the failure to its parent.
-
-## Stewards
-
-Stewards are not a special construct — they're task types with `steward: true`.
-They have two invocation contexts:
-
-**Approval:** Input is an artifact (plan or patch). Output is a verdict
-(approve/reject). Runs in parallel across stewards. Blocks the continuation.
-
-**Upkeep:** Input is a landed diff. The steward updates its knowledge base if
-the change is relevant to its domain. Async, no gate.
-
-Both use the same task type and knowledge base. The difference is in the task
-description (structured by the system) and available tools (approval has
-`approve()`/`reject()`, upkeep doesn't).
-
-The steward's "statefulness" is files in its `knowledge_base` directory. Its
-"serial queue" is the `serial: true` flag. Steward knowledge base updates
-produce commits that go through steward review themselves.
-
-## Task Lifecycle
-
-```
-pending → active → awaiting_approval → completed → (successor spawned)
-                 → failed             → rejected  → (caller resumed)
-```
-
-## Example Workflows
-
-### Bug fix (small)
-
-```
-user creates bug "Login fails with special characters"
-  → bug agent investigates, reproduces, identifies fix
-  → continuation: small_fix → implement
-    → implement agent writes the fix in a worktree
-    → continuation: done (requires approval)
-      → steward_quality reviews → approve
-      → steward_security reviews → approve
-      → review agent verifies
-      → commit lands via merge train
-```
-
-### Feature (needs decomposition)
-
-```
-user creates conversation "Add OAuth2 support"
-  → conversation agent discusses with user, creates plan sub-task (modal)
-    → plan agent produces implementation plan
-    → continuation: decompose (requires approval)
-      → steward_quality reviews plan → approve
-      → steward_security reviews plan → approve
-      → decompose agent splits into 3 implement tasks (modal)
-        → implement "OAuth2 provider config" (parallel)
-        → implement "Token exchange flow" (parallel)
-        → implement "Session middleware" (parallel)
-        → all complete, each through steward approval
-      → decompose reports to conversation
-```
-
-### Steward rejection
-
-```
-plan agent produces plan
-  → continuation: implement (requires approval)
-    → steward_quality reviews → reject("Missing error handling")
-    → plan agent resumed with rejection feedback
-    → plan agent revises
-    → continuation: implement (requires approval)
-      → all stewards approve
-      → implement agent proceeds
-```
+Steward approval and upkeep are schema concepts. The server does not
+schedule stewards or enforce the serial and max_turns settings.

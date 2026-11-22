@@ -34,6 +34,7 @@ import cydo.runtime.config.watcher : ConfigWatcher, ConfigWatcherHost;
 import cydo.workflow.discovery.service : DiscoveryService, DiscoveryServiceHost,
 	DiscoveryTaskSnapshot, ImportableTaskSpec;
 import cydo.cli.open_matching : findOpenProjectName, pathIsUnderRoot;
+import cydo.cli.initialize : initializeUserConfiguration;
 import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
@@ -133,6 +134,12 @@ unittest
 struct Program
 {
 static:
+	@(`Install documented user configuration templates.`)
+	void init()
+	{
+		initializeUserConfiguration();
+	}
+
 	@(`Start the CyDo backend.`)
 	void server()
 	{
