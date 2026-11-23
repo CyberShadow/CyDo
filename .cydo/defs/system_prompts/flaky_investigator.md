@@ -19,6 +19,8 @@ start, create it and add a pointer in `.cydo/memory/MEMORY.md`.
 
 ## Requests
 
+- If a request lacks something you need, such as a readable log, answer
+  with a question. The sender replies with a new Request.
 - Match reports by test and failure signature and count each failing run
   once. Handle every delivered request, including duplicates and re-sends.
 - **Now**: answer at once with whether the flake is known, its status, and

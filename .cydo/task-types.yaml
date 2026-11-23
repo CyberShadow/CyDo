@@ -14,7 +14,9 @@ singletons:
       Send a request whenever a test or check fails for a reason unrelated to
       your work. Include the check or test name, the failing output or the
       path of its log (for a nix check, the .drv), the commit it ran on, and
-      your worktree. Say when you want the answer: "now" if you can carry on
+      your worktree. Sessions have a private /tmp, so the investigator
+      cannot read a path there: copy the log into your task directory and
+      send that path. Say when you want the answer: "now" if you can carry on
       by retrying, or "after the fix has landed" if you are blocked and will
       rebase onto it. The answer says whether the flake is known, and, if you
       waited, the commit that fixes it.
