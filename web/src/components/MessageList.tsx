@@ -8,6 +8,7 @@ import {
   useCallback,
 } from "preact/hooks";
 import type { DisplayMessage, Block } from "../types";
+import type { SubtaskEnd } from "../subtaskResultParent";
 import type { AgnosticEvent, TurnEndReason } from "../protocol";
 import { outbox, type OutboxEntry } from "../outbox";
 import { hasAnsi, renderAnsi } from "../ansi";
@@ -48,6 +49,7 @@ interface Props {
   onViewFile?: (filePath: string) => void;
   spawnedTidsByItemId?: Map<string, Map<number, number>>;
   getTaskHref?: (id: string) => string;
+  subtaskEnd?: SubtaskEnd;
 }
 
 /** Headlines for turns that ended for a reason worth naming. */
@@ -58,6 +60,27 @@ const endReasonHeadlines: Partial<Record<TurnEndReason, string>> = {
   max_turns: "Turn limit reached",
   auto_mode_stopped: "Stopped by auto mode",
 };
+
+function SubtaskEndFooter({ end }: { end: SubtaskEnd }) {
+  return (
+    <div
+      class={`subtask-end ${end.failed ? "result-error" : "result-success"}`}
+      data-testid="subtask-finished-footer"
+    >
+      <span
+        class="subtask-end-icon action-icon"
+        dangerouslySetInnerHTML={{ __html: end.failed ? errorIcon : checkIcon }}
+      />
+      <span class="subtask-end-label">
+        {end.failed ? "Sub-task failed" : "Sub-task complete"}
+      </span>
+      <a class="subtask-end-link" href={end.parentHref}>
+        ← Back to{" "}
+        {end.parentTitle === undefined ? "parent task" : `“${end.parentTitle}”`}
+      </a>
+    </div>
+  );
+}
 
 function ResultMessageView({ message }: { message: DisplayMessage }) {
   const devMode = useDevMode();
@@ -960,6 +983,7 @@ export function MessageList({
   onViewFile,
   spawnedTidsByItemId,
   getTaskHref,
+  subtaskEnd,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -1216,6 +1240,7 @@ export function MessageList({
               />
             );
           })}
+          {subtaskEnd && <SubtaskEndFooter end={subtaskEnd} />}
         </div>
       </div>
     </ReplacementEventsContext.Provider>

@@ -8,6 +8,7 @@ import {
 } from "preact/hooks";
 import { MarkdownQuote } from "../vendor/quote-selection";
 import type { PermissionPromptState, TaskState } from "../types";
+import type { SubtaskEnd } from "../subtaskResultParent";
 import type { Theme } from "../useTheme";
 import type {
   ImageAttachment,
@@ -67,6 +68,7 @@ interface Props {
   defaultAgent?: string;
   exportMode?: boolean;
   getTaskHref?: (id: string) => string;
+  subtaskEnd?: SubtaskEnd;
   agentUsage?: Record<string, AgentUsageMessage>;
 }
 
@@ -122,6 +124,7 @@ function SessionViewInner({
   defaultAgent,
   exportMode,
   getTaskHref,
+  subtaskEnd,
   agentUsage,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -438,7 +441,9 @@ function SessionViewInner({
             </div>
           )}
         </div>
-      ) : task.messages.length === 0 && !task.isProcessing ? (
+      ) : task.messages.length === 0 &&
+        !task.isProcessing &&
+        subtaskEnd === undefined ? (
         <div class="welcome-prompt">
           <div class="welcome-box">
             <LogoBanner />
@@ -470,6 +475,7 @@ function SessionViewInner({
           onViewFile={openFileViewer}
           spawnedTidsByItemId={task.spawnedTidsByItemId}
           getTaskHref={getTaskHref}
+          subtaskEnd={subtaskEnd}
         />
       )}
       {undoPreview && undoPreview.messagesRemoved >= 0 && (

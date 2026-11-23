@@ -21,6 +21,7 @@ import { RefreshWorkspacesButton } from "./components/RefreshWorkspacesButton";
 import { SearchPopup } from "./components/SearchPopup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Toast } from "./components/Toast";
+import { subtaskResultParent } from "./subtaskResultParent";
 import {
   createControlledImageStore,
   resetControlledImageStore,
@@ -88,6 +89,15 @@ function AppContent() {
     scanState,
   } = useTaskManager(addToast);
   const tasksLoading = connected && !tasksLoaded;
+  const continuationPredecessors = useMemo(() => {
+    const predecessors = new Set<number>();
+    for (const task of tasks.values()) {
+      if (task.relationType === "continuation" && task.parentTid) {
+        predecessors.add(task.parentTid);
+      }
+    }
+    return predecessors;
+  }, [tasks]);
   const previousConnectedRef = useRef(connected);
   useLayoutEffect(() => {
     const wasConnected = previousConnectedRef.current;
@@ -516,6 +526,18 @@ function AppContent() {
               const isActive =
                 String(task.tid) === activeTaskId ||
                 String(task.tid) === activeTaskIdRef.current;
+              const resultParentTid = tasksLoaded
+                ? subtaskResultParent(
+                    {
+                      tid: task.tid,
+                      status: task.status,
+                      parentTid: task.parentTid,
+                      relationType: task.relationType,
+                    },
+                    continuationPredecessors,
+                    getByTid,
+                  )
+                : undefined;
               return (
                 <div
                   key={task.uuid}
@@ -554,6 +576,15 @@ function AppContent() {
                     defaultAgent={effectiveDefaultAgent}
                     agentUsage={agentUsage}
                     getTaskHref={getTaskHref}
+                    subtaskEnd={
+                      resultParentTid === undefined
+                        ? undefined
+                        : {
+                            parentHref: getTaskHref(String(resultParentTid)),
+                            parentTitle: getByTid(resultParentTid)?.title,
+                            failed: task.status === "failed",
+                          }
+                    }
                   />
                 </div>
               );
