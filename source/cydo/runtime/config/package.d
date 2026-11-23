@@ -1,7 +1,7 @@
 module cydo.runtime.config;
 
 import configy.attributes : ConfigParser, Key, Optional, SetInfo;
-import configy.read : parseConfigFileSimple;
+import cydo.runtime.config.yaml : parseYamlConfigFile;
 
 import dyaml.node : NodeID;
 
@@ -188,7 +188,7 @@ struct CydoConfig
 
 CydoConfig loadConfig()
 {
-	auto result = parseConfigFileSimple!CydoConfig(configPath);
+	auto result = parseYamlConfigFile!CydoConfig(configPath);
 	CydoConfig config = result.isNull() ? CydoConfig.init : result.get();
 	applyPostLoadFixups(config);
 	return config;
@@ -197,7 +197,7 @@ CydoConfig loadConfig()
 /// Re-parse config file. Returns null on parse error (caller keeps old config).
 Nullable!CydoConfig reloadConfig()
 {
-	auto result = parseConfigFileSimple!CydoConfig(configPath);
+	auto result = parseYamlConfigFile!CydoConfig(configPath);
 	if (!result.isNull())
 	{
 		auto inner = result.get();
@@ -239,7 +239,7 @@ version (unittest)
 {
 	import std.algorithm : canFind;
 	import ae.sys.file : realPath;
-	import configy.read : parseConfigString;
+	import cydo.runtime.config.yaml : parseYamlConfigString;
 	import std.exception : assertThrown;
 	import std.file : exists, mkdirRecurse, rmdirRecurse, symlink, write;
 	import std.path : buildPath, buildNormalizedPath;
@@ -315,7 +315,7 @@ version (unittest)
 	{
 		auto yaml = workspacesYAML ~ "agents:\n  my-claude:\n    driver: claude\n"
 			~ "    model_aliases:\n      small: haiku\n";
-		auto config = parseConfigString!CydoConfig(yaml, "/dev/null");
+		auto config = parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 		auto spec = config.agents["my-claude"].model_aliases["small"];
 		assert(spec.model == "haiku");
 		assert(spec.effort == "");
@@ -326,7 +326,7 @@ version (unittest)
 	{
 		auto yaml = workspacesYAML ~ "agents:\n  my-claude:\n    driver: claude\n"
 			~ "    model_aliases:\n      large:\n        model: opus\n        effort: high\n";
-		auto config = parseConfigString!CydoConfig(yaml, "/dev/null");
+		auto config = parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 		auto spec = config.agents["my-claude"].model_aliases["large"];
 		assert(spec.model == "opus");
 		assert(spec.effort == "high");
@@ -337,7 +337,7 @@ version (unittest)
 	{
 		auto yaml = workspacesYAML ~ "agents:\n  my-claude:\n    driver: claude\n"
 			~ "    model_aliases:\n      large:\n        effort: high\n";
-		auto config = parseConfigString!CydoConfig(yaml, "/dev/null");
+		auto config = parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 		auto spec = config.agents["my-claude"].model_aliases["large"];
 		assert(spec.model == "");
 		assert(spec.effort == "high");
@@ -348,7 +348,7 @@ version (unittest)
 	{
 		auto yaml = workspacesYAML ~ "agents:\n  my-claude:\n    driver: claude\n"
 			~ "    model_aliases:\n      large:\n        model: opus\n";
-		auto config = parseConfigString!CydoConfig(yaml, "/dev/null");
+		auto config = parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 		auto spec = config.agents["my-claude"].model_aliases["large"];
 		assert(spec.model == "opus");
 		assert(spec.effort == "");
@@ -359,7 +359,7 @@ version (unittest)
 	{
 		auto yaml = workspacesYAML ~ "agents:\n  my-claude:\n    driver: claude\n"
 			~ "    model_aliases:\n      small: haiku\n      large:\n        model: opus\n        effort: high\n";
-		auto config = parseConfigString!CydoConfig(yaml, "/dev/null");
+		auto config = parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 		auto aliases = config.agents["my-claude"].model_aliases;
 		assert(aliases["small"].model == "haiku");
 		assert(aliases["large"].model == "opus");
@@ -373,7 +373,7 @@ version (unittest)
 			~ "    model_aliases:\n      large: [a, b]\n";
 		try
 		{
-			parseConfigString!CydoConfig(yaml, "/dev/null");
+			parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 			assert(false, "expected a ConfigException");
 		}
 		catch (Exception e)
@@ -390,7 +390,7 @@ version (unittest)
 			~ "    model_aliases:\n      large:\n        modle: opus\n";
 		try
 		{
-			parseConfigString!CydoConfig(yaml, "/dev/null");
+			parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 			assert(false, "expected a ConfigException");
 		}
 		catch (Exception e)
@@ -407,7 +407,7 @@ version (unittest)
 			~ "    model_aliases:\n      large:\n        effort: high\n";
 		try
 		{
-			parseConfigString!CydoConfig(yaml, "/dev/null");
+			parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 			assert(false, "expected a ConfigException");
 		}
 		catch (Exception e)
@@ -426,7 +426,7 @@ version (unittest)
 			~ "    model_aliases:\n      large:\n        effort: high\n";
 		try
 		{
-			parseConfigString!CydoConfig(yaml, "/dev/null");
+			parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 			assert(false, "expected a ConfigException");
 		}
 		catch (Exception e)
@@ -444,7 +444,7 @@ version (unittest)
 			~ "    model_aliases:\n      large:\n        effort: high\n"
 			~ "  my-codex:\n    driver: codex\n"
 			~ "    model_aliases:\n      large:\n        effort: high\n";
-		parseConfigString!CydoConfig(yaml, "/dev/null");
+		parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 	}
 
 	// 11. An arbitrary, unrecognised effort value on claude parses without throwing.
@@ -452,7 +452,7 @@ version (unittest)
 	{
 		auto yaml = workspacesYAML ~ "agents:\n  my-claude:\n    driver: claude\n"
 			~ "    model_aliases:\n      large:\n        effort: some-future-level\n";
-		parseConfigString!CydoConfig(yaml, "/dev/null");
+		parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 	}
 
 	// 12. A model-only alias on a copilot agent parses without throwing.
@@ -460,7 +460,7 @@ version (unittest)
 	{
 		auto yaml = workspacesYAML ~ "agents:\n  my-copilot:\n    driver: copilot\n"
 			~ "    model_aliases:\n      small: gpt-4.1\n      large:\n        model: gpt-4.1\n";
-		parseConfigString!CydoConfig(yaml, "/dev/null");
+		parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 	}
 
 	// 13. An agent whose key is not a driver name and has no driver: field, with
@@ -470,7 +470,7 @@ version (unittest)
 	{
 		auto yaml = workspacesYAML ~ "agents:\n  custom:\n"
 			~ "    model_aliases:\n      large:\n        effort: high\n";
-		parseConfigString!CydoConfig(yaml, "/dev/null");
+		parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 	}
 
 	// 14. A permissions block parses at every layer, recording which fields
@@ -482,7 +482,7 @@ version (unittest)
 			~ "    permissions:\n      auto_mode: true\n"
 			~ "workspaces:\n  local:\n    root: /tmp\n"
 			~ "    permissions:\n      policy: ask\n";
-		auto config = parseConfigString!CydoConfig(yaml, "/dev/null");
+		auto config = parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 		assert(config.permissions.prompt_timeout.set);
 		assert(config.permissions.prompt_timeout == 30);
 		assert(!config.permissions.auto_mode.set);
@@ -502,7 +502,7 @@ version (unittest)
 			~ "    permissions:\n      auto_mode: true\n";
 		try
 		{
-			parseConfigString!CydoConfig(yaml, "/dev/null");
+			parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 			assert(false, "expected a ConfigException");
 		}
 		catch (Exception e)
@@ -516,22 +516,22 @@ version (unittest)
 	unittest
 	{
 		auto yaml = "workspaces:\n  local:\n    root: /tmp\n    auto_mode: true\n";
-		assertThrown!Exception(parseConfigString!CydoConfig(yaml, "/dev/null"));
+		assertThrown!Exception(parseYamlConfigString!CydoConfig(yaml, "/dev/null"));
 	}
 
 	// Disk cleanup has a positive, wide threshold and preserves its default.
 	unittest
 	{
-		assert(parseConfigString!CydoConfig(workspacesYAML, "/dev/null")
+		assert(parseYamlConfigString!CydoConfig(workspacesYAML, "/dev/null")
 			.disk_cleanup_threshold_bytes == 10_485_760);
-		assert(parseConfigString!CydoConfig(workspacesYAML
+		assert(parseYamlConfigString!CydoConfig(workspacesYAML
 			~ "disk_cleanup_threshold_bytes: 4294967296\n", "/dev/null")
 			.disk_cleanup_threshold_bytes == 4_294_967_296L);
 		foreach (value; ["0", "-1", "\"9223372036854775808\""])
 		{
 			bool rejected;
 			try
-				parseConfigString!CydoConfig(workspacesYAML
+				parseYamlConfigString!CydoConfig(workspacesYAML
 					~ "disk_cleanup_threshold_bytes: " ~ value ~ "\n", "/dev/null");
 			catch (Exception e)
 			{
@@ -541,7 +541,7 @@ version (unittest)
 			}
 			assert(rejected);
 		}
-		assertThrown!Exception(parseConfigString!CydoConfig(workspacesYAML
+		assertThrown!Exception(parseYamlConfigString!CydoConfig(workspacesYAML
 			~ "disk_cleanup_threshold_bytes: 9223372036854775808\n", "/dev/null"));
 	}
 }

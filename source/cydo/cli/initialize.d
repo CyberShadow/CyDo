@@ -1,6 +1,5 @@
 module cydo.cli.initialize;
 
-import configy.read : parseConfigString;
 import ae.sys.file : openFile;
 import cydo.cli.init_detection : DetectedWorkspace, detectInitWorkspaces;
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef,
@@ -11,7 +10,7 @@ import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, loadConfig,
 	GitIdentityConfig, ModelSpecFields, PathMode, PermissionsConfig,
 	ProjectDiscoveryConfig, SandboxConfig, WorkspaceConfig;
 import cydo.runtime.config.paths : configDir, configPath, userTaskTypesPath;
-import dyaml.loader : Loader;
+import cydo.runtime.config.yaml : loadYamlString, parseYamlConfigString;
 import dyaml.node : Node;
 
 import std.algorithm : canFind, count, sort, startsWith;
@@ -96,8 +95,8 @@ alias InitRenderer = string delegate(DetectedWorkspace[] workspaces);
 
 private void validateInitDocuments(string renderedConfig)
 {
-	parseConfigString!CydoConfig(renderedConfig, "generated config.yaml");
-	parseConfigString!TaskTypesFile(taskTypesTemplate, "embedded task-types.yaml");
+	parseYamlConfigString!CydoConfig(renderedConfig, "generated config.yaml");
+	parseYamlConfigString!TaskTypesFile(taskTypesTemplate, "embedded task-types.yaml");
 }
 
 private void ensureUnoccupied(string path)
@@ -334,8 +333,8 @@ unittest
 {
 	auto yaml = specimen(configTemplate, "workspaces: {}").complete;
 	assertConfigMarkers();
-	auto config = parseConfigString!CydoConfig(yaml, "config-template.yaml");
-	auto root = Loader.fromString(yaml).load();
+	auto config = parseYamlConfigString!CydoConfig(yaml, "config-template.yaml");
+	auto root = loadYamlString(yaml, "config-template.yaml");
 	assertKeys!CydoConfig(root);
 	assertKeys!WorkspaceConfig(at(root, ["workspaces", "example-project"]), ["name"]);
 	assertKeys!SandboxConfig(at(root, ["sandbox"]));
@@ -378,8 +377,8 @@ unittest
 	auto yaml = examples.complete;
 	assert(taskTypesTemplate.length >= 2 && taskTypesTemplate[$ - 1] == '\n'
 		&& taskTypesTemplate[$ - 2] != '\n');
-	auto root = Loader.fromString(yaml).load();
-	auto parsed = parseConfigString!TaskTypesFile(yaml, "task-types-template.yaml");
+	auto root = loadYamlString(yaml, "task-types-template.yaml");
+	auto parsed = parseYamlConfigString!TaskTypesFile(yaml, "task-types-template.yaml");
 	assertKeys!TaskTypesFile(root);
 	assertKeys!TaskTypeDef(at(root, ["task_types", "approval_steward"]), ["name"]);
 	assertKeys!CreatableTaskDef(at(root, ["task_types", "coordinator", "creatable_tasks", "implement_change"]),
@@ -398,7 +397,7 @@ unittest
 	string[] audiences;
 	foreach (example; [yaml] ~ examples.snippets)
 	{
-		auto sample = Loader.fromString(example).load();
+		auto sample = loadYamlString(example, "task-types example.yaml");
 		if (!nodeKeys(sample).canFind("singletons"))
 			continue;
 		foreach (Node name, Node singleton; sample["singletons"])
@@ -450,7 +449,7 @@ unittest
 	size_t iconCount;
 	foreach (yaml; [examples.complete] ~ examples.snippets)
 	{
-		auto root = Loader.fromString(yaml).load();
+		auto root = loadYamlString(yaml, "task-types example.yaml");
 		if (!nodeKeys(root).canFind("task_types"))
 			continue;
 		foreach (Node name, Node role; root["task_types"])
@@ -651,7 +650,7 @@ unittest // The complete examples and documented edits load through the runtime.
 	import std.path : dirName;
 
 	auto configExamples = specimen(configTemplate, "workspaces: {}");
-	auto config = parseConfigString!CydoConfig(configExamples.complete, "config.yaml");
+	auto config = parseYamlConfigString!CydoConfig(configExamples.complete, "config.yaml");
 	resolveConfig(config);
 	enum workspaceName = "example-project";
 	assert(effectiveDefaultAgentName(config) == "claude");
@@ -701,7 +700,7 @@ unittest // The complete examples and documented edits load through the runtime.
 	{
 		auto yaml = snippet.startsWith("workspaces:") || snippet.canFind("\nworkspaces:")
 			? snippet : snippet ~ "workspaces: {}\n";
-		auto sample = parseConfigString!CydoConfig(yaml, "config example.yaml");
+		auto sample = parseYamlConfigString!CydoConfig(yaml, "config example.yaml");
 		resolveConfig(sample);
 		foreach (ref workspace; sample.workspaces)
 		{
@@ -733,7 +732,7 @@ unittest // The complete examples and documented edits load through the runtime.
 	auto errors = validateTaskTypes(catalog.types, catalog.entryPoints, catalog.singletons,
 		configured, promptDirs);
 	assert(errors.length == 0, errors.join("\n"));
-	auto exampleRoot = Loader.fromString(taskExamples.complete).load();
+	auto exampleRoot = loadYamlString(taskExamples.complete, "task-types-template.yaml");
 	auto roles = exampleNames(exampleRoot, "task_types");
 	auto entries = exampleNames(exampleRoot, "user_entry_points")
 		~ exampleNames(exampleRoot, "singletons") ~ ["integrator"];
@@ -747,7 +746,7 @@ unittest // The complete examples and documented edits load through the runtime.
 		errors = validateTaskTypes(edited.types, edited.entryPoints, edited.singletons,
 			configured, promptDirs);
 		assert(errors.length == 0, snippet ~ errors.join("\n"));
-		auto editRoot = Loader.fromString(snippet).load();
+		auto editRoot = loadYamlString(snippet, "task-types edit.yaml");
 		auto disabledRoles = disabledExampleNames(editRoot, "task_types");
 		auto disabledEntries = disabledExampleNames(editRoot, "user_entry_points");
 		auto editedRoles = (roles ~ exampleNames(editRoot, "task_types")).sort.uniq
@@ -798,7 +797,7 @@ unittest
 		configTemplate[0 .. configTemplate.indexOf(beginMarker) + beginMarker.length]);
 	assert(rendered[end .. $] == configTemplate[configTemplate.indexOf(endMarker) .. $]);
 	assert(rendered[$ - 1] == '\n');
-	auto parsed = parseConfigString!CydoConfig(rendered, "rendered.yaml");
+	auto parsed = parseYamlConfigString!CydoConfig(rendered, "rendered.yaml");
 	assert(parsed.workspaces.length == workspaces.length);
 	foreach (i, workspace; workspaces)
 	{
@@ -839,8 +838,8 @@ unittest
 	auto installedTask = cast(string) read(taskPath);
 	assert(installedMain[$ - 1] == '\n' && installedMain[$ - 2] != '\n');
 	assert(installedTask[$ - 1] == '\n' && installedTask[$ - 2] != '\n');
-	parseConfigString!CydoConfig(installedMain, mainPath);
-	parseConfigString!TaskTypesFile(installedTask, taskPath);
+	parseYamlConfigString!CydoConfig(installedMain, mainPath);
+	parseYamlConfigString!TaskTypesFile(installedTask, taskPath);
 	auto installedBegin = installedMain.indexOf(beginMarker);
 	auto installedEnd = installedMain.indexOf(endMarker);
 	auto templateBegin = configTemplate.indexOf(beginMarker);
@@ -980,7 +979,7 @@ unittest // Generated documents use only detected workspaces and real loader fix
 	auto loaded = loadConfig();
 	assert(loaded.workspaces.length == 1 && loaded.workspaces[0].name == special.name
 		&& loaded.workspaces[0].root == special.root);
-	auto generated = parseConfigString!CydoConfig(cast(string) read(configPath), "generated.yaml");
+	auto generated = parseYamlConfigString!CydoConfig(cast(string) read(configPath), "generated.yaml");
 	assert(!generated.sandbox.isolate_filesystem.set && generated.default_agent == ""
 		&& generated.task_dir == "" && generated.agents.length == 0);
 }

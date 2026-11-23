@@ -325,8 +325,7 @@ TaskTypeConfig loadTaskTypes(string[] paths...)
 package(cydo) TaskTypeConfig loadTaskTypeLayers(string[] paths, out string[] loadedPaths)
 {
 	import core.stdc.errno : ENOENT, ENOTDIR;
-	import configy.read : parseConfig, CLIArgs;
-	import dyaml.loader : Loader;
+	import cydo.runtime.config.yaml : loadYamlString, parseYamlConfigNode;
 	import std.file : FileException, read;
 
 	Node root;
@@ -344,7 +343,7 @@ package(cydo) TaskTypeConfig loadTaskTypeLayers(string[] paths, out string[] loa
 			continue;
 		}
 
-		auto node = Loader.fromString(cast(char[]) contents, path).load();
+		auto node = loadYamlString(cast(string) contents, path);
 		enforce(node.nodeID == NodeID.mapping, atYamlNode(node, "task type YAML root must be a mapping"));
 		root = loadedPaths.length == 0 ? node : deepMerge(root, node);
 		loadedPaths ~= path;
@@ -353,7 +352,7 @@ package(cydo) TaskTypeConfig loadTaskTypeLayers(string[] paths, out string[] loa
 	if (loadedPaths.length == 0)
 		throw new Exception("No task type files found in: " ~ paths.join(", "));
 
-	auto result = parseConfig!TaskTypesFile(CLIArgs(loadedPaths[0]), root);
+	auto result = parseYamlConfigNode!TaskTypesFile(root, loadedPaths[0]);
 	removeDisabled(result, root);
 
 	// Ensure "blank" type always exists even if not in any config file.
@@ -759,6 +758,22 @@ private void removeDisabled(ref TaskTypesFile file, Node root)
 			atYamlNode(root["user_entry_points"]["blank"]["enabled"], "The blank entry point cannot be disabled"));
 	file.user_entry_points = file.user_entry_points
 		.filter!(entryPoint => entryPoint.enabled && available(entryPoint.resolvedType)).array;
+}
+
+unittest // Preserve the text of a task-type entry point description.
+{
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+
+	auto path = buildPath(tempDir(), "cydo-test-task-type-description.yaml");
+	write(path, "task_types:\n  example:\n    model_class: large\n"
+		~ "user_entry_points:\n  example:\n    task_type: example\n    description: no\n");
+	scope(exit) remove(path);
+
+	auto config = loadTaskTypes(path);
+	auto entryPoint = config.entryPoints.byName("example");
+	assert(entryPoint !is null);
+	assert(entryPoint.description == "no", entryPoint.description);
 }
 
 /// Deep-merge two YAML nodes. For mappings, keys from `overlay` are merged

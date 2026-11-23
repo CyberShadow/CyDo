@@ -1,7 +1,5 @@
 module cydo.domain.task_types.catalog;
 
-import configy.exceptions : ConfigException;
-
 import core.sys.posix.sys.stat : S_ISDIR;
 import std.algorithm : sort;
 import std.array : join;
@@ -71,6 +69,7 @@ TaskTypeLayers discoverTaskTypeLayers(string taskTypesDir, string taskTypesPath,
 	reverse(layers.promptDirs);
 	return layers;
 }
+import cydo.runtime.config.yaml : yamlConfigDiagnostic;
 
 private struct ProjectTypeCache
 {
@@ -146,9 +145,8 @@ class TaskTypeCatalog
 		}
 		catch (Exception e)
 		{
-			auto schemaError = cast(ConfigException) e;
 			warningf("Failed to load task types from [%s]: %s", paths.join(", "),
-				schemaError is null ? e.msg : schemaError.toString());
+				yamlConfigDiagnostic(e));
 			if (auto cache = projectPath in taskTypesByProject)
 			{
 				cache.stale = false;

@@ -167,12 +167,12 @@ unittest
 // resolveModelSpec, for both a configured and an unconfigured model_class.
 unittest
 {
-	import configy.read : parseConfigString;
+	import cydo.runtime.config.yaml : parseYamlConfigString;
 	import cydo.agent.resolver : createAgentByDriver, resolveConfiguredAgent;
 
 	auto yaml = "workspaces:\n  local:\n    root: /tmp\n"
 		~ "agents:\n  claude:\n    model_aliases:\n      large:\n        model: custom-model\n        effort: high\n";
-	auto config = parseConfigString!CydoConfig(yaml, "/dev/null");
+	auto config = parseYamlConfigString!CydoConfig(yaml, "/dev/null");
 	resolveConfig(config);
 
 	auto resolved = resolveConfiguredAgent(config, "claude");

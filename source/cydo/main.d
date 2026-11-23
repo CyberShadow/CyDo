@@ -36,6 +36,7 @@ import cydo.workflow.discovery.service : DiscoveryService, DiscoveryServiceHost,
 import cydo.cli.open_matching : findOpenProjectName, pathIsUnderRoot;
 import cydo.cli.initialize : initializeUserConfiguration;
 import cydo.cli.tasktype_config : loadCliTaskTypes;
+import cydo.runtime.config.yaml : yamlConfigDiagnostic;
 import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
@@ -243,7 +244,7 @@ static:
 			config = loadTaskTypes(taskTypesPath);
 		catch (Exception e)
 		{
-			stderr.writefln("Error loading %s: %s", taskTypesPath, e.msg);
+			stderr.writefln("Error loading %s: %s", taskTypesPath, yamlConfigDiagnostic(e));
 			exit(1);
 		}
 
@@ -596,8 +597,19 @@ void dispatch(
 
 void run(string[] args)
 {
+	import configy.exceptions : ConfigException;
+	import dyaml.exception : MarkedYAMLException;
+
 	enum config = () { import std.getopt : config; FunOptConfig c; c.getoptConfig = [config.stopOnFirstNonOption]; return c; }();
-	funopt!(dispatch, config, usageFun)(args);
+	try
+		funopt!(dispatch, config, usageFun)(args);
+	catch (Exception e)
+	{
+		if (cast(ConfigException) e || cast(MarkedYAMLException) e)
+			// ae.utils.main reports uncaught exceptions through their message.
+			throw new Exception(yamlConfigDiagnostic(e), e.file, e.line);
+		throw e;
+	}
 }
 
 mixin main!run;
