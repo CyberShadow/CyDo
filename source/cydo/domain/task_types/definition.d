@@ -318,31 +318,42 @@ import dyaml.node : Node, NodeID;
 /// (later files override earlier ones at the YAML level).
 TaskTypeConfig loadTaskTypes(string[] paths...)
 {
+	string[] loadedPaths;
+	return loadTaskTypeLayers(paths, loadedPaths);
+}
+
+package(cydo) TaskTypeConfig loadTaskTypeLayers(string[] paths, out string[] loadedPaths)
+{
+	import core.stdc.errno : ENOENT, ENOTDIR;
 	import configy.read : parseConfig, CLIArgs;
 	import dyaml.loader : Loader;
-	import std.file : exists;
+	import std.file : FileException, read;
 
 	Node root;
-	bool hasRoot = false;
-
 	foreach (path; paths)
 	{
-		if (path.length == 0 || !exists(path))
+		if (path.length == 0)
 			continue;
-		auto node = Loader.fromFile(path).load();
-		if (!hasRoot)
+		void[] contents;
+		try
+			contents = read(path);
+		catch (FileException e)
 		{
-			root = node;
-			hasRoot = true;
+			if (e.errno != ENOENT && e.errno != ENOTDIR)
+				throw e;
+			continue;
 		}
-		else
-			root = deepMerge(root, node);
+
+		auto node = Loader.fromString(cast(char[]) contents, path).load();
+		enforce(node.nodeID == NodeID.mapping, atYamlNode(node, "task type YAML root must be a mapping"));
+		root = loadedPaths.length == 0 ? node : deepMerge(root, node);
+		loadedPaths ~= path;
 	}
 
-	if (!hasRoot)
+	if (loadedPaths.length == 0)
 		throw new Exception("No task type files found in: " ~ paths.join(", "));
 
-	auto result = parseConfig!TaskTypesFile(CLIArgs(paths[0]), root);
+	auto result = parseConfig!TaskTypesFile(CLIArgs(loadedPaths[0]), root);
 	removeDisabled(result, root);
 
 	// Ensure "blank" type always exists even if not in any config file.
@@ -368,12 +379,13 @@ TaskTypeConfig loadTaskTypes(string[] paths...)
 	SingletonDef[] singletons;
 	foreach (ref singleton; result.singletons)
 	{
+		auto target = root["singletons"][singleton.name]["task_type"];
 		enforce(result.user_entry_points.byName(singleton.name) is null,
-			"singletons: '" ~ singleton.name ~ "' is already an entry point");
+			atYamlNode(target, "singletons: '" ~ singleton.name ~ "' is already an entry point"));
 		if (singleton.task_type.length == 0)
 			continue;
 		enforce(result.task_types.byName(singleton.task_type) !is null,
-			"singletons: '" ~ singleton.name ~ "' has unknown task type '" ~ singleton.task_type ~ "'");
+			atYamlNode(target, "singletons: '" ~ singleton.name ~ "' has unknown task type '" ~ singleton.task_type ~ "'"));
 		UserEntryPointDef ep;
 		ep.name = singleton.name;
 		ep.task_type = singleton.task_type;
@@ -384,6 +396,22 @@ TaskTypeConfig loadTaskTypes(string[] paths...)
 	}
 
 	return TaskTypeConfig(result.task_types, result.user_entry_points, singletons);
+}
+
+unittest
+{
+	import std.exception : collectException;
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+
+	auto base = buildPath(tempDir, "cydo-test-task-type-mapping-root-base.yaml");
+	auto overlay = buildPath(tempDir, "cydo-test-task-type-mapping-root-overlay.yaml");
+	write(base, "task_types: {}\n");
+	scope (exit) remove(base);
+	write(overlay, "- invalid overlay\n");
+	scope (exit) remove(overlay);
+	auto error = collectException(loadTaskTypes(base, overlay));
+	assert(error !is null && error.msg == overlay ~ ":1: task type YAML root must be a mapping");
 }
 
 unittest
@@ -415,7 +443,7 @@ unittest
 
 	write(path, types ~ "singletons:\n  integrator:\n    task_type: missing\n" ~ singletonFields);
 	auto error = collectException(loadTaskTypes(path));
-	assert(error !is null && error.msg == "singletons: 'integrator' has unknown task type 'missing'");
+	assert(error !is null && error.msg == path ~ ":6: singletons: 'integrator' has unknown task type 'missing'");
 
 	enum collidingEntryPoint = "user_entry_points:\n  integrator:\n    task_type: lander\n"
 		~ "    description: Lands\n";
@@ -424,7 +452,7 @@ unittest
 	{
 		write(path, types ~ collidingEntryPoint ~ declaration);
 		error = collectException(loadTaskTypes(path));
-		assert(error !is null && error.msg == "singletons: 'integrator' is already an entry point");
+		assert(error !is null && error.msg == path ~ ":10: singletons: 'integrator' is already an entry point");
 	}
 
 	write(path, types ~ disabledSingleton);
@@ -652,20 +680,28 @@ unittest
 	scope(exit) remove(path);
 	foreach (test; [
 		tuple("task_types:\n  blank:\n    model_class: large\n    enabled: false\n",
-			"The blank task type cannot be disabled"),
+			4, "The blank task type cannot be disabled"),
 		tuple("task_types:\n  blank:\n    model_class: large\nuser_entry_points:\n"
 			~ "  blank:\n    description: Blank session\n    enabled: false\n",
-			"The blank entry point cannot be disabled"),
+			7, "The blank entry point cannot be disabled"),
 		tuple("task_types:\n  lander:\n    model_class: large\n    enabled: false\n"
 			~ "singletons:\n  integrator:\n    task_type: lander\n    prompt_template: p.md\n    title: Integrator\n",
-			"singletons: 'integrator' has unknown task type 'lander'"),
+			7, "singletons: 'integrator' has unknown task type 'lander'"),
 	])
 	{
 		write(path, test[0]);
 		auto error = collectException(loadTaskTypes(path));
-		assert(error !is null, test[1]);
-		assert(error.msg == test[1], error.msg);
+		assert(error !is null, test[2]);
+		assert(error.msg == format("%s:%s: %s", path, test[1], test[2]), error.msg);
 	}
+}
+
+private string atYamlNode(Node node, string reason)
+{
+	auto mark = node.startMark;
+	if (mark.name == "<unknown>")
+		return reason;
+	return format("%s:%s: %s", mark.name, mark.line + 1, reason);
 }
 
 /// Configy parses only the `enabled` field of a disabled struct, so a disabled
@@ -697,7 +733,8 @@ private void removeDisabled(ref TaskTypesFile file, Node root)
 	foreach (ref type; file.task_types)
 		if (!type.enabled)
 		{
-			enforce(type.name != "blank", "The blank task type cannot be disabled");
+			enforce(type.name != "blank", atYamlNode(root["task_types"]["blank"]["enabled"],
+				"The blank task type cannot be disabled"));
 			disabledTypes[type.name] = true;
 		}
 	bool available(string target)
@@ -718,7 +755,8 @@ private void removeDisabled(ref TaskTypesFile file, Node root)
 	}
 
 	foreach (ref entryPoint; file.user_entry_points)
-		enforce(entryPoint.enabled || entryPoint.name != "blank", "The blank entry point cannot be disabled");
+		enforce(entryPoint.enabled || entryPoint.name != "blank",
+			atYamlNode(root["user_entry_points"]["blank"]["enabled"], "The blank entry point cannot be disabled"));
 	file.user_entry_points = file.user_entry_points
 		.filter!(entryPoint => entryPoint.enabled && available(entryPoint.resolvedType)).array;
 }

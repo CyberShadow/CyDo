@@ -24,6 +24,42 @@ string bestEffortProjectPathIdentity(string path)
 	return absolute;
 }
 
+/// Snapshot names without asking the directory iterator for lazy metadata.
+string[] directoryEntryPaths(string path)
+{
+	import core.stdc.errno : ENOENT, ENOTDIR;
+	import std.file : dirEntries, FileException, SpanMode;
+
+	string[] paths;
+	try
+	{
+		foreach (entry; dirEntries(path, SpanMode.shallow))
+			paths ~= entry.name;
+	}
+	catch (FileException e)
+	{
+		if (e.errno != ENOENT && e.errno != ENOTDIR)
+			throw e;
+	}
+	return paths;
+}
+
+/// Obtain the file type of a path that may disappear between readdir and stat.
+uint existingPathAttributes(string path, bool followLinks = true)
+{
+	import core.stdc.errno : ENOENT, ENOTDIR;
+	import std.file : FileException, getAttributes, getLinkAttributes;
+
+	try
+		return followLinks ? getAttributes(path) : getLinkAttributes(path);
+	catch (FileException e)
+	{
+		if (e.errno != ENOENT && e.errno != ENOTDIR)
+			throw e;
+		return 0;
+	}
+}
+
 version (unittest)
 {
 	import std.exception : assertThrown;

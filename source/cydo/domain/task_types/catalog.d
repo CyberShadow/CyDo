@@ -1,10 +1,35 @@
 module cydo.domain.task_types.catalog;
 
-import std.logger : warningf;
+import configy.exceptions : ConfigException;
 
+import core.sys.posix.sys.stat : S_ISDIR;
+import std.algorithm : sort;
+import std.array : join;
+import std.file : exists;
+import std.logger : infof, warningf;
+import std.path : buildPath;
+
+import cydo.foundation.platform.path : directoryEntryPaths, existingPathAttributes;
+
+import cydo.runtime.config.paths : configDir, userDefsDir, userTaskTypesPath;
 import cydo.domain.task_types.definition : TaskTypeDef, UserEntryPointDef, SingletonDef, byName, computeReachesWorktree,
-	computeTreeReadOnly, loadTaskTypes, validateTaskTypes;
-import cydo.runtime.config.paths : userDefsDir, userTaskTypesPath;
+	computeTreeReadOnly, loadTaskTypeLayers, validateTaskTypes;
+
+private string[] orderedPackDirectories(string[] paths)
+{
+	string[] dirs;
+	foreach (path; paths)
+		if (S_ISDIR(existingPathAttributes(path)))
+			dirs ~= path;
+	sort(dirs);
+	return dirs;
+}
+
+private struct TaskTypeLayer
+{
+	string yamlPath;
+	string promptDir;
+}
 
 private struct ProjectTypeCache
 {
@@ -13,6 +38,8 @@ private struct ProjectTypeCache
 	SingletonDef[] singletons;
 	bool[string] reachesWorktree;
 	bool[string] treeReadOnly;
+	string[] promptDirs;
+	bool stale;
 }
 
 class TaskTypeCatalog
@@ -35,33 +62,59 @@ class TaskTypeCatalog
 			(string name) => isConfiguredAgentName(name));
 	}
 
+	private TaskTypeLayer[] layersForProject(string projectPath)
+	{
+		TaskTypeLayer[] layers = [TaskTypeLayer(taskTypesPath, taskTypesDir)];
+
+		void addConfigDirectory(string dir)
+		{
+			foreach (pack; orderedPackDirectories(directoryEntryPaths(buildPath(dir, "packs"))))
+				layers ~= TaskTypeLayer(buildPath(pack, "task-types.yaml"), pack);
+			layers ~= TaskTypeLayer(buildPath(dir, "task-types.yaml"), buildPath(dir, "defs"));
+		}
+
+		addConfigDirectory(configDir());
+		if (projectPath.length > 0)
+			addConfigDirectory(buildPath(projectPath, ".cydo"));
+		return layers;
+	}
+
+	private static string[] promptDirsForLayers(TaskTypeLayer[] layers)
+	{
+		string[] dirs;
+		foreach_reverse (layer; layers)
+			dirs ~= layer.promptDir;
+		return dirs;
+	}
+
 	string[] promptSearchPath(string projectPath)
 	{
-		import std.path : buildPath;
-
-		string[] dirs;
-		if (projectPath.length > 0)
-			dirs ~= buildPath(projectPath, ".cydo/defs");
-		dirs ~= userDefsDir();
-		dirs ~= taskTypesDir;
-		return dirs;
+		if (projectPath in taskTypesByProject)
+		{
+			getTaskTypesForProject(projectPath);
+			return taskTypesByProject[projectPath].promptDirs;
+		}
+		return promptDirsForLayers(layersForProject(projectPath));
 	}
 
 	TaskTypeDef[] getTaskTypesForProject(string projectPath)
 	{
-		import std.path : buildPath;
+		if (auto cache = projectPath in taskTypesByProject)
+			if (!cache.stale)
+				return cache.types;
 
-		if (auto p = projectPath in taskTypesByProject)
-			return p.types;
-
+		string[] paths;
 		try
 		{
-			auto userTypesPath = userTaskTypesPath();
-			auto projectTypesPath = projectPath.length > 0
-				? buildPath(projectPath, ".cydo/task-types.yaml") : "";
-			auto config = loadTaskTypes(taskTypesPath, userTypesPath, projectTypesPath);
+			auto layers = layersForProject(projectPath);
+			foreach (layer; layers)
+				paths ~= layer.yamlPath;
+			auto promptDirs = promptDirsForLayers(layers);
+
+			string[] loadedPaths;
+			auto config = loadTaskTypeLayers(paths, loadedPaths);
 			auto errors = validateTaskTypes(config.types, config.entryPoints, config.singletons,
-				isConfiguredAgentName, promptSearchPath(projectPath));
+				isConfiguredAgentName, promptDirs);
 			foreach (e; errors)
 				warningf("task type: %s", e);
 			taskTypesByProject[projectPath] = ProjectTypeCache(
@@ -70,22 +123,28 @@ class TaskTypeCatalog
 				config.singletons,
 				computeReachesWorktree(config.types),
 				computeTreeReadOnly(config.types),
+				promptDirs,
 			);
-			return taskTypesByProject[projectPath].types;
+			infof("Loaded task type YAML layers in order: %s", loadedPaths.join(", "));
+			infof("Task type prompt search path: %s", promptDirs.join(", "));
+			return config.types;
 		}
 		catch (Exception e)
 		{
-			warningf("task types file changed but failed to parse, keeping previous version: %s", e.msg);
-			if (auto p = projectPath in taskTypesByProject)
-				return p.types;
+			auto schemaError = cast(ConfigException) e;
+			warningf("Failed to load task types from [%s]: %s", paths.join(", "),
+				schemaError is null ? e.msg : schemaError.toString());
+			if (auto cache = projectPath in taskTypesByProject)
+			{
+				cache.stale = false;
+				return cache.types;
+			}
 			return null;
 		}
 	}
 
 	UserEntryPointDef[] getEntryPointsForProject(string projectPath)
 	{
-		if (auto p = projectPath in taskTypesByProject)
-			return p.entryPoints;
 		getTaskTypesForProject(projectPath);
 		if (auto p = projectPath in taskTypesByProject)
 			return p.entryPoints;
@@ -114,9 +173,11 @@ class TaskTypeCatalog
 	{
 		if (projectPath.length > 0)
 			if (auto p = projectPath in taskTypesByProject)
-				return p.reachesWorktree;
+				if (!p.stale)
+					return p.reachesWorktree;
 		if (auto p = "" in taskTypesByProject)
-			return p.reachesWorktree;
+			if (!p.stale)
+				return p.reachesWorktree;
 		return null;
 	}
 
@@ -124,28 +185,31 @@ class TaskTypeCatalog
 	{
 		if (projectPath.length > 0)
 			if (auto p = projectPath in taskTypesByProject)
-				return p.treeReadOnly;
+				if (!p.stale)
+					return p.treeReadOnly;
 		if (auto p = "" in taskTypesByProject)
-			return p.treeReadOnly;
+			if (!p.stale)
+				return p.treeReadOnly;
 		return null;
 	}
 
 	void invalidateProject(string projectPath)
 	{
-		taskTypesByProject.remove(projectPath);
+		if (auto cache = projectPath in taskTypesByProject)
+			cache.stale = true;
 	}
 
 	void invalidateAll()
 	{
-		taskTypesByProject = null;
+		foreach (ref cache; taskTypesByProject)
+			cache.stale = true;
 	}
 }
 
 version (unittest)
 {
 	import std.algorithm : canFind;
-	import std.file : exists, mkdirRecurse, rmdirRecurse, write;
-	import std.path : buildPath;
+	import std.file : mkdirRecurse, rmdirRecurse, write;
 	import std.process : environment;
 }
 
@@ -471,4 +535,270 @@ unittest
 	assert(catalog.treeReadOnlyFor(projectPath) is null);
 	assert(catalog.reachesWorktreeFor("") is null);
 	assert(catalog.treeReadOnlyFor("") is null);
+}
+
+version (unittest) private struct PackCatalogFixture
+{
+	string root;
+	string userConfig;
+	string project;
+	string projectConfig;
+	string shipped;
+	TaskTypeCatalog catalog;
+	private string oldHome;
+	private bool hadHome;
+
+	void setup(string name)
+	{
+		oldHome = environment.get("HOME", "");
+		hadHome = "HOME" in environment;
+		root = makeTempRoot(name);
+		auto home = buildPath(root, "home");
+		userConfig = buildPath(home, ".config", "cydo");
+		project = buildPath(root, "project");
+		projectConfig = buildPath(project, ".cydo");
+		shipped = buildPath(root, "shipped");
+		mkdirRecurse(userConfig);
+		environment["HOME"] = home;
+		writeGlobalTaskTypes(shipped, yaml("shipped"));
+		catalog = new TaskTypeCatalog(shipped, buildPath(shipped, "task-types.yaml"), &isKnownTestAgent);
+	}
+
+	void cleanup()
+	{
+		if (hadHome)
+			environment["HOME"] = oldHome;
+		else
+			environment.remove("HOME");
+		rmdirRecurse(root);
+	}
+
+	static string yaml(string description)
+	{
+		return "task_types:\n  sample:\n    agent_description: " ~ description ~ "\n";
+	}
+
+	void writeLayer(string dir, string description)
+	{
+		mkdirRecurse(dir);
+		write(buildPath(dir, "task-types.yaml"), yaml(description));
+	}
+
+	string description()
+	{
+		auto sample = catalog.getTaskTypesForProject(project).byName("sample");
+		assert(sample !is null);
+		return sample.agent_description;
+	}
+}
+
+unittest
+{
+	import std.file : remove, rmdir, symlink;
+	import std.typecons : tuple;
+
+	PackCatalogFixture fixture;
+	scope (exit) fixture.cleanup();
+	fixture.setup("cydo-test-task-type-pack-precedence");
+
+	auto early = buildPath(fixture.userConfig, "packs", "a-early");
+	auto late = buildPath(fixture.userConfig, "packs", "z-late");
+	auto projectPack = buildPath(fixture.projectConfig, "packs", "project-pack");
+	// Create the user packs in reverse lexical order.
+	fixture.writeLayer(late, "late user pack");
+	fixture.writeLayer(early, "early user pack");
+	fixture.writeLayer(fixture.userConfig, "user YAML");
+	fixture.writeLayer(projectPack, "project pack");
+	fixture.writeLayer(fixture.projectConfig, "project YAML");
+
+	auto packs = buildPath(fixture.userConfig, "packs");
+	auto vanished = buildPath(packs, "vanished");
+	auto dangling = buildPath(packs, "dangling");
+	mkdirRecurse(vanished);
+	symlink(vanished, dangling);
+	assert(directoryEntryPaths(packs).canFind(vanished));
+	rmdir(vanished);
+	assert(orderedPackDirectories([late, vanished, dangling, early]) == [early, late]);
+
+	foreach (layer; [
+		tuple(fixture.projectConfig, "project YAML"),
+		tuple(projectPack, "project pack"),
+		tuple(fixture.userConfig, "user YAML"),
+		tuple(late, "late user pack"),
+		tuple(early, "early user pack"),
+	])
+	{
+		assert(fixture.description() == layer[1], layer[1]);
+		remove(buildPath(layer[0], "task-types.yaml"));
+		fixture.catalog.invalidateProject(fixture.project);
+	}
+	assert(fixture.description() == "shipped");
+}
+
+unittest
+{
+	import cydo.domain.task_types.definition : promptTemplateSource;
+
+	PackCatalogFixture fixture;
+	scope (exit) fixture.cleanup();
+	fixture.setup("cydo-test-task-type-pack-prompts");
+
+	auto userPromptPack = buildPath(fixture.userConfig, "packs", "prompts");
+	auto projectPromptPack = buildPath(fixture.projectConfig, "packs", "a-prompts");
+	auto yamlOnlyPack = buildPath(fixture.projectConfig, "packs", "z-types");
+	fixture.writeLayer(yamlOnlyPack, "YAML-only pack");
+
+	enum prompt = "prompts/start.md";
+	mkdirRecurse(buildPath(userPromptPack, "prompts"));
+	mkdirRecurse(buildPath(projectPromptPack, "prompts"));
+	write(buildPath(fixture.shipped, prompt), "shipped");
+	write(buildPath(userPromptPack, prompt), "{{ default }}\nuser pack");
+	write(buildPath(projectPromptPack, prompt), "project pack\n{{ default }}");
+
+	assert(fixture.description() == "YAML-only pack");
+	assert(promptTemplateSource(fixture.catalog.promptSearchPath(fixture.project), prompt)
+		== "project pack\nshipped\nuser pack");
+}
+
+unittest
+{
+	PackCatalogFixture fixture;
+	scope (exit) fixture.cleanup();
+	fixture.setup("cydo-test-task-type-pack-last-good");
+
+	assert(fixture.description() == "shipped");
+	auto lastGoodDirs = fixture.catalog.promptSearchPath(fixture.project).dup;
+	fixture.writeLayer(fixture.shipped, "updated shipped");
+	auto pack = buildPath(fixture.projectConfig, "packs", "new-pack");
+	mkdirRecurse(pack);
+	foreach (invalid; ["task_types: [\n", "- invalid overlay\n"])
+	{
+		write(buildPath(pack, "task-types.yaml"), invalid);
+		fixture.catalog.invalidateProject(fixture.project);
+		assert(fixture.catalog.promptSearchPath(fixture.project) == lastGoodDirs);
+		assert(fixture.description() == "shipped");
+	}
+
+	fixture.writeLayer(pack, "recovered pack");
+	fixture.catalog.invalidateProject(fixture.project);
+	assert(fixture.catalog.promptSearchPath(fixture.project).canFind(pack));
+	assert(fixture.description() == "recovered pack");
+}
+
+unittest
+{
+	import core.sys.posix.unistd : geteuid;
+	import std.conv : octal;
+	import std.exception : collectException;
+	import std.file : setAttributes;
+	import cydo.domain.task_types.definition : loadTaskTypes;
+
+	// A privileged process can open a file in a directory without search permission.
+	if (geteuid() == 0)
+		return;
+
+	PackCatalogFixture fixture;
+	scope (exit) fixture.cleanup();
+	fixture.setup("cydo-test-task-type-pack-inaccessible");
+
+	auto pack = buildPath(fixture.projectConfig, "packs", "restricted");
+	auto packYaml = buildPath(pack, "task-types.yaml");
+	fixture.writeLayer(pack, "pack");
+	assert(fixture.description() == "pack");
+	fixture.writeLayer(fixture.shipped, "updated shipped");
+
+	setAttributes(pack, octal!600);
+	scope (exit) setAttributes(pack, octal!700);
+	auto error = collectException(loadTaskTypes(buildPath(fixture.shipped, "task-types.yaml"), packYaml));
+	assert(error !is null && error.msg.canFind(packYaml));
+	fixture.catalog.invalidateProject(fixture.project);
+	assert(fixture.description() == "pack");
+
+	setAttributes(pack, octal!700);
+	fixture.writeLayer(pack, "updated pack");
+	fixture.catalog.invalidateProject(fixture.project);
+	assert(fixture.description() == "updated pack");
+}
+
+unittest
+{
+	import std.file : remove, rename, symlink;
+
+	PackCatalogFixture fixture;
+	scope (exit) fixture.cleanup();
+	fixture.setup("cydo-test-task-type-pack-symlink-loop");
+
+	auto packs = buildPath(fixture.projectConfig, "packs");
+	auto pack = buildPath(packs, "linked");
+	auto target = buildPath(fixture.root, "pack-target");
+	auto movedPacks = buildPath(fixture.root, "moved-packs");
+	fixture.writeLayer(target, "pack");
+	mkdirRecurse(packs);
+	symlink(target, pack);
+	assert(fixture.description() == "pack");
+	auto lastGoodDirs = fixture.catalog.promptSearchPath(fixture.project).dup;
+
+	remove(pack);
+	symlink(pack, pack);
+	fixture.catalog.invalidateProject(fixture.project);
+	assert(fixture.description() == "pack", "A looping pack entry must reject the reload");
+	assert(fixture.catalog.promptSearchPath(fixture.project) == lastGoodDirs);
+	remove(pack);
+	symlink(target, pack);
+
+	rename(packs, movedPacks);
+	symlink(packs, packs);
+	fixture.catalog.invalidateProject(fixture.project);
+	assert(fixture.description() == "pack", "A looping packs container must reject the reload");
+	assert(fixture.catalog.promptSearchPath(fixture.project) == lastGoodDirs);
+
+	remove(packs);
+	rename(movedPacks, packs);
+	fixture.writeLayer(target, "restored pack");
+	fixture.catalog.invalidateProject(fixture.project);
+	assert(fixture.description() == "restored pack");
+}
+
+unittest
+{
+	import std.logger.core : Logger, LogLevel, stdThreadLocalLog;
+	import std.string : indexOf;
+
+	final class WarningLogger : Logger
+	{
+		string[] warnings;
+
+		this()
+		{
+			super(LogLevel.warning);
+		}
+
+		override protected void writeLogMsg(ref LogEntry entry) @safe
+		{
+			warnings ~= entry.msg;
+		}
+	}
+
+	PackCatalogFixture fixture;
+	scope (exit) fixture.cleanup();
+	fixture.setup("cydo-test-task-type-pack-schema-error");
+
+	auto first = buildPath(fixture.projectConfig, "packs", "10-first");
+	auto second = buildPath(fixture.projectConfig, "packs", "20-second");
+	auto secondYaml = buildPath(second, "task-types.yaml");
+	fixture.writeLayer(first, "first pack");
+	fixture.writeLayer(second, "second pack");
+	assert(fixture.description() == "second pack");
+	write(secondYaml, "task_types:\n  sample:\n    unknown_field: true\n");
+
+	auto previous = stdThreadLocalLog;
+	scope (exit) stdThreadLocalLog = previous;
+	auto logger = new WarningLogger;
+	stdThreadLocalLog = logger;
+	fixture.catalog.invalidateProject(fixture.project);
+	assert(fixture.description() == "second pack");
+	assert(logger.warnings.length == 1, logger.warnings.join("\n"));
+	auto warning = logger.warnings[0];
+	auto diagnostic = warning[warning.indexOf("]: ") + 3 .. $];
+	assert(diagnostic.canFind(secondYaml) && diagnostic.canFind("unknown_field"), warning);
 }

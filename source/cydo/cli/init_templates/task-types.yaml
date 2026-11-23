@@ -4,9 +4,11 @@
 
 ## Where task types come from
 ##
-## CyDo loads the packaged definitions, then this file
-## (~/.config/cydo/task-types.yaml), then the project's
-## .cydo/task-types.yaml. The root keys are task_types, user_entry_points,
+## CyDo loads, in order: the packaged definitions, user packs
+## (~/.config/cydo/packs/*/task-types.yaml, by directory name), this file
+## (~/.config/cydo/task-types.yaml), project packs
+## (.cydo/packs/*/task-types.yaml), then the project's
+## .cydo/task-types.yaml. See docs/task-types.md for packs. The root keys are task_types, user_entry_points,
 ## and singletons. There is no version key.
 
 ## How the layers merge
@@ -20,8 +22,8 @@
 ## CyDo reloads the user file if ~/.config/cydo existed at server startup.
 ## If init creates that directory while CyDo is running, restart CyDo.
 ## CyDo also reloads watched project files. It logs validation diagnostics
-## and still uses the loaded definitions. Parse or load errors can leave a
-## catalog empty after a reload.
+## and still uses the loaded definitions. A parse or load error keeps the
+## previously loaded definitions and logs a warning naming the file.
 ##
 ## Prompts are read when rendered. Startup prompt text already sent to a
 ## process stays with it.
@@ -62,7 +64,8 @@ task_types: {}
 ##    role prompts through system_prompts/master.md. Claude and Copilot
 ##    receive the prompt at launch. Codex gets it in task message framing.
 ## 4. Use paths relative to a defs directory. Lookup prefers the project
-##    .cydo/defs/, then ~/.config/cydo/defs/, then the shipped definitions.
+##    .cydo/defs/, project packs, ~/.config/cydo/defs/, user packs, then
+##    the shipped definitions.
 ##    Use {{ default }} to include the next matching file. A missing
 ##    lower-priority file is an error. Use read_file with an absolute or
 ##    tilde-expanded absolute path to insert literal file contents. For
