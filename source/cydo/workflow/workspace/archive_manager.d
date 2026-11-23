@@ -38,6 +38,7 @@ struct ArchiveManagerHost
 	void delegate(int tid) broadcastTaskUpdate;
 	void delegate(WebSocketAdapter ws, int tid, string message) sendError;
 	Promise!void delegate(int tid, ArchiveState goal) setArchiveGoal;
+	int delegate(int childTid) pendingBatchParent;
 }
 
 struct WorktreeOp
@@ -101,10 +102,23 @@ class ArchiveManager
 
 		if (archived)
 		{
-			auto aliveTid = findAliveInSubtree(host_.snapshotTasks(), tid);
+			auto tasks = host_.snapshotTasks();
+			auto aliveTid = findInSubtree(tasks, tid, task => task.alive);
 			if (aliveTid >= 0)
 			{
 				host_.sendError(ws, tid, format!"Cannot archive: task %d is still running"(aliveTid));
+				return;
+			}
+			int parentTid;
+			auto childTid = findInSubtree(tasks, tid, (ArchiveTaskSnapshot task) {
+				parentTid = host_.pendingBatchParent(task.tid);
+				return parentTid != 0;
+			});
+			if (childTid >= 0)
+			{
+				host_.sendError(ws, tid,
+					format!"Task %d cannot be archived yet: its parent task %d has not received its result."
+						(childTid, parentTid));
 				return;
 			}
 		}
@@ -238,17 +252,18 @@ private:
 		});
 	}
 
-	int findAliveInSubtree(ArchiveTaskSnapshot[int] tasks, int tid)
+	int findInSubtree(ArchiveTaskSnapshot[int] tasks, int tid,
+		bool delegate(ArchiveTaskSnapshot) matches)
 	{
 		auto task = tid in tasks;
 		if (task is null)
 			return -1;
-		if (task.alive)
+		if (matches(*task))
 			return tid;
 		foreach (childTid, child; tasks)
 			if (child.parentTid == tid)
 			{
-				auto found = findAliveInSubtree(tasks, childTid);
+				auto found = findInSubtree(tasks, childTid, matches);
 				if (found >= 0)
 					return found;
 			}
@@ -403,6 +418,7 @@ unittest
 		broadcastTaskUpdate: (int tid) {},
 		sendError: (WebSocketAdapter ws, int tid, string message) {},
 		setArchiveGoal: null,
+		pendingBatchParent: (int childTid) => 0,
 	);
 
 	ArchiveManager manager;
@@ -513,6 +529,7 @@ unittest
 			errors ~= message;
 		},
 		setArchiveGoal: null,
+		pendingBatchParent: (int childTid) => 0,
 	);
 
 	ArchiveManager manager;
@@ -572,6 +589,7 @@ unittest
 			errors ~= message;
 		},
 		setArchiveGoal: null,
+		pendingBatchParent: (int childTid) => 0,
 	);
 
 	ArchiveManager manager;
@@ -653,6 +671,7 @@ unittest
 			errors ~= message;
 		},
 		setArchiveGoal: null,
+		pendingBatchParent: (int childTid) => 0,
 	);
 
 	ArchiveManager manager;
@@ -732,6 +751,7 @@ unittest
 			assert(false, message);
 		},
 		setArchiveGoal: null,
+		pendingBatchParent: (int childTid) => 0,
 	);
 
 	auto manager = new ArchiveManager(host, (ArchiveExecutionPlan plan) {

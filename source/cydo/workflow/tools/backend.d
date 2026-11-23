@@ -1205,6 +1205,11 @@ public:
 		return batchRegistry_.findOwnerOfChild(tid, handle, slot);
 	}
 
+	int pendingBatchParent(int childTid)
+	{
+		return batchRegistry_.parentOfChild(childTid);
+	}
+
 	bool hasBatchChild(int tid)
 	{
 		return batchRegistry_.hasChild(tid);
@@ -4731,4 +4736,107 @@ unittest
 	assert(results.length == 1 && !results[0].isError
 		&& results[0].text.canFind("deliver this live question"),
 		"live carrier must skip cancelled question and take the next event");
+}
+
+// Archive remains blocked until the parent receives the batch results.
+unittest
+{
+	import ae.net.http.websocket : WebSocketAdapter;
+	import cydo.workflow.workspace.archive_manager :
+		ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
+
+	// Exercise the child directly and through its enclosing subtree.
+	foreach (requestedTid; [2, 1])
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		f.tasks[3] = TaskData(3, "local", f.tasks[1].projectPath);
+		f.tasks[3].parentTid = 1;
+		f.tasks[3].status = TaskStatus.active;
+		auto b = f.makeBackend();
+		BatchHandle handle;
+		string error;
+		assert(b.batchRegistry_.create(1, [2, 3], handle, error), error);
+
+		// Keep the live-task guard out of the way while the sibling slot is pending.
+		ArchiveTaskSnapshot[int] tasks;
+		tasks[1] = ArchiveTaskSnapshot(1, 0, false, false, false, "ws", "/repo");
+		tasks[2] = ArchiveTaskSnapshot(2, 1, false, false, false, "ws", "/repo");
+		tasks[3] = ArchiveTaskSnapshot(3, 1, false, false, false, "ws", "/repo");
+		int[] archiveGoals;
+		int[] persistedTasks;
+		string[] errors;
+
+		auto host = ArchiveManagerHost(
+			tryGetTask: (int tid, out ArchiveTaskSnapshot task) {
+				task = tasks[tid];
+				return true;
+			},
+			snapshotTasks: () => tasks.dup,
+			tryTaskDir: (int tid, string workspace, string projectPath) => "",
+			updateTaskState: (int tid, bool archived, bool archiving) {
+				tasks[tid].archived = archived;
+				tasks[tid].archiving = archiving;
+				return true;
+			},
+			persistArchived: (int tid, bool archived) {
+				assert(archived);
+				persistedTasks ~= tid;
+			},
+			broadcastTaskUpdate: (int tid) {},
+			sendError: (WebSocketAdapter ws, int tid, string message) {
+				assert(tid == requestedTid);
+				errors ~= message;
+			},
+			setArchiveGoal: (int tid, ArchiveState goal) {
+				assert(goal == ArchiveState.Archived);
+				archiveGoals ~= tid;
+				return resolve();
+			},
+			pendingBatchParent: &b.pendingBatchParent,
+		);
+		auto manager = new ArchiveManager(host);
+
+		void assertArchiveRefused()
+		{
+			errors = null;
+			manager.handleSetArchived(null, requestedTid, true);
+			drainPromiseNextTicks();
+
+			assert(errors.length == 1);
+			assert(errors[0] == "Task 2 cannot be archived yet: its parent task 1 has not received its result."
+				|| (requestedTid == 1
+					&& errors[0] == "Task 3 cannot be archived yet: its parent task 1 has not received its result."));
+			assert(!tasks[requestedTid].archived);
+			assert(!tasks[requestedTid].archiving);
+			assert(persistedTasks.length == 0);
+			assert(archiveGoals.length == 0);
+		}
+
+		McpResult[] carriers;
+		b.awaitEvent(1).then((McpResult r) { carriers ~= r; }).ignoreResult();
+		drainPromiseNextTicks();
+
+		f.tasks[2].resultText = "first child result";
+		assert(b.finalizeCompletedSubTask(2));
+		assertArchiveRefused();
+		assert(carriers.length == 0);
+
+		f.tasks[3].resultText = "second child result";
+		assert(b.finalizeCompletedSubTask(3));
+		drainPromiseNextTicks();
+		assert(carriers.length == 1 && !carriers[0].isError && carriers[0].structuredContent);
+		assertArchiveRefused();
+
+		b.onToolCallDelivered("1", carriers[0]);
+		errors = null;
+		manager.handleSetArchived(null, requestedTid, true);
+		drainPromiseNextTicks();
+
+		assert(errors.length == 0);
+		assert(tasks[requestedTid].archived);
+		assert(!tasks[requestedTid].archiving);
+		assert(persistedTasks == [requestedTid]);
+		assert(archiveGoals == [requestedTid]);
+	}
 }

@@ -311,6 +311,7 @@ class App
 					format!"Archive queue missing for task %d"(tid));
 				return td.archiveQueue.setGoal(goal);
 			},
+			pendingBatchParent: (int childTid) => workflowTools.pendingBatchParent(childTid),
 		));
 		worktreeAllocator = new WorktreeAllocator(WorktreeAllocatorHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,

@@ -142,6 +142,12 @@ public:
 		return (childTid in ownerByChild_) !is null;
 	}
 
+	int parentOfChild(int childTid) const
+	{
+		auto id = childTid in ownerByChild_;
+		return id is null ? 0 : batches_[*id].parentTid;
+	}
+
 	bool isRecorded(int childTid) const
 	{
 		auto id = childTid in ownerByChild_;
