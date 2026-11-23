@@ -427,8 +427,8 @@ class CodexAgent : DriverServedHistoryAgent
 	}
 
 	Promise!ThreadForkOutcome forkSession(CodexSession forkOwner, int childTid,
-		string sourceThreadId, string lastTurnId, ProcessLaunch childLaunch,
-		SessionConfig childConfig)
+		string sourceThreadId, string turnId, HistoryBoundaryKind boundaryKind,
+		ProcessLaunch childLaunch, SessionConfig childConfig)
 	{
 		enforce(forkOwner !is null && forkOwner.alive,
 			"Codex native fork requires a live parent session");
@@ -442,9 +442,19 @@ class CodexAgent : DriverServedHistoryAgent
 		tfp.threadId = sourceThreadId;
 		tfp.excludeTurns = true;
 		tfp.config = JSONFragment(buildConfigOverride(childTid, childConfig));
-		if (lastTurnId.length > 0)
+		if (turnId.length > 0)
 		{
-			tfp.lastTurnId = lastTurnId;
+			final switch (boundaryKind)
+			{
+			case HistoryBoundaryKind.user:
+				tfp.beforeTurnId = turnId;
+				break;
+			case HistoryBoundaryKind.agent_turn:
+				tfp.lastTurnId = turnId;
+				break;
+			case HistoryBoundaryKind.provisional_user:
+				assert(false, "A provisional user message cannot anchor a Codex fork");
+			}
 			tfp.model = childConfig.model.length > 0 ? childConfig.model : "codex-mini-latest";
 			tfp.cwd = childLaunch.workDir.length > 0
 				? childLaunch.workDir
@@ -1507,7 +1517,7 @@ unittest
 	drainNextTicks();
 	auto childConfig = sourceConfig;
 	auto fork = agent.forkSession(owner, 72, "source-thread",
-		"source-turn", childLaunch, childConfig);
+		"source-turn", HistoryBoundaryKind.agent_turn, childLaunch, childConfig);
 	auto forkRequest = connection.takeRequest("thread/fork");
 	assert(comparableConfig(forkRequest, 72) == expectedConfig);
 	auto forkParams = parseJSON(toJson(forkRequest.params));
@@ -1534,7 +1544,8 @@ unittest
 	drainNextTicks();
 	assert(forkSettled && outcome.ok && outcome.threadId == "child-thread");
 
-	agent.forkSession(owner, 73, "source-thread", null, childLaunch, childConfig)
+	agent.forkSession(owner, 73, "source-thread", null,
+		HistoryBoundaryKind.agent_turn, childLaunch, childConfig)
 		.then((ThreadForkOutcome backupOutcome) {
 			assert(backupOutcome.ok, backupOutcome.error);
 		}, (Exception e) { assert(false, e.msg); }).ignoreResult();
@@ -1548,11 +1559,33 @@ unittest
 	connection.respond(connection.takeRequest("thread/unsubscribe"), unsubscribed);
 	drainNextTicks();
 
+	bool userForkSettled;
+	agent.forkSession(owner, 75, "source-thread", "source-turn",
+		HistoryBoundaryKind.user, childLaunch, childConfig)
+		.then((ThreadForkOutcome userForkOutcome) {
+			assert(userForkOutcome.ok, userForkOutcome.error);
+			assert(userForkOutcome.threadId == "user-fork-thread");
+			userForkSettled = true;
+		}, (Exception e) { assert(false, e.msg); }).ignoreResult();
+	auto userForkRequest = connection.takeRequest("thread/fork");
+	auto userForkParams = parseJSON(toJson(userForkRequest.params));
+	assert(userForkParams["threadId"].str == "source-thread"
+		&& userForkParams["beforeTurnId"].str == "source-turn"
+		&& userForkParams["excludeTurns"].boolean
+		&& "lastTurnId" !in userForkParams.object
+		&& "path" !in userForkParams.object);
+	connection.respond(userForkRequest, threadResponse("user-fork-thread"));
+	drainNextTicks();
+	assert(!userForkSettled);
+	connection.respond(connection.takeRequest("thread/unsubscribe"), unsubscribed);
+	drainNextTicks();
+	assert(userForkSettled);
+
 	// Keep the app-server available after explicitly closing the fork owner.
 	auto reservation = server.reserveOperationRouteTid();
 	scope (exit) server.cancelOperationRouteReservation(reservation);
 	auto lateFork = agent.forkSession(owner, 74, "source-thread", "source-turn",
-		childLaunch, childConfig);
+		HistoryBoundaryKind.agent_turn, childLaunch, childConfig);
 	lateFork.then((ThreadForkOutcome lateOutcome) {
 	}, (Exception e) { assert(false, e.msg); }).ignoreResult();
 	auto lateForkRequest = connection.takeRequest("thread/fork");
@@ -3324,6 +3357,16 @@ unittest
 		== HistoryBoundary("before:turn-2", HistoryBoundaryKind.user));
 	assert(session.liveTurnIds.length == 2 && "turn-1" in session.liveTurnIds
 		&& "turn-2" in session.liveTurnIds);
+
+	session.handleTurnCompleted(jsonParse!CompletedNotification(
+		`{"params":{"threadId":"thread","turn":{"id":"turn-2","status":"completed"}}}`).params,
+		"completed");
+	enum contextPrefixedPrompt = "<environment_context>explain this marker";
+	echo("turn-3", contextPrefixedPrompt);
+	auto confirmed = jsonParse!ItemStartedEvent(emitted[$ - 1].translated);
+	assert(confirmed.correlation_id == contextPrefixedPrompt ~ "-nonce");
+	assert(!confirmed.is_meta, "A confirmed submission echo must remain non-meta");
+	assert(confirmed.history_boundary == HistoryBoundary.init);
 }
 
 unittest
@@ -4413,6 +4456,7 @@ unittest
 	import std.string : lineSplitter;
 	import cydo.agent.drivers.codex.thread_items_fixtures : nineTurnItemsPage,
 		nineTurnLiveNotifications, nineTurnTurnsPage;
+	import cydo.protocol : ItemStartedEvent;
 
 	void drainPromiseNextTicks()
 	{
@@ -4450,9 +4494,6 @@ unittest
 				continue;
 			if (type == "item/started" && json["item_type"].str != "user_message")
 				json["text"] = texts[json["item_id"].str];
-			// Replay carries bootstrap metadata in JSON, live in the event envelope.
-			if (event.isContextBootstrap)
-				json["is_meta"] = true;
 			if (type == "item/completed")
 				json.object.remove("text");
 			if (type == "turn/stop")
@@ -4491,9 +4532,8 @@ unittest
 	assert(items[0].turnId == turns[0].id && items[0].item.type == "userMessage");
 	auto bootstrap = items[0];
 	bootstrap.item.id = "bootstrap";
-	enum bootstrapText = "[SYSTEM: Session start: test]";
-	bootstrap.item.content = jsonParse!SO(
-		`[{"type":"text","text":"[SYSTEM: Session start: test]","text_elements":[]}]`);
+	enum bootstrapText = "[SYSTEM: Session start: test]\n\nfirst prompt\n\n[/SYSTEM]";
+	bootstrap.item.content = jsonParse!SO(toJson([ContentBlock("text", bootstrapText)]));
 	foreach (line; nineTurnLiveNotifications.lineSplitter)
 	{
 		auto notification = jsonParse!Notification(line);
@@ -4522,6 +4562,9 @@ unittest
 						session.expectedEchoMessages_ ~= context;
 						session.handleItemStarted(bootstrapStarted, toJson(bootstrapStarted));
 						drainPromiseNextTicks();
+						auto bootstrapEvent = jsonParse!ItemStartedEvent(live[$ - 1].translated);
+						assert(!bootstrapEvent.is_meta
+							&& bootstrapEvent.history_boundary == HistoryBoundary.init);
 					}
 					auto text = userMessageText(started.item);
 					auto submission = new CodexSession.PendingMessage(

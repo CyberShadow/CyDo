@@ -1,3 +1,5 @@
+/** @vitest-environment jsdom */
+
 import { describe, expect, it } from "vitest";
 import renderToString from "preact-render-to-string";
 import { MessageList } from "./MessageList";
@@ -311,47 +313,116 @@ describe("MessageList parse-error rendering", () => {
     );
   });
 
-  it("gates the first user message by its own policy entry", () => {
-    const first: DisplayMessage = {
-      id: "u1",
+  it.each([
+    { firstHasAnchor: true, firstIsMeta: false },
+    { firstHasAnchor: false, firstIsMeta: false },
+    { firstHasAnchor: false, firstIsMeta: true },
+  ])(
+    "classifies first-user actions with anchor=$firstHasAnchor and meta=$firstIsMeta",
+    ({ firstHasAnchor, firstIsMeta }) => {
+      const messages: DisplayMessage[] = [
+        {
+          id: "u1",
+          type: "user",
+          content: [{ type: "text", text: "opening message" }],
+          seq: 1,
+          isMeta: firstIsMeta,
+        },
+        {
+          id: "u2",
+          type: "user",
+          content: [{ type: "text", text: "selected prompt" }],
+          seq: 2,
+        },
+        {
+          id: "u3",
+          type: "user",
+          content: [{ type: "text", text: "later prompt" }],
+          seq: 3,
+        },
+      ];
+      const userStarted = (anchor: string): AgnosticEvent => ({
+        type: "item/started",
+        item_type: "user_message",
+        item_id: "",
+        history_boundary: { anchor, kind: "user" },
+      });
+      const root = document.createElement("div");
+      root.innerHTML = renderToString(
+        <MessageList
+          taskTid={1}
+          messages={messages}
+          replacementEvents={
+            new Map([
+              ...(firstHasAnchor ? [[1, userStarted("a1")] as const] : []),
+              [2, userStarted("a2")],
+              [3, userStarted("a3")],
+            ])
+          }
+          historyOperations={{
+            fork: { first_user: "jsonl", user: "jsonl" },
+            undo: { user: "jsonl" },
+          }}
+          blocks={new Map()}
+          isProcessing={false}
+          bandStatus=""
+          onFork={() => {}}
+          onUndo={() => {}}
+        />,
+      );
+      const wrappers = [...root.querySelectorAll(".message-wrapper")];
+      expect(
+        wrappers.map((wrapper) => [
+          wrapper.querySelectorAll(".fork-btn").length,
+          wrapper.querySelectorAll(".undo-btn").length,
+        ]),
+      ).toEqual([
+        [firstHasAnchor ? 1 : 0, 0],
+        [1, firstIsMeta ? 0 : 1],
+        [1, 1],
+      ]);
+    },
+  );
+
+  it("withholds a Codex fork at the first anchored prompt", () => {
+    const anchors = ["before:first", "before:later"];
+    const messages: DisplayMessage[] = anchors.map((anchor, index) => ({
+      id: anchor,
       type: "user",
-      content: [{ type: "text", text: "first prompt" }],
-      seq: 1,
-    };
-    const second: DisplayMessage = {
-      id: "u2",
-      type: "user",
-      content: [{ type: "text", text: "second prompt" }],
-      seq: 2,
-    };
-    const userStarted = (anchor: string): AgnosticEvent => ({
-      type: "item/started",
-      item_type: "user_message",
-      item_id: "",
-      history_boundary: { anchor, kind: "user" },
-    });
-    const html = renderToString(
+      content: [{ type: "text", text: anchor }],
+      seq: index + 1,
+    }));
+    const replacementEvents = new Map<number, AgnosticEvent>(
+      anchors.map((anchor, index) => [
+        index + 1,
+        {
+          type: "item/started",
+          item_id: anchor,
+          item_type: "user_message",
+          history_boundary: { anchor, kind: "user" },
+        },
+      ]),
+    );
+    const root = document.createElement("div");
+    root.innerHTML = renderToString(
       <MessageList
         taskTid={1}
-        messages={[first, second]}
-        replacementEvents={
-          new Map([
-            [1, userStarted("a1")],
-            [2, userStarted("a2")],
-          ])
-        }
-        historyOperations={{ fork: {}, undo: { user: "jsonl" } }}
+        messages={messages}
+        replacementEvents={replacementEvents}
+        historyOperations={{ fork: { user: "codex_native" }, undo: {} }}
         blocks={new Map()}
         isProcessing={false}
         bandStatus=""
         onFork={() => {}}
-        onUndo={() => {}}
       />,
     );
-    expect(html.match(/undo-btn/g)).toHaveLength(1);
-    expect(html.indexOf("undo-btn")).toBeGreaterThan(
-      html.indexOf("first prompt"),
-    );
+
+    const [first, later] = root.querySelectorAll(".message-wrapper");
+    expect(first?.querySelectorAll(".fork-btn")).toHaveLength(0);
+    expect(later?.querySelectorAll(".fork-btn")).toHaveLength(1);
+    expect(
+      later?.querySelector(".fork-btn")?.getAttribute("data-fork-anchor"),
+    ).toBe(anchors[1]);
   });
 
   it("renders undo without fork or checkpoint for a provisional user boundary", () => {

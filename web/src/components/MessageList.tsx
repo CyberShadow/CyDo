@@ -1178,15 +1178,15 @@ export function MessageList({
       };
     }, [composedMessages, blocks]);
 
-  // The conversation's first user message, which some agents can only undo
-  // in-process (HistoryOperationKinds.first_user).
-  const firstUserBoundaryAnchor = useMemo(() => {
-    for (const msg of topLevelMessages) {
-      const boundary = historyBoundaryOf(msg, replacementEvents);
-      if (boundary?.kind === "user") return boundary.anchor;
-    }
-    return undefined;
-  }, [topLevelMessages, replacementEvents]);
+  const firstUserMessage = topLevelMessages.find(
+    (msg) =>
+      msg.type === "user" &&
+      !msg.isMeta &&
+      !msg.isSynthetic &&
+      !msg.isSidechain &&
+      !msg.pending &&
+      !msg.parentToolUseId,
+  );
 
   return (
     <ReplacementEventsContext.Provider value={replacementEvents}>
@@ -1203,8 +1203,7 @@ export function MessageList({
             const boundary = historyBoundaryOf(msg, replacementEvents);
             const actionUuid = boundary?.anchor;
             const operationKind =
-              boundary?.kind === "user" &&
-              boundary.anchor === firstUserBoundaryAnchor
+              boundary?.kind === "user" && msg === firstUserMessage
                 ? "first_user"
                 : boundary?.kind;
             const isForkable =

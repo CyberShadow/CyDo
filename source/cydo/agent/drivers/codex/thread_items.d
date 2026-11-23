@@ -13,7 +13,8 @@ import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial, jsonPa
 import ae.utils.time.types : AbsTime;
 
 import cydo.agent.drivers.codex.app_server : extractCodexErrorMessage;
-import cydo.agent.drivers.codex.rollout : extractCommandInput, isCodexContextOnlyUserText;
+import cydo.agent.drivers.codex.rollout : extractCommandInput, isCodexContextOnlyUserText,
+	isCodexSessionStartPrompt;
 import cydo.agent.drivers.codex.rpc : SO, ThreadItem, ThreadItemEntry, ThreadMetadata, Turn;
 import cydo.protocol : ContentBlock, HistoryBoundary, HistoryBoundaryKind,
 	ItemCompletedEvent, ItemResultEvent, ItemStartedEvent, SessionCompactedEvent,
@@ -515,10 +516,10 @@ TranslatedEvent[] translateThreadHistory(ThreadMetadata thread, Turn[] turns,
 						stop();
 					string[] unrecognized;
 					auto ev = userMessageEvent(item, unrecognized);
-					// Context CyDo or Codex put into the conversation is not
-					// a message of the user's, and not a place to cut it.
-					ev.is_meta = isCodexContextOnlyUserText(userMessageText(item));
-					attachUserBoundary(ev, turn.id, ev.is_meta, seenUserMessage);
+					auto text = userMessageText(item);
+					auto context = isCodexContextOnlyUserText(text);
+					ev.is_meta = context && !isCodexSessionStartPrompt(text);
+					attachUserBoundary(ev, turn.id, context, seenUserMessage);
 					events ~= TranslatedEvent(toJson(ev), rawItem, ts);
 					foreach (event; unrecognized)
 						events ~= TranslatedEvent(event, rawItem, ts);
@@ -1082,6 +1083,11 @@ unittest
 		`user [reply with "reasoning-fixture"]`,
 		"turn success",
 	]);
+
+	context[3].item.content = jsonParse!SO(
+		`[{"type":"text","text":"<environment_context>context</environment_context>"}]`);
+	auto replayed = outline(translateThreadHistory(fixtureThread(), turns, context), turns);
+	assert(replayed[8] == "user [<environment_context>context</environment_context>] meta");
 }
 
 // An automatic compaction is an item of the turn that triggered it.

@@ -24,7 +24,8 @@ import {
   visibleHistory,
   installCydoE2eBridge,
   forkThroughBridge,
-  codexRolloutRecords,
+  historyPathForTask,
+  readHistoryFile,
 } from "./fixtures";
 import type { Page } from "@playwright/test";
 
@@ -117,6 +118,27 @@ async function forkFromMessage(page: Page, selector: string, text: string) {
   await fork.click();
 }
 
+function observeSuccessfulTurns(page: Page) {
+  const counts = new Map<number, number>();
+  page.on("websocket", (ws) => {
+    const replaying = new Set<number>();
+    ws.on("framereceived", ({ payload }) => {
+      const { type, tid, event } = JSON.parse(payload.toString());
+      if (type === "task_history_start") replaying.add(tid);
+      if (type === "task_history_end") replaying.delete(tid);
+      if (
+        !replaying.has(tid) &&
+        event?.type === "turn/result" &&
+        event.subtype === "success"
+      ) {
+        counts.set(tid, (counts.get(tid) ?? 0) + 1);
+      }
+    });
+  });
+  return (tid: string | number, count: number) =>
+    expect.poll(() => counts.get(Number(tid)) ?? 0).toBe(count);
+}
+
 async function undoUserMessage(page: Page, text: string) {
   const message = messageWrapper(
     page,
@@ -134,13 +156,11 @@ test(
   "codex fork from older turn truncates later history and isolates branches",
   { tag: "@codex-only" },
   async ({ page, agentType }) => {
-    await installCydoE2eBridge(page);
     const taskCreatedEvents: Array<{
       tid: number;
       parent_tid?: number;
       relation_type?: string;
     }> = [];
-    const frames: any[] = [];
     const frameWaiters: Array<{
       predicate: (frame: any) => boolean;
       resolve: (frame: any) => void;
@@ -152,7 +172,6 @@ test(
       ws.on("framereceived", (event) => {
         try {
           const data = JSON.parse(event.payload.toString());
-          frames.push(data);
           for (let index = frameWaiters.length - 1; index >= 0; index--) {
             const waiter = frameWaiters[index];
             if (waiter.predicate(data)) {
@@ -173,25 +192,6 @@ test(
       });
     });
 
-    // Codex names a turn when it accepts the message that starts it, so the
-    // user message arrives with its boundary.
-    const isCanonicalUserBoundary = (frame: any, tid: number, prompt: string) =>
-      frame?.tid === tid &&
-      frame?.event?.type === "item/started" &&
-      frame?.event?.item_type === "user_message" &&
-      !frame?.event?.pending &&
-      !frame?.event?.is_meta &&
-      !frame?.event?.is_synthetic &&
-      !frame?.event?.is_sidechain &&
-      Array.isArray(frame?.event?.content) &&
-      frame.event.content.length === 1 &&
-      frame.event.content[0]?.type === "text" &&
-      frame.event.content[0]?.text === prompt &&
-      frame?.event?.history_boundary?.kind === "user";
-    const isSuccessfulTurn = (frame: any, tid: number) =>
-      frame?.tid === tid &&
-      frame?.event?.type === "turn/result" &&
-      frame?.event?.subtype === "success";
     const isHistoryEnd = (frame: any, tid: number) =>
       frame?.type === "task_history_end" && frame?.tid === tid;
 
@@ -306,36 +306,29 @@ test(
       ),
     ).toHaveCount(0);
 
+    const waitForSuccessfulTurns = observeSuccessfulTurns(page);
     await enterSession(page);
     const userBefore = await snapshotTids(page);
     const offlineUser = "FORK_OFFLINE_USER";
     const offlineResponse = "FORK_OFFLINE_USER_RESPONSE";
-    const offlineTail = "FORK_OFFLINE_USER_TAIL";
+    const offlineTail = "FORK_OFFLINE_LAST_TURN";
     await sendMessage(page, `Reply exactly with ${turnOne}`);
     const offlineParentTid = await waitForNewTid(page, userBefore);
     await expect(activeAssistantText(page, turnOne)).toBeVisible({
       timeout: responseTimeout(agentType),
     });
+    await waitForSuccessfulTurns(offlineParentTid, 1);
     const offlinePrompt = `Reply exactly with ${offlineResponse}. Marker ${offlineUser}`;
-    const offlineFrameStart = frames.length;
-    const offlineCanonical = nextFrame((frame) =>
-      isCanonicalUserBoundary(frame, Number(offlineParentTid), offlinePrompt),
-    );
-    const offlineTurnComplete = nextFrame((frame) =>
-      isSuccessfulTurn(frame, Number(offlineParentTid)),
-    );
     await sendMessage(page, offlinePrompt);
     await expect(activeAssistantText(page, offlineResponse)).toBeVisible({
       timeout: responseTimeout(agentType),
     });
-    await Promise.all([offlineCanonical, offlineTurnComplete]);
-    // The frames of this turn as the session emitted it: the reloads below
-    // replay the message, boundary included.
-    const offlineFrameEnd = frames.length;
+    await waitForSuccessfulTurns(offlineParentTid, 2);
     await sendMessage(page, `Reply exactly with ${offlineTail}`);
     await expect(activeAssistantText(page, offlineTail)).toBeVisible({
       timeout: responseTimeout(agentType),
     });
+    await waitForSuccessfulTurns(offlineParentTid, 3);
     await killSession(page, agentType);
     const offlineSetupHistoryEnd = nextFrame((frame) =>
       isHistoryEnd(frame, Number(offlineParentTid)),
@@ -348,47 +341,47 @@ test(
     });
     const offlineParentHistory = await activePersistedMessages(page);
     const offlineTids = await snapshotTids(page);
-    const taskCreatedBeforeUnsupported = taskCreatedEvents.length;
-    const offlineUserMessage = messageWrapper(
-      page,
-      ".user-message",
-      offlineUser,
-    );
-    await offlineUserMessage.hover();
-    await expect(offlineUserMessage.locator(".fork-btn")).toHaveCount(0);
-    const userBoundaries = frames
-      .slice(offlineFrameStart, offlineFrameEnd)
-      .filter((frame) =>
-        isCanonicalUserBoundary(frame, Number(offlineParentTid), offlinePrompt),
-      );
-    expect(userBoundaries).toHaveLength(1);
-    const offlineUserAnchor = userBoundaries[0].event.history_boundary.anchor;
-    expect(offlineUserAnchor).toMatch(/^before:.+$/);
-    const offlineRollout = codexRolloutRecords(Number(offlineParentTid));
-    await forkThroughBridge(page, Number(offlineParentTid), offlineUserAnchor!);
-    const forkError = page.locator(".command-error-dialog");
-    await expect(forkError).toContainText(
-      "Fork failed: message UUID not found in task history",
-    );
-    await forkError.getByRole("button", { name: "Dismiss" }).click();
-    await expect(page).toHaveURL(new RegExp(`/task/${offlineParentTid}$`));
-    await expect(activeAssistantText(page, offlineTail)).toBeVisible({
+    const offlineHistoryPath = historyPathForTask(Number(offlineParentTid));
+    const offlineRollout = readHistoryFile(offlineHistoryPath);
+
+    await forkFromMessage(page, ".user-message", offlineUser);
+    const offlineForkTid = await waitForNewTid(page, offlineTids);
+    await expect(page).toHaveURL(new RegExp(`/task/${offlineForkTid}$`));
+    expect(taskCreatedEvents).toContainEqual({
+      tid: Number(offlineForkTid),
+      parent_tid: Number(offlineParentTid),
+      relation_type: "fork",
+    });
+    await expect(activeAssistantText(page, turnOne)).toBeVisible({
       timeout: responseTimeout(agentType),
     });
-    expect(
-      taskCreatedEvents
-        .slice(taskCreatedBeforeUnsupported)
-        .filter(
-          (event) =>
-            event.parent_tid === Number(offlineParentTid) &&
-            event.relation_type === "fork",
-        ),
-    ).toHaveLength(0);
-    expect(await snapshotTids(page)).toEqual(offlineTids);
+    await expect(
+      messageWrapper(page, ".user-message", offlineUser),
+    ).toHaveCount(0);
+    await expect(activeAssistantText(page, offlineResponse)).toHaveCount(0);
+    await expect(
+      messageWrapper(page, ".user-message", offlineTail),
+    ).toHaveCount(0);
+    await expect(activeAssistantText(page, offlineTail)).toHaveCount(0);
+    await expect(page.locator(".input-textarea:visible")).toHaveValue(
+      offlinePrompt,
+    );
+
+    await openTaskByTid(page, offlineParentTid);
+    await expect(page.locator(".btn-banner-archive:visible")).toBeVisible();
+    await expect(activeAssistantText(page, offlineTail)).toBeVisible();
     expect(await activePersistedMessages(page)).toEqual(offlineParentHistory);
-    expect(codexRolloutRecords(Number(offlineParentTid))).toEqual(
+    // The dead-source fork resumes the parent, which records its settings.
+    const offlineRolloutAfterFork = readHistoryFile(offlineHistoryPath);
+    expect(offlineRolloutAfterFork.slice(0, offlineRollout.length)).toBe(
       offlineRollout,
     );
+    const tail = offlineRolloutAfterFork.slice(offlineRollout.length);
+    expect(tail.split("\n")).toEqual([expect.any(String), ""]);
+    expect(JSON.parse(tail)).toMatchObject({
+      type: "event_msg",
+      payload: { type: "thread_settings_applied" },
+    });
     const offlineFinalHistoryEnd = nextFrame((frame) =>
       isHistoryEnd(frame, Number(offlineParentTid)),
     );
@@ -398,115 +391,112 @@ test(
     await expect(activeAssistantText(page, offlineTail)).toBeVisible({
       timeout: responseTimeout(agentType),
     });
-    expect(await snapshotTids(page)).toEqual(offlineTids);
-    expect(await activePersistedMessages(page)).toEqual(offlineParentHistory);
-    expect(codexRolloutRecords(Number(offlineParentTid))).toEqual(
-      offlineRollout,
+    expect(await snapshotTids(page)).toEqual(
+      new Set([...offlineTids, offlineForkTid]),
     );
+    expect(await activePersistedMessages(page)).toEqual(offlineParentHistory);
+    expect(readHistoryFile(offlineHistoryPath)).toBe(offlineRolloutAfterFork);
   },
 );
 
 test(
-  "codex does not offer user-boundary forks",
+  "codex forks a live task before a later user message and preserves it as the child draft",
   { tag: "@codex-only" },
   async ({ page, agentType }) => {
-    const currentUser = "FORK_CURRENT_USER";
-    const currentResponse = "FORK_CURRENT_RESPONSE";
-    const earlierUser = "FORK_EARLIER_USER";
-    const currentPrompt = `Reply exactly with ${currentResponse}. Marker ${currentUser}`;
-    await installCydoE2eBridge(page);
+    const earlierReply = "FORK_EARLIER_REPLY";
+    const earlierPrompt = `Reply exactly with ${earlierReply}`;
+    const laterReply = "FORK_LATER_REPLY";
+    const laterPrompt = `Reply exactly with ${laterReply}`;
     const taskCreatedEvents: Array<{
+      tid: number;
       parent_tid?: number;
       relation_type?: string;
     }> = [];
-    const frames: any[] = [];
     page.on("websocket", (ws) => {
-      ws.on("framereceived", (event) => {
-        try {
-          const frame = JSON.parse(event.payload.toString());
-          frames.push(frame);
-          if (frame.type === "task_created") taskCreatedEvents.push(frame);
-        } catch {}
+      ws.on("framereceived", ({ payload }) => {
+        const event = JSON.parse(payload.toString());
+        if (event.type === "task_created") taskCreatedEvents.push(event);
       });
     });
+
+    const waitForSuccessfulTurns = observeSuccessfulTurns(page);
+    const timeout = responseTimeout(agentType);
     await enterSession(page);
     const before = await snapshotTids(page);
-
-    await sendMessage(page, `Reply exactly with ${earlierUser}`);
+    await sendMessage(page, earlierPrompt);
     const parentTid = await waitForNewTid(page, before);
-    await expect(activeAssistantText(page, earlierUser)).toBeVisible({
-      timeout: responseTimeout(agentType),
+    await expect(activeAssistantText(page, earlierReply)).toBeVisible({
+      timeout,
     });
-    await expect
-      .poll(() =>
-        frames.some(
-          (frame) =>
-            frame?.tid === Number(parentTid) &&
-            frame?.event?.type === "turn/result" &&
-            frame?.event?.subtype === "success",
-        ),
-      )
-      .toBe(true);
-    const currentFrameStart = frames.length;
-    await sendMessage(page, currentPrompt);
-    await expect(activeAssistantText(page, currentResponse)).toBeVisible({
-      timeout: responseTimeout(agentType),
-    });
-    await expect
-      .poll(() =>
-        frames
-          .slice(currentFrameStart)
-          .some(
-            (frame) =>
-              frame?.tid === Number(parentTid) &&
-              frame?.event?.type === "turn/result" &&
-              frame?.event?.subtype === "success",
-          ),
-      )
-      .toBe(true);
-    let userAnchor: string | undefined;
-    await expect
-      .poll(() => {
-        const matches = frames.filter(
-          (frame) =>
-            frame?.tid === Number(parentTid) &&
-            frame?.event?.type === "item/started" &&
-            frame?.event?.item_type === "user_message" &&
-            !frame.event?.pending &&
-            !frame.event?.is_meta &&
-            !frame.event?.is_synthetic &&
-            !frame.event?.is_sidechain &&
-            Array.isArray(frame.event?.content) &&
-            frame.event.content.length === 1 &&
-            frame.event.content[0]?.type === "text" &&
-            frame.event.content[0]?.text === currentPrompt &&
-            frame?.event?.history_boundary?.kind === "user",
-        );
-        userAnchor = matches[0]?.event?.history_boundary?.anchor;
-        return matches.length;
-      })
-      .toBe(1);
-    expect(userAnchor).toMatch(/^before:.+$/);
-
-    const userMessage = messageWrapper(page, ".user-message", currentUser);
-    await userMessage.hover();
-    await expect(userMessage.locator(".fork-btn")).toHaveCount(0);
-    const tidsBeforeFork = await snapshotTids(page);
-
-    await forkThroughBridge(page, Number(parentTid), userAnchor!);
-    const forkError = page.locator(".command-error-dialog");
-    await expect(forkError).toContainText(
-      "Fork failed: message UUID not found in task history",
-    );
-    await forkError.getByRole("button", { name: "Dismiss" }).click();
-    expect(await snapshotTids(page)).toEqual(tidsBeforeFork);
-    expect(
-      taskCreatedEvents.filter(
-        (event) =>
-          event.parent_tid === Number(parentTid) &&
-          event.relation_type === "fork",
+    await expect(
+      messageWrapper(page, ".assistant-message", earlierReply).locator(
+        ".fork-btn",
       ),
-    ).toHaveLength(0);
+    ).toHaveCount(1);
+    await waitForSuccessfulTurns(parentTid, 1);
+    await sendMessage(page, laterPrompt);
+    await waitForSuccessfulTurns(parentTid, 2);
+    await expect(activeAssistantText(page, laterReply)).toBeVisible({
+      timeout,
+    });
+
+    const laterUserMessage = messageWrapper(page, ".user-message", laterPrompt);
+    await expect(laterUserMessage.locator(".fork-btn")).toHaveCount(1);
+    // CyDo's Session start bootstrap has no history boundary.
+    const bootstrap = messageWrapper(page, ".user-message", earlierPrompt);
+    await bootstrap.hover();
+    await expect(bootstrap.locator(".fork-btn")).toHaveCount(0);
+    await expect(page.locator(".btn-banner-end:visible")).toBeVisible();
+    const parentHistory = await activePersistedMessages(page);
+
+    const tidsBeforeFork = await snapshotTids(page);
+    await forkFromMessage(page, ".user-message", laterPrompt);
+    const childTid = await waitForNewTid(page, tidsBeforeFork);
+    await expect(page).toHaveURL(new RegExp(`/task/${childTid}$`));
+    expect(taskCreatedEvents).toContainEqual(
+      expect.objectContaining({
+        tid: Number(childTid),
+        parent_tid: Number(parentTid),
+        relation_type: "fork",
+      }),
+    );
+
+    const input = page.locator(".input-textarea:visible");
+    await expect(input).toHaveValue(laterPrompt);
+    await expect(
+      messageWrapper(page, ".user-message", earlierPrompt),
+    ).toBeVisible({ timeout });
+    await expect(activeAssistantText(page, earlierReply)).toBeVisible({
+      timeout,
+    });
+    await expect(laterUserMessage).toHaveCount(0);
+    await expect(activeAssistantText(page, laterReply)).toHaveCount(0);
+
+    await page.reload();
+    await expect(page).toHaveURL(new RegExp(`/task/${childTid}$`));
+    await expect(input).toHaveValue(laterPrompt);
+    await expect(activeAssistantText(page, earlierReply)).toBeVisible({
+      timeout,
+    });
+    await expect(laterUserMessage).toHaveCount(0);
+    await expect(activeAssistantText(page, laterReply)).toHaveCount(0);
+
+    await resumeIfNeeded(page);
+    await expect(input).toHaveValue(laterPrompt);
+    await page.locator(".btn-send:visible").click();
+    await waitForSuccessfulTurns(childTid, 1);
+    await expect(laterUserMessage).toBeVisible({ timeout });
+    await expect(activeAssistantText(page, laterReply)).toBeVisible({
+      timeout,
+    });
+
+    await openTaskByTid(page, parentTid);
+    await expect(activeAssistantText(page, laterReply)).toBeVisible({
+      timeout,
+    });
+    await expect(page.locator(".btn-banner-end:visible")).toBeVisible();
+    await expect(input).toHaveValue("");
+    expect(await activePersistedMessages(page)).toEqual(parentHistory);
   },
 );
 
@@ -529,6 +519,7 @@ test(
       });
     });
 
+    const waitForSuccessfulTurns = observeSuccessfulTurns(page);
     await enterSession(page);
     const before = await snapshotTids(page);
     await sendMessage(page, `Reply exactly with ${marker}`);
@@ -536,8 +527,7 @@ test(
     await expect(activeAssistantText(page, marker)).toBeVisible({
       timeout: responseTimeout(agentType),
     });
-    // The turn is over once its end is known, which is when the reply can
-    // be forked at: the transcript does not change after that.
+    await waitForSuccessfulTurns(parentTid, 1);
     await expect(
       messageWrapper(page, ".assistant-message", marker).locator(".fork-btn"),
     ).toHaveCount(1);
@@ -953,6 +943,7 @@ codexProfileTest(
     const cwd = "/tmp/cydo-test-workspace";
     const timeout = responseTimeout("codex");
 
+    const waitForSuccessfulTurns = observeSuccessfulTurns(page);
     await enterSession(page);
     const before = await snapshotTids(page);
     await sendMessage(page, `Reply exactly with ${parentMarker}`);
@@ -960,7 +951,9 @@ codexProfileTest(
     await expect(activeAssistantText(page, parentMarker)).toBeVisible({
       timeout,
     });
+    await waitForSuccessfulTurns(parentTid, 1);
     await sendMessage(page, `Reply exactly with ${laterMarker}`);
+    await waitForSuccessfulTurns(parentTid, 2);
     await expect(activeAssistantText(page, laterMarker)).toBeVisible({
       timeout,
     });
@@ -1030,6 +1023,7 @@ codexProfileTest(
       await expect(sendBtn).toBeEnabled();
       await sendBtn.click();
     }).toPass();
+    await waitForSuccessfulTurns(forkTid, 1);
     await expect(activeAssistantText(page, childMarker)).toBeVisible({
       timeout,
     });

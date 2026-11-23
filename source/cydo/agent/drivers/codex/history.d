@@ -9,7 +9,8 @@ import ae.utils.json : jsonParse, toJson;
 import ae.utils.promise : Promise;
 
 import cydo.agent.contract : DriverHistory, HistoryReplay;
-import cydo.agent.drivers.codex.rollout : computeRollbackSkipLines, parseRolloutLineEvidence;
+import cydo.agent.drivers.codex.rollout : computeRollbackSkipLines,
+	isCodexSessionStartPrompt, parseRolloutLineEvidence;
 import cydo.agent.drivers.codex.rpc : ThreadItemEntry, ThreadItemsListParams,
 	ThreadItemsListResult, ThreadMetadata, ThreadMetadataResult, ThreadReadParams,
 	ThreadTurnsListParams, ThreadTurnsListResult, Turn;
@@ -181,7 +182,8 @@ TranslatedEvent[] decodeLegacyRollout(string content, const bool[string] liveTur
 			&& evidence.eventMessage == pendingUserText)
 		{
 			auto user = jsonParse!ItemStartedEvent(events[pendingUser].translated);
-			attachUserBoundary(user, turnId, user.is_meta, seenUserMessage);
+			attachUserBoundary(user, turnId,
+				user.is_meta || isCodexSessionStartPrompt(pendingUserText), seenUserMessage);
 			events[pendingUser].translated = toJson(user);
 		}
 		pendingUser = -1;

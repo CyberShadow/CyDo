@@ -9,7 +9,7 @@ import std.string : representation;
 
 import ae.net.http.websocket : WebSocketAdapter;
 import ae.sys.data : Data;
-import ae.utils.json : jsonParse, toJson;
+import ae.utils.json : JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
 import ae.utils.statequeue : StateQueue;
 
@@ -25,10 +25,10 @@ import cydo.domain.tasks.model : ArchiveState, HistoryStore, NativeUndoState, Er
 	ProcessState, TaskCreatedMessage, TaskData, TaskStatus, UndoPreviewMessage,
 	UndoResultMessage, Watermark, WsMessage, watermarkFromPath;
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
-import cydo.protocol : HistoryBoundary, HistoryBoundaryKind;
+import cydo.protocol : HistoryBoundary, HistoryBoundaryKind, ContentBlock, extractContentText;
 import cydo.workflow.history.jsonl_edit : replaceUserMessageContent;
 import cydo.workflow.history.operations : NativeSessionState, HistoryOperation,
-	HistoryOperationMechanism, allowsFileRevert, allowsOperation, operationMechanism,
+	HistoryBoundaryEvent, HistoryOperationMechanism, allowsFileRevert, allowsOperation, operationMechanism,
 	selectHistoryOperations;
 import cydo.workflow.history.jsonl_store : countLinesAfterForkId,
 	editJsonlMessage, forkTask, HistoryForkDestination, spliceJsonlByLine,
@@ -534,13 +534,14 @@ private:
 		string emptyTitle;
 		string relationType;
 		string failurePrefix;
+		string draft;
 	}
 
 	private alias CodexNativeChildMaterialized =
 		void delegate(int childTid, string workspace, string projectPath);
 
 	void beginCodexNativeFork(WebSocketAdapter ws, int tid, HistoryAccess source,
-		HistoryBoundary boundary, CodexAgent ca, CodexSession forkOwner,
+		HistoryBoundary boundary, string prompt, CodexAgent ca, CodexSession forkOwner,
 		CodexForkSourceOperation operation)
 	{
 		CodexNativeChildSpec childSpec;
@@ -548,9 +549,10 @@ private:
 		childSpec.emptyTitle = "(fork)";
 		childSpec.relationType = "fork";
 		childSpec.failurePrefix = "Fork failed";
+		childSpec.draft = prompt;
 		materializeCodexNativeChild(
 			MutationReplySocket((Data data) => ws.send(data)), tid, source,
-			codexTurnId(boundary), ca, forkOwner, operation, childSpec,
+			codexTurnId(boundary), boundary.kind, ca, forkOwner, operation, childSpec,
 			(int childTid, string workspace, string projectPath) {
 				host_.broadcastTaskCreated(TaskCreatedMessage("task_created", childTid,
 					workspace, projectPath, tid, "fork"));
@@ -561,7 +563,7 @@ private:
 	}
 
 	void materializeCodexNativeChild(MutationReplySocket ws, int tid,
-		HistoryAccess source, string lastTurnId, CodexAgent ca,
+		HistoryAccess source, string turnId, HistoryBoundaryKind boundaryKind, CodexAgent ca,
 		CodexSession forkOwner, CodexForkSourceOperation operation,
 		CodexNativeChildSpec childSpec,
 		CodexNativeChildMaterialized onMaterialized, void delegate() onFailure = null)
@@ -649,6 +651,9 @@ private:
 			newTd.lastActive = newTd.createdAt;
 			host_.setRelationType(childTid, childSpec.relationType);
 			host_.setTitle(childTid, newTd.title);
+			newTd.draft = childSpec.draft;
+			if (newTd.draft.length > 0)
+				host_.persistence().setDraft(childTid, newTd.draft);
 			host_.putTask(childTid, move(newTd));
 			auto child = host_.getTask(childTid);
 			assert(child !is null, "Fork child task must exist after insertion");
@@ -666,7 +671,7 @@ private:
 				"Codex native fork child launch must use the captured source profile");
 
 			auto fork = ca.forkSession(forkOwner, childTid, source.sessionId,
-				lastTurnId, childLaunch, launch.sessionConfig);
+				turnId, boundaryKind, childLaunch, launch.sessionConfig);
 			fork.then((ThreadForkOutcome outcome) {
 				if (settled)
 					return;
@@ -725,8 +730,8 @@ private:
 		childSpec.failurePrefix = "Undo failed: pre-undo backup";
 		void materialize(CodexSession forkOwner, CodexForkSourceOperation operation)
 		{
-			materializeCodexNativeChild(ws, tid, source, null, codex, forkOwner,
-				operation, childSpec,
+			materializeCodexNativeChild(ws, tid, source, null, HistoryBoundaryKind.agent_turn,
+				codex, forkOwner, operation, childSpec,
 				(int childTid, string workspace, string projectPath) {
 					host_.broadcastTaskCreated(TaskCreatedMessage("task_created", childTid,
 						workspace, projectPath, tid, "undo-backup"));
@@ -788,40 +793,36 @@ private:
 	}
 
 	/// The boundary `anchor` names in a loaded history.
-	/// `opensConversation`: no other user boundary precedes it.
+	/// `opensConversation`: no user message precedes it.
 	/// `userBoundariesFrom`: the user boundaries from it on, itself included.
 	static bool resolveLoadedBoundary(ref HistoryStore history, string anchor,
-		out HistoryBoundary boundary, out bool opensConversation, out int userBoundariesFrom)
+		out HistoryBoundary boundary, out bool opensConversation, out int userBoundariesFrom,
+		out string matchedEvent)
 	{
 		import ae.utils.array : as;
-		import ae.utils.json : JSONOptional, JSONPartial;
 
 		if (anchor.length == 0)
 			return false;
-		bool found;
-		int userBoundariesBefore;
+		bool found, userBefore;
 		foreach (ref entry; history)
 		{
-			HistoryBoundary current;
+			HistoryBoundaryEvent probe;
 			entry.enter((scope const(ubyte)[] bytes) {
-				@JSONPartial static struct Probe
-				{
-					@JSONOptional HistoryBoundary history_boundary;
-				}
-				current = jsonParse!Probe(
-					extractEventFromEnvelope(bytes.as!(char[])).idup).history_boundary;
+				auto event = extractEventFromEnvelope(bytes.as!(char[]));
+				probe = jsonParse!HistoryBoundaryEvent(event);
+				if (!found && probe.history_boundary.anchor == anchor)
+					matchedEvent = event.idup;
 			});
-			if (current.anchor.length == 0)
-				continue;
+			auto current = probe.history_boundary;
 			if (!found && current.anchor == anchor)
 			{
 				found = true;
 				boundary = current;
-				opensConversation = current.kind == HistoryBoundaryKind.user
-					&& userBoundariesBefore == 0;
+				opensConversation = current.kind == HistoryBoundaryKind.user && !userBefore;
 			}
-			if (current.kind == HistoryBoundaryKind.user)
-				(found ? userBoundariesFrom : userBoundariesBefore)++;
+			userBefore = userBefore || probe.isConversationUser;
+			if (found && current.anchor.length > 0 && current.kind == HistoryBoundaryKind.user)
+				userBoundariesFrom++;
 		}
 		return found;
 	}
@@ -850,21 +851,33 @@ private:
 			HistoryBoundary boundary;
 			bool opensConversation;
 			int userBoundariesFrom;
+			string matchedEvent;
 			if (!resolveLoadedBoundary(td.history, anchor, boundary, opensConversation,
-				userBoundariesFrom))
+				userBoundariesFrom, matchedEvent))
 				return refuse();
 			auto operations = selectHistoryOperations(ca.driver,
 				host_.nativeSessionState(tid), host_.servedHistoryMode(tid));
 			if (!allowsOperation(boundary, opensConversation, operations, HistoryOperation.fork))
 				return refuse();
+			string prompt;
+			if (boundary.kind == HistoryBoundaryKind.user)
+			{
+				@JSONPartial static struct UserPrompt
+				{
+					@JSONOptional ContentBlock[] content;
+					@JSONOptional string text;
+				}
+				auto item = jsonParse!UserPrompt(matchedEvent);
+				prompt = item.content.length > 0 ? extractContentText(item.content) : item.text;
+			}
 			if (auto owner = cast(CodexSession) host_.sessionForTask(tid))
 			{
-				beginCodexNativeFork(ws, tid, source, boundary, ca, owner, null);
+				beginCodexNativeFork(ws, tid, source, boundary, prompt, ca, owner, null);
 				return;
 			}
 			withCodexOperation(MutationReplySocket((Data data) => ws.send(data)), tid, source,
 				"Fork failed", (CodexSession owner, CodexForkSourceOperation operation) {
-					beginCodexNativeFork(ws, tid, source, boundary, ca, owner, operation);
+					beginCodexNativeFork(ws, tid, source, boundary, prompt, ca, owner, operation);
 				});
 		});
 	}
@@ -884,8 +897,9 @@ private:
 			HistoryBoundary boundary;
 			bool opensConversation;
 			int userBoundariesFrom;
+			string matchedEvent;
 			if (!resolveLoadedBoundary(td.history, json.anchor, boundary, opensConversation,
-				userBoundariesFrom))
+				userBoundariesFrom, matchedEvent))
 				return fail("UUID not found in task history");
 			auto operations = selectHistoryOperations(access.agent.driver,
 				host_.nativeSessionState(tid), host_.servedHistoryMode(tid));
@@ -1731,14 +1745,16 @@ unittest
 	task.agentName = "codex";
 	task.agentSessionId = "thread";
 	ubyte mode = CodexHistoryMode.paginated;
-	void loadHistory()
+	void loadHistory(bool firstUserAnchored = true)
 	{
 		task.history.reset(Watermark.driverServed());
 		LoadedHistory loaded;
 		foreach (event; [
-			`{"type":"item/started","item_type":"user_message","history_boundary":{"anchor":"before:t1","kind":"user"}}`,
+			firstUserAnchored
+				? `{"type":"item/started","item_type":"user_message","history_boundary":{"anchor":"before:t1","kind":"user"}}`
+				: `{"type":"item/started","item_type":"user_message"}`,
 			`{"type":"turn/stop","history_boundary":{"anchor":"through:t1","kind":"agent_turn"}}`,
-			`{"type":"item/started","item_type":"user_message","history_boundary":{"anchor":"before:t2","kind":"user"}}`,
+			`{"type":"item/started","item_type":"user_message","item_id":"u2","content":[{"type":"text","text":"second prompt"}],"history_boundary":{"anchor":"before:t2","kind":"user"}}`,
 			`{"type":"item/started","item_type":"user_message"}`,
 			`{"type":"turn/stop","history_boundary":{"anchor":"through:t2","kind":"agent_turn"}}`,
 		])
@@ -1755,19 +1771,26 @@ unittest
 	HistoryBoundary boundary;
 	bool opensConversation;
 	int userBoundariesFrom;
+	string matchedEvent;
 	assert(TaskMutationService.resolveLoadedBoundary(task.history, "before:t1", boundary,
-		opensConversation, userBoundariesFrom));
+		opensConversation, userBoundariesFrom, matchedEvent));
 	assert(boundary.kind == HistoryBoundaryKind.user && opensConversation
 		&& userBoundariesFrom == 2);
 	assert(TaskMutationService.resolveLoadedBoundary(task.history, "before:t2", boundary,
-		opensConversation, userBoundariesFrom));
+		opensConversation, userBoundariesFrom, matchedEvent));
 	assert(!opensConversation && userBoundariesFrom == 1);
 	assert(TaskMutationService.resolveLoadedBoundary(task.history, "through:t2", boundary,
-		opensConversation, userBoundariesFrom));
+		opensConversation, userBoundariesFrom, matchedEvent));
 	assert(boundary.kind == HistoryBoundaryKind.agent_turn && userBoundariesFrom == 0);
 	foreach (forged; ["", "before:t3", "through:t", "line:2"])
 		assert(!TaskMutationService.resolveLoadedBoundary(task.history, forged, boundary,
-			opensConversation, userBoundariesFrom));
+			opensConversation, userBoundariesFrom, matchedEvent));
+
+	loadHistory(false);
+	assert(TaskMutationService.resolveLoadedBoundary(task.history, "before:t2", boundary,
+		opensConversation, userBoundariesFrom, matchedEvent));
+	assert(!opensConversation && userBoundariesFrom == 1);
+	loadHistory();
 
 	auto session = new StubCodexSession;
 	bool alive = true;

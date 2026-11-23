@@ -132,13 +132,34 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
     timeout: responseTimeout(agentType),
   });
 
+  const parentTid = await page
+    .locator(".sidebar-item.active[data-tid]")
+    .getAttribute("data-tid");
+  expect(parentTid).toBeTruthy();
+
+  const waitForSuccessfulTurns = (count: number) =>
+    expect
+      .poll(
+        () =>
+          frames.filter(
+            (frame) =>
+              frame.tid === Number(parentTid) &&
+              frame.event?.type === "turn/result" &&
+              frame.event.subtype === "success",
+          ).length,
+      )
+      .toBe(count);
+
+  await waitForSuccessfulTurns(1);
   const targetPrompt = 'Please reply with "fork-source"';
   await sendMessage(page, targetPrompt);
 
   await expect(assistantText(page, "fork-source")).toBeVisible({
     timeout: responseTimeout(agentType),
   });
+  await waitForSuccessfulTurns(2);
   await sendMessage(page, 'Please reply with "fork-tail"');
+  await waitForSuccessfulTurns(3);
   await expect(assistantText(page, "fork-tail")).toBeVisible({
     timeout: responseTimeout(agentType),
   });
@@ -173,11 +194,6 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
   }
 
   const parentHistory = await activeHistory(page);
-
-  const parentTid = await page
-    .locator(".sidebar-item.active[data-tid]")
-    .getAttribute("data-tid");
-  expect(parentTid).toBeTruthy();
 
   const userMsg = page.locator(".message-wrapper").filter({
     has: page.locator(
@@ -221,16 +237,12 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
           (frame) =>
             frame?.type === "history_operations" &&
             frame?.history_operations?.fork?.user ===
-              (agentType === "codex" ? undefined : "jsonl"),
+              (agentType === "codex" ? "codex_native" : "jsonl"),
         ),
     ).toBe(true);
   }).toPass();
   await userMsg.hover();
   const forkBtn = userMsg.locator(".fork-btn");
-  if (agentType === "codex") {
-    await expect(forkBtn).toHaveCount(0);
-    return;
-  }
   await expect(forkBtn).toBeVisible();
 
   await forkBtn.click();
@@ -250,9 +262,18 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
       hasText: "fork-bootstrap",
     }),
   ).toBeVisible();
-  await expect(
-    page.locator(".message.user-message:visible", { hasText: "fork-source" }),
-  ).toBeVisible();
+  const forkSource = page.locator(".message.user-message:visible", {
+    hasText: "fork-source",
+  });
+  // Codex forks before the selected turn and restores its prompt as a draft.
+  if (agentType === "codex") {
+    await expect(forkSource).toHaveCount(0);
+    await expect(page.locator(".input-textarea:visible")).toHaveValue(
+      targetPrompt,
+    );
+  } else {
+    await expect(forkSource).toBeVisible();
+  }
   await expect(assistantText(page, "fork-source")).toHaveCount(0);
   await expect(
     page.locator(".message.user-message:visible", { hasText: "fork-tail" }),

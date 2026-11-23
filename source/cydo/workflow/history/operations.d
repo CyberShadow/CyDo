@@ -1,6 +1,6 @@
 module cydo.workflow.history.operations;
 
-import ae.utils.json : JSONOptional;
+import ae.utils.json : JSONOptional, JSONPartial;
 import cydo.agent.drivers.codex.history : CodexHistoryMode;
 import cydo.protocol : HistoryBoundary, HistoryBoundaryKind;
 import cydo.runtime.config : AgentDriver;
@@ -15,8 +15,7 @@ enum NativeSessionState { dead, liveReady, liveBusy }
 struct HistoryOperationKinds
 {
 	@JSONOptional HistoryOperationMechanism user;
-	/// The conversation's first user message: a `user` boundary no other
-	/// precedes.
+	/// A user boundary on the conversation's first user message.
 	@JSONOptional HistoryOperationMechanism first_user;
 	@JSONOptional HistoryOperationMechanism provisional_user;
 	@JSONOptional HistoryOperationMechanism agent_turn;
@@ -62,20 +61,44 @@ HistoryOperations selectHistoryOperations(AgentDriver driver,
 		return result;
 	}
 
-	// Codex cuts a thread at its turns: thread/fork keeps the turns through
-	// one, thread/revert drops the turns from one on. A running turn cannot
-	// be forked at; an undo stops it first.
+	// Codex forks before a user turn or through an agent turn. A running
+	// turn blocks forks, while undo stops it before reverting.
 	if (session != NativeSessionState.liveBusy)
+	{
+		result.fork.user = HistoryOperationMechanism.codex_native;
 		result.fork.agent_turn = HistoryOperationMechanism.codex_native;
+	}
 	// Codex reverts only the threads it keeps a history index of.
 	if (historyMode != CodexHistoryMode.legacy)
 		result.undo.user = HistoryOperationMechanism.codex_native;
-	result.fork.first_user = result.fork.user;
+	result.fork.first_user = HistoryOperationMechanism.none;
 	result.undo.first_user = result.undo.user;
 	return result;
 }
 
-/// `opensConversation`: no other `user` boundary precedes `boundary`.
+/// The fields that identify a user message and its optional history boundary.
+@JSONPartial
+package(cydo) struct HistoryBoundaryEvent
+{
+	string type;
+	@JSONOptional string item_type;
+	@JSONOptional string uuid;
+	@JSONOptional string item_id;
+	@JSONOptional bool is_meta;
+	@JSONOptional bool is_synthetic;
+	@JSONOptional bool is_sidechain;
+	@JSONOptional bool pending;
+	@JSONOptional string parent_tool_use_id;
+	@JSONOptional HistoryBoundary history_boundary;
+
+	bool isConversationUser() const
+	{
+		return type == "item/started" && item_type == "user_message"
+			&& !is_meta && !is_synthetic && !is_sidechain && !pending && parent_tool_use_id.length == 0;
+	}
+}
+
+/// `opensConversation`: no user message precedes `boundary`.
 bool allowsOperation(const HistoryBoundary boundary, bool opensConversation,
 	const HistoryOperations operations, HistoryOperation operation)
 {
@@ -103,7 +126,14 @@ HistoryOperationMechanism operationMechanism(const HistoryBoundary boundary,
 
 unittest
 {
-	import cydo.protocol : HistoryBoundary;
+	auto codex = selectHistoryOperations(AgentDriver.codex, NativeSessionState.dead,
+		CodexHistoryMode.paginated);
+	auto first = HistoryBoundary("before:first", HistoryBoundaryKind.user, "");
+	assert(!allowsOperation(first, true, codex, HistoryOperation.fork),
+		"Codex must refuse a fork at the first anchored user message");
+	auto later = HistoryBoundary("before:later", HistoryBoundaryKind.user, "");
+	assert(allowsOperation(later, false, codex, HistoryOperation.fork));
+
 	foreach (session; [NativeSessionState.dead, NativeSessionState.liveReady,
 		NativeSessionState.liveBusy])
 	{
@@ -112,7 +142,8 @@ unittest
 		foreach (mode; [ubyte(0), ubyte(CodexHistoryMode.paginated)])
 		{
 			auto paginated = selectHistoryOperations(AgentDriver.codex, session, mode);
-			assert(paginated.fork.user == HistoryOperationMechanism.none);
+			assert(paginated.fork.user == forkable);
+			assert(paginated.fork.first_user == HistoryOperationMechanism.none);
 			assert(paginated.fork.agent_turn == forkable);
 			assert(paginated.undo.user == HistoryOperationMechanism.codex_native);
 			assert(paginated.undo.first_user == HistoryOperationMechanism.codex_native);
@@ -121,6 +152,8 @@ unittest
 		auto legacy = selectHistoryOperations(AgentDriver.codex, session,
 			CodexHistoryMode.legacy);
 		assert(legacy.fork.agent_turn == forkable);
+		assert(legacy.fork.user == forkable);
+		assert(legacy.fork.first_user == HistoryOperationMechanism.none);
 		assert(legacy.undo == HistoryOperationKinds.init);
 	}
 	auto claude = selectHistoryOperations(AgentDriver.claude,
@@ -152,13 +185,10 @@ unittest
 		"provisional queue boundaries must not be forkable");
 	assert(allowsOperation(provisional, false, claude, HistoryOperation.undo),
 		"provisional queue boundaries must remain undoable");
-	auto codex = selectHistoryOperations(AgentDriver.codex, NativeSessionState.dead,
-		CodexHistoryMode.paginated);
 	auto boundary = HistoryBoundary("through:t", HistoryBoundaryKind.agent_turn, "");
 	assert(allowsOperation(boundary, false, codex, HistoryOperation.fork));
 	assert(!allowsOperation(boundary, false, codex, HistoryOperation.undo));
 	boundary = HistoryBoundary("before:t", HistoryBoundaryKind.user, "");
-	assert(!allowsOperation(boundary, false, codex, HistoryOperation.fork));
 	assert(allowsOperation(boundary, false, codex, HistoryOperation.undo));
 	assert(!allowsFileRevert(boundary));
 	boundary.checkpoint_uuid = "checkpoint";

@@ -64,6 +64,7 @@ struct ThreadForkParams
 {
 	string threadId;
 	@JSONOptional string lastTurnId;
+	@JSONOptional string beforeTurnId;
 	bool excludeTurns;
 	@JSONOptional string model;
 	@JSONOptional string cwd;

@@ -33,6 +33,7 @@ import cydo.workflow.history.native_history : HistoryAccess,
 	TaskHistoryResolution, TaskHistoryResolutionKind, UnavailableHistory,
 	UnavailableHistoryKind;
 import cydo.workflow.history.jsonl_store : completeJsonlPrefix, loadTaskHistoryContent;
+import cydo.workflow.history.operations : HistoryBoundaryEvent;
 
 package(cydo):
 
@@ -417,16 +418,10 @@ class HistoryEventPipeline
 			auto boundaries = ta.extractPersistedHistoryBoundaries(raw, line - 1);
 			if (boundaries.length != 1)
 				continue;
-			@JSONPartial static struct Probe {
-				string type; @JSONOptional string item_type; @JSONOptional string uuid;
-				@JSONOptional string item_id; @JSONOptional bool is_meta;
-				@JSONOptional bool is_synthetic; @JSONOptional bool pending;
-				@JSONOptional bool is_sidechain; @JSONOptional string parent_tool_use_id;
-			}
-			Probe probe;
+			HistoryBoundaryEvent probe;
 			entry.enter((scope const(ubyte)[] bytes) {
 				auto event = extractEventFromEnvelope(bytes.as!(char[]));
-				probe = jsonParse!Probe(event);
+				probe = jsonParse!HistoryBoundaryEvent(event);
 			});
 			// A turn opener's boundary belongs to its canonical echo; a
 			// withdrawn message has left the conversation.
@@ -438,9 +433,6 @@ class HistoryEventPipeline
 				tracef("queue replay: suppressing boundary %s", boundaries[0].anchor);
 				continue;
 			}
-			auto isUser = probe.type == "item/started" && probe.item_type == "user_message"
-				&& !probe.is_meta && !probe.is_synthetic && !probe.is_sidechain
-				&& !probe.pending && probe.parent_tool_use_id.length == 0;
 			auto isProvisionalUser = probe.type == "item/started"
 				&& probe.item_type == "user_message" && probe.pending
 				&& !probe.is_meta && !probe.is_synthetic && !probe.is_sidechain
@@ -448,7 +440,7 @@ class HistoryEventPipeline
 				&& boundaries[0].anchor.startsWith("enqueue-");
 			auto isTurn = probe.type == "turn/stop" && !probe.is_sidechain
 				&& probe.parent_tool_use_id.length == 0;
-			if ((boundaries[0].kind == PersistedHistoryBoundaryKind.user && !isUser)
+			if ((boundaries[0].kind == PersistedHistoryBoundaryKind.user && !probe.isConversationUser)
 				|| (boundaries[0].kind == PersistedHistoryBoundaryKind.provisional_user
 					&& !isProvisionalUser)
 				|| (boundaries[0].kind == PersistedHistoryBoundaryKind.agent_turn && !isTurn))
@@ -470,7 +462,7 @@ class HistoryEventPipeline
 	}
 
 	/// Find the boundary `requestedAnchor` names in the task's session file
-	/// as it is now. `opensConversation`: no other user boundary precedes it.
+	/// as it is now. `opensConversation`: no user message precedes it.
 	bool resolveFreshPersistedBoundary(int tid, const ref HistoryAccess access,
 		string requestedAnchor, out HistoryBoundary boundary, out bool opensConversation)
 	{
@@ -499,17 +491,14 @@ class HistoryEventPipeline
 		bool found, userBefore;
 		foreach (ref entry; snapshot.history)
 		{
-			HistoryBoundary candidate;
+			HistoryBoundaryEvent event;
 			entry.enter((scope const(ubyte)[] bytes) {
-				@JSONPartial static struct Probe { @JSONOptional HistoryBoundary history_boundary; }
-				auto event = extractEventFromEnvelope(bytes.as!(char[]));
-				candidate = jsonParse!Probe(event).history_boundary;
+				event = jsonParse!HistoryBoundaryEvent(extractEventFromEnvelope(bytes.as!(char[])));
 			});
+			auto candidate = event.history_boundary;
 			if (candidate.anchor != requestedAnchor)
 			{
-				if (!found && candidate.anchor.length > 0
-					&& candidate.kind == HistoryBoundaryKind.user)
-					userBefore = true;
+				userBefore = userBefore || event.isConversationUser;
 				continue;
 			}
 			assert(!found, "persisted history boundary anchor must be unique");
@@ -786,17 +775,8 @@ class HistoryEventPipeline
 			auto envelope = bytes.as!(char[]);
 			auto event = extractEventFromEnvelope(envelope);
 			assert(event.length > 0, "history boundary target has no event");
-			@JSONPartial static struct Probe {
-				string type; @JSONOptional string item_type; @JSONOptional bool is_meta;
-				@JSONOptional bool is_synthetic; @JSONOptional bool pending;
-				@JSONOptional bool is_sidechain; @JSONOptional string parent_tool_use_id;
-				@JSONOptional HistoryBoundary history_boundary;
-			}
-			auto probe = jsonParse!Probe(event);
-			bool isUser = boundary.kind == HistoryBoundaryKind.user
-				&& probe.type == "item/started" && probe.item_type == "user_message"
-				&& !probe.is_meta && !probe.is_synthetic && !probe.is_sidechain
-				&& !probe.pending && probe.parent_tool_use_id.length == 0;
+			auto probe = jsonParse!HistoryBoundaryEvent(event);
+			bool isUser = boundary.kind == HistoryBoundaryKind.user && probe.isConversationUser;
 			bool isProvisionalUser = boundary.kind == HistoryBoundaryKind.provisional_user
 				&& boundary.anchor.startsWith("enqueue-")
 				&& probe.type == "item/started" && probe.item_type == "user_message"
@@ -1351,6 +1331,29 @@ unittest
 		}
 	}
 	assert(sawToolResult, "tool_result event missing from loaded history");
+
+	import cydo.workflow.history.operations : HistoryOperation, HistoryOperationMechanism,
+		NativeSessionState, operationMechanism, selectHistoryOperations;
+
+	write(jsonlPath,
+		`{"type":"user","isMeta":true,"uuid":"context","message":{"role":"user","content":"context"}}` ~ "\n"
+		~ `{"type":"user","uuid":"first","message":{"role":"user","content":"first prompt"}}` ~ "\n"
+		~ `{"type":"user","uuid":"later","message":{"role":"user","content":"later prompt"}}` ~ "\n");
+	auto access = HistoryAccess(agent, profile, td.agentSessionId, jsonlPath);
+	auto operations = selectHistoryOperations(AgentDriver.claude, NativeSessionState.dead, 0);
+	HistoryBoundary boundary;
+	bool opensConversation;
+	assert(!pipeline.resolveFreshPersistedBoundary(tid, access, "context", boundary, opensConversation));
+	assert(pipeline.resolveFreshPersistedBoundary(tid, access, "first", boundary, opensConversation));
+	assert(opensConversation);
+	assert(operationMechanism(boundary, opensConversation, operations, HistoryOperation.undo)
+		== HistoryOperationMechanism.none);
+	assert(operationMechanism(boundary, opensConversation, operations, HistoryOperation.fork)
+		== HistoryOperationMechanism.jsonl);
+	assert(pipeline.resolveFreshPersistedBoundary(tid, access, "later", boundary, opensConversation));
+	assert(!opensConversation);
+	assert(operationMechanism(boundary, opensConversation, operations, HistoryOperation.undo)
+		== HistoryOperationMechanism.jsonl);
 }
 
 @("Claude replay preserves source lines and stops before the next prompt")

@@ -56,6 +56,19 @@ PersistedHistoryBoundary[] applyRollbackToIdsWithInfo(PersistedHistoryBoundary[]
 	return [];
 }
 
+package bool isCodexSessionStartPrompt(string text)
+{
+	import cydo.foundation.system.framing : ParsedSystemFraming, tryParseSystemFraming;
+	import cydo.foundation.system.known_messages : KnownSystemMessageKind,
+		KnownSystemMessageMatch, tryKnownSystemMessageMatch;
+
+	ParsedSystemFraming framing;
+	KnownSystemMessageMatch match;
+	return tryParseSystemFraming("SYSTEM", text, framing)
+		&& tryKnownSystemMessageMatch(framing.subject, match)
+		&& match.kind == KnownSystemMessageKind.sessionStart;
+}
+
 package bool isCodexContextOnlyUserText(string text)
 {
 	import std.string : startsWith, stripLeft;
@@ -727,7 +740,7 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 		ev.content = contentBlocks;
 		if (role != "user" || forceMeta)
 			ev.is_meta = true;
-		else if (isCodexContextOnlyUserText(userText))
+		else if (isCodexContextOnlyUserText(userText) && !isCodexSessionStartPrompt(userText))
 			ev.is_meta = true;
 		if (forkId !is null)
 			ev.uuid = forkId;
