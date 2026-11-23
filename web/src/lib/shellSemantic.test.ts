@@ -322,6 +322,37 @@ describe("pipe reads (should succeed as Read)", () => {
     },
   );
 
+  it.each([
+    ["nl -s '' f.d", "nl -s separator must not be empty"],
+    ["nl -s 5 f.d", "nl -s separator must not start with a digit"],
+    [
+      "nl -ba -s 1x f.d | sed -n 1,2p",
+      "nl -s separator must not start with a digit",
+    ],
+  ])(
+    "rejects a separator that cannot delimit the gutter in %s",
+    async (command, reason) => {
+      await expect(parseShellSemantic(command)).resolves.toEqual({
+        ok: false,
+        code: "unsupported_option",
+        reason,
+      });
+    },
+  );
+
+  it.each([
+    ["LF", "\n"],
+    ["CR", "\r"],
+  ])("rejects an nl separator containing %s", async (_label, separator) => {
+    await expect(
+      parseShellSemantic(`nl -ba -s '${separator}' f.d | sed -n 1,2p`),
+    ).resolves.toEqual({
+      ok: false,
+      code: "unsupported_option",
+      reason: "nl -s separator must not contain a line terminator",
+    });
+  });
+
   it("nl -ba src/main.rs | sed -n '1200,1720p' → read with line numbers and selected range", async () => {
     const r = await parseShellSemantic(
       "nl -ba src/main.rs | sed -n '1200,1720p'",

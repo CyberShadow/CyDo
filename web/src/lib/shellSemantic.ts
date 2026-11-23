@@ -459,6 +459,24 @@ function parseNlArgs(
       if (!next || next.kind !== "value") {
         return reject("unsupported_option", "nl -s requires a separator");
       }
+      if (/[\r\n]/.test(next.text)) {
+        return reject(
+          "unsupported_option",
+          "nl -s separator must not contain a line terminator",
+        );
+      }
+      if (next.text === "") {
+        return reject(
+          "unsupported_option",
+          "nl -s separator must not be empty",
+        );
+      }
+      if (/^\d/.test(next.text)) {
+        return reject(
+          "unsupported_option",
+          "nl -s separator must not start with a digit",
+        );
+      }
       options.separator = next.text;
       continue;
     }
