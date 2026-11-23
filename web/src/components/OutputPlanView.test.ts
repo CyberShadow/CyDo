@@ -78,6 +78,53 @@ describe("OutputPlanView", () => {
     expect(html).toContain("34:");
   });
 
+  it.each([
+    ["/repo/README.md", "markdown", "     1\t# Title\n     2\t\n"],
+    ["/repo/x.svg", "xml", "     1\t<svg></svg>\n"],
+  ])(
+    "keeps numbered %s on the code rendering path",
+    (filePath, language, stdout) => {
+      const outputPlan: OutputPlan = {
+        version: 1,
+        blocks: [
+          {
+            id: "nl-0",
+            source: { filePath, producerName: "nl" },
+            format: {
+              kind: "nl-line-number-prefixed",
+              width: 6,
+              separator: "\t",
+              format: { kind: "content", language },
+            },
+            location: {
+              kind: "from-cursor",
+              end: { kind: "end-of-output", requiresComplete: true },
+            },
+          },
+        ],
+      };
+      const html = renderToString(
+        h(OutputPlanView, {
+          stdout,
+          outputPlan,
+          canRenderFilePreview: () => true,
+        }),
+      );
+      expect(html).toContain(
+        'data-testid="output-line-prefix" class="line-number">     1\t</span>',
+      );
+      expect(html).not.toContain('alt="SVG preview"');
+      expect(html).not.toContain("text-content");
+      expect(html).not.toContain("<h1");
+      if (language === "markdown") {
+        expect(html).toContain(
+          'data-testid="output-line-prefix" class="line-number">     2\t</span>',
+        );
+        expect(html).toContain("# Title");
+      }
+    },
+  );
+
   it("uses preview callback when provided", () => {
     const stdout = '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n';
     const outputPlan: OutputPlan = {

@@ -1,9 +1,20 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { h } from "preact";
 import { act } from "preact/test-utils";
 import renderToString from "preact-render-to-string";
-import type { ShellSemanticResult } from "../lib/shellSemantic";
+import {
+  parseShellSemantic,
+  type ShellSemanticResult,
+} from "../lib/shellSemantic";
 import * as shellParser from "../lib/shellParser";
 import type { ParseResult } from "../lib/shellParser";
 import { configureShellParserAssets } from "../lib/shellParser";
@@ -92,13 +103,19 @@ function successfulParse(source: string): ParseResult {
   };
 }
 
+let useRealShellSemantic = false;
+
 vi.mock("../lib/shellSemantic", async () => {
   const actual = await vi.importActual<typeof import("../lib/shellSemantic")>(
     "../lib/shellSemantic",
   );
   return {
     ...actual,
-    useShellSemantic: (command: string | null | undefined) => {
+    useShellSemantic(command: string | null | undefined) {
+      const real = actual.useShellSemantic(
+        useRealShellSemantic ? (command ?? null) : null,
+      );
+      if (useRealShellSemantic) return real;
       if (!command) return null;
       if (command.startsWith("cat > README.md <<EOF")) {
         const writeResult: ShellSemanticResult = {
@@ -835,6 +852,182 @@ describe("ToolCall shell source tree rendering", () => {
     expect(html).toContain('data-testid="semantic-shell-diff"');
     expect(html).toContain("diff-view");
     expect(html).toContain('title="Show source"');
+  });
+});
+
+describe("ToolCall numbered shell output", () => {
+  const roots = ownedRoots();
+  beforeEach(() => {
+    useRealShellSemantic = true;
+  });
+  afterEach(() => {
+    useRealShellSemantic = false;
+  });
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n';
+  const numberedSvg = `     1\t${svg}`;
+
+  async function mountResult(
+    command: string,
+    result: ToolResult,
+    driver: "claude" | "codex" = "claude",
+  ): Promise<HTMLDivElement> {
+    const root = roots.create();
+    await act(() => {
+      roots.render(
+        h(ToolCall, {
+          name: driver === "claude" ? "Bash" : "commandExecution",
+          driver,
+          toolUseId: result.toolUseId,
+          input: { command },
+          result,
+        }),
+        root,
+      );
+    });
+    await act(async () => {
+      await parseShellSemantic(command);
+    });
+    if (!root.querySelector(".tool-result-container")) {
+      await act(() => {
+        root.querySelector<HTMLElement>(".tool-result-header")!.click();
+      });
+    }
+    return root;
+  }
+
+  function expectNoPreview(root: HTMLElement): void {
+    expect(
+      root.querySelector(
+        '[alt="SVG preview"], [title="Show rendered"], [title="Show source"]',
+      ),
+    ).toBeNull();
+  }
+
+  it.each(["git show HEAD:x.svg | nl -ba | sed -n 1,20p"])(
+    "renders numbering without preview for %s",
+    async (command) => {
+      const root = await mountResult(
+        command,
+        makeResult({ toolResult: { stdout: numberedSvg } }),
+      );
+      expect(
+        root.querySelector('[data-testid="semantic-shell-block-nl-0"]'),
+      ).not.toBeNull();
+      expect(
+        root.querySelector('[data-testid="semantic-shell-line-prefix"]')
+          ?.textContent,
+      ).toBe("     1\t");
+      expectNoPreview(root);
+    },
+  );
+
+  it("keeps all stdout plain when an accepted plan's anchor appears twice", async () => {
+    const stdout = `${numberedSvg}     2\t<!-- done -->\n<!-- done -->\n`;
+    const root = await mountResult(
+      "cat x.svg | nl -ba && echo '<!-- done -->'",
+      makeResult({ toolResult: { stdout } }),
+    );
+    expect(
+      root.querySelector('[data-testid="semantic-shell-output"]'),
+    ).toBeNull();
+    expect(root.querySelector("pre.tool-result")?.textContent).toBe(stdout);
+    expectNoPreview(root);
+  });
+
+  it.each(["claude", "codex"] as const)(
+    "preserves %s stdout on an error",
+    async (driver) => {
+      const toolResult =
+        driver === "claude"
+          ? { stdout: numberedSvg, stderr: "boom" }
+          : { aggregatedOutput: numberedSvg };
+      const root = await mountResult(
+        "nl -ba x.svg",
+        makeResult({ toolResult, isError: true }),
+        driver,
+      );
+      expect(root.querySelector("pre.tool-result.error")?.textContent).toBe(
+        numberedSvg,
+      );
+      if (driver === "claude") expect(root.textContent).toContain("boom");
+      expectNoPreview(root);
+    },
+  );
+
+  it.each(["nl -ba x.md"])(
+    "renders numbered markdown as text for %s",
+    async (command) => {
+      const root = await mountResult(
+        command,
+        makeResult({
+          toolResult: { stdout: "     1\t# Title\n     2\tbody\n" },
+        }),
+      );
+      const block = root.querySelector(
+        '[data-testid="semantic-shell-block-nl-0"]',
+      );
+      expect(
+        block?.querySelectorAll('[data-testid="semantic-shell-line-prefix"]'),
+      ).toHaveLength(2);
+      expect(block?.textContent).toContain("# Title");
+      expect(block?.querySelector(".text-content, h1")).toBeNull();
+      expectNoPreview(root);
+    },
+  );
+
+  it.each([
+    ["a payload CR before CRLF", "     1\talpha\r\r\n     2\tbeta\n"],
+    ["CRLF file rows", "     1\tmodule probe;\r\n     2\tint x;\r\n"],
+    [
+      "a lone CR and U+2028",
+      "     1\talpha\rinner\u2028separator\n     2\tbeta\n",
+    ],
+  ])("preserves %s after nl highlighting resolves", async (_name, stdout) => {
+    const root = await mountResult(
+      "nl -ba s.d",
+      makeResult({ toolResult: { stdout } }),
+    );
+    const block = root.querySelector(
+      '[data-testid="semantic-shell-block-nl-0"]',
+    );
+    expect(block).not.toBeNull();
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(block?.querySelector("span[style*='color']")).not.toBeNull();
+    });
+    expect(block?.querySelector("pre")?.textContent).toBe(stdout);
+  });
+
+  it("offers a preview for verbatim SVG", async () => {
+    const root = await mountResult(
+      "cat x.svg",
+      makeResult({ toolResult: { stdout: svg } }),
+    );
+    expect(
+      root.querySelector('[title="Show source"], [title="Show rendered"]'),
+    ).not.toBeNull();
+  });
+
+  it("keeps the read renderer for an unnumbered git object", async () => {
+    const root = await mountResult(
+      "git show HEAD:x.svg",
+      makeResult({ toolResult: { stdout: svg } }),
+    );
+    expect(
+      root.querySelector('[data-testid="semantic-shell-read"]'),
+    ).not.toBeNull();
+  });
+
+  it("keeps generic rendering for a rejected command", async () => {
+    const root = await mountResult(
+      "cat README.md | rev",
+      makeResult({ toolResult: { stdout: svg } }),
+    );
+    expect(
+      root.querySelector('[data-testid="semantic-shell-output"]'),
+    ).toBeNull();
+    expect(root.querySelector("pre.tool-result")?.textContent).toBe(svg);
+    expect(root.querySelector('[title="Show rendered"]')).not.toBeNull();
   });
 });
 

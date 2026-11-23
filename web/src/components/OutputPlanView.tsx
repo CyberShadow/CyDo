@@ -7,6 +7,7 @@ import { SourceRenderedToggle } from "./file-preview/SourceRenderedToggle";
 import { FileContentPreview } from "./file-preview/FileContentPreview";
 import { detectRenderableFormat } from "../lib/fileFormats";
 import {
+  parseNlOutputRows,
   segmentOutput,
   type OutputFormat,
   type OutputPlan,
@@ -42,6 +43,99 @@ function splitLogicalLines(text: string): string[] {
     start = nl + 1;
   }
   return lines;
+}
+
+function useOutputRowTokens(
+  code: string,
+  language: string,
+  rowCount: number,
+): ThemedToken[][] | null {
+  const codeLanguage =
+    language === "text" ||
+    language === "shell-output" ||
+    language === "markdown"
+      ? null
+      : language;
+  const tokens = useHighlight(codeLanguage ? code : null, codeLanguage);
+  if (tokens && tokens.length !== rowCount) {
+    throw new Error("highlighted output row count does not match stdout");
+  }
+  return tokens;
+}
+
+function renderOutputRow(
+  text: string,
+  tokens: ThemedToken[] | undefined,
+): h.JSX.Element | string {
+  if (!tokens) return text;
+  if (tokens.map((token) => token.content).join("") !== text) {
+    throw new Error("highlighted output row text does not match stdout");
+  }
+  return renderTokens(tokens);
+}
+
+type NlRenderRow = { prefix: string; text: string; terminator: string };
+
+function NlNumberedRows({
+  text,
+  format,
+  linePrefixTestId,
+}: {
+  text: string;
+  format: Extract<OutputFormat, { kind: "nl-line-number-prefixed" }>;
+  linePrefixTestId?: string;
+}): h.JSX.Element {
+  const rows = Array.from(
+    parseNlOutputRows(text, format),
+    ({ row, terminator }) => {
+      if (!row) throw new Error("invalid row in structured nl output");
+      return { ...row, terminator };
+    },
+  );
+  // Shiki splits on CRLF or LF. A CRLF joiner leaves any payload CR intact.
+  const code = rows.map((row) => row.text).join("\r\n");
+  // Key on the highlight input so tokens from a previous payload cannot be reused.
+  return (
+    <HighlightedNlRows
+      key={code}
+      code={code}
+      rows={rows}
+      language={format.format.language}
+      linePrefixTestId={linePrefixTestId}
+    />
+  );
+}
+
+function HighlightedNlRows({
+  code,
+  rows,
+  language,
+  linePrefixTestId,
+}: {
+  code: string;
+  rows: NlRenderRow[];
+  language: string;
+  linePrefixTestId?: string;
+}): h.JSX.Element {
+  const tokens = useOutputRowTokens(code, language, rows.length);
+  return (
+    <>
+      {rows.map(({ prefix, text: rowText, terminator }, i) => {
+        return (
+          <Fragment key={i}>
+            <span
+              class="line-number"
+              data-testid={linePrefixTestId ?? "output-line-prefix"}
+            >
+              {prefix}
+            </span>
+            {renderOutputRow(rowText, tokens?.[i])}
+            {terminator}
+          </Fragment>
+        );
+      })}
+    </>
+  );
 }
 
 function InlineFormatted({
@@ -100,19 +194,34 @@ function InlineFormatted({
     );
   }
 
-  const lines = splitLogicalLines(text);
-  return (
-    <>
-      {lines.map((line, i) => (
-        <InlineFormatted
-          key={i}
-          text={line}
-          format={format.format}
+  switch (format.kind) {
+    case "nl-line-number-prefixed":
+      return (
+        <NlNumberedRows
+          text={text}
+          format={format}
           linePrefixTestId={linePrefixTestId}
         />
-      ))}
-    </>
-  );
+      );
+    case "individual-lines": {
+      const lines = splitLogicalLines(text);
+      return (
+        <>
+          {lines.map((line, i) => (
+            <InlineFormatted
+              key={i}
+              text={line}
+              format={format.format}
+              linePrefixTestId={linePrefixTestId}
+            />
+          ))}
+        </>
+      );
+    }
+  }
+
+  const unexpectedFormat: never = format;
+  throw new Error(`unexpected output format: ${String(unexpectedFormat)}`);
 }
 
 function StructuredContent({

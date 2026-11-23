@@ -1,8 +1,42 @@
-import { describe, expect, it } from "vitest";
+import { assert, beforeAll, describe, expect, it } from "vitest";
 import { h } from "preact";
 import renderToString from "preact-render-to-string";
 import { SemanticShellOutput } from "./SemanticShellOutput";
+import { derivePlan } from "../lib/commandStep";
 import type { OutputPlan } from "../lib/outputPlan";
+import { configureShellParserAssets } from "../lib/shellParser";
+import { parseShellSemantic } from "../lib/shellSemantic";
+
+const processLike = (
+  globalThis as typeof globalThis & {
+    process: { getBuiltinModule(name: string): unknown };
+  }
+).process;
+
+beforeAll(async () => {
+  const fs = processLike.getBuiltinModule("node:fs/promises") as {
+    readFile(path: URL): Promise<Uint8Array>;
+  };
+  const [runtime, bashLanguage] = await Promise.all([
+    fs.readFile(
+      new URL(
+        "../../node_modules/web-tree-sitter/web-tree-sitter.wasm",
+        import.meta.url,
+      ),
+    ),
+    fs.readFile(
+      new URL(
+        "../../node_modules/tree-sitter-bash/tree-sitter-bash.wasm",
+        import.meta.url,
+      ),
+    ),
+  ]);
+  configureShellParserAssets({
+    kind: "bytes",
+    loadRuntime: () => Promise.resolve(new Uint8Array(runtime)),
+    loadBashLanguage: () => Promise.resolve(new Uint8Array(bashLanguage)),
+  });
+});
 
 function renderSemantic(stdout: string, outputPlan: OutputPlan): string {
   return renderToString(
@@ -328,12 +362,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     expect(html).not.toContain("text-content");
   });
 
-  // nl is excluded from FILE_PREVIEW_PRODUCERS because its output carries
-  // line-number prefixes ("    1\t…") that are not part of the source file.
-  // Rendering nl output as a file preview would corrupt the content.
-  // Using an SVG file here so the two paths produce distinguishable DOM:
-  // preview would render an <img> element; the non-preview path renders XML code.
-  it("nl output does NOT get file content preview — SVG is not rendered as image", () => {
+  it("renders an nl-format SVG block as numbered source", () => {
     const outputPlan: OutputPlan = {
       version: 1,
       blocks: [
@@ -344,7 +373,12 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
             producerName: "nl",
             filePath: "/repo/banner.svg",
           },
-          format: { kind: "content", language: "xml" },
+          format: {
+            kind: "nl-line-number-prefixed",
+            width: 6,
+            separator: "\t",
+            format: { kind: "content", language: "xml" },
+          },
           location: {
             kind: "from-cursor",
             end: { kind: "end-of-output", requiresComplete: true },
@@ -354,9 +388,86 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       ],
     };
 
-    const html = renderSemantic(SVG_CONTENT, outputPlan);
+    const html = renderSemantic(`     1\t${SVG_CONTENT}`, outputPlan);
     expect(html).toContain('data-testid="semantic-shell-block-nl-0"');
     expect(html).not.toContain('alt="SVG preview"');
+  });
+
+  it("renders numbered SVG output as source after slicing it with sed", async () => {
+    const result = await parseShellSemantic("nl -ba /tmp/x.svg | sed -n 1,20p");
+    assert(result.ok && result.value.steps);
+    const outputPlan = derivePlan(result.value.steps);
+    assert(outputPlan);
+
+    const html = renderSemantic(`     1\t${SVG_CONTENT}`, outputPlan);
+    expect(html).not.toContain('alt="SVG preview"');
+    expect(html).toContain(
+      'data-testid="semantic-shell-line-prefix" class="line-number">     1\t</span>',
+    );
+    expect(html).toContain("&lt;svg");
+  });
+
+  it("keeps a numbered git-object SVG out of file preview after sed", async () => {
+    const result = await parseShellSemantic(
+      "git show HEAD:x.svg | nl -ba | sed -n 1,20p",
+    );
+    assert(result.ok && result.value.steps);
+    expect(result.value.commandName).toBe("git");
+    const outputPlan = derivePlan(result.value.steps);
+    assert(outputPlan);
+
+    const html = renderSemantic(`     1	${SVG_CONTENT}`, outputPlan);
+    expect(html).toContain('data-testid="semantic-shell-block-nl-0"');
+    expect(html).not.toContain('alt="SVG preview"');
+  });
+
+  it.each([
+    ["nl x.d", "       \n", "       ", 1],
+    ["nl -w 2 -s 'é' x.md", "    \n    \n", "    ", 2],
+    ["nl ./page.d", "\n", "", 1],
+  ])(
+    "uses gutter rendering for whitespace-only GNU nl output from %s",
+    async (command, stdout, prefix, count) => {
+      const result = await parseShellSemantic(command);
+      assert(result.ok && result.value.steps);
+      const outputPlan = derivePlan(result.value.steps);
+      assert(outputPlan);
+      const html = renderSemantic(stdout, outputPlan);
+      expect(html).toContain('data-testid="semantic-shell-block-nl-0"');
+      const prefixes = html.match(
+        /data-testid="semantic-shell-line-prefix" class="line-number"> *<\/span>/g,
+      );
+      expect(prefixes).toEqual(
+        Array<string>(count).fill(
+          `data-testid="semantic-shell-line-prefix" class="line-number">${prefix}</span>`,
+        ),
+      );
+    },
+  );
+
+  it("leaves a lone CR outside the numbered output renderer", async () => {
+    const result = await parseShellSemantic("nl x.d");
+    assert(result.ok && result.value.steps);
+    const outputPlan = derivePlan(result.value.steps);
+    assert(outputPlan);
+    expect(renderSemantic("\r", outputPlan)).toBe("");
+  });
+
+  it("renders a derived numbered markdown plan as literal text", async () => {
+    const result = await parseShellSemantic("nl -ba /repo/README.md");
+    assert(result.ok && result.value.steps);
+    const outputPlan = derivePlan(result.value.steps);
+    assert(outputPlan);
+    const html = renderSemantic("     1\t# Title\n     2\tbody\n", outputPlan);
+    expect(html).toContain('data-testid="semantic-shell-block-nl-0"');
+    expect(html).toContain(
+      'data-testid="semantic-shell-line-prefix" class="line-number">     1\t</span>',
+    );
+    expect(html).toContain(
+      'data-testid="semantic-shell-line-prefix" class="line-number">     2\t</span>',
+    );
+    expect(html).toContain("# Title");
+    expect(html).not.toContain("text-content");
   });
 
   // Same SVG probe for an unfamiliar producer.

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   type OutputPlan,
+  parseNlOutputRow,
+  splitOutputRows,
   segmentOutput,
   type SegmentedOutputPiece,
 } from "./outputPlan";
@@ -15,6 +17,102 @@ function assertCoverage(stdout: string, pieces: SegmentedOutputPiece[]) {
   }
   expect(cursor).toBe(stdout.length);
 }
+
+it("consumes CR only as part of CRLF", () => {
+  expect(Array.from(splitOutputRows("x\ry\r\n--\r"))).toEqual([
+    { text: "x\ry", terminator: "\r\n" },
+    { text: "--\r", terminator: "" },
+  ]);
+  expect(Array.from(splitOutputRows("\r"))).toEqual([
+    { text: "\r", terminator: "" },
+  ]);
+});
+
+describe("nl output rows", () => {
+  it.each([
+    ["     1\ta", "     1\t", "a"],
+    ["     2\t", "     2\t", ""],
+    ["       ", "       ", ""],
+    ["       H", "       ", "H"],
+    ["", "", ""],
+    ["1234567\tx", "1234567\t", "x"],
+  ])("parses %j with the default gutter", (line, prefix, text) => {
+    expect(parseNlOutputRow(line, { width: 6, separator: "\t" })).toEqual({
+      prefix,
+      text,
+    });
+  });
+
+  it.each(["    1\ta", "1\ta", "     1 a", "      a", "x"])(
+    "rejects %j with the default gutter",
+    (line) => {
+      expect(parseNlOutputRow(line, { width: 6, separator: "\t" })).toBeNull();
+    },
+  );
+
+  it("validates custom width and separator", () => {
+    const options = { width: 2, separator: ": " };
+    expect(parseNlOutputRow(" 1: a", options)).toEqual({
+      prefix: " 1: ",
+      text: "a",
+    });
+    expect(parseNlOutputRow("    ", options)).toEqual({
+      prefix: "    ",
+      text: "",
+    });
+    expect(parseNlOutputRow(" 1:a", options)).toBeNull();
+  });
+
+  it("uses GNU's byte width for the unnumbered padding", () => {
+    const options = { width: 2, separator: "界" };
+    expect(parseNlOutputRow("     H", options)).toEqual({
+      prefix: "     ",
+      text: "H",
+    });
+    expect(parseNlOutputRow(" 1界a", options)).toEqual({
+      prefix: " 1界",
+      text: "a",
+    });
+  });
+
+  it("rejects a short field even for a width above the string size limit", () => {
+    expect(
+      parseNlOutputRow("     1\ta", {
+        width: Number.MAX_SAFE_INTEGER,
+        separator: "\t",
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    ["     1\ta\r\n       H\n\n     2\t\n", "structured"],
+    ["     1\ta\nno gutter\n", "raw"],
+    ["", "raw"],
+    ["\r", "raw"],
+  ])("segments %j as %s", (stdout, kind) => {
+    const plan: OutputPlan = {
+      version: 1,
+      blocks: [
+        {
+          id: "nl-0",
+          format: {
+            kind: "nl-line-number-prefixed",
+            width: 6,
+            separator: "\t",
+            format: { kind: "content", language: "text" },
+          },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+          },
+        },
+      ],
+    };
+    expect(
+      segmentOutput(stdout, plan, { kind: "complete" }).pieces,
+    ).toMatchObject([{ kind, start: 0, end: stdout.length }]);
+  });
+});
 
 describe("outputPlan", () => {
   it("round-trips output plan through JSON", () => {

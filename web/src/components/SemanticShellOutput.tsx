@@ -6,9 +6,8 @@ import type {
 } from "../lib/outputPlan";
 import { OutputPlanView, hasStructuredOutput } from "./OutputPlanView";
 
-// nl is excluded: its output carries line-number prefixes ("1\t…") that are
-// not part of the source file, so rendering as a file preview would be wrong.
-const FILE_PREVIEW_PRODUCERS = new Set(["sed", "cat", "head", "tail"]);
+// Numbered reads carry their gutter in the format, which bypasses file preview.
+const FILE_PREVIEW_PRODUCERS = new Set(["sed", "cat", "head", "tail", "nl"]);
 
 function canRenderStructuredFilePreview(
   piece: Extract<SegmentedOutputPiece, { kind: "structured" }>,

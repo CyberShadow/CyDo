@@ -2667,13 +2667,13 @@ function parseExecCommandOutput(text: string): string {
   return text.slice(outputMarker + "Output:\n".length);
 }
 
-function extractShellStdout(
+function extractShellOutput(
   name: string,
   toolServer: string | undefined,
   driver: string | undefined,
   result: ToolResult | undefined,
 ): string | null {
-  if (!result || result.isError) return null;
+  if (!result) return null;
   if (toolIs(name, driver, toolServer, "claude/Bash")) {
     const tr = result.toolResult as Record<string, unknown> | undefined;
     return typeof tr?.stdout === "string" ? tr.stdout : null;
@@ -3236,25 +3236,25 @@ export const ToolCall = memo(
       ? extractSemanticShellCommand(input, shellActionCommand)
       : null;
     const shellSemantic = useShellSemantic(semanticCommand);
+    const semanticShellRead =
+      shellSemantic?.ok === true && shellSemantic.value.kind === "read"
+        ? shellSemantic.value
+        : null;
     const useSemanticShellRead =
-      shellSemantic?.ok === true &&
-      shellSemantic.value.kind === "read" &&
+      semanticShellRead != null &&
+      semanticShellRead.steps == null &&
       result != null &&
       !result.isError;
     const semanticShellStdout = useSemanticShellRead
-      ? extractShellStdout(name, toolServer, driver, result)
+      ? extractShellOutput(name, toolServer, driver, result)
       : null;
-    const semanticReadFilePath =
-      shellSemantic?.ok === true && shellSemantic.value.kind === "read"
-        ? shellSemantic.value.filePath
-        : null;
     const useSemanticShellDiff =
       shellSemantic?.ok === true &&
       shellSemantic.value.kind === "diff" &&
       result != null &&
       !result.isError;
     const semanticShellDiffStdout = useSemanticShellDiff
-      ? extractShellStdout(name, toolServer, driver, result)
+      ? extractShellOutput(name, toolServer, driver, result)
       : null;
     const semanticOutputPlan =
       shellSemantic?.ok === true && shellSemantic.value.steps
@@ -3262,7 +3262,7 @@ export const ToolCall = memo(
         : undefined;
     const semanticOutputStdout =
       semanticOutputPlan && result != null && !result.isError
-        ? extractShellStdout(name, toolServer, driver, result)
+        ? extractShellOutput(name, toolServer, driver, result)
         : null;
     const semanticOutputElement =
       semanticOutputPlan != null &&
@@ -3274,6 +3274,12 @@ export const ToolCall = memo(
         />
       ) : null;
     const shouldRenderSemanticOutput = semanticOutputElement != null;
+    const semanticPlanFallbackOutput =
+      semanticOutputPlan != null &&
+      result != null &&
+      !shouldRenderSemanticOutput
+        ? (extractShellOutput(name, toolServer, driver, result) ?? resultText)
+        : null;
     const semanticKind =
       shellSemantic?.ok === true ? shellSemantic.value.kind : null;
     const hasSemanticOutputPlan =
@@ -3516,12 +3522,17 @@ export const ToolCall = memo(
                   {!useReadHighlight && resultImagesElement}
                   {shouldRenderSemanticOutput ? (
                     semanticOutputElement
+                  ) : semanticPlanFallbackOutput ? (
+                    <ResultPre
+                      content={semanticPlanFallbackOutput}
+                      isError={result.isError}
+                    />
                   ) : semanticShellStdout != null &&
-                    semanticReadFilePath != null ? (
+                    semanticShellRead != null ? (
                     <div data-testid="semantic-shell-read">
                       <ReadResult
                         content={semanticShellStdout}
-                        filePath={semanticReadFilePath}
+                        filePath={semanticShellRead.filePath}
                       />
                     </div>
                   ) : semanticShellDiffStdout != null ? (

@@ -304,6 +304,24 @@ describe("pipe reads (should succeed as Read)", () => {
     expect(v.filePath).toBe("tui/Cargo.toml");
   });
 
+  it.each([
+    ["nl -w 3 -s ': ' f.d | sed -n 2,4p", 3, ": ", "d"],
+    ["git show HEAD:x.svg | nl -ba | sed -n 1,20p", 6, "\t", "xml"],
+  ])(
+    "preserves the gutter format for %s",
+    async (command, width, separator, language) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(plan(result.value)?.blocks[0]?.format).toEqual({
+        kind: "nl-line-number-prefixed",
+        width,
+        separator,
+        format: { kind: "content", language },
+      });
+    },
+  );
+
   it("nl -ba src/main.rs | sed -n '1200,1720p' → read with line numbers and selected range", async () => {
     const r = await parseShellSemantic(
       "nl -ba src/main.rs | sed -n '1200,1720p'",
@@ -314,6 +332,14 @@ describe("pipe reads (should succeed as Read)", () => {
     expect(v.filePath).toBe("src/main.rs");
     expect(v.range).toEqual({ type: "lines", start: 1200, end: 1720 });
     expect(v.presentation).toEqual({ lineNumbers: { style: "nl" } });
+    expect(v.commandName).toBe("nl");
+    expect(plan(r.value)?.blocks[0]?.source?.producerName).toBe("nl");
+    expect(plan(r.value)?.blocks[0]?.format).toEqual({
+      kind: "nl-line-number-prefixed",
+      width: 6,
+      separator: "\t",
+      format: { kind: "content", language: "rust" },
+    });
   });
 
   it("sed -n '260,640p' src/main.rs | nl -ba → reject (numbering after range is ambiguous)", async () => {
@@ -556,6 +582,24 @@ describe("cd && read (should reject)", () => {
       });
     },
   );
+
+  it("rejects a numbered git-object read combined with other list output", async () => {
+    await expect(
+      parseShellSemantic("git show HEAD:f | nl && echo done"),
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "git object reads cannot be combined with other list output",
+    });
+  });
+
+  it("rejects a numbered git-object read under cd", async () => {
+    await expect(
+      parseShellSemantic("cd x && git show HEAD:x.svg | nl -ba | sed -n 1,20p"),
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "git object paths are not relative to cd",
+    });
+  });
 
   it("cd foo && echo hello → reject (echo is not a read command)", async () => {
     const r = await parseShellSemantic("cd foo && echo hello");

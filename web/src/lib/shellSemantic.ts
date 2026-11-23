@@ -1,5 +1,6 @@
 import { useState, useEffect } from "preact/hooks";
 import { langFromPath } from "../highlight";
+import type { OutputFormat } from "./outputPlan";
 import { derivePlan, type CommandStep, type ReadRange } from "./commandStep";
 import {
   assertValidParsedShellDocument,
@@ -909,6 +910,18 @@ function buildShellOutputExpr(
   return { ok: true, value: expr };
 }
 
+const NL_DEFAULT_WIDTH = 6;
+const NL_DEFAULT_SEPARATOR = "\t";
+
+function nlNumberedFormat(options: NlOptions, language: string): OutputFormat {
+  return {
+    kind: "nl-line-number-prefixed",
+    width: options.width ?? NL_DEFAULT_WIDTH,
+    separator: options.separator ?? NL_DEFAULT_SEPARATOR,
+    format: { kind: "content", language },
+  };
+}
+
 function lowerReadFromFileExpr(
   expr: Extract<ShellOutputExpr, { kind: "file-read" }>,
   originalCommand: string,
@@ -916,7 +929,7 @@ function lowerReadFromFileExpr(
   presentation: ShellReadSemantic["presentation"] = { lineNumbers: false },
   commandNameOverride?: "cat" | "nl" | "sed" | "head" | "tail",
 ): ShellSemanticResult {
-  if (expr.commandName === "git") {
+  if (expr.commandName === "git" && presentation.lineNumbers === false) {
     return {
       ok: true,
       value: {
@@ -931,7 +944,10 @@ function lowerReadFromFileExpr(
   }
 
   const language = langFromPath(expr.filePath) || "text";
-  const commandName = commandNameOverride ?? expr.commandName;
+  const commandName =
+    expr.commandName === "git"
+      ? "nl"
+      : (commandNameOverride ?? expr.commandName);
   const steps: CommandStep[] = [
     {
       kind: "read-file",
@@ -941,8 +957,10 @@ function lowerReadFromFileExpr(
       range,
       outputShape: {
         kind: "content",
-        format: { kind: "content", language },
-        validator: "non-empty",
+        format: presentation.lineNumbers
+          ? nlNumberedFormat(presentation.lineNumbers, language)
+          : { kind: "content", language },
+        validator: presentation.lineNumbers ? undefined : "non-empty",
       },
       blockId: commandName === "sed" ? "sed-output" : undefined,
     },
@@ -952,7 +970,7 @@ function lowerReadFromFileExpr(
     value: {
       kind: "read",
       command: originalCommand,
-      commandName,
+      commandName: expr.commandName === "git" ? "git" : commandName,
       filePath: expr.filePath,
       range,
       presentation,
@@ -1084,7 +1102,7 @@ function conservativeLower(
           end: expr.end,
         },
         { lineNumbers },
-        "sed",
+        "nl",
       );
     }
     return lowerAsDiffOnly(expr.input);
