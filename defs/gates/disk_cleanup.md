@@ -1,4 +1,4 @@
-The task has reached the disk cleanup threshold of {{threshold_bytes}} apparent bytes.
+Please review this task’s disk usage. The cleanup threshold is {{threshold_bytes}} apparent bytes.
 
 Task directory {{task_dir}}: {{task_bytes}} bytes
 Temporary directory {{temporary_dir}}: {{temporary_bytes}} bytes
@@ -6,6 +6,12 @@ Signed total: {{total_bytes}} bytes
 
 Top positive subtree deltas:
 {{top_paths}}
+
+Paths whose size could not be measured (for example, due to a permission error):
+{{unmeasured_paths}}
+
+For any leftover scratch paths listed above, restore permissions (for example,
+with `chmod -R u+rwx`) and remove them.
 
 {{nix_closures}}
 

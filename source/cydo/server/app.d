@@ -3177,6 +3177,7 @@ class App
 			ownsWorktree: (int taskTid) => tasks[taskTid].ownsWorktree,
 			worktreePath: (int taskTid) => taskPathResolver.worktreePath(&tasks[taskTid]),
 			forkBaseSha: (int taskTid) => getWorktreeForkBaseHead(tasks[taskTid]),
+			forkRepository: (int taskTid) => tasks[taskTid].repoPath,
 		));
 	}
 
@@ -5880,8 +5881,9 @@ unittest
 	import std.path : dirName;
 	import cydo.workflow.sessions.disk_usage : DiskEvaluation;
 	import cydo.workflow.sessions.yield_gates : checkDiskCleanupGate;
-	import cydo.runtime.storage.disk_usage : DiskCategory, DiskTopPath;
+	import cydo.runtime.storage.disk_usage : DiskCategory, DiskTopPath, DiskUnmeasured;
 	import cydo.runtime.storage.nix_roots : NixClosureEntry, nixClosureLabel;
+	import std.array : replace;
 
 	auto root = buildPath(tempDir(), "cydo-app-disk-cleanup-template");
 	if (exists(root)) rmdirRecurse(root);
@@ -5908,6 +5910,9 @@ unittest
 	evaluation.usage.temporaryBytes = 15;
 	evaluation.usage.totalBytes = 12;
 	evaluation.usage.topPaths = [DiskTopPath(DiskCategory.temporary, "build{{x}}", 15)];
+	evaluation.usage.unmeasured = [
+		DiskUnmeasured(DiskCategory.task, "blocked", "Permission denied"),
+	];
 	evaluation.nix.entries = [NixClosureEntry(["/task/result"], "/nix/store/example", 100)];
 	auto vars = checkDiskCleanupGate(evaluation, 10, "/task", "/tmp/task").vars;
 	vars["x"] = "must-not-expand";
@@ -5917,6 +5922,8 @@ unittest
 	assert(bundledBody.canFind("Signed total: 12 bytes"));
 	assert(bundledBody.canFind("15 temporary build{{x}}"));
 	assert(!bundledBody.canFind("must-not-expand"));
+	assert(!bundledBody.replace("build{{x}}", "").canFind("{{"));
+	assert(bundledBody.canFind("task blocked"));
 	assert(bundledBody.canFind(nixClosureLabel));
 	assert(bundledBody.canFind("100 /nix/store/example /task/result"));
 	assert(bundledBody.canFind("Retain required outputs, shared inputs, and needed build"));

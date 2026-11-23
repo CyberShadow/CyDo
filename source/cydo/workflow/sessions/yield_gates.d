@@ -42,11 +42,14 @@ YieldGateFinding checkDiskCleanupGate(DiskEvaluation evaluation, long threshold,
 	bool over = evaluation.usage.totalBytes >= threshold;
 	foreach (entry; evaluation.nix.entries)
 		over = over || entry.closureSize >= threshold;
-	if (!over)
+	if (!over && evaluation.usage.unmeasured.length == 0)
 		return YieldGateFinding(YieldGate.diskCleanup);
 	string[] paths;
 	foreach (path; evaluation.usage.topPaths)
 		paths ~= to!string(path.bytes) ~ " " ~ to!string(path.category) ~ " " ~ path.relativePath;
+	string[] unmeasured;
+	foreach (path; evaluation.usage.unmeasured)
+		unmeasured ~= to!string(path.category) ~ " " ~ path.relativePath;
 	string[] closures;
 	foreach (entry; evaluation.nix.entries)
 		closures ~= to!string(entry.closureSize) ~ " " ~ entry.storePath ~ " "
@@ -59,10 +62,11 @@ YieldGateFinding checkDiskCleanupGate(DiskEvaluation evaluation, long threshold,
 		"total_bytes": to!string(evaluation.usage.totalBytes),
 		"threshold_bytes": to!string(threshold),
 		"top_paths": paths.length ? paths.join("\n") : "(none)",
+		"unmeasured_paths": unmeasured.length ? unmeasured.join("\n") : "(none)",
 		"nix_closures": nixClosureLabel ~ "\n" ~
 			(closures.length ? closures.join("\n") : "(none)"),
 	];
-	return YieldGateFinding(YieldGate.diskCleanup, "disk cleanup threshold reached", vars);
+	return YieldGateFinding(YieldGate.diskCleanup, "disk cleanup requested", vars);
 }
 
 unittest
@@ -95,4 +99,24 @@ unittest
 	auto nagged = NaggedYieldGates.init;
 	nagged.mark(YieldGate.diskCleanup);
 	assert(!shouldRetryYieldGate(nagged, finding));
+	assert(!shouldEvaluateDiskCleanup(nagged));
+}
+
+unittest
+{
+	import cydo.runtime.storage.disk_usage : DiskCategory, DiskUnmeasured;
+
+	DiskEvaluation evaluation;
+	evaluation.usage.totalBytes = 99;
+	assert(!checkDiskCleanupGate(evaluation, 100, "/task", "/tmp/task").found);
+	auto finding = checkDiskCleanupGate(evaluation, 98, "/task", "/tmp/task");
+	assert(finding.found);
+	assert(finding.vars["unmeasured_paths"] == "(none)");
+
+	evaluation.usage.unmeasured = [
+		DiskUnmeasured(DiskCategory.temporary, "nested/blocked", "Permission denied"),
+	];
+	finding = checkDiskCleanupGate(evaluation, 100, "/task", "/tmp/task");
+	assert(finding.found);
+	assert(finding.vars["unmeasured_paths"] == "temporary nested/blocked");
 }

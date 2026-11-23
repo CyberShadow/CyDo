@@ -20,6 +20,7 @@ struct DiskUsageHost
 	bool delegate(int tid) ownsWorktree;
 	string delegate(int tid) worktreePath;
 	string delegate(int tid) forkBaseSha;
+	string delegate(int tid) forkRepository;
 }
 
 DiskScanInput buildDiskScanInput(int tid, DiskUsageHost host)
@@ -31,6 +32,7 @@ DiskScanInput buildDiskScanInput(int tid, DiskUsageHost host)
 	{
 		input.forkWorktree = host.worktreePath(tid);
 		input.forkBaseSha = host.forkBaseSha(tid);
+		input.forkRepository = host.forkRepository(tid);
 	}
 	return input;
 }
@@ -63,10 +65,12 @@ unittest
 	import std.algorithm : canFind;
 	import std.file : dirEntries, mkdirRecurse, rmdirRecurse, tempDir, write, SpanMode;
 	import std.path : buildPath;
+	import std.process : execute;
 	import std.uuid : randomUUID;
 
 	auto root = buildPath(tempDir(), "cydo-disk-worker-" ~ randomUUID().toString());
 	auto task = buildPath(root, "task");
+	auto repo = buildPath(root, "repo");
 	auto sharedRoot = buildPath(root, "shared");
 	mkdirRecurse(task);
 	mkdirRecurse(sharedRoot);
@@ -77,6 +81,7 @@ unittest
 		ownsWorktree: (int tid) => false,
 		worktreePath: (int tid) => "",
 		forkBaseSha: (int tid) => "",
+		forkRepository: (int tid) => repo,
 	);
 	auto input = buildDiskScanInput(12, host);
 	assert(input.taskDir == task);
@@ -84,18 +89,22 @@ unittest
 	assert(input.forkWorktree.length == 0);
 	// I: inherited worktrees and the project checkout are outside scan roots.
 	bool baseCalled;
+	bool repositoryCalled;
 	auto inheritedHost = DiskUsageHost(
 		taskDir: (int tid) => task,
 		sharedTmpPath: (int tid) => sharedRoot,
 		ownsWorktree: (int tid) => false,
 		worktreePath: (int tid) => "/elsewhere/parent-fork",
 		forkBaseSha: (int tid) { baseCalled = true; return "base"; },
+		forkRepository: (int tid) { repositoryCalled = true; return repo; },
 	);
 	auto inherited = buildDiskScanInput(12, inheritedHost);
 	assert(inherited.taskDir == task);
 	assert(inherited.forkWorktree.length == 0);
 	assert(inherited.forkBaseSha.length == 0);
+	assert(inherited.forkRepository.length == 0);
 	assert(!baseCalled);
+	assert(!repositoryCalled);
 	// J: both launch modes use their host TMPDIR, never the sandbox alias.
 	auto otherRoot = buildPath(root, "shared-b");
 	host.sharedTmpPath = (int tid) => otherRoot;
@@ -127,29 +136,33 @@ unittest
 	assert(completed);
 	input.taskDir = task;
 
-	input.forkWorktree = task;
+	assert(execute(["git", "init", "-q", repo]).status == 0);
+	auto fork = buildPath(task, "fork");
+	mkdirRecurse(fork);
+	input.forkWorktree = fork;
+	input.forkRepository = repo;
 	input.forkBaseSha = "bad-sha";
 	bool rejected;
 	measureDiskUsageAsync(input).then((DiskEvaluation result) {
 		assert(false, "expected Git failure");
 	}, (Exception e) {
-		assert(e.msg.canFind(task));
+		assert(e.msg.canFind("Cannot list fork base for " ~ fork));
 		rejected = true;
 	}).ignoreResult();
 	socketManager.loop();
 	assert(rejected);
 
 	// K: an owned fork with no resolvable base rejects on the worker.
-	auto fork = buildPath(task, "fork");
-	mkdirRecurse(fork);
 	auto ownedHost = DiskUsageHost(
 		taskDir: (int tid) => task,
 		sharedTmpPath: (int tid) => sharedRoot,
 		ownsWorktree: (int tid) => true,
 		worktreePath: (int tid) => fork,
 		forkBaseSha: (int tid) => "",
+		forkRepository: (int tid) => repo,
 	);
 	auto missingBase = buildDiskScanInput(12, ownedHost);
+	assert(missingBase.forkRepository == repo);
 	rejected = false;
 	measureDiskUsageAsync(missingBase).then((DiskEvaluation result) {
 		assert(false, "expected missing-base failure");
@@ -167,15 +180,14 @@ unittest
 	{
 		input.forkWorktree = "";
 		input.forkBaseSha = "";
-		auto blocked = buildPath(task, "blocked");
-		mkdirRecurse(blocked);
-		assert(chmod(blocked.toStringz, 0) == 0);
-		scope (exit) chmod(blocked.toStringz, 448);
+		input.forkRepository = "";
+		assert(chmod(task.toStringz, 0) == 0);
+		scope (exit) assert(chmod(task.toStringz, 448) == 0);
 		rejected = false;
 		measureDiskUsageAsync(input).then((DiskEvaluation result) {
-			assert(false, "expected unreadable-directory failure");
+			assert(false, "expected unreadable-root failure");
 		}, (Exception e) {
-			assert(e.msg.canFind(blocked));
+			assert(e.msg.canFind(task));
 			rejected = true;
 		}).ignoreResult();
 		socketManager.loop();

@@ -1,6 +1,7 @@
 module cydo.runtime.storage.disk_usage;
 
-import core.stdc.errno : ENOENT, errno;
+import core.stdc.errno : EACCES, ENOENT, EPERM, errno;
+import core.sys.posix.unistd : X_OK, access;
 import core.sys.posix.sys.stat : S_ISDIR, S_ISLNK, S_ISREG, lstat, stat_t;
 import std.algorithm : sort, startsWith;
 import std.conv : to;
@@ -18,6 +19,7 @@ struct DiskScanInput
 	string temporaryDir;
 	string forkWorktree;
 	string forkBaseSha;
+	string forkRepository;
 }
 
 struct DiskEntry
@@ -45,6 +47,13 @@ struct DiskSymlink
 	string rawTarget;
 }
 
+struct DiskUnmeasured
+{
+	DiskCategory category;
+	string relativePath;
+	string error;
+}
+
 struct DiskUsageResult
 {
 	long taskBytes;
@@ -52,6 +61,7 @@ struct DiskUsageResult
 	long totalBytes;
 	DiskTopPath[] topPaths;
 	DiskSymlink[] symlinks;
+	DiskUnmeasured[] unmeasured;
 }
 
 private long checkedAdd(long a, long b)
@@ -84,12 +94,15 @@ private bool beneath(string path, string root)
 }
 
 DiskUsageResult aggregateDiskUsage(DiskScanInput input, DiskEntry[] entries,
-	long[string] baseline)
+	long[string] baseline, DiskUnmeasured[] unmeasured = null)
 {
 	if (input.forkWorktree.length > 0)
 		enforce(beneath(input.forkWorktree, input.taskDir),
 			"Fork worktree " ~ input.forkWorktree ~ " is not inside task directory " ~ input.taskDir);
+	unmeasured.sort!((a, b) => a.category != b.category
+		? a.category < b.category : a.relativePath < b.relativePath);
 	DiskUsageResult result;
+	result.unmeasured = unmeasured;
 	long[string] deltas;
 	bool[string] visitedPaths;
 	bool[string] visitedInodes;
@@ -122,7 +135,11 @@ DiskUsageResult aggregateDiskUsage(DiskScanInput input, DiskEntry[] entries,
 		if (entry.symlink)
 			result.symlinks ~= DiskSymlink(entry.absolutePath, entry.symlinkTarget);
 	}
-	foreach (path, bytes; baseline)
+	bool[string] unmeasuredTaskPaths;
+	foreach (path; unmeasured)
+		if (path.category == DiskCategory.task)
+			unmeasuredTaskPaths[path.relativePath] = true;
+	baselineEntry: foreach (path, bytes; baseline)
 	{
 		if (path in baselinePaths)
 			continue;
@@ -130,6 +147,14 @@ DiskUsageResult aggregateDiskUsage(DiskScanInput input, DiskEntry[] entries,
 		if (absolute in visitedPaths)
 			continue;
 		auto relative = absolute[input.taskDir.length + 1 .. $];
+		for (auto ancestor = relative; unmeasuredTaskPaths.length > 0;)
+		{
+			if (ancestor in unmeasuredTaskPaths)
+				continue baselineEntry;
+			auto slash = ancestor.lastIndexOf('/');
+			if (slash < 0) break;
+			ancestor = ancestor[0 .. slash];
+		}
 		auto key = DiskCategory.task.to!string ~ ":" ~ relative;
 		deltas[key] = checkedAdd(key in deltas ? deltas[key] : 0, -bytes);
 	}
@@ -188,15 +213,26 @@ string[] listDirectory(string path)
 	return children;
 }
 
-private void walkRoot(string root, DiskCategory category, ref DiskEntry[] entries,
-	string[] delegate(string dir) list)
+private bool permissionDenied(int error)
 {
+	return error == EACCES || error == EPERM;
+}
+
+private void walkRoot(string root, DiskCategory category, ref DiskEntry[] entries,
+	ref DiskUnmeasured[] unmeasured, string[] delegate(string dir) list)
+{
+	void recordUnmeasured(string path, string error)
+	{
+		unmeasured ~= DiskUnmeasured(category, path[root.length + 1 .. $], error);
+	}
+
 	void walk(string path, bool isRoot)
 	{
 		stat_t info;
 		if (lstat(path.toStringz, &info) != 0)
 		{
-			if (errno == ENOENT)
+			auto error = errno;
+			if (error == ENOENT)
 			{
 				if (isRoot) throw new Exception("Disk usage root does not exist: " ~ root);
 				return;
@@ -207,12 +243,29 @@ private void walkRoot(string root, DiskCategory category, ref DiskEntry[] entrie
 			throw new Exception("Disk usage root is not a directory: " ~ root);
 		if (S_ISDIR(info.st_mode))
 		{
+			// Listing needs read permission, but measuring children also needs search permission.
+			if (access(path.toStringz, X_OK) != 0)
+			{
+				auto error = errno;
+				auto failure = new FileException(path, error);
+				if (!isRoot && permissionDenied(error))
+				{
+					recordUnmeasured(path, failure.msg);
+					return;
+				}
+				throw new Exception("Cannot search disk usage directory " ~ path ~ ": " ~ failure.msg);
+			}
 			string[] children;
 			try
 				children = list(path);
 			catch (FileException e)
 			{
 				if (e.errno == ENOENT && !isRoot) return;
+				if (!isRoot && permissionDenied(e.errno))
+				{
+					recordUnmeasured(path, e.msg);
+					return;
+				}
 				throw new Exception("Cannot read disk usage directory " ~ path ~ ": " ~ e.msg);
 			}
 			children.sort();
@@ -259,14 +312,17 @@ DiskUsageResult measureDiskUsage(DiskScanInput input,
 	{
 		enforce(input.forkBaseSha.length > 0,
 			"Cannot resolve fork base for " ~ input.forkWorktree);
-		auto listing = execute(["git", "-C", input.forkWorktree, "ls-tree",
-			"-r", "-l", "-z", input.forkBaseSha]);
-		enforce(listing.status == 0, "Cannot list fork base for " ~
-			input.forkWorktree ~ ": " ~ listing.output);
+		enforce(input.forkRepository.length > 0,
+			"Cannot resolve fork repository for " ~ input.forkWorktree);
+		auto listing = execute(["git", "-C", input.forkRepository, "ls-tree",
+			"--full-tree", "-r", "-l", "-z", input.forkBaseSha]);
+		enforce(listing.status == 0, "Cannot list fork base for " ~ input.forkWorktree
+			~ " in " ~ input.forkRepository ~ ": " ~ listing.output);
 		baseline = parseLsTreeBlobs(listing.output);
 	}
 	DiskEntry[] entries;
-	walkRoot(input.taskDir, DiskCategory.task, entries, list);
-	walkRoot(input.temporaryDir, DiskCategory.temporary, entries, list);
-	return aggregateDiskUsage(input, entries, baseline);
+	DiskUnmeasured[] unmeasured;
+	walkRoot(input.taskDir, DiskCategory.task, entries, unmeasured, list);
+	walkRoot(input.temporaryDir, DiskCategory.temporary, entries, unmeasured, list);
+	return aggregateDiskUsage(input, entries, baseline, unmeasured);
 }

@@ -219,7 +219,8 @@ unittest
     assert(execute(["git", "-C", repo, "-c", "user.name=CyDo",
         "-c", "user.email=cydo@example.test", "commit", "-qm", "base"]).status == 0);
     auto base = execute(["git", "-C", repo, "rev-parse", "HEAD"]).output.strip;
-    auto input = DiskScanInput(task, temporary, repo, base);
+    auto input = DiskScanInput(task, temporary, repo, base,
+        buildPath(fixture.root, "git-metadata"));
     auto pointerBytes = cast(long) getSize(buildPath(repo, ".git"));
     // Base checkout: unchanged blobs and the tracked link net to zero.
     auto unchanged = measureDiskUsage(input);
@@ -439,7 +440,7 @@ unittest
     auto base = execute(["git", "-C", repo, "rev-parse", "HEAD"]).output.strip;
     assert(execute(["git", "-C", repo, "worktree", "add", "-q", fork, "HEAD"]).status == 0);
     write(buildPath(repo, "large-untracked"), new char[1_000_000]);
-    auto result = measureDiskUsage(DiskScanInput(task, temporary, fork, base));
+    auto result = measureDiskUsage(DiskScanInput(task, temporary, fork, base, repo));
     assert(result.taskBytes == getSize(buildPath(fork, ".git")));
     assert(result.temporaryBytes == 0);
     assert(result.topPaths.length == 1);
@@ -507,32 +508,237 @@ unittest
         if (dir == fork) paths ~= buildPath(fork, "vanished");
         return paths;
     };
-    auto result = measureDiskUsage(DiskScanInput(task, temporary, fork, base), list);
+    auto result = measureDiskUsage(DiskScanInput(task, temporary, fork, base,
+        buildPath(fixture.root, "git-metadata")), list);
     assert(result.taskBytes == getSize(buildPath(fork, ".git")) - 2);
 }
 
-// H: unreadable directories reject with their path in the diagnostic.
+// A blocked subtree is reported without losing the bytes from readable siblings.
+unittest
+{
+    import core.stdc.errno : EACCES;
+    import core.sys.posix.sys.stat : chmod;
+    import core.sys.posix.unistd : geteuid;
+    import std.file : FileException;
+    import std.string : toStringz;
+
+    DiskFixture fixture = DiskFixture("unreadable-subtree");
+    auto task = buildPath(fixture.root, "task");
+    auto blocked = buildPath(task, "nested", "blocked");
+    auto temporary = buildPath(fixture.root, "tmp");
+    mkdirRecurse(blocked);
+    mkdirRecurse(temporary);
+    write(buildPath(blocked, "hidden"), "unmeasured bytes");
+    write(buildPath(task, "nested", "sibling"), "12345");
+    auto input = DiskScanInput(task, temporary);
+    void check(DiskUsageResult result)
+    {
+        assert(result.taskBytes == 5);
+        assert(result.totalBytes == 5);
+        assert(result.unmeasured.length == 1);
+        assert(result.unmeasured[0].category == DiskCategory.task);
+        assert(result.unmeasured[0].relativePath == "nested/blocked");
+        assert(result.unmeasured[0].error.length != 0);
+    }
+
+    if (geteuid() == 0)
+    {
+        check(measureDiskUsage(input, (string dir) {
+            if (dir == blocked) throw new FileException(dir, EACCES);
+            return listDirectory(dir);
+        }));
+        return;
+    }
+    foreach (mode; [0, 64, 256]) // 0000, 0100, 0400
+    {
+        assert(chmod(blocked.toStringz, mode) == 0);
+        scope (exit) assert(chmod(blocked.toStringz, 448) == 0);
+        check(measureDiskUsage(input));
+    }
+}
+
+// An unreadable or unsearchable scan root still fails the scan.
+unittest
+{
+    import core.stdc.errno : EACCES;
+    import core.sys.posix.sys.stat : chmod;
+    import core.sys.posix.unistd : geteuid;
+    import std.exception : collectException;
+    import std.file : FileException;
+    import std.string : toStringz;
+
+    DiskFixture fixture = DiskFixture("unreadable-root");
+    auto task = buildPath(fixture.root, "task");
+    auto temporary = buildPath(fixture.root, "tmp");
+    mkdirRecurse(task);
+    mkdirRecurse(temporary);
+    write(buildPath(task, "file"), "task bytes");
+    write(buildPath(temporary, "file"), "temporary bytes");
+    auto input = DiskScanInput(task, temporary);
+
+    if (geteuid() == 0)
+    {
+        auto failure = collectException(measureDiskUsage(input, (string dir) {
+            if (dir == task) throw new FileException(dir, EACCES);
+            return listDirectory(dir);
+        }));
+        assert(failure && failure.msg.canFind(task));
+        return;
+    }
+
+    foreach (path; [task, temporary])
+        foreach (mode; [0, 256]) // 0000, 0400
+        {
+            assert(chmod(path.toStringz, mode) == 0);
+            scope (exit) assert(chmod(path.toStringz, 448) == 0);
+            auto failure = collectException(measureDiskUsage(input));
+            assert(failure && failure.msg.canFind(path));
+        }
+}
+
+// A blocked tracked subtree has zero delta, while a deleted sibling still subtracts.
+unittest
+{
+    import core.stdc.errno : EACCES;
+    import std.file : FileException, remove;
+    import std.process : execute;
+    import std.string : strip;
+
+    DiskFixture fixture = DiskFixture("unreadable-baseline");
+    auto task = buildPath(fixture.root, "task");
+    auto fork = buildPath(task, "fork");
+    auto temporary = buildPath(fixture.root, "tmp");
+    auto blocked = buildPath(fork, "foo");
+    auto deleted = buildPath(fork, "foobar");
+    mkdirRecurse(blocked);
+    mkdirRecurse(temporary);
+    assert(execute(["git", "init", "-q", "--separate-git-dir",
+        buildPath(fixture.root, "git-metadata"), fork]).status == 0);
+    write(buildPath(blocked, "tracked"), new ubyte[1000]);
+    write(deleted, "12345");
+    assert(execute(["git", "-C", fork, "add", "."]).status == 0);
+    assert(execute(["git", "-C", fork, "-c", "user.name=CyDo",
+        "-c", "user.email=cydo@example.test", "commit", "-qm", "base"]).status == 0);
+    auto base = execute(["git", "-C", fork, "rev-parse", "HEAD"]).output.strip;
+    auto input = DiskScanInput(task, temporary, fork, base,
+        buildPath(fixture.root, "git-metadata"));
+    auto readable = measureDiskUsage(input);
+    string[] delegate(string) list = (string dir) {
+        if (dir == blocked) throw new FileException(dir, EACCES);
+        return listDirectory(dir);
+    };
+    auto unreadable = measureDiskUsage(input, list);
+    assert(unreadable.totalBytes == readable.totalBytes);
+    assert(unreadable.topPaths == readable.topPaths);
+    assert(unreadable.unmeasured.length == 1);
+
+    remove(deleted);
+    auto afterDeletion = measureDiskUsage(input, list);
+    assert(afterDeletion.totalBytes == readable.totalBytes - 5);
+    assert(afterDeletion.topPaths.length == 1);
+    assert(afterDeletion.topPaths[0].relativePath == "fork/.git");
+    assert(afterDeletion.topPaths[0].bytes == readable.topPaths[0].bytes);
+}
+
+// The baseline comes from the project even when the linked fork is blocked.
 unittest
 {
     import core.sys.posix.sys.stat : chmod;
     import core.sys.posix.unistd : geteuid;
-    import std.string : toStringz;
+    import std.exception : assertThrown, collectException;
+    import std.file : remove;
+    import std.process : execute;
+    import std.string : strip, toStringz;
+
+    DiskFixture fixture = DiskFixture("blocked-fork-baseline");
+    auto project = buildPath(fixture.root, "project");
+    auto task = buildPath(fixture.root, "task");
+    auto fork = buildPath(task, "fork");
+    auto temporary = buildPath(fixture.root, "tmp");
+    mkdirRecurse(project);
+    mkdirRecurse(task);
+    mkdirRecurse(temporary);
+    assert(execute(["git", "-C", project, "init", "-q"]).status == 0);
+    write(buildPath(project, "tracked"), new ubyte[1000]);
+    write(buildPath(project, "deleted"), new ubyte[500]);
+    assert(execute(["git", "-C", project, "add", "."]).status == 0);
+    assert(execute(["git", "-C", project, "-c", "user.name=CyDo",
+        "-c", "user.email=cydo@example.test", "commit", "-qm", "base"]).status == 0);
+    auto base = execute(["git", "-C", project, "rev-parse", "HEAD"]).output.strip;
+    assert(execute(["git", "-C", project, "worktree", "add", "-q", "--detach", fork]).status == 0);
+    remove(buildPath(fork, "deleted"));
+    write(buildPath(task, "sibling"), "12345");
+
+    auto input = DiskScanInput(task, temporary, fork, base, project);
+    auto invalid = input;
+    invalid.forkBaseSha = "invalid-revision";
+    auto badRevision = collectException(measureDiskUsage(invalid));
+    assert(badRevision && badRevision.msg.canFind(fork));
+    invalid = input;
+    invalid.forkRepository = buildPath(fixture.root, "no-such-repo");
+    assertThrown(measureDiskUsage(invalid));
+    invalid.forkRepository = "";
+    auto emptyRepository = collectException(measureDiskUsage(invalid));
+    assert(emptyRepository && emptyRepository.msg.canFind("Cannot resolve fork repository"));
+
+    auto readable = measureDiskUsage(input);
+    assert(readable.unmeasured.length == 0);
+    if (geteuid() == 0) return;
+    foreach (mode; [0, 256]) // 0000, 0400
+    {
+        assert(chmod(fork.toStringz, mode) == 0);
+        scope (exit) assert(chmod(fork.toStringz, 448) == 0);
+
+        auto result = measureDiskUsage(input);
+        assert(result.totalBytes == 5);
+        assert(result.topPaths == [DiskTopPath(DiskCategory.task, "sibling", 5)]);
+        assert(result.unmeasured.length == 1);
+        assert(result.unmeasured[0].category == DiskCategory.task);
+        assert(result.unmeasured[0].relativePath == "fork");
+    }
+    auto pointer = buildPath(fork, ".git");
+    {
+        assert(chmod(pointer.toStringz, 0) == 0);
+        scope (exit) assert(chmod(pointer.toStringz, 384) == 0);
+        assert(measureDiskUsage(input) == readable);
+    }
+    auto metadata = buildPath(project, ".git", "worktrees", "fork");
+    assert(chmod(metadata.toStringz, 0) == 0);
+    scope (exit) assert(chmod(metadata.toStringz, 448) == 0);
+    assert(measureDiskUsage(input) == readable);
+}
+
+// Task-owned worktree metadata is measured by the walk alone.
+unittest
+{
+    import core.sys.posix.sys.stat : chmod;
+    import core.sys.posix.unistd : geteuid;
+    import std.process : execute;
+    import std.string : strip, toStringz;
 
     if (geteuid() == 0) return;
-    DiskFixture fixture = DiskFixture("unreadable");
+    DiskFixture fixture = DiskFixture("blocked-worktree-metadata");
     auto task = buildPath(fixture.root, "task");
-    auto blocked = buildPath(task, "blocked");
+    auto primary = buildPath(task, "primary");
+    auto fork = buildPath(task, "fork");
     auto temporary = buildPath(fixture.root, "tmp");
-    mkdirRecurse(blocked);
+    mkdirRecurse(primary);
     mkdirRecurse(temporary);
-    assert(chmod(blocked.toStringz, 0) == 0);
-    scope (exit) chmod(blocked.toStringz, 448);
-    bool threw;
-    try measureDiskUsage(DiskScanInput(task, temporary));
-    catch (Exception e)
-    {
-        assert(e.msg.canFind(blocked));
-        threw = true;
-    }
-    assert(threw);
+    assert(execute(["git", "-C", primary, "init", "-q"]).status == 0);
+    write(buildPath(primary, "tracked"), "base");
+    assert(execute(["git", "-C", primary, "add", "."]).status == 0);
+    assert(execute(["git", "-C", primary, "-c", "user.name=CyDo",
+        "-c", "user.email=cydo@example.test", "commit", "-qm", "base"]).status == 0);
+    auto base = execute(["git", "-C", primary, "rev-parse", "HEAD"]).output.strip;
+    assert(execute(["git", "-C", primary, "worktree", "add", "-q", "--detach", fork]).status == 0);
+    write(buildPath(temporary, "sibling"), "abc");
+
+    auto metadata = buildPath(primary, ".git", "worktrees", "fork");
+    assert(chmod(metadata.toStringz, 0) == 0);
+    scope (exit) assert(chmod(metadata.toStringz, 448) == 0);
+    auto result = measureDiskUsage(DiskScanInput(task, temporary, fork, base, primary));
+    assert(result.temporaryBytes == 3);
+    assert(result.unmeasured.length == 1);
+    assert(result.unmeasured[0].category == DiskCategory.task);
+    assert(result.unmeasured[0].relativePath == "primary/.git/worktrees/fork");
 }
