@@ -1480,7 +1480,9 @@ class App
 			~ "' has unknown task type '" ~ ep.resolvedType ~ "'");
 		auto workspace = caller.workspace;
 		auto projectPath = caller.projectPath;
-		auto agentName = resolveAgent(typeDef.agent, caller.agentName, workspace);
+		// A singleton serves every task in its workspace, so it is nobody's
+		// child: its `parent_agent_type` is the workspace's default agent.
+		auto agentName = resolveAgent(typeDef.agent, defaultAgentName(workspace), workspace);
 		// `caller` dangles from here on: creating a task grows `tasks`.
 		auto tid = createEntryPointTask(workspace, projectPath, agentName, ep);
 		tasks[tid].title = singleton.title;

@@ -104,7 +104,10 @@ are hidden on the new-task page.
 
 CyDo routes each request to the newest unarchived singleton task in the
 caller's project and workspace, starting one if needed. The caller waits
-for the singleton's `Answer`. To replace a singleton, stop and archive its
+for the singleton's `Answer`. A singleton has no parent: its type's `agent:`
+expression sees the workspace's default agent as `parent_agent_type`, so
+which task happened to send the first request does not decide its agent.
+To replace a singleton, stop and archive its
 task. The next request starts a fresh one.
 
 A singleton can receive questions while blocked in a CyDo tool call. Long
