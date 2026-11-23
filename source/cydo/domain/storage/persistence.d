@@ -48,6 +48,18 @@ struct PersistedBatch
 	int[] childTids;
 }
 
+private enum sessionMetaCacheSchema =
+	"CREATE TABLE session_meta_cache (" ~
+	"    driver TEXT NOT NULL," ~
+	"    profile_root TEXT NOT NULL," ~
+	"    session_id TEXT NOT NULL," ~
+	"    mtime INTEGER NOT NULL," ~
+	"    project_path TEXT NOT NULL DEFAULT ''," ~
+	"    title TEXT NOT NULL DEFAULT ''," ~
+	"    has_messages INTEGER NOT NULL DEFAULT 1," ~
+	"    PRIMARY KEY (driver, profile_root, session_id)" ~
+	");";
+
 struct Persistence
 {
 	Database db;
@@ -147,16 +159,7 @@ struct Persistence
 			"ALTER TABLE tasks ADD COLUMN task_start_head TEXT NOT NULL DEFAULT '';",
 			// Migration 21: cache native session metadata by its exact profile namespace.
 			"DROP TABLE session_meta_cache;" ~
-			"CREATE TABLE session_meta_cache (" ~
-			"    driver TEXT NOT NULL," ~
-			"    profile_root TEXT NOT NULL," ~
-			"    session_id TEXT NOT NULL," ~
-			"    mtime INTEGER NOT NULL," ~
-			"    project_path TEXT NOT NULL DEFAULT ''," ~
-			"    title TEXT NOT NULL DEFAULT ''," ~
-			"    has_messages INTEGER NOT NULL DEFAULT 1," ~
-			"    PRIMARY KEY (driver, profile_root, session_id)" ~
-			");",
+			sessionMetaCacheSchema,
 			// Migration 22: Claude rows cached a directory-name guess and must be rescanned.
 			"DELETE FROM session_meta_cache WHERE driver = 'claude';",
 			// Migration 23: durable independent pre-yield retry opportunities.
@@ -178,6 +181,9 @@ struct Persistence
 			"FROM task_deps) " ~
 			"UPDATE task_deps AS dep SET batch_id = ranked.batch_id, ordinal = ranked.ordinal " ~
 			"FROM ranked WHERE dep.parent_tid = ranked.parent_tid AND dep.child_tid = ranked.child_tid;",
+
+			// Migration 25: rescan Codex and Copilot sessions hidden by stale metadata.
+			"DELETE FROM session_meta_cache WHERE driver IN ('codex', 'copilot');",
 		]);
 
 		// In CI, disable durability to speed up tests. This trades crash-safety
@@ -686,7 +692,7 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 25);
+	assert(userVersion == 26);
 
 	auto rows = persistence.loadTasks();
 	assert(rows.length == 1);
@@ -779,15 +785,10 @@ unittest
 
 	{
 		auto legacy = Database(dbPath);
-		legacy.db.exec("CREATE TABLE session_meta_cache (" ~
-			"driver TEXT NOT NULL, profile_root TEXT NOT NULL, session_id TEXT NOT NULL, " ~
-			"mtime INTEGER NOT NULL, project_path TEXT NOT NULL DEFAULT '', " ~
-			"title TEXT NOT NULL DEFAULT '', has_messages INTEGER NOT NULL DEFAULT 1, " ~
-			"PRIMARY KEY (driver, profile_root, session_id));"
-		);
+		legacy.db.exec(sessionMetaCacheSchema);
 		legacy.db.exec("INSERT INTO session_meta_cache VALUES " ~
 			"('claude', '/profiles/one', 'same-id', 1, '/guessed', 'Claude session', 1), " ~
-			"('codex', '/profiles/one', 'same-id', 2, '/recorded', 'Codex session', 1);"
+			"('other', '/profiles/one', 'same-id', 2, '/recorded', 'Other session', 1);"
 		);
 		// Later migrations alter the tasks and task_deps tables.
 		legacy.db.exec("CREATE TABLE tasks (tid INTEGER PRIMARY KEY, status TEXT NOT NULL);");
@@ -799,11 +800,40 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 25);
+	assert(userVersion == 26);
 
 	auto rows = persistence.loadSessionMetaCache();
-	assert(rows == [Persistence.CacheRow("codex", "/profiles/one", "same-id", 2,
-		"/recorded", "Codex session", true)]);
+	assert(rows == [Persistence.CacheRow("other", "/profiles/one", "same-id", 2,
+		"/recorded", "Other session", true)]);
+}
+
+unittest
+{
+	import std.file : exists, remove, tempDir;
+	import std.path : buildPath;
+	import std.uuid : randomUUID;
+
+	auto dbPath = buildPath(tempDir(), "cydo-session-meta-cache-" ~ randomUUID().toString ~ ".sqlite");
+	scope (exit)
+		if (exists(dbPath))
+			remove(dbPath);
+	{
+		auto legacy = Persistence(dbPath);
+		legacy.db.db.exec("INSERT INTO session_meta_cache VALUES " ~
+			"('codex', '/profiles/one', 'same-id', 1, '/workspace', 'Stale Codex title', 0), " ~
+			"('copilot', '/profiles/one', 'same-id', 2, '/workspace', 'Stale Copilot title', 0), " ~
+			"('claude', '/profiles/one', 'same-id', 3, '/workspace', 'Claude session', 1);"
+		);
+		legacy.db.db.exec("PRAGMA user_version = 25;");
+	}
+
+	auto persistence = Persistence(dbPath);
+	int userVersion;
+	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
+		userVersion = value;
+	assert(userVersion == 26);
+	assert(persistence.loadSessionMetaCache() ==
+		[Persistence.CacheRow("claude", "/profiles/one", "same-id", 3, "/workspace", "Claude session", true)]);
 }
 
 
@@ -859,6 +889,7 @@ unittest
 			"PRIMARY KEY (parent_tid, child_tid));");
 		legacy.db.exec("INSERT INTO task_deps VALUES " ~
 			"(1, 2), (1, 3), (1, 4), (5, 6), (7, 9), (7, 8), (7, 10), (11, 6);");
+		legacy.db.exec(sessionMetaCacheSchema);
 		legacy.db.exec("PRAGMA user_version = 24;");
 	}
 
