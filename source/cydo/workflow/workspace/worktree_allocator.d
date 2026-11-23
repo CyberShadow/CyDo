@@ -2,7 +2,7 @@ module cydo.workflow.workspace.worktree_allocator;
 
 import std.file : exists, mkdirRecurse;
 import std.format : format;
-import std.logger : errorf, infof;
+import std.logger : infof;
 import std.process : execute;
 
 import cydo.domain.task_types.definition : WorktreeMode;
@@ -19,6 +19,14 @@ struct WorktreeAllocatorHost
 	string delegate(const TaskData* td) worktreePath;
 }
 
+final class WorktreePreparationFailure : Exception
+{
+	this(Exception cause)
+	{
+		super(cause.msg, __FILE__, __LINE__, cause);
+	}
+}
+
 class WorktreeAllocator
 {
 	private WorktreeAllocatorHost host_;
@@ -30,40 +38,38 @@ class WorktreeAllocator
 
 	void setupForEdge(int childTid, int parentTid, WorktreeMode mode)
 	{
-		final switch (mode)
+		int ownerTid;
+		try
 		{
+			final switch (mode)
+			{
 			case WorktreeMode.inherit:
-				setupInherit(childTid, parentTid);
+				auto parent = host_.getTask(parentTid);
+				ownerTid = parent is null ? 0 : parent.worktreeTid;
 				break;
 			case WorktreeMode.require:
-				setupRequire(childTid, parentTid);
+				ownerTid = prepareRequiredWorktree(childTid, parentTid);
 				break;
 			case WorktreeMode.fork:
-				setupFork(childTid, parentTid);
+				ownerTid = prepareForkWorktree(childTid, parentTid);
 				break;
+			}
+		}
+		catch (Exception e)
+			throw new WorktreePreparationFailure(e);
+
+		if (ownerTid > 0)
+		{
+			auto child = host_.getTask(childTid);
+			assert(child !is null, "Worktree assignment requires an existing child");
+			host_.persistWorktreeTid(childTid, ownerTid);
+			child.worktreeTid = ownerTid;
 		}
 	}
 
 private:
-	void setTaskWorktreeTid(int tid, int worktreeTid)
-	{
-		auto td = host_.getTask(tid);
-		if (td is null)
-			throw new Exception(format!"Task %d not found while setting worktree owner %d"(
-				tid, worktreeTid));
-		td.worktreeTid = worktreeTid;
-		host_.persistWorktreeTid(tid, worktreeTid);
-	}
 
-	void setupInherit(int childTid, int parentTid)
-	{
-		auto parentTd = host_.getTask(parentTid);
-		if (parentTd is null || parentTd.worktreeTid <= 0)
-			return;
-		setTaskWorktreeTid(childTid, parentTd.worktreeTid);
-	}
-
-	void setupRequire(int childTid, int parentTid)
+	int prepareRequiredWorktree(int childTid, int parentTid)
 	{
 		int current = parentTid;
 		while (current > 0)
@@ -72,18 +78,13 @@ private:
 			if (ancestorTd is null)
 				break;
 			if (ancestorTd.worktreeTid > 0)
-			{
-				setTaskWorktreeTid(childTid, ancestorTd.worktreeTid);
-				return;
-			}
+				return ancestorTd.worktreeTid;
 			current = ancestorTd.parentTid;
 		}
 
 		int rootTid = host_.findRootTid(childTid);
 		auto rootTd = host_.getTask(rootTid);
-		if (rootTd is null)
-			throw new Exception(format!"Root task %d not found while creating required worktree for task %d"(
-				rootTid, childTid));
+		assert(rootTd !is null, "Required worktree needs an existing root task");
 
 		auto rootTaskDir = host_.taskDir(rootTd);
 		auto wtPath = worktreePathForTaskDir(rootTaskDir);
@@ -93,24 +94,19 @@ private:
 			auto workDir = rootTd.projectPath.length > 0 ? rootTd.projectPath : null;
 			auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
 			if (gitResult.status != 0)
-			{
-				errorf("Failed to create worktree for require at root task %d: %s",
-					rootTid, gitResult.output);
-				return;
-			}
+				throw new Exception(format!"Failed to create required worktree for root task %d: %s"(
+					rootTid, gitResult.output));
 			infof("Created shared worktree at root task %d: %s", rootTid, wtPath);
 		}
-		setTaskWorktreeTid(childTid, rootTid);
+		return rootTid;
 	}
 
-	void setupFork(int childTid, int parentTid)
+	int prepareForkWorktree(int childTid, int parentTid)
 	{
 		auto td = host_.getTask(childTid);
-		if (td is null)
-			throw new Exception(format!"Task %d not found while creating fork worktree"(
-				childTid));
+		assert(td !is null, "Fork worktree needs an existing child");
 		if (td.worktreeTid > 0)
-			return;
+			return 0;
 
 		auto childTaskDir = host_.taskDir(td);
 		mkdirRecurse(childTaskDir);
@@ -124,13 +120,11 @@ private:
 			: (td.projectPath.length > 0 ? td.projectPath : null);
 
 		auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
-		if (gitResult.status == 0)
-		{
-			setTaskWorktreeTid(childTid, childTid);
-			infof("Created fork worktree for task %d: %s", childTid, wtPath);
-		}
-		else
-			errorf("Failed to create fork worktree for task %d: %s", childTid, gitResult.output);
+		if (gitResult.status != 0)
+			throw new Exception(format!"Failed to create fork worktree for task %d: %s"(
+				childTid, gitResult.output));
+		infof("Created fork worktree for task %d: %s", childTid, wtPath);
+		return childTid;
 	}
 }
 
