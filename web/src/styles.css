@@ -137,7 +137,8 @@ body,
   grid-row: 3;
 }
 
-.app.has-sidebar .message-list {
+.app.has-sidebar .message-list,
+.app.has-sidebar .welcome-prompt {
   grid-column: 2;
   grid-row: 4;
   min-height: 0;
@@ -148,11 +149,19 @@ body,
   grid-row: 5;
 }
 
-/* Welcome prompt (empty session with sidebar) */
+/* Welcome prompt (draft and empty session) */
 .welcome-prompt {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+}
+
+.welcome-prompt > .welcome-box,
+.welcome-prompt > .session-empty-inner {
+  flex-shrink: 0;
+  margin: auto;
 }
 
 /* Session config (pre-start task type selector) */
@@ -3940,6 +3949,7 @@ pre.extra-field-value {
   .app.has-sidebar .system-banner,
   .app.has-sidebar .file-viewer,
   .app.has-sidebar .message-list,
+  .app.has-sidebar .welcome-prompt,
   .app.has-sidebar .input-box,
   .app.has-sidebar .resume-bar,
   .app.has-sidebar .ask-user-form,

@@ -439,7 +439,7 @@ function SessionViewInner({
           )}
         </div>
       ) : task.messages.length === 0 && !task.isProcessing ? (
-        <div class="message-list welcome-prompt">
+        <div class="welcome-prompt">
           <div class="welcome-box">
             <LogoBanner />
             <p class="welcome-subtitle">Multi-agent orchestration system</p>
@@ -708,7 +708,7 @@ export function DraftSessionView({
         onToggleSidebar={onToggleSidebar}
         hasGlobalAttention={hasGlobalAttention}
       />
-      <div class="message-list welcome-prompt">
+      <div class="welcome-prompt">
         <div class="session-empty-inner">
           <div class="welcome-page-header">
             <LogoBanner />
