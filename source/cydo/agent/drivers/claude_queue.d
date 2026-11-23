@@ -24,7 +24,6 @@
 /// classifies the whole file up front.
 module cydo.agent.drivers.claude_queue;
 
-import std.algorithm : canFind;
 import std.string : lineSplitter;
 
 import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse;
@@ -160,16 +159,11 @@ struct Row
 			@JSONOptional string operation;
 			@JSONOptional string reason;
 			@JSONOptional string content;
-			@JSONOptional bool isMeta;
 			@JSONOptional Message message;
 		}
 
 		Row row;
 		if (line.length == 0)
-			return row;
-		// Only queue and user rows matter; skip parsing the (large) rest.
-		bool isQueue = line.canFind(`"queue-operation"`);
-		if (!isQueue && !line.canFind(`"type":"user"`) && !line.canFind(`"version"`))
 			return row;
 		Probe probe;
 		try
@@ -177,7 +171,8 @@ struct Row
 		catch (Exception)
 			return row;
 		row.version_ = probe.version_;
-		if (probe.type == "queue-operation")
+		import cydo.domain.tasks.model : isQueueOperationType;
+		if (isQueueOperationType(probe.type))
 		{
 			row.kind = RowKind.queueOperation;
 			row.operation = probe.operation;
@@ -187,8 +182,12 @@ struct Row
 		else if (probe.type == "user")
 		{
 			row.kind = RowKind.user;
-			if (!probe.isMeta)
-				row.canonicalUser = canonicalText(probe.message.content, row.text);
+			import cydo.agent.drivers.claude : ClaudeCodeAgent;
+			if (ClaudeCodeAgent.isCanonicalHistoryPrompt(line))
+			{
+				row.canonicalUser = true;
+				canonicalText(probe.message.content, row.text);
+			}
 		}
 		return row;
 	}
@@ -373,4 +372,20 @@ unittest
 		assert(outcomes[2] == ClaudeQueueOutcome(steering, 3));
 		assert(outcomes[5] == ClaudeQueueOutcome(removed, 6));
 	}
+}
+
+@("Claude parent-linked queue confirmation waits for the canonical root echo")
+unittest
+{
+	import std.array : join;
+	import cydo.agent.drivers.claude : claudeParentLinkedQueueFixture;
+	auto content = [
+		claudeParentLinkedQueueFixture("queue-operation", "enqueue", "root"),
+		claudeParentLinkedQueueFixture("queue/operation", "dequeue"),
+		`{"type":"user","parent_tool_use_id":"t","message":{"content":"nested"}}`,
+		`{"type":"user","isMeta":true,"turnCompanion":true,"message":{"content":"[Image: original 2x2]"}}`,
+		`{"type": "user", "message":{"content":"root"}}`,
+	].join("\n");
+	auto outcomes = classifyClaudeQueueRecords(content, null);
+	assert(outcomes[1] == ClaudeQueueOutcome(ClaudeQueueOutcomeKind.turnStart, 5));
 }

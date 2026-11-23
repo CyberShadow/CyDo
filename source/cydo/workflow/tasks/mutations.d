@@ -668,12 +668,12 @@ public:
 		}
 
 		auto edited = editJsonlMessage(jsonlPath, targetUuid,
-			&ta.forkIdMatchesLine,
+			&ta.historyRecordIdMatchesLine,
 			(string line) => replaceUserMessageContent(line, newContent));
 		if (!edited && fallbackUuid.length > 0)
 		{
 			edited = editJsonlMessage(jsonlPath, fallbackUuid,
-				&ta.forkIdMatchesLine,
+				&ta.historyRecordIdMatchesLine,
 				(string line) => replaceUserMessageContent(line, newContent));
 		}
 		if (!edited)
@@ -1495,7 +1495,7 @@ private:
 		auto inactive = access.agent.inactiveHistoryLines(content);
 		int remaining = 0;
 		foreach (i, line; content.splitLines())
-			if (cast(int) i + 1 !in inactive && access.agent.isUserMessageLine(line))
+			if (cast(int) i + 1 !in inactive && access.agent.isHistoryPrompt(line))
 				remaining++;
 		if (remaining < cast(int) td.pendingSteeringTexts.length)
 			td.pendingSteeringTexts = td.pendingSteeringTexts[0 .. remaining].dup;

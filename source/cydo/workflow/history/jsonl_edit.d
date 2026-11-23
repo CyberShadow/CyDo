@@ -5,14 +5,16 @@ module cydo.workflow.history.jsonl_edit;
 string replaceUserMessageContent(string line, string newContent)
 {
 	import std.json : parseJSON, JSONValue;
+	import cydo.domain.tasks.model : isQueueOperationType;
 
 	auto json = parseJSON(line);
-	if ("message" in json)
+	if ("type" in json && isQueueOperationType(json["type"].str))
+	{
+		if ("operation" in json && json["operation"].str == "enqueue")
+			json["content"] = JSONValue(newContent);
+	}
+	else if ("message" in json)
 		json["message"]["content"] = JSONValue(newContent);
-	else if ("type" in json && "operation" in json
-		&& json["type"].str == "queue-operation"
-		&& json["operation"].str == "enqueue")
-		json["content"] = JSONValue(newContent);
 	return json.toString();
 }
 
@@ -32,10 +34,12 @@ unittest
 {
 	import std.json : parseJSON;
 
-	auto updated = parseJSON(replaceUserMessageContent(
-		`{"type":"queue-operation","operation":"enqueue","content":"steer"}`,
-		"updated steering"));
-	assert(updated["type"].str == "queue-operation");
-	assert(updated["operation"].str == "enqueue");
-	assert(updated["content"].str == "updated steering");
+	foreach (queueType; ["queue-operation", `queue\/operation`])
+	{
+		auto updated = parseJSON(replaceUserMessageContent(
+			`{"type":"` ~ queueType ~ `","operation":"enqueue","content":"steer"}`,
+			"updated steering"));
+		assert(updated["operation"].str == "enqueue");
+		assert(updated["content"].str == "updated steering");
+	}
 }

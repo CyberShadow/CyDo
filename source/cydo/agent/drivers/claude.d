@@ -17,7 +17,7 @@ import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPar
 import ae.utils.promise : Promise, reject, resolve;
 import ae.utils.time.types : AbsTime;
 
-import cydo.agent.contract : Agent, DiscoveredSession, InterruptedToolCallRepair,
+import cydo.agent.contract : Agent, HistoryReplay, DiscoveredSession, InterruptedToolCallRepair,
 	PersistedHistoryBoundary, PersistedHistoryBoundaryKind, OneShotHandle,
 	RewindResult, SessionConfig, SessionMeta;
 import cydo.protocol;
@@ -605,12 +605,69 @@ class ClaudeCodeAgent : Agent
 		assert(agent.historyPath(idB, profile) == fresh);
 	}
 
-	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
+	private enum HistoryRowKind { inside, assistant, prompt, enqueue, end, detachedSidechain }
+
+	@JSONPartial private static struct HistoryRow
 	{
-		return translateClaudeHistoryEvent(line);
+		@JSONPartial static struct Message
+		{
+			@JSONOptional string id;
+			@JSONOptional JSONFragment content;
+		}
+		string type;
+		@JSONOptional string subtype;
+		@JSONOptional string operation;
+		@JSONOptional string uuid;
+		@JSONOptional Message message;
+		@JSONOptional string parent_tool_use_id;
+		@JSONOptional bool isSidechain;
+		@JSONOptional bool isMeta;
+		@JSONOptional bool isApiErrorMessage;
+
+		@property HistoryRowKind kind() const
+		{
+			import cydo.domain.tasks.model : isQueueOperationType;
+
+			// CLI queue rows are root bookkeeping. The root captures in
+			// task 42281 contain no parent-linked queue rows.
+			if (isQueueOperationType(type))
+				return operation == "enqueue" ? HistoryRowKind.enqueue : HistoryRowKind.end;
+
+			// Detached sidechains belong to separate subagent transcripts.
+			if (isSidechain && parent_tool_use_id.length == 0)
+				return HistoryRowKind.detachedSidechain;
+			if (parent_tool_use_id.length > 0)
+				return HistoryRowKind.inside;
+			switch (type)
+			{
+				case "assistant":
+					return isApiErrorMessage ? HistoryRowKind.end : HistoryRowKind.assistant;
+				case "user":
+					return !isMeta && hasPromptContent(message.content)
+						? HistoryRowKind.prompt : HistoryRowKind.inside;
+				case "system":
+					return subtype == "compact_boundary" || subtype == "model_refusal_fallback"
+						? HistoryRowKind.end : HistoryRowKind.inside;
+				case "summary", "result", "exit", "cost-state":
+					return HistoryRowKind.end;
+				default:
+					return HistoryRowKind.inside;
+			}
+		}
 	}
 
-	void resetHistoryReplay() {} // no state to reset for Claude
+	private static HistoryRow parseHistoryRow(string line)
+	{
+		try return jsonParse!HistoryRow(line);
+		catch (Exception) return HistoryRow.init;
+	}
+
+	HistoryReplay createHistoryReplay()
+	{
+		return HistoryReplay((line, lineNum) =>
+			parseHistoryRow(line).kind == HistoryRowKind.detachedSidechain
+				? [] : translateClaudeHistoryEvent(line));
+	}
 
 	TranslatedEvent[] translateLiveEvent(string rawLine)
 	{
@@ -626,16 +683,20 @@ class ClaudeCodeAgent : Agent
 		return rawLine.canFind(`"type":"turn/result"`);
 	}
 
-	bool isUserMessageLine(string rawLine)
+	bool isHistoryPrompt(string line)
 	{
-		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"user"`);
+		return isCanonicalHistoryPrompt(line);
 	}
 
-	bool isAssistantMessageLine(string rawLine)
+	package(cydo) static bool isCanonicalHistoryPrompt(string line)
 	{
-		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"assistant"`);
+		return parseHistoryRow(line).kind == HistoryRowKind.prompt;
+	}
+
+	package(cydo) static string canonicalHistoryPromptUuid(string line)
+	{
+		auto row = parseHistoryRow(line);
+		return row.kind == HistoryRowKind.prompt ? row.uuid : null;
 	}
 
 	string rewriteSessionId(string line, string oldId, string newId)
@@ -654,70 +715,51 @@ class ClaudeCodeAgent : Agent
 
 	PersistedHistoryBoundary[] extractPersistedHistoryBoundaries(string content, int lineOffset = 0)
 	{
-		import std.algorithm : canFind;
-		import std.format : format;
-		import std.string : indexOf, lineSplitter;
+		import std.string : lineSplitter;
 
-		PersistedHistoryBoundary[] ids;
+		PersistedHistoryBoundary[] boundaries;
 		int lineNum = lineOffset;
 		foreach (line; content.lineSplitter)
 		{
 			lineNum++;
-			if (line.length == 0)
-				continue;
-			if (line.canFind(`"queue-operation"`))
-			{
-				import ae.utils.json : jsonParse, JSONPartial;
-				@JSONPartial static struct QueueOpProbe { string operation; }
-				try
-				{
-					auto qop = jsonParse!QueueOpProbe(line);
-					if (qop.operation == "enqueue")
-						ids ~= PersistedHistoryBoundary(format!"enqueue-%d"(lineNum), PersistedHistoryBoundaryKind.provisional_user, null, lineNum);
-				}
-				catch (Exception e) { tracef("history scan: queue op parse error: %s", e.msg); }
-				continue;
-			}
-			bool isUser = line.canFind(`"type":"user"`);
-			if (!isUser && !line.canFind(`"type":"assistant"`))
-				continue;
-			if (isUser && !hasCanonicalUserContent(line))
-				continue;
-			enum prefix = `"uuid":"`;
-			auto idx = line.indexOf(prefix);
-			bool hasUuid;
-			if (idx >= 0)
-			{
-				auto start = idx + prefix.length;
-				auto end = line.indexOf('"', start);
-				if (end >= 0 && end > idx + cast(ptrdiff_t) prefix.length)
-				{
-					auto uuid = line[start .. end];
-					ids ~= PersistedHistoryBoundary(uuid,
-						isUser ? PersistedHistoryBoundaryKind.user : PersistedHistoryBoundaryKind.agent_turn,
-						null, lineNum);
-					hasUuid = true;
-				}
-			}
-			if (!hasUuid)
-				ids ~= PersistedHistoryBoundary(format!"line:%d"(lineNum),
-					isUser ? PersistedHistoryBoundaryKind.user : PersistedHistoryBoundaryKind.agent_turn,
-					null, lineNum);
+			auto row = parseHistoryRow(line);
+			auto boundary = historyBoundary(row, row.kind, lineNum);
+			if (!boundary.isNull)
+				boundaries ~= boundary.get;
 		}
-		return ids;
+		return boundaries;
 	}
 
-	private static bool hasCanonicalUserContent(string line)
+	private static Nullable!PersistedHistoryBoundary historyBoundary(
+		const ref HistoryRow row, HistoryRowKind kind, int lineNum)
 	{
-		@JSONPartial static struct UserMessage { JSONFragment content; }
-		@JSONPartial static struct UserRecord { UserMessage message; }
-		UserRecord record;
-		try
-			record = jsonParse!UserRecord(line);
-		catch (Exception)
-			return false;
+		import std.format : format;
 
-		auto content = record.message.content.json;
+		switch (kind)
+		{
+			case HistoryRowKind.assistant:
+			{
+				auto anchor = row.uuid.length > 0 ? row.uuid : format!"line:%d"(lineNum);
+				return Nullable!PersistedHistoryBoundary(PersistedHistoryBoundary(
+					anchor, PersistedHistoryBoundaryKind.agent_turn, null, lineNum));
+			}
+			case HistoryRowKind.prompt:
+			{
+				auto anchor = row.uuid.length > 0 ? row.uuid : format!"line:%d"(lineNum);
+				return Nullable!PersistedHistoryBoundary(PersistedHistoryBoundary(
+					anchor, PersistedHistoryBoundaryKind.user, null, lineNum));
+			}
+			case HistoryRowKind.enqueue:
+				return Nullable!PersistedHistoryBoundary(PersistedHistoryBoundary(
+					format!"enqueue-%d"(lineNum), PersistedHistoryBoundaryKind.provisional_user, null, lineNum));
+			default:
+				return Nullable!PersistedHistoryBoundary.init;
+		}
+	}
+
+	private static bool hasPromptContent(JSONFragment contentFragment)
+	{
+		auto content = contentFragment.json;
 		if (content is null || content.length == 0)
 			return false;
 		if (content[0] == '"')
@@ -745,39 +787,28 @@ class ClaudeCodeAgent : Agent
 
 	bool forkIdMatchesLine(string line, int lineNum, string forkId)
 	{
-		import std.algorithm : canFind, startsWith;
-		// Handle synthetic enqueue UUID "enqueue-N" (line-number-based).
-		// The undo anchor for a steering message is the queue-op-enqueue line;
-		// truncating there (excludeMatch=true) removes it and all following lines.
-		if (forkId.startsWith("enqueue-"))
-		{
-			import std.conv : to;
-			try
-			{
-				auto targetLine = forkId["enqueue-".length .. $].to!int;
-				if (lineNum != targetLine || !line.canFind(`"queue-operation"`))
-					return false;
-				// Parse operation field to avoid whitespace sensitivity.
-				import ae.utils.json : jsonParse, JSONPartial;
-				@JSONPartial static struct QueueOpProbe { string operation; }
-				try { return jsonParse!QueueOpProbe(line).operation == "enqueue"; }
-				catch (Exception e) { tracef("matchesForkId: queue op parse error: %s", e.msg); return false; }
-			}
-			catch (Exception e)
-			{ tracef("matchesForkId: error: %s", e.msg); return false; }
-		}
-		if (forkId.startsWith("line:"))
-		{
-			import std.conv : to;
-			return lineNum == forkId["line:".length .. $].to!int;
-		}
-		return line.canFind(`"uuid":"` ~ forkId ~ `"`);
+		auto row = parseHistoryRow(line);
+		auto boundary = historyBoundary(row, row.kind, lineNum);
+		return !boundary.isNull && boundary.get.anchor == forkId;
+	}
+
+	bool historyRecordIdMatchesLine(string line, int lineNum, string recordId)
+	{
+		import std.format : format;
+
+		auto row = parseHistoryRow(line);
+		if (row.type == "user" && row.uuid.length > 0)
+			return row.uuid == recordId;
+		auto kind = row.kind;
+		if (kind == HistoryRowKind.enqueue)
+			return recordId == format!"enqueue-%d"(lineNum);
+		return kind == HistoryRowKind.prompt && recordId == format!"line:%d"(lineNum);
 	}
 
 	bool isForkableLine(string line)
 	{
-		import std.algorithm : canFind;
-		return line.canFind(`"type":"user"`) || line.canFind(`"type":"assistant"`);
+		auto kind = parseHistoryRow(line).kind;
+		return kind == HistoryRowKind.prompt || kind == HistoryRowKind.assistant;
 	}
 
 	@property bool needsBash() { return false; }
@@ -2213,15 +2244,6 @@ class ClaudeCodeSession : AgentSession
 	{
 		import std.datetime : Clock;
 		lineReceiptTs_ = AbsTime(Clock.currStdTime);
-		import std.algorithm : canFind;
-
-		// Queue operations must pass through raw so broadcastTask can intercept them.
-		if (rawLine.canFind(`"queue-operation"`))
-		{
-			emitEvent(TranslatedEvent(rawLine, null));
-			return;
-		}
-
 		@JSONPartial static struct TypeProbe { string type; string subtype; }
 		TypeProbe probe;
 		try
@@ -2231,6 +2253,14 @@ class ClaudeCodeSession : AgentSession
 			import cydo.protocol : makeUnrecognizedEvent;
 			import ae.utils.json : toJson;
 			emitEvent(TranslatedEvent(makeUnrecognizedEvent("non-JSON output"), toJson(rawLine)));
+			return;
+		}
+
+		// Queue operations must pass through raw so broadcastTask can intercept them.
+		import cydo.domain.tasks.model : isQueueOperationType;
+		if (isQueueOperationType(probe.type))
+		{
+			emitEvent(TranslatedEvent(rawLine, null));
 			return;
 		}
 
@@ -3049,6 +3079,91 @@ unittest
 	lifecycle("u4", "started");
 	replay("u4");
 	assert(steering == [false, true, false, false]);
+}
+
+@("Claude stdout echo with queue-operation text resolves to its own tailed user row")
+unittest
+{
+	import cydo.domain.tasks.model : TaskData, Watermark;
+	import cydo.protocol : HistoryBoundary, HistoryBoundaryKind;
+	import cydo.runtime.launch.types : NativeHistoryProfile;
+	import cydo.workflow.history.jsonl_tracker : JsonlTracker;
+	import cydo.workflow.history.native_history : LiveHistoryContext, LiveHistoryWatchTarget,
+		LiveHistoryWatchResolution;
+	import std.file : remove, write;
+	import std.stdio : File;
+
+	enum tid = 1;
+	enum seq = 7;
+	enum path = "/tmp/cydo-claude-queue-word-echo.jsonl";
+	enum enqueue = `{"type":"queue/operation","operation":"enqueue","content":"queue-operation"}`;
+	enum dequeue = `{"type":"queue/operation","operation":"dequeue"}`;
+	enum liveEcho = `{"type":"user","uuid":"prompt","isReplay":true,"message":{"role":"user","content":"queue-operation"}}`;
+	enum tailEcho = `{"type":"user","uuid":"prompt","message":{"role":"user","content":"queue-operation"}}`;
+	write(path, enqueue ~ "\n" ~ dequeue ~ "\n");
+	scope(exit) remove(path);
+
+	TaskData task = TaskData(tid, "", "");
+	task.history.reset(Watermark.none());
+	auto agent = new ClaudeCodeAgent();
+	auto context = LiveHistoryContext(agent, NativeHistoryProfile(agent.driver, "/tmp"), "session");
+	JsonlTracker tracker;
+	tracker.getTask = (int) => &task;
+	tracker.historyGeneration = (int) => task.history.generation;
+	tracker.resolveLiveHistoryWatch = (int) =>
+		LiveHistoryWatchResolution.target(LiveHistoryWatchTarget(context, path));
+	string[] resolved;
+	tracker.onBoundaryResolved = (int, size_t eventSeq, HistoryBoundary boundary, bool publish, ulong) {
+		assert(eventSeq == seq && publish && boundary.kind == HistoryBoundaryKind.user);
+		resolved ~= boundary.anchor;
+	};
+	tracker.startJsonlWatch(tid);
+	scope(exit) tracker.stopJsonlWatch(tid);
+
+	@JSONPartial static struct UserItem
+	{
+		string type;
+		@JSONOptional string item_type;
+		@JSONOptional string uuid;
+	}
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	TranslatedEvent[] events;
+	session.onOutput = (TranslatedEvent event) {
+		events ~= event;
+		tracker.noteLiveBoundaryCandidate(tid, seq, event.translated, event.raw, event.sourceLine);
+	};
+	session.translateLiveLine(liveEcho);
+	assert(events.length == 1, "stdout user echo must emit one event");
+	auto item = jsonParse!UserItem(events[0].translated);
+	assert(item.type == "item/started" && item.item_type == "user_message" && item.uuid == "prompt",
+		"stdout user echo must retain its user item type and native identity");
+	assert(resolved.length == 0, "queue rows must not resolve the canonical user item");
+
+	{
+		auto transcript = File(path, "a");
+		transcript.write(tailEcho ~ "\n");
+	}
+	tracker.processNewJsonlContent(tid, path);
+	assert(resolved == ["prompt"], "the canonical tail row must resolve the live user item");
+}
+
+@("Claude stdout preserves a top-level slash-spelled queue operation")
+unittest
+{
+	import cydo.domain.tasks.model : isQueueOperation;
+
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	TranslatedEvent[] events;
+	session.onOutput = (TranslatedEvent event) { events ~= event; };
+
+	enum enqueue = `{"type":"queue/operation","operation":"enqueue","content":"queue-operation test"}`;
+	session.translateLiveLine(enqueue);
+	assert(events.length == 1, "stdout queue operation must emit one event");
+	assert(events[0].translated == enqueue && events[0].raw is null,
+		"stdout queue operation must pass through unchanged");
+	assert(isQueueOperation(events[0].translated));
 }
 
 // The history path registrar receives the init event's session ID and cwd
@@ -3901,6 +4016,10 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 		return makeUnrecognizedEvent("JSON parse error: " ~ e.msg);
 	}
 
+	import cydo.domain.tasks.model : isQueueOperationType;
+	if (isQueueOperationType(probe.type))
+		return null; // Queue reconstruction owns these events.
+
 	switch (probe.type)
 	{
 		case "system":
@@ -3921,9 +4040,6 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 			return translateStderr(rawLine);
 		case "exit":
 			return translateExit(rawLine);
-		case "queue-operation":
-			return null; // consumed — handled by broadcastTask / stateful replay closure
-		// Ignored stdout messages.
 		case "active_goal":
 		case "auth_status":
 		case "autocompact_state":
@@ -6050,4 +6166,84 @@ unittest
 	auto lines = `{"type":"ai-title","aiTitle":"generated title"}`.repeat(60).array;
 	auto meta = readTestSessionMeta(lines ~ metaTestHello);
 	assert(!meta.hasMessages);
+}
+
+
+version (unittest)
+package(cydo) string[] claudeHistoryAgreementFixture(string toolInputType)
+{
+	return [
+		`{"type":"assistant","isSidechain":true,"message":{"id":"X","content":[{"type":"text","text":"detached"}]}}`,
+		`{"type":"assistant","parent_tool_use_id":"t","message":{"id":"X","content":[{"type":"text","text":"nested"}]}}`,
+		`{"type":"assistant","isApiErrorMessage":true,"message":{"id":"X","content":[{"type":"text","text":"error"}]}}`,
+		`{"type":"assistant","uuid":"head","apiBlockIndex":0,"message":{"id":"X","content":[{"type":"tool_use","id":"t","name":"Read","input":{}}]}}`,
+		`{"type":"user","parent_tool_use_id":"t","uuid":"nested-prompt","message":{"content":"nested prompt"}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"image"}]}}`,
+		`{"type":"user","isMeta":true,"turnCompanion":true,"uuid":"companion","message":{"content":"[Image: original 2x2]"}}`,
+		`{"type":"system","subtype":"informational","level":"info","content":"Fixture notice"}`,
+		`{"type":"system","subtype":"scheduled_task_fire"}`,
+		`{"type":"api-request-blob"}`,
+		`{"type":"assistant","uuid":"tail","apiBlockIndex":1,"message":{"id":"X","content":[{"type":"tool_use","id":"u","name":"Write","input":{"type":"`
+			~ toolInputType ~ `"}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"u","content":"image"}]}}`,
+		`{"type":"user","isMeta":true,"turnCompanion":true,"message":{"content":"[Image: original 3x3]"}}`,
+		`{"type":"assistant","isApiErrorMessage":true,"message":{"id":"X","content":[{"type":"text","text":"error"}]}}`,
+		`{"type":"assistant","parent_tool_use_id":"t","message":{"id":"X","content":[{"type":"text","text":"nested"}]}}`,
+		`{"type":"assistant","isSidechain":true,"message":{"id":"X","content":[{"type":"text","text":"detached"}]}}`,
+	];
+}
+
+version (unittest)
+package(cydo) string claudeParentLinkedQueueFixture(string queueType,
+	string operation = "enqueue", string content = "queued")
+{
+	import std.format : format;
+
+	return format!`{"type":"%s","operation":"%s","parent_tool_use_id":"t","content":%s}`(
+		queueType, operation, toJson(content));
+}
+
+@("Claude replay and extraction treat parent-linked queue rows as root bookkeeping")
+unittest
+{
+	import std.array : join;
+
+	@JSONPartial static struct Event
+	{
+		string type;
+		@JSONOptional string uuid;
+	}
+
+	auto agent = new ClaudeCodeAgent();
+	auto rows = claudeHistoryAgreementFixture("ordinary");
+	string[] mismatches;
+	foreach (queueType; ["queue-operation", "queue/operation"])
+	foreach (operation; ["enqueue", "dequeue", "remove", "popAll"])
+	{
+		auto replay = agent.createHistoryReplay();
+		auto first = replay.translateHistoryLine(rows[3], 1);
+		replay.translateHistoryLine(rows[5], 2);
+		auto closed = replay.translateHistoryLine(
+			claudeParentLinkedQueueFixture(queueType, operation), 3);
+		auto next = replay.translateHistoryLine(
+			`{"type":"assistant","apiBlockIndex":0,"message":{"id":"Y","content":[{"type":"text","text":"next"}]}}`, 4);
+		auto stop = jsonParse!Event(first[$ - 1].translated);
+		bool lateStop;
+		foreach (entry; next)
+		{
+			auto event = jsonParse!Event(entry.translated);
+			lateStop |= event.type == "turn/stop" && event.uuid == "head";
+		}
+		assert(stop.type == "turn/stop" && stop.uuid == "head");
+		assert(closed.length == 0 && !lateStop);
+	}
+	foreach (queueType; ["queue-operation", "queue/operation"])
+	{
+		auto boundaries = agent.extractPersistedHistoryBoundaries(
+			claudeParentLinkedQueueFixture(queueType), 2);
+		if (boundaries.length != 1 || boundaries[0].kind != PersistedHistoryBoundaryKind.provisional_user
+			|| boundaries[0].anchor != "enqueue-3" || boundaries[0].sourceLine != 3)
+			mismatches ~= queueType ~ ": parent-linked enqueue must extract as enqueue-3";
+	}
+	assert(mismatches.length == 0, mismatches.join("\n"));
 }

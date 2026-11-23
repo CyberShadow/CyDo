@@ -132,6 +132,9 @@ struct JsonlTracker
 		if (requireLiveContext(tid).agent.driver == AgentDriver.codex && isContextBootstrap
 			&& kind == PersistedHistoryBoundaryKind.user)
 			return;
+		if (kind == PersistedHistoryBoundaryKind.user && p.is_meta
+			&& requireLiveContext(tid).agent.driver == AgentDriver.claude)
+			return;
 		auto identity = p.uuid.length > 0 ? p.uuid : p.item_id;
 		if (kind == PersistedHistoryBoundaryKind.user
 			&& identity in boundaryState[tid].absorbedLocalIdentities)
@@ -707,6 +710,46 @@ unittest
 	tracker.noteLiveBoundaryCandidate(1, 4,
 		`{"type":"item/started","item_type":"user_message","uuid":"live-user","meta":{"label":"Session start: agentic"}}`);
 	assert(resolved == ["line:4:4"]);
+}
+
+@("Claude persisted prompt waits for its own stdout after a meta user")
+unittest
+{
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import std.conv : to;
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+
+	auto path = buildPath(tempDir(), "cydo-jsonl-tracker-meta-user.jsonl");
+	write(path, `{"type":"user","uuid":"M","isMeta":true,"message":{"role":"user","content":"Meta user"}}` ~ "\n");
+	scope(exit) remove(path);
+
+	TaskData task = TaskData(1, "", "");
+	task.history.reset(Watermark.none());
+	JsonlTracker tracker;
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+	tracker.getTask = (int) => &task;
+	tracker.historyGeneration = (int) => task.history.generation;
+	string[] resolved;
+	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool, ulong) {
+		resolved ~= boundary.anchor ~ ":" ~ to!string(seq);
+	};
+
+	tracker.noteLiveBoundaryCandidate(1, 4,
+		`{"type":"item/started","item_type":"user_message","uuid":"M","is_meta":true}`);
+	tracker.processNewJsonlContent(1, path);
+	assert(resolved.length == 0, "Tailing M must leave the boundary unresolved");
+
+	File(path, "a").write(`{"type":"user","uuid":"P","message":{"role":"user","content":"Canonical prompt"}}` ~ "\n");
+	tracker.processNewJsonlContent(1, path);
+	auto beforePromptStdout = resolved.dup;
+	tracker.noteLiveBoundaryCandidate(1, 9,
+		`{"type":"item/started","item_type":"user_message","uuid":"P"}`);
+
+	assert(beforePromptStdout.length == 0,
+		"Resolution before P stdout: " ~ beforePromptStdout.to!string
+		~ "; resolutions after P stdout: " ~ resolved.to!string);
+	assert(resolved == ["P:9"], "P must resolve exactly once at its own stdout sequence");
 }
 
 unittest

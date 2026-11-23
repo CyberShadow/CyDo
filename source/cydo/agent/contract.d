@@ -86,6 +86,13 @@ class InterruptedToolCallRepair
 	}
 }
 
+/// Translation delegates owned by one load of a native transcript.
+struct HistoryReplay
+{
+	TranslatedEvent[] delegate(string line, int lineNum) translateHistoryLine;
+	TranslatedEvent[] delegate() finishHistoryReplay;
+}
+
 /// Describes an agent type: its sandbox requirements, git identity,
 /// and how to create sessions. Separates agent metadata from
 /// the runtime AgentSession interface.
@@ -155,17 +162,8 @@ interface Agent
 	string createHistoryForkDestination(string sessionId, string sourceHistoryPath,
 		const ref NativeHistoryProfile profile);
 
-	/// Reset internal history-replay state (e.g. task_started sentinel).
-	/// Called before each loadTaskHistory loop so re-loads start clean.
-	void resetHistoryReplay();
-
-	/// Translate a history line from the agent's native JSONL format.
-	/// Claude returns lines unchanged (raw protocol); Codex translates
-	/// from {timestamp, type, payload} to agnostic events.
-	/// lineNum is 1-based; agents using line-number fork IDs can inject
-	/// the fork ID into translated output.
-	/// Returns zero or more translated event pairs (empty = skip line).
-	TranslatedEvent[] translateHistoryLine(string line, int lineNum);
+	/// Create fresh translation state owned by one history loader.
+	HistoryReplay createHistoryReplay();
 
 	/// Path to the last-created MCP config temp file, or null if none.
 	/// Used for cleanup tracking (the file should be deleted when the
@@ -200,6 +198,9 @@ interface Agent
 	/// Used by truncation/fork logic to find the cut point.
 	bool forkIdMatchesLine(string line, int lineNum, string forkId);
 
+	/// Match the persisted record targeted by a message edit.
+	bool historyRecordIdMatchesLine(string line, int lineNum, string recordId);
+
 	/// Whether a JSONL line represents a forkable message (user or assistant).
 	/// Used for counting messages in undo preview.
 	bool isForkableLine(string line);
@@ -211,11 +212,8 @@ interface Agent
 	/// Whether a raw output line represents a completed turn.
 	bool isTurnResult(string rawLine);
 
-	/// Whether a raw JSONL line is a user message (for compaction detection).
-	bool isUserMessageLine(string rawLine);
-
-	/// Whether a raw JSONL line is an assistant message (for compaction detection).
-	bool isAssistantMessageLine(string rawLine);
+	/// Whether a persisted row represents a user prompt for steering bookkeeping.
+	bool isHistoryPrompt(string rawLine);
 
 	/// Whether this agent requires the Bash MCP tool.
 	/// When false, the Bash tool is excluded from the MCP tools/list.

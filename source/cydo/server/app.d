@@ -2894,21 +2894,15 @@ class App
 			return;
 		}
 
-		auto ta = tryAgentForTask(tid);
-		if (ta is null || !ta.isUserMessageLine(line))
+		import cydo.agent.drivers.claude : ClaudeCodeAgent;
+		if (cast(ClaudeCodeAgent) tryAgentForTask(tid) is null)
 			return;
-		auto ts = ta.translateHistoryLine(line, lineNum);
-		if (ts.length == 0)
-			return;
-		@JSONPartial static struct TypeProbe { string type; }
-		if (jsonParse!TypeProbe(ts[0].translated).type != "item/started")
-			return; // tool_result etc.
-		auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
+		auto uuid = ClaudeCodeAgent.canonicalHistoryPromptUuid(line);
 		// The echo carries the UUID CyDo submitted the message under.
-		if (!td.nativeSubmission(ev.uuid).found)
+		if (uuid.length == 0 || !td.nativeSubmission(uuid).found)
 			return;
-		td.observeNativeTail(ev.uuid, SubmissionTailState.canonical, td.history.generation);
-		jsonlTracker.noteQueueCanonicalIdentity(tid, ev.uuid, td.history.generation);
+		td.observeNativeTail(uuid, SubmissionTailState.canonical, td.history.generation);
+		jsonlTracker.noteQueueCanonicalIdentity(tid, uuid, td.history.generation);
 	}
 
 	private void broadcastAppendedTaskEvent(int tid, string translated)
@@ -6510,4 +6504,46 @@ unittest
 	assert(app.updateArchiveTaskState(1, false, false));
 	assert(runner.deliveries == 1);
 	assert(!app.tasks[1].archived && !app.tasks[1].archiving);
+}
+
+
+@("Claude tail still recognizes the canonical echo after nested user-shaped tool input")
+unittest
+{
+	auto dbPath = buildPath(tempDir(), "cydo-verify-42206-tail.sqlite");
+	if (exists(dbPath)) remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	auto td = &fixture.app.tasks[fixture.tid];
+	td.agentName = "claude";
+	td.reserveNativeSubmission("local-echo", "next", td.history.generation, "next");
+	fixture.app.onTailedJsonlLine(fixture.tid,
+		`{"type":"assistant","uuid":"assistant-row","message":{"id":"msg_api","content":[{"type":"tool_use","id":"tool-id","name":"mcp__test__save","input":{"type":"user","nested":{"type":"assistant","isMeta":true,"isSidechain":true,"subtype":"compact_boundary","operation":"queue-operation"}}}]}}`, 1);
+	fixture.app.onTailedJsonlLine(fixture.tid,
+		`{"type":"user","uuid":"local-echo","message":{"role":"user","content":"next"}}`, 2);
+	assert(td.nativeSubmission("local-echo").tailState == SubmissionTailState.canonical);
+}
+
+@("Claude tail recognizes parent-linked queue bookkeeping")
+unittest
+{
+	import cydo.agent.drivers.claude : claudeParentLinkedQueueFixture;
+
+	auto dbPath = buildPath(tempDir(), "cydo-app-parent-linked-queue.sqlite");
+	if (exists(dbPath)) remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	auto td = &fixture.app.tasks[fixture.tid];
+	td.agentName = "claude";
+	auto reminder = systemMessagePrefix(fixture.app.config.system_keyword,
+		KnownSystemMessageKind.postCompactionTaskModeReminder);
+	foreach (i, queueType; ["queue-operation", "queue/operation"])
+	{
+		td.compactionReminderInFlight = false;
+		fixture.app.onTailedJsonlLine(fixture.tid,
+			claudeParentLinkedQueueFixture(queueType, "enqueue", reminder), cast(int) i + 1);
+		assert(td.compactionReminderInFlight, queueType ~ ": parent-linked reminder was ignored");
+	}
 }

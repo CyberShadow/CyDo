@@ -1059,11 +1059,23 @@ struct TaskHistoryEndMessage
 	int tid;
 }
 
-/// Check if a raw line is a queue-operation event (fast string search).
+/// Claude queue rows are session-level bookkeeping. Only the parsed
+/// top-level type determines membership, including both wire spellings.
+package(cydo) bool isQueueOperationType(string type)
+{
+	return type == "queue-operation" || type == "queue/operation";
+}
+
+/// Check the top-level event type without looking inside message content.
 bool isQueueOperation(string line)
 {
-	import std.algorithm : canFind;
-	return line.canFind(`"queue-operation"`);
+	import ae.utils.json : JSONPartial, jsonParse;
+	@JSONPartial static struct TypeProbe { string type; }
+	try
+	{
+		return isQueueOperationType(jsonParse!TypeProbe(line).type);
+	}
+	catch (Exception) return false;
 }
 
 /// Parsed queue-operation fields.

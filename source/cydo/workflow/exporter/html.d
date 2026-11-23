@@ -150,13 +150,13 @@ string exportTaskData(Persistence.TaskRow[] taskRows, ref CydoConfig config,
 		import std.file : readText;
 		auto inactiveLines = agent.inactiveHistoryLines(readText(jsonlPath));
 
-		agent.resetHistoryReplay();
+		auto replay = agent.createHistoryReplay();
 		auto loaded = loadTaskHistory(t.tid, jsonlPath,
 			delegate TranslatedEvent[](string line, int lineNum) {
 				if (lineNum in inactiveLines)
 					return [];
-				return agent.translateHistoryLine(line, lineNum);
-			});
+				return replay.translateHistoryLine(line, lineNum);
+			}, ulong.max, replay.finishHistoryReplay);
 
 		string[] evList;
 		foreach (i, ref msg; loaded.history)

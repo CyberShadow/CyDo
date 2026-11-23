@@ -26,7 +26,7 @@ import cydo.runtime.config : AgentDriver;
 import cydo.domain.storage.persistence : LoadedHistory;
 import cydo.domain.tasks.model : QueueOperationProbe, TaskData, TaskHistoryEndMessage,
 	TaskHistoryStartMessage, Watermark, buildSyntheticUserEvent, extractEventFromEnvelope,
-	extractTsFromEnvelope, watermarkFromPath;
+	extractTsFromEnvelope, isQueueOperation, watermarkFromPath;
 import cydo.workflow.history.native_history : HistoryAccess,
 	TaskHistoryResolution, TaskHistoryResolutionKind;
 import cydo.workflow.history.jsonl_store : completeJsonlPrefix, loadTaskHistoryContent;
@@ -157,7 +157,7 @@ class HistoryEventPipeline
 
 		bool hasQueueOps = false;
 		int userMsgFromJsonl = 0;
-		// Queue reconstruction: the enqueue record is the authoritative "user
+		// The enqueue record is the authoritative "user
 		// sent this" fact and emits the message immediately (pending
 		// presentation, identity enqueue-N). Its outcome, classified up front
 		// from the whole file (classifyClaudeQueueRecords), is reported where
@@ -196,7 +196,7 @@ class HistoryEventPipeline
 						queueOutcomeTargets[outcome.line] ~= format!"enqueue-%d"(enqueueLine);
 			}
 
-			ta.resetHistoryReplay();
+			auto replay = ta.createHistoryReplay();
 			return loadTaskHistoryContent(tid, content, delegate TranslatedEvent[](string line, int lineNum) {
 				if (lineNum in inactiveLines)
 					return [];
@@ -224,22 +224,32 @@ class HistoryEventPipeline
 					// (anchors, checkpoints and truncation semantics attach to
 					// it), preceded by the confirmation that tells the UI to
 					// drop the provisional enqueue-emitted bubble.
-					auto ts = ta.translateHistoryLine(line, lineNum);
-					assert(ts.length > 0, "Claude queue echo must translate to a user message");
-					auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
+					auto events = replay.translateHistoryLine(line, lineNum);
 					assert(confirmations.length == 1,
 						"one echo row confirms exactly one queued message");
 					auto consumed = jsonParse!UserMessageConsumedEvent(
 						confirmations[0].translated);
-					consumed.native_uuid = ev.uuid.length > 0 ? ev.uuid : consumed.uuid;
-					return stripTransientStatus([
-						TranslatedEvent(toJson(consumed), null, AbsTime.init, lineNum),
-						TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $]);
+					@JSONPartial static struct EchoProbe
+					{
+						string type;
+						@JSONOptional string item_type;
+						@JSONOptional string uuid;
+					}
+					foreach (i, event; events)
+					{
+						auto echo = jsonParse!EchoProbe(event.translated);
+						if (echo.type != "item/started" || echo.item_type != "user_message")
+							continue;
+						consumed.native_uuid = echo.uuid.length > 0 ? echo.uuid : consumed.uuid;
+						auto confirmation = TranslatedEvent(toJson(consumed), null, AbsTime.init, lineNum);
+						return stripTransientStatus(events[0 .. i] ~ confirmation ~ events[i .. $]);
+					}
+					assert(false, "Claude queue echo must translate to a user message");
 				}
-				if (ta.isUserMessageLine(line))
+				if (ta.isHistoryPrompt(line))
 					userMsgFromJsonl++;
-				return stripTransientStatus(ta.translateHistoryLine(line, lineNum));
-			});
+				return stripTransientStatus(replay.translateHistoryLine(line, lineNum));
+			}, replay.finishHistoryReplay);
 		});
 		sw.stop();
 		if (td.history.isLoaded)
@@ -896,11 +906,6 @@ private:
 		return host_.normalizeKnownSystemMessageMeta(translated, tid);
 	}
 
-	static bool isQueueOperation(string translated)
-	{
-		return translated.canFind(`"type":"queue-operation"`)
-			|| translated.canFind(`"type":"queue\/operation"`);
-	}
 }
 
 unittest
@@ -1145,6 +1150,7 @@ unittest
 	assert(sawToolResult, "tool_result event missing from loaded history");
 }
 
+@("Claude replay enriches record stops with structural boundaries")
 unittest
 {
 	import std.algorithm : canFind;
@@ -1189,13 +1195,22 @@ unittest
 
 	auto enqueueLine = `{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-11T06:00:00Z","sessionId":"S","content":"queued steering"}`;
 	auto assistantLine =
-		`{"type":"assistant","uuid":"msg-1","message":{"id":"msg-1","content":[{"type":"text","text":"assistant after steering"},{"type":"text","text":"second content"}],"model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1}}}`;
+		`{"type":"assistant","uuid":"record-1","message":{"id":"msg-1","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"true"}}],"model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1}}}`;
+	auto toolResultLine = `{"type":"user","uuid":"result-1","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}`;
+	auto lastAssistantLine = `{"type":"assistant","uuid":"record-2","message":{"id":"msg-1","content":[{"type":"tool_use","id":"tool-2","name":"Write","input":{"type":"queue-operation","nested":{"type":"user"}}}],"model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1}}}`;
+	string[] replayMismatches;
+	auto extracted = agent.extractPersistedHistoryBoundaries(lastAssistantLine, 4);
+	if (extracted.length != 1 || extracted[0].kind != PersistedHistoryBoundaryKind.agent_turn
+		|| extracted[0].sourceLine != 5)
+		replayMismatches ~= "final assistant record must extract as an agent turn at line 5";
 	auto jsonl = [
 		enqueueLine,
 		`{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-11T06:00:01Z","sessionId":"S"}`,
 		assistantLine,
+		toolResultLine,
+		lastAssistantLine,
 	].join("\n") ~ "\n";
-	write(jsonlPath, jsonl);
+	write(jsonlPath, jsonl ~ `{"type":"assistant","message":`);
 
 	td.history.reset(Watermark.atBytes(getSize(jsonlPath)));
 
@@ -1231,18 +1246,61 @@ unittest
 			"queued steering event must keep the enqueue physical line");
 	}
 	assert(sawQueuedSteering, "queued steering replay event missing from loaded history");
-	int assistantBoundaries;
+	int[] assistantBoundaries;
 	foreach (i, ref ev; td.history)
 	{
 		auto s = cast(string) ev.toGC();
-		if (td.history.rawAt(i) == assistantLine && s.canFind(`"history_boundary"`))
+		auto line = td.history.sourceLineAt(i);
+		assert(line <= 5, "partial row reached replay");
+		if (s.canFind(`"type":"turn/stop"`) && s.canFind(`"history_boundary"`))
 		{
-			assistantBoundaries++;
-			assert(s.canFind(`"type":"turn/stop"`));
+			assistantBoundaries ~= line;
+			if (line == 5)
+			{
+				assert(td.history.rawAt(i) == lastAssistantLine);
+				assert(s.canFind(`"anchor":"record-2"`));
+			}
 		}
 	}
-	assert(assistantBoundaries == 1,
-		"multi-content assistant replay enriches only its final top-level turn");
+	if (assistantBoundaries != [3, 5])
+		replayMismatches ~= "both record stops must be enriched despite nested queue and user types";
+	enum secondPrompt = `{"type":"user","uuid":"prompt-2","message":{"content":"second prompt"}}`;
+	// A confirmed enqueue uses its canonical echo, while an unconsumed
+	// enqueue still resolves by its provisional anchor.
+	foreach (queueType; ["queue-operation", "queue/operation"])
+	{
+		auto rows = [
+			format!`{"type":"%s","operation":"enqueue","content":"second prompt"}`(queueType),
+			format!`{"type":"%s","operation":"dequeue"}`(queueType),
+			secondPrompt,
+			format!`{"type":"%s","operation":"enqueue","content":"still queued"}`(queueType),
+		];
+		write(jsonlPath, rows.join("\n") ~ "\n");
+		td.history.reset(Watermark.atBytes(getSize(jsonlPath)));
+		pipeline.ensureHistoryLoaded(tid);
+
+		bool confirmed;
+		foreach (ref entry; td.history)
+		{
+			auto event = extractEventFromEnvelope(cast(string) entry.toGC());
+			confirmed |= event.canFind(`"type":"user_message/consumed"`)
+				&& event.canFind(`"uuid":"enqueue-1"`)
+				&& event.canFind(`"native_uuid":"prompt-2"`)
+				&& event.canFind(`"turn_start"`);
+		}
+		if (!confirmed)
+			replayMismatches ~= queueType ~ ": missing turn-start confirmation tied to the canonical echo";
+
+		auto access = HistoryAccess(agent, profile, td.agentSessionId, jsonlPath);
+		HistoryBoundary pending;
+		bool opensConversation;
+		if (!pipeline.resolveFreshPersistedBoundary(tid, access, "enqueue-4", pending, opensConversation)
+			|| pending.kind != HistoryBoundaryKind.provisional_user || opensConversation)
+			replayMismatches ~= queueType ~ ": pending enqueue must resolve after the canonical echo";
+		if (!agent.forkIdMatchesLine(rows[3], 4, "enqueue-4"))
+			replayMismatches ~= queueType ~ ": provisional anchor must match its physical enqueue row";
+	}
+	assert(replayMismatches.length == 0, replayMismatches.join("\n"));
 }
 
 unittest

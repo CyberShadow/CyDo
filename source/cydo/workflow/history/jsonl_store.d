@@ -25,9 +25,11 @@ package(cydo) string completeJsonlPrefix(string content)
 /// The delegate receives (line, 1-based lineNum) and returns zero or more translated
 /// event pairs (empty array = skip, one element = normal, two = compaction injection).
 /// A bounded snapshot ends at the last complete record within maxBytes.
+/// finishReplay flushes translated events deferred beyond the last line.
 LoadedHistory loadTaskHistory(int tid, string jsonlPath,
 	TranslatedEvent[] delegate(string, int) translateLine = null,
-	ulong maxBytes = ulong.max)
+	ulong maxBytes = ulong.max,
+	TranslatedEvent[] delegate() finishReplay = null)
 {
 	import std.file : exists, read;
 
@@ -37,16 +39,30 @@ LoadedHistory loadTaskHistory(int tid, string jsonlPath,
 	auto content = cast(string) read(jsonlPath, cast(size_t) maxBytes);
 	if (maxBytes != ulong.max)
 		content = completeJsonlPrefix(content);
-	return loadTaskHistoryContent(tid, content, translateLine);
+	return loadTaskHistoryContent(tid, content, translateLine, finishReplay);
 }
 
 package(cydo) LoadedHistory loadTaskHistoryContent(int tid, string content,
-	TranslatedEvent[] delegate(string, int) translateLine)
+	TranslatedEvent[] delegate(string, int) translateLine,
+	TranslatedEvent[] delegate() finishReplay = null)
 {
 	import std.string : lineSplitter;
 
 	LoadedHistory result;
 	int lineNum = 0;
+	void appendTranslated(TranslatedEvent[] translated, int sourceLine)
+	{
+		foreach (t; translated)
+		{
+			auto injected = toJson(TaskEventEnvelope(tid, t.ts.stdTime,
+				JSONFragment(t.translated)));
+			result.history ~= Data(injected.representation);
+			result.rawSource ~= t.raw;
+			result.sourceLine ~= t.raw is null
+				? noSourceLine
+				: (t.sourceLine != noSourceLine ? t.sourceLine : sourceLine);
+		}
+	}
 	foreach (line; content.lineSplitter)
 	{
 		lineNum++;
@@ -57,17 +73,15 @@ package(cydo) LoadedHistory loadTaskHistoryContent(int tid, string content,
 			? translateLine(line, lineNum)
 			: [TranslatedEvent(line, line)];
 
-		// Wrap each translated event with file-event envelope; store raw separately.
-		foreach (t; translated)
-		{
-			auto injected = toJson(TaskEventEnvelope(tid, t.ts.stdTime,
-				JSONFragment(t.translated)));
-			result.history ~= Data(injected.representation);
-			result.rawSource ~= t.raw;
-			result.sourceLine ~= t.raw is null
-				? noSourceLine
-				: (t.sourceLine != noSourceLine ? t.sourceLine : lineNum);
-		}
+		appendTranslated(translated, lineNum);
+	}
+	if (finishReplay !is null)
+	{
+		auto flushed = finishReplay();
+		foreach (t; flushed)
+			assert(t.raw is null || t.sourceLine != noSourceLine,
+				"Deferred history events must carry their source line");
+		appendTranslated(flushed, noSourceLine);
 	}
 	return move(result);
 }
@@ -591,12 +605,9 @@ unittest
 	].join("\n") ~ "\n";
 	write(jsonlPath, jsonl);
 
-	bool delegate(string, int, string) matchEnqueue = (string line, int lineNum, string forkId) {
-		return forkId == "enqueue-1"
-			&& lineNum == 1
-			&& line.canFind(`"queue-operation"`)
-			&& line.canFind(`"operation":"enqueue"`);
-	};
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	auto agent = new ClaudeCodeAgent();
+	auto matchEnqueue = &agent.forkIdMatchesLine;
 
 	assert(findNextUserUuid(jsonlPath, "enqueue-1", matchEnqueue) == "user-echo-1");
 
@@ -665,10 +676,15 @@ unittest
 /// should be stripped together with it on undo.
 private bool isNeutralOrQueueOp(string line)
 {
-	import std.algorithm : canFind;
-	return line.canFind(`"queue-operation"`)
-		|| line.canFind(`"file-history-snapshot"`)
-		|| line.canFind(`"progress"`);
+	import ae.utils.json : JSONPartial, jsonParse;
+	@JSONPartial static struct TypeProbe { string type; }
+	try
+	{
+		auto type = jsonParse!TypeProbe(line).type;
+		import cydo.domain.tasks.model : isQueueOperationType;
+		return isQueueOperationType(type) || type == "file-history-snapshot" || type == "progress";
+	}
+	catch (Exception) return false;
 }
 
 /// Extract a string field value from a JSON line by prefix scanning.
@@ -701,4 +717,60 @@ private string generateUUID()
 		bytes[4], bytes[5], bytes[6], bytes[7],
 		bytes[8], bytes[9], bytes[10], bytes[11],
 		bytes[12], bytes[13], bytes[14], bytes[15]);
+}
+
+@("Editing a Claude meta image companion preserves both assistant members")
+unittest
+{
+	import std.file : readText, remove, tempDir, write;
+	import std.json : parseJSON;
+	import std.path : buildPath;
+	import std.string : lineSplitter;
+	import std.uuid : randomUUID;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent, claudeHistoryAgreementFixture;
+	import cydo.workflow.history.jsonl_edit : replaceUserMessageContent;
+
+	auto fixture = claudeHistoryAgreementFixture("ordinary");
+	auto before = fixture[3 .. 13];
+	auto path = buildPath(tempDir(), "cydo-edit-companion-" ~ randomUUID().toString() ~ ".jsonl");
+	import std.array : array, join;
+	write(path, before.join("\n") ~ "\n");
+	scope(exit) remove(path);
+
+	auto agent = new ClaudeCodeAgent();
+	enum replacement = "[Image: updated]";
+	assert(editJsonlMessage(path, "companion", &agent.historyRecordIdMatchesLine,
+		(string line) => replaceUserMessageContent(line, replacement)),
+		"editJsonlMessage did not find the meta image companion by UUID");
+
+	auto after = readText(path).lineSplitter.array;
+	assert(after.length == before.length);
+	enum companionIndex = 3;
+	assert(after[0 .. companionIndex] == before[0 .. companionIndex]);
+	auto edited = parseJSON(after[companionIndex]);
+	assert(edited["uuid"].str == "companion");
+	assert(edited["message"]["content"].str == replacement);
+	assert(after[companionIndex + 1 .. $] == before[companionIndex + 1 .. $],
+		"editing the companion changed later history rows");
+}
+
+@("Claude undo trims parent-linked queue run-up before the removed prompt")
+unittest
+{
+	import std.file : readText, remove, tempDir, write;
+	import std.path : buildPath;
+	import std.uuid : randomUUID;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent, claudeParentLinkedQueueFixture;
+
+	auto path = buildPath(tempDir(), "cydo-undo-queue-run-up-" ~ randomUUID().toString() ~ ".jsonl");
+	scope(exit) remove(path);
+	auto agent = new ClaudeCodeAgent();
+	enum kept = `{"type":"assistant","message":{"id":"keep"}}` ~ "\n";
+	write(path, kept
+		~ claudeParentLinkedQueueFixture("queue-operation") ~ "\n"
+		~ claudeParentLinkedQueueFixture("queue/operation", "dequeue") ~ "\n"
+		~ `{"type":"user","uuid":"undo","message":{"role":"user","content":"queued"}}` ~ "\n");
+
+	assert(truncateJsonl(path, "undo", &agent.forkIdMatchesLine, true) == 3);
+	assert(readText(path) == kept);
 }

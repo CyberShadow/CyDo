@@ -23,7 +23,7 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
 	SdkEvent, EmptyResult;
 version (unittest) import cydo.agent.sdk : makeTestSdkProcess;
-import cydo.agent.contract : Agent, DiscoveredSession, InterruptedToolCallRepair,
+import cydo.agent.contract : Agent, HistoryReplay, DiscoveredSession, InterruptedToolCallRepair,
 	PersistedHistoryBoundary, PersistedHistoryBoundaryKind, OneShotHandle,
 	RewindResult, SessionConfig, SessionMeta;
 import cydo.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
@@ -469,9 +469,12 @@ class CopilotAgent : Agent
 		return historyPath(sessionId, profile);
 	}
 
-	void resetHistoryReplay() {} // no state to reset for Copilot
+	HistoryReplay createHistoryReplay()
+	{
+		return HistoryReplay((line, lineNum) => translateHistoryLine(line, lineNum));
+	}
 
-	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
+	private static TranslatedEvent[] translateHistoryLine(string line, int lineNum)
 	{
 		import std.algorithm : canFind;
 		import std.uuid : randomUUID;
@@ -671,19 +674,13 @@ class CopilotAgent : Agent
 		catch (Exception) { return false; }
 	}
 
-	bool isUserMessageLine(string rawLine)
+	bool isHistoryPrompt(string rawLine)
 	{
 		@JSONPartial static struct TypeProbe { string type; }
 		try { return jsonParse!TypeProbe(rawLine).type == "user.message"; }
 		catch (Exception) { return false; }
 	}
 
-	bool isAssistantMessageLine(string rawLine)
-	{
-		@JSONPartial static struct TypeProbe { string type; }
-		try { return jsonParse!TypeProbe(rawLine).type == "assistant.message"; }
-		catch (Exception) { return false; }
-	}
 
 	string rewriteSessionId(string line, string oldId, string newId)
 	{
@@ -736,6 +733,11 @@ class CopilotAgent : Agent
 	}
 
 	bool forkIdMatchesLine(string line, int lineNum, string forkId)
+	{
+		return historyRecordIdMatchesLine(line, lineNum, forkId);
+	}
+
+	bool historyRecordIdMatchesLine(string line, int lineNum, string forkId)
 	{
 		@JSONPartial
 		static struct IdProbe

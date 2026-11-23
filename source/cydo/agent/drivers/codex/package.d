@@ -26,7 +26,7 @@ version (unittest) import ae.net.asockets : ConnectionState, DisconnectType,
 	IConnection;
 version (unittest) import ae.utils.jsonrpc : JsonRpcRequest;
 
-import cydo.agent.contract : Agent, DiscoveredSession, InterruptedToolCallRepair,
+import cydo.agent.contract : Agent, HistoryReplay, DiscoveredSession, InterruptedToolCallRepair,
 	PersistedHistoryBoundary, OneShotHandle, RewindResult, SessionConfig,
 	SessionMeta;
 import cydo.agent.process : AgentProcess, FramingMode;
@@ -206,12 +206,11 @@ class CodexAgent : Agent
 	// scanSessions walk. Read and written only on the event-loop thread;
 	// enumerateAllSessions (discovery worker thread) bypasses it.
 	private string[string][string] scannedHistoryPaths_;
-	// History replay state: tracks whether task_started has been seen in the current replay.
-	private bool histSeenTaskStarted_;
-
-	void resetHistoryReplay()
+	HistoryReplay createHistoryReplay()
 	{
-		histSeenTaskStarted_ = false;
+		bool seenTaskStarted;
+		return HistoryReplay((line, lineNum) =>
+			translateHistoryLine(line, lineNum, seenTaskStarted));
 	}
 
 	void configureSandbox(ref SandboxPaths paths, ref string[string] env)
@@ -905,7 +904,7 @@ class CodexAgent : Agent
 		return result;
 	}
 
-	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
+	private static TranslatedEvent[] translateHistoryLine(string line, int lineNum, ref bool seenTaskStarted)
 	{
 		import std.conv : to;
 		import cydo.protocol : parseIso8601Timestamp;
@@ -935,7 +934,7 @@ class CodexAgent : Agent
 			if (probe.isForkableMessage)
 				forkId = "line:" ~ to!string(lineNum);
 			// Lines before task_started are system context injected by Codex — mark as meta.
-			bool forceMeta = !histSeenTaskStarted_;
+			bool forceMeta = !seenTaskStarted;
 			auto results = translateRolloutResponseItem(line, forkId, forceMeta);
 			TranslatedEvent[] evs;
 			foreach (r; results)
@@ -944,8 +943,8 @@ class CodexAgent : Agent
 		}
 		else if (probe.isEventMsg)
 		{
-			if (!histSeenTaskStarted_ && probe.isTaskStarted)
-				histSeenTaskStarted_ = true;
+			if (!seenTaskStarted && probe.isTaskStarted)
+				seenTaskStarted = true;
 			auto t = translateRolloutEventMsg(line);
 			return t !is null ? [TranslatedEvent(t, line, ts)] : [];
 		}
@@ -966,15 +965,11 @@ class CodexAgent : Agent
 		return rawLine.canFind(`"type":"turn/result"`);
 	}
 
-	bool isUserMessageLine(string rawLine)
+	bool isHistoryPrompt(string rawLine)
 	{
 		return parseRolloutLineProbe(rawLine).isUserMessage;
 	}
 
-	bool isAssistantMessageLine(string rawLine)
-	{
-		return parseRolloutLineProbe(rawLine).isAssistantMessage;
-	}
 
 	string rewriteSessionId(string line, string oldId, string newId)
 	{
@@ -1002,6 +997,11 @@ class CodexAgent : Agent
 	}
 
 	bool forkIdMatchesLine(string line, int lineNum, string forkId)
+	{
+		return historyRecordIdMatchesLine(line, lineNum, forkId);
+	}
+
+	bool historyRecordIdMatchesLine(string line, int lineNum, string forkId)
 	{
 		import std.conv : to;
 		// Fork IDs are "line:<N>" — match on line number
@@ -5336,24 +5336,25 @@ unittest
 	enum later = `{"timestamp":"2026-03-27T07:32:25.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"before"},{"type":"input_text","text":"start"}]}}`;
 
 	auto agent = new CodexAgent;
-	auto first = agent.translateHistoryLine(before, 1);
+	auto replay = agent.createHistoryReplay();
+	auto first = replay.translateHistoryLine(before, 1);
 	assert(first.length == 1 && first[0].raw == before);
 	assert(first[0].translated.canFind(`"uuid":"line:1"`));
 	assert(first[0].translated.canFind(`"is_meta":true`));
 	assert(first[0].translated.canFind(`"text":"before"`));
 	assert(first[0].translated.canFind(`"text":"start"`));
 
-	agent.translateHistoryLine(taskStarted, 2);
-	auto after = agent.translateHistoryLine(later, 3);
+	replay.translateHistoryLine(taskStarted, 2);
+	auto after = replay.translateHistoryLine(later, 3);
 	assert(after.length == 1 && after[0].raw == later);
 	assert(after[0].translated.canFind(`"uuid":"line:3"`));
 	assert(!after[0].translated.canFind(`"is_meta":true`));
 	assert(after[0].translated.canFind(`"text":"before"`));
 	assert(after[0].translated.canFind(`"text":"start"`));
 
-	agent.resetHistoryReplay();
-	auto replay = agent.translateHistoryLine(before, 1);
-	assert(replay.length == 1 && replay[0].translated.canFind(`"is_meta":true`));
+	replay = agent.createHistoryReplay();
+	auto restarted = replay.translateHistoryLine(before, 1);
+	assert(restarted.length == 1 && restarted[0].translated.canFind(`"is_meta":true`));
 }
 
 unittest
