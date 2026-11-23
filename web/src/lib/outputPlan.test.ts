@@ -3,6 +3,8 @@ import {
   type OutputPlan,
   parseNlOutputRow,
   splitOutputRows,
+  parseNumberedOutputRow,
+  type SpanValidatorId,
   segmentOutput,
   type SegmentedOutputPiece,
 } from "./outputPlan";
@@ -104,6 +106,112 @@ describe("nl output rows", () => {
           location: {
             kind: "from-cursor",
             end: { kind: "end-of-output", requiresComplete: true },
+          },
+        },
+      ],
+    };
+    expect(
+      segmentOutput(stdout, plan, { kind: "complete" }).pieces,
+    ).toMatchObject([{ kind, start: 0, end: stdout.length }]);
+  });
+});
+
+describe("parseNumberedOutputRow", () => {
+  it.each([
+    [
+      "12:a:b",
+      {
+        kind: "numbered",
+        lineNumber: 12,
+        delimiter: ":",
+        prefix: "12:",
+        text: "a:b",
+      },
+    ],
+    [
+      "13-foo: bar",
+      {
+        kind: "numbered",
+        lineNumber: 13,
+        delimiter: "-",
+        prefix: "13-",
+        text: "foo: bar",
+      },
+    ],
+    [
+      "13-left\rright\u2028above\u2029below",
+      {
+        kind: "numbered",
+        lineNumber: 13,
+        delimiter: "-",
+        prefix: "13-",
+        text: "left\rright\u2028above\u2029below",
+      },
+    ],
+    ["13-multiple\nrows", null],
+    [
+      "1:x\r",
+      {
+        kind: "numbered",
+        lineNumber: 1,
+        delimiter: ":",
+        prefix: "1:",
+        text: "x\r",
+      },
+    ],
+    ["--\r", null],
+    ["--", { kind: "group-separator" }],
+    ["-- x", null],
+    ["--5", null],
+    ["x:1", null],
+    [":1", null],
+    ["", null],
+  ])("parses %j", (row, expected) => {
+    expect(parseNumberedOutputRow(row)).toEqual(expected);
+  });
+});
+
+describe("numbered output span validation", () => {
+  it.each<[SpanValidatorId, string, "structured" | "raw"]>([
+    ["line-number-prefixed-with-context", "1:x\n--\r", "raw"],
+    ["line-number-prefixed-with-context", "1:x\r", "structured"],
+    ["colon-line-number-prefixed", "12:p\r", "structured"],
+    [
+      "line-number-prefixed-with-context",
+      "58-okay\r\n61:matched\r",
+      "structured",
+    ],
+    [
+      "colon-line-number-prefixed",
+      "12:left\rright\u2028above\u2029below\n",
+      "structured",
+    ],
+    [
+      "line-number-prefixed-with-context",
+      "1:x\n2-left\rright\u2028above\u2029below\n",
+      "structured",
+    ],
+    ["line-number-prefixed-with-context", "12-a\n--\n20:b\n--\n", "structured"],
+    ["line-number-prefixed-with-context", "12-a\nfoo\n", "raw"],
+    ["colon-line-number-prefixed", "11:match\n12-x\n", "raw"],
+    ["colon-line-number-prefixed", "11:match\n--\n", "raw"],
+  ])("%s classifies %j as %s", (validator, stdout, kind) => {
+    const plan: OutputPlan = {
+      version: 1,
+      blocks: [
+        {
+          id: "rg-results",
+          format: {
+            kind: "individual-lines",
+            format: {
+              kind: "line-number-prefixed",
+              format: { kind: "content", language: "text" },
+            },
+          },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+            validator,
           },
         },
       ],

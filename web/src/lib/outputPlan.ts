@@ -36,7 +36,35 @@ export type BlockEndSpec =
   | { kind: "end-of-output"; requiresComplete: true }
   | { kind: "before-block"; blockId: string };
 
-export type SpanValidatorId = "non-empty" | "colon-line-number-prefixed";
+export type SpanValidatorId =
+  | "non-empty"
+  | "colon-line-number-prefixed"
+  | "line-number-prefixed-with-context";
+
+export type NumberedOutputRow =
+  | {
+      kind: "numbered";
+      lineNumber: number;
+      delimiter: ":" | "-";
+      prefix: string;
+      text: string;
+    }
+  | { kind: "group-separator" };
+
+export function parseNumberedOutputRow(line: string): NumberedOutputRow | null {
+  if (line === "--") return { kind: "group-separator" };
+  const match = /^(\d+)([:-])([^\n]*)$/.exec(line);
+  if (!match) return null;
+  const lineNumber = match[1]!;
+  const delimiter = match[2] as ":" | "-";
+  return {
+    kind: "numbered",
+    lineNumber: Number(lineNumber),
+    delimiter,
+    prefix: lineNumber + delimiter,
+    text: match[3]!,
+  };
+}
 
 export function* splitOutputRows(
   text: string,
@@ -180,12 +208,18 @@ function validateSpan(
       return true;
     case "non-empty":
       return /\S/.test(text);
-    case "colon-line-number-prefixed": {
-      const lines = text.split("\n");
-      for (const rawLine of lines) {
-        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    case "colon-line-number-prefixed":
+    case "line-number-prefixed-with-context": {
+      for (const { text: line } of splitOutputRows(text)) {
         if (line.trim().length === 0) continue;
-        if (!/^(\d+):(.*)$/.test(line)) return false;
+        const row = parseNumberedOutputRow(line);
+        if (
+          !row ||
+          (validator === "colon-line-number-prefixed" &&
+            (row.kind !== "numbered" || row.delimiter !== ":"))
+        ) {
+          return false;
+        }
       }
       return true;
     }

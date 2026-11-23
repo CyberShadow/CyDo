@@ -779,7 +779,7 @@ export function matchPattern(userText) {
     return {
       type: "shell",
       command:
-        'rg -n --context=3 "semantic shell" /tmp/tests/e2e/semantic-shell.spec.ts',
+        'rg -n -H "semantic shell" /tmp/tests/e2e/semantic-shell.spec.ts',
     };
 
   // "fail with usage limit" → the mock API answers HTTP 429 usage_limit_reached,

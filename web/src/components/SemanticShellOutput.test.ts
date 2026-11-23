@@ -1,7 +1,10 @@
 import { assert, beforeAll, describe, expect, it } from "vitest";
 import { h } from "preact";
 import renderToString from "preact-render-to-string";
-import { SemanticShellOutput } from "./SemanticShellOutput";
+import {
+  hasSemanticShellOutput,
+  SemanticShellOutput,
+} from "./SemanticShellOutput";
 import { derivePlan } from "../lib/commandStep";
 import type { OutputPlan } from "../lib/outputPlan";
 import { configureShellParserAssets } from "../lib/shellParser";
@@ -498,5 +501,54 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     const html = renderSemantic(SVG_CONTENT, outputPlan);
     expect(html).toContain('data-testid="semantic-shell-block-unknown-0"');
     expect(html).not.toContain('alt="SVG preview"');
+  });
+});
+
+describe("SemanticShellOutput numbered search context", () => {
+  async function reportedSearchPlan(): Promise<OutputPlan> {
+    const result = await parseShellSemantic(
+      'cd /mnt/local/moved/home/vladimir/work/.cydo/tasks/39201/worktree && grep -n "backfillHistoryBoundary" -B3 -A60 source/cydo/workflow/history/pipeline.d | sed -n 1,150p',
+    );
+    assert(result.ok && result.value.steps);
+    const outputPlan = derivePlan(result.value.steps);
+    assert(outputPlan);
+    return outputPlan;
+  }
+
+  it("renders search output starting inside a context group", async () => {
+    const outputPlan = await reportedSearchPlan();
+    const stdout = [
+      "58-    }",
+      "59-",
+      "60-    // Restore the history boundary.",
+      "61:    void backfillHistoryBoundary(ref Ledger l) {",
+      "62-        auto b = l.boundary;",
+      "--",
+      "140:    backfillHistoryBoundary(ledger);",
+      "141-}",
+      "",
+    ].join("\n");
+
+    const html = renderSemantic(stdout, outputPlan);
+    expect(html).toContain('data-testid="semantic-shell-output-search"');
+    expect(html).toContain('data-testid="semantic-shell-block-rg-results"');
+    expect(html).not.toContain("semantic-shell-raw");
+    for (const prefix of ["58-", "61:", "140:"]) {
+      expect(html).toContain(
+        `data-testid="semantic-shell-line-prefix" class="line-number">${prefix}</span>`,
+      );
+    }
+    expect(
+      html.match(/<span class="search-group-separator">--<\/span>/g),
+    ).toHaveLength(1);
+  });
+
+  it("falls back to raw output when a row has no valid search prefix", async () => {
+    const outputPlan = await reportedSearchPlan();
+    const stdout =
+      "58-    }\ninvalid row\n140:    backfillHistoryBoundary(ledger);\n";
+
+    expect(hasSemanticShellOutput(stdout, outputPlan)).toBe(false);
+    expect(renderSemantic(stdout, outputPlan)).toBe("");
   });
 });

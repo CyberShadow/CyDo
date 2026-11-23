@@ -125,6 +125,45 @@ describe("OutputPlanView", () => {
     },
   );
 
+  it("renders match and context prefixes and a search group separator", () => {
+    const stdout =
+      "60-left\rright\u2028above\u2029below\r\n61:b: c\n--\n70-d\r";
+    const outputPlan: OutputPlan = {
+      version: 1,
+      blocks: [
+        {
+          id: "rg-results",
+          format: {
+            kind: "individual-lines",
+            format: {
+              kind: "line-number-prefixed",
+              format: { kind: "content", language: "text" },
+            },
+          },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+            validator: "line-number-prefixed-with-context",
+          },
+        },
+      ],
+    };
+
+    const html = renderOutputPlanView(stdout, outputPlan);
+    for (const prefix of ["60-", "61:", "70-"]) {
+      expect(html).toContain(
+        `data-testid="output-line-prefix" class="line-number">${prefix}</span>`,
+      );
+    }
+    expect(hasStructuredOutput(stdout, outputPlan)).toBe(true);
+    expect(html).toContain("</span>left\rright\u2028above\u2029below\r\n");
+    expect(html).toContain("</span>b: c\n");
+    expect(html).toContain("</span>d\r");
+    expect(
+      html.match(/<span class="search-group-separator">--<\/span>/g),
+    ).toHaveLength(1);
+  });
+
   it("uses preview callback when provided", () => {
     const stdout = '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n';
     const outputPlan: OutputPlan = {

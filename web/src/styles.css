@@ -3131,6 +3131,11 @@ body,
   user-select: none;
 }
 
+.search-group-separator {
+  color: var(--text-dim);
+  user-select: none;
+}
+
 /* TodoWrite formatting */
 .todo-list {
   margin-top: 4px;

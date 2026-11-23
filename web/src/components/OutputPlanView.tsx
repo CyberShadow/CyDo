@@ -8,7 +8,9 @@ import { FileContentPreview } from "./file-preview/FileContentPreview";
 import { detectRenderableFormat } from "../lib/fileFormats";
 import {
   parseNlOutputRows,
+  parseNumberedOutputRow,
   segmentOutput,
+  splitOutputRows,
   type OutputFormat,
   type OutputPlan,
   type OutputBlockPlan,
@@ -27,22 +29,6 @@ function renderTokenLines(tokens: ThemedToken[][] | null): h.JSX.Element {
       ))}
     </Fragment>
   );
-}
-
-function splitLogicalLines(text: string): string[] {
-  if (text.length === 0) return [];
-  const lines: string[] = [];
-  let start = 0;
-  while (start < text.length) {
-    const nl = text.indexOf("\n", start);
-    if (nl < 0) {
-      lines.push(text.slice(start));
-      break;
-    }
-    lines.push(text.slice(start, nl + 1));
-    start = nl + 1;
-  }
-  return lines;
 }
 
 function useOutputRowTokens(
@@ -138,6 +124,17 @@ function HighlightedNlRows({
   );
 }
 
+function HighlightedInlineRow({
+  text,
+  language,
+}: {
+  text: string;
+  language: string;
+}): h.JSX.Element {
+  const tokens = useOutputRowTokens(text, language, 1);
+  return <>{renderOutputRow(text, tokens?.[0])}</>;
+}
+
 function InlineFormatted({
   text,
   format,
@@ -147,46 +144,47 @@ function InlineFormatted({
   format: OutputFormat;
   linePrefixTestId?: string;
 }): h.JSX.Element {
-  const codeLanguage =
-    format.kind === "content" &&
-    format.language !== "text" &&
-    format.language !== "shell-output" &&
-    format.language !== "markdown"
-      ? format.language
-      : null;
-  const tokens = useHighlight(codeLanguage ? text : null, codeLanguage);
-
   if (format.kind === "content") {
-    if (!codeLanguage) return <>{text}</>;
-    return <>{renderTokenLines(tokens)}</>;
+    return (
+      <HighlightedInlineRow key={text} text={text} language={format.language} />
+    );
   }
 
   if (format.kind === "line-number-prefixed") {
-    const lines = splitLogicalLines(text);
     return (
       <>
-        {lines.map((line, i) => {
-          const colon = line.indexOf(":");
-          if (colon < 0) {
+        {Array.from(splitOutputRows(text), ({ text: line, terminator }, i) => {
+          const row = parseNumberedOutputRow(line);
+          if (!row) {
             return (
-              <InlineFormatted key={i} text={line} format={format.format} />
+              <Fragment key={i}>
+                <InlineFormatted text={line} format={format.format} />
+                {terminator}
+              </Fragment>
             );
           }
-          const prefix = line.slice(0, colon + 1);
-          const suffix = line.slice(colon + 1);
+          if (row.kind === "group-separator") {
+            return (
+              <Fragment key={i}>
+                <span class="search-group-separator">--</span>
+                {terminator}
+              </Fragment>
+            );
+          }
           return (
             <Fragment key={i}>
               <span
                 class="line-number"
                 data-testid={linePrefixTestId ?? "output-line-prefix"}
               >
-                {prefix}
+                {row.prefix}
               </span>
               <InlineFormatted
-                text={suffix}
+                text={row.text}
                 format={format.format}
                 linePrefixTestId={linePrefixTestId}
               />
+              {terminator}
             </Fragment>
           );
         })}
@@ -204,17 +202,21 @@ function InlineFormatted({
         />
       );
     case "individual-lines": {
-      const lines = splitLogicalLines(text);
       return (
         <>
-          {lines.map((line, i) => (
-            <InlineFormatted
-              key={i}
-              text={line}
-              format={format.format}
-              linePrefixTestId={linePrefixTestId}
-            />
-          ))}
+          {Array.from(
+            splitOutputRows(text),
+            ({ text: line, terminator }, i) => (
+              <Fragment key={i}>
+                <InlineFormatted
+                  text={line}
+                  format={format.format}
+                  linePrefixTestId={linePrefixTestId}
+                />
+                {terminator}
+              </Fragment>
+            ),
+          )}
         </>
       );
     }

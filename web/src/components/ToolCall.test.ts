@@ -998,6 +998,56 @@ describe("ToolCall numbered shell output", () => {
     expect(block?.querySelector("pre")?.textContent).toBe(stdout);
   });
 
+  it.each(["grep", "rg"])(
+    "preserves %s context CRLF after highlighting resolves",
+    async (tool) => {
+      const stdout = "1-int a;\r\n2:int hit;\r\n--\n5-int c;\r\n6:int hit;\r\n";
+      const root = await mountResult(
+        `${tool} -n -B1 hit cr.d`,
+        makeResult({ toolResult: { stdout } }),
+      );
+      const block = root.querySelector(
+        '[data-testid="semantic-shell-block-rg-results"]',
+      );
+      expect(block?.querySelector(".search-group-separator")).not.toBeNull();
+      await vi.waitFor(async () => {
+        await act(async () => {});
+        expect(block?.querySelector("span[style*='color']")).not.toBeNull();
+      });
+      expect(block?.querySelector("pre")?.textContent).toBe(stdout);
+    },
+  );
+
+  it("renders a malformed separator ending in CR as raw stdout", async () => {
+    const stdout = "1:x\n--\r";
+    const root = await mountResult(
+      "grep -n -B1 x cr.d",
+      makeResult({ toolResult: { stdout } }),
+    );
+    expect(
+      root.querySelector('[data-testid="semantic-shell-block-rg-results"]'),
+    ).toBeNull();
+    expect(root.querySelector(".search-group-separator")).toBeNull();
+    expect(root.querySelector("pre.tool-result")?.textContent).toBe(stdout);
+  });
+
+  it("preserves an unterminated search row's payload CR after highlighting", async () => {
+    const stdout = "1:x\r";
+    const root = await mountResult(
+      "grep -n -B1 x cr.d",
+      makeResult({ toolResult: { stdout } }),
+    );
+    const block = root.querySelector(
+      '[data-testid="semantic-shell-block-rg-results"]',
+    );
+    expect(block).not.toBeNull();
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(block?.querySelector("span[style*='color']")).not.toBeNull();
+    });
+    expect(block?.querySelector("pre")?.textContent).toBe(stdout);
+  });
+
   it("offers a preview for verbatim SVG", async () => {
     const root = await mountResult(
       "cat x.svg",

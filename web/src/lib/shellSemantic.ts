@@ -206,7 +206,12 @@ type ShellStream =
       numbering: NlOptions | null;
       producer: ReadStageName;
     }
-  | { kind: "numbered-rows"; origin: FileOrigin; pattern: string }
+  | {
+      kind: "numbered-rows";
+      origin: FileOrigin;
+      pattern: string;
+      context: boolean;
+    }
   | {
       kind: "diff";
       commandName: "git" | "diff";
@@ -217,7 +222,7 @@ type StageOp =
   | { kind: "identity" }
   | { kind: "slice"; range: SliceRange; commandName: "head" | "tail" | "sed" }
   | { kind: "number-lines"; options: NlOptions }
-  | { kind: "search"; pattern: string }
+  | { kind: "search"; pattern: string; context: boolean }
   | { kind: "opaque"; commandName: string };
 
 type ParsedStage =
@@ -534,7 +539,7 @@ function parseNlArgs(
 function parseRgArgs(
   cmd: SimpleCommand,
   requireFile: boolean,
-): ParseResult<{ pattern: string; filePath?: string }> {
+): ParseResult<{ pattern: string; filePath?: string; context: boolean }> {
   const toolName = cmd.name === "grep" ? "grep" : "rg";
   if (cmd.redirects.length > 0) {
     return reject(
@@ -542,18 +547,39 @@ function parseRgArgs(
       `${toolName} redirections are not supported`,
     );
   }
-  const unsupported = cmd.args.find(
-    (a) => a.kind === "flag" && a.text !== "-n" && a.text !== "--line-number",
-  );
-  if (unsupported) {
+  let hasLineNumbers = false;
+  let context = false;
+  const values: string[] = [];
+  for (let i = 0; i < cmd.args.length; i++) {
+    const { kind, text } = cmd.args[i]!;
+    if (kind === "value") {
+      values.push(text);
+      continue;
+    }
+    if (text === "-n" || text === "--line-number") {
+      hasLineNumbers = true;
+      continue;
+    }
+    const contextOption =
+      /^(?:-[ABC](\d*)|--(?:after-context|before-context|context)(?:=(\d+))?)$/.exec(
+        text,
+      );
+    if (contextOption) {
+      const count = contextOption[1] || contextOption[2] || cmd.args[++i]?.text;
+      if (
+        count !== undefined &&
+        /^\d+$/.test(count) &&
+        Number.isSafeInteger(Number(count))
+      ) {
+        context = true;
+        continue;
+      }
+    }
     return reject(
       "unsupported_option",
-      `unsupported ${toolName} option ${unsupported.text}`,
+      `unsupported ${toolName} option ${text}`,
     );
   }
-  const hasLineNumbers = cmd.args.some(
-    (a) => a.kind === "flag" && (a.text === "-n" || a.text === "--line-number"),
-  );
   if (!hasLineNumbers) {
     return reject(
       "unsupported_option",
@@ -561,9 +587,6 @@ function parseRgArgs(
     );
   }
 
-  const values = cmd.args
-    .filter((a): a is { kind: "value"; text: string } => a.kind === "value")
-    .map((a) => a.text);
   const expectedCount = requireFile ? 2 : 1;
   if (values.length > expectedCount) {
     return reject(
@@ -598,7 +621,7 @@ function parseRgArgs(
     }
   }
 
-  return { ok: true, value: { pattern, filePath } };
+  return { ok: true, value: { pattern, filePath, context } };
 }
 
 function openFile(origin: FileOrigin, producer: ReadStageName): ShellStream {
@@ -696,7 +719,11 @@ function parseStage(
       const parsed = parseRgArgs(cmd, first);
       if (!parsed.ok) return parsed;
       return filter(
-        { kind: "search", pattern: parsed.value.pattern },
+        {
+          kind: "search",
+          pattern: parsed.value.pattern,
+          context: parsed.value.context,
+        },
         "cat",
         parsed.value.filePath,
       );
@@ -950,6 +977,7 @@ function applyStage(
               kind: "numbered-rows",
               origin: stream.origin,
               pattern: op.pattern,
+              context: op.context,
             },
           };
       }
@@ -1040,7 +1068,9 @@ function lowerStream(
               format: { kind: "content", language },
             },
           },
-          validator: "colon-line-number-prefixed",
+          validator: stream.context
+            ? "line-number-prefixed-with-context"
+            : "colon-line-number-prefixed",
         },
         blockId: "rg-results",
       },

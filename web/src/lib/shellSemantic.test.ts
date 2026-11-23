@@ -2299,6 +2299,94 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
 });
 
 describe("batch 1 rg/sed/structured output plans", () => {
+  it("classifies the exact reported command as a D context search", async () => {
+    const result = await parseShellSemantic(
+      'cd /mnt/local/moved/home/vladimir/work/.cydo/tasks/39201/worktree && grep -n "backfillHistoryBoundary" -B3 -A60 source/cydo/workflow/history/pipeline.d | sed -n 1,150p',
+    );
+    const filePath =
+      "/mnt/local/moved/home/vladimir/work/.cydo/tasks/39201/worktree/source/cydo/workflow/history/pipeline.d";
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        kind: "search",
+        commandName: "rg",
+        pattern: "backfillHistoryBoundary",
+        filePath,
+      },
+    });
+    if (!result.ok) return;
+    expect(plan(result.value)).toEqual({
+      version: 1,
+      blocks: [
+        {
+          id: "rg-results",
+          source: { stepIndex: 0, producerName: "rg", filePath },
+          format: {
+            kind: "individual-lines",
+            format: {
+              kind: "line-number-prefixed",
+              format: { kind: "content", language: "d" },
+            },
+          },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+            validator: "line-number-prefixed-with-context",
+          },
+        },
+      ],
+    });
+  });
+
+  it.each([
+    ["grep -n pat -B3 -A60 f.d", "d"],
+    ["grep -n -A 3 pat f.d", "d"],
+    ["grep -n --context=2 pat f.d", "d"],
+    ["grep -n --after-context 2 pat f.d", "d"],
+    ["rg -n -A3 foo README.md", "markdown"],
+    ["rg -n --context=3 foo README.md", "markdown"],
+    ["cat f.d | grep -n -C1 pat", "d"],
+    ["grep -n p -A2 f.d | head -5 | tail -2", "d"],
+  ])("plans numbered context rows for %s", async (command, language) => {
+    const result = await parseShellSemantic(command);
+    expect(result).toMatchObject({ ok: true, value: { kind: "search" } });
+    if (!result.ok) return;
+    const block = plan(result.value)?.blocks[0];
+    expect(block?.location).toMatchObject({
+      validator: "line-number-prefixed-with-context",
+    });
+    expect(block?.format).toEqual({
+      kind: "individual-lines",
+      format: {
+        kind: "line-number-prefixed",
+        format: { kind: "content", language },
+      },
+    });
+  });
+
+  it.each([
+    ["grep -n pat f.d -A", "-A"],
+    ["grep -n -A x pat f.d", "-A"],
+    ["grep -n -A -1 pat f.d", "-A"],
+    ["grep -n -A9007199254740993 pat f.d", "-A9007199254740993"],
+    [
+      "grep -n --context=9007199254740993 pat f.d",
+      "--context=9007199254740993",
+    ],
+
+    ["grep -n pat f.d --context", "--context"],
+    ["grep -n --group-separator=x pat f.d", "--group-separator=x"],
+    ["grep -nA3 pat f.d", "-nA3"],
+    ["grep -n -H pat f.d", "-H"],
+  ])("rejects %s and names the unsupported flag", async (command, flag) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsupported_option",
+      reason: `unsupported grep option ${flag}`,
+    });
+  });
+
   it("supported rg -n emits search semantic and line-number plan", async () => {
     const r = await parseShellSemantic(
       'rg -n "formatGenericInput" web/src/components/ToolCall.tsx',
@@ -2358,8 +2446,6 @@ describe("batch 1 rg/sed/structured output plans", () => {
       "rg --json foo README.md",
       "rg -n foo .",
       "rg -n foo README.md package.json",
-      "rg -n -A3 foo README.md",
-      "rg -n --context=3 foo README.md",
       "rg -n --column foo README.md",
       "rg -n --with-filename foo README.md",
       "rg -n --color=always foo README.md",
