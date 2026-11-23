@@ -20,6 +20,7 @@ import { createOrdinaryDraftStore } from "./ordinaryDraftStore";
 const state = vi.hoisted(() => ({
   serverError: null as TaskManager["serverError"],
   dismissServerError: vi.fn(),
+  sendPermissionPromptResponse: vi.fn(),
   draftView: null as TaskManager["draftView"],
   activeTaskId: null as string | null,
   activeWorkspace: null as string | null,
@@ -93,7 +94,7 @@ vi.mock("./useSessionManager", () => ({
       setArchived: vi.fn(),
       saveDraft: vi.fn(),
       sendAskUserResponse: vi.fn(),
-      sendPermissionPromptResponse: vi.fn(),
+      sendPermissionPromptResponse: state.sendPermissionPromptResponse,
       editMessage: vi.fn(),
       editRawEvent: vi.fn(),
       draftView: state.draftView,
@@ -232,6 +233,7 @@ beforeEach(() => {
   state.agents = [];
   state.connected = true;
   state.tasksLoaded = true;
+  state.sendPermissionPromptResponse.mockClear();
   state.getByTid.mockReset();
   state.getByTid.mockImplementation((tid: number) =>
     Array.from(state.tasks.values()).find((task) => task.tid === tid),
@@ -281,6 +283,65 @@ function expectPlaceholderFrame(html: string): void {
   expect(root.querySelectorAll(".system-banner")).toHaveLength(1);
   expect(root.querySelectorAll(".session-empty")).toHaveLength(1);
 }
+
+describe("permission prompt responses", () => {
+  const roots = ownedRoots();
+  const tid = 42;
+  const toolUseId = "toolu_visible";
+
+  async function renderPrompt() {
+    const task = {
+      ...makeTaskState(tid, true, false, "Permission task", true),
+      status: "active" as const,
+      pendingPermission: {
+        toolUseId,
+        toolName: "Bash",
+        input: { command: "echo example" },
+      },
+    };
+    state.tasks.set(task.uuid, task);
+    state.activeTaskId = String(tid);
+
+    const container = roots.create();
+    await act(() => {
+      render(h(App, {}), container);
+    });
+    return container;
+  }
+
+  it("allows the tool call identified by the shown prompt", async () => {
+    const container = await renderPrompt();
+    await act(() => {
+      container
+        .querySelector<HTMLButtonElement>(".permission-allow-btn")!
+        .click();
+    });
+
+    expect(state.sendPermissionPromptResponse).toHaveBeenCalledExactlyOnceWith(
+      tid,
+      toolUseId,
+      JSON.stringify({ behavior: "allow" }),
+    );
+  });
+
+  it("denies the tool call identified by the shown prompt", async () => {
+    const container = await renderPrompt();
+    const denyButton = () =>
+      container.querySelector<HTMLButtonElement>(".permission-deny-btn")!;
+    await act(() => {
+      denyButton().click();
+    });
+    await act(() => {
+      denyButton().click();
+    });
+
+    expect(state.sendPermissionPromptResponse).toHaveBeenCalledExactlyOnceWith(
+      tid,
+      toolUseId,
+      JSON.stringify({ behavior: "deny" }),
+    );
+  });
+});
 
 describe("server command errors", () => {
   const roots = ownedRoots();

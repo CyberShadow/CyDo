@@ -2,6 +2,7 @@ module cydo.workflow.tools.backend;
 
 import core.time : Duration;
 import std.datetime.systime : Clock, SysTime;
+import std.exception : enforce;
 import std.format : format;
 import std.logger : errorf, infof, tracef, warningf;
 import std.process : execute;
@@ -283,8 +284,15 @@ final class WorkflowToolsBackend : ToolsBackend
 private:
 	WorkflowToolsHost host_;
 	Promise!(McpResult)[int] pendingAskUserQuestions_;
-	Promise!PermissionDecision[int] pendingPermissionPrompts_;
-	/// Deny a pending permission prompt nobody answers in time.
+	struct QueuedPermissionPrompt
+	{
+		PermissionPrompt prompt;
+		Duration timeout;
+		SysTime deadline;
+		Promise!PermissionDecision promise;
+	}
+	QueuedPermissionPrompt[][int] permissionPromptQueues_;
+	/// Only the visible prompt of each task can have a timer.
 	TimerTask[int] permissionPromptTimeouts_;
 	BatchRegistry batchRegistry_;
 	Mailbox[int] mailboxes_;
@@ -1017,14 +1025,31 @@ public:
 	/// was interrupted): take the prompt down.
 	void withdrawToolPermissionPrompt(int tid, string toolUseId)
 	{
-		auto td = requireTask(tid, "Withdrawn tool permission request for a missing task");
-		// A concurrent request refused with "Another permission prompt is
-		// already pending" never had a prompt of its own.
-		if ((tid in pendingPermissionPrompts_) is null
-			|| td.pendingPermission.prompt.toolUseId != toolUseId)
+		withdraw(tid, toolUseId, "Permission request withdrawn by the agent");
+	}
+
+	private void withdraw(int tid, string toolUseId, string message)
+	{
+		auto queue = tid in permissionPromptQueues_;
+		if (queue is null)
 			return;
-		settlePermissionPrompt(tid,
-			PermissionDecision(false, "Permission request withdrawn by the agent"));
+
+		foreach (index, entry; *queue)
+		{
+			if (entry.prompt.toolUseId != toolUseId)
+				continue;
+
+			auto decision = PermissionDecision(false, message);
+			if (index == 0)
+				settleHead(tid, decision);
+			else
+			{
+				import std.algorithm.mutation : remove;
+				*queue = (*queue).remove(index);
+				entry.promise.fulfill(decision);
+			}
+			return;
+		}
 	}
 
 	void onToolCallDelivered(string callerTidStr, McpResult result)
@@ -1122,13 +1147,15 @@ public:
 
 	void handlePermissionPromptResponse(WsMessage json)
 	{
+		enforce(json.tool_use_id.length > 0, "Permission response requires tool_use_id");
 		auto tid = json.tid;
-		auto td = host_.getTask(tid);
-		if (tid < 0 || td is null)
+		auto queue = tid in permissionPromptQueues_;
+		if (queue is null || (*queue)[0].prompt.toolUseId != json.tool_use_id)
+		{
+			warningf("Ignoring stale permission response for task %s, tool use %s",
+				tid, json.tool_use_id);
 			return;
-
-		if ((tid in pendingPermissionPrompts_) is null)
-			return;
+		}
 
 		string rawContent = json.content.json !is null
 			? jsonParse!string(json.content.json)
@@ -1158,27 +1185,31 @@ public:
 		catch (Exception)
 			decision = PermissionDecision(false, "Invalid response");
 
-		settlePermissionPrompt(tid, decision);
+		settleHead(tid, decision);
 	}
 
-	/// Answer the pending permission prompt of `tid` and take it down.
-	private void settlePermissionPrompt(int tid, PermissionDecision decision)
+	private void settleHead(int tid, PermissionDecision decision)
 	{
-		auto td = requireTask(tid, "Settled permission prompt for a missing task");
-		auto pending = pendingPermissionPrompts_[tid];
-		pendingPermissionPrompts_.remove(tid);
 		cancelPermissionPromptTimeout(tid);
+		auto queue = tid in permissionPromptQueues_;
+		auto promise = (*queue)[0].promise;
+		*queue = (*queue)[1 .. $];
+		if ((*queue).length > 0)
+			showHead(tid);
+		else
+		{
+			permissionPromptQueues_.remove(tid);
+			auto td = requireTask(tid, "Settled permission prompt for a missing task");
+			td.needsAttention = false;
+			host_.persistNeedsAttention(tid, false);
+			td.hasPendingQuestion = false;
+			td.notificationBody = "";
+			td.isProcessing = true;
+			host_.clearPermissionPrompt(tid);
+			host_.broadcastTaskUpdate(tid);
+		}
 
-		td.pendingPermission = PendingPermission.init;
-		td.needsAttention = false;
-		host_.persistNeedsAttention(tid, false);
-		td.hasPendingQuestion = false;
-		td.notificationBody = "";
-		td.isProcessing = true;
-
-		pending.fulfill(decision);
-		host_.clearPermissionPrompt(tid);
-		host_.broadcastTaskUpdate(tid);
+		promise.fulfill(decision);
 	}
 
 	void replayPendingClientPrompts(int tid,
@@ -1194,10 +1225,11 @@ public:
 				td.pendingAskToolUseId, td.pendingAskQuestions)));
 		}
 
-		if ((tid in pendingPermissionPrompts_) !is null
-			&& td.pendingPermission.prompt.toolUseId.length > 0)
+		if (auto queue = tid in permissionPromptQueues_)
 		{
-			send(toJson(PermissionPromptMessage.of(tid, td.pendingPermission)));
+			auto head = (*queue)[0];
+			send(toJson(PermissionPromptMessage.of(tid,
+				PendingPermission(head.prompt, head.deadline))));
 		}
 	}
 
@@ -1333,15 +1365,13 @@ public:
 
 	void failPendingPermissionPromptOnExit(int tid)
 	{
-		auto td = host_.getTask(tid);
-		if (td is null)
-			return;
-		if (auto permPending = tid in pendingPermissionPrompts_)
+		if (auto pending = tid in permissionPromptQueues_)
 		{
-			permPending.fulfill(PermissionDecision(false, "Task exited"));
-			pendingPermissionPrompts_.remove(tid);
+			auto queue = *pending;
+			permissionPromptQueues_.remove(tid);
 			cancelPermissionPromptTimeout(tid);
-			td.pendingPermission = PendingPermission.init;
+			foreach (entry; queue)
+				entry.promise.fulfill(PermissionDecision(false, "Task exited"));
 		}
 	}
 
@@ -1914,26 +1944,32 @@ private:
 	Promise!PermissionDecision promptUserForPermission(int tid, PermissionPrompt prompt,
 		Duration timeout)
 	{
-		if (tid in pendingPermissionPrompts_)
-			return resolve(PermissionDecision(false,
-				"Another permission prompt is already pending"));
-
 		auto promise = new Promise!PermissionDecision;
-		pendingPermissionPrompts_[tid] = promise;
+		auto queue = permissionPromptQueues_.get(tid, null);
+		foreach (entry; queue)
+			assert(entry.prompt.toolUseId != prompt.toolUseId, "Duplicate permission prompt ID");
+		queue ~= QueuedPermissionPrompt(prompt, timeout, SysTime.init, promise);
+		permissionPromptQueues_[tid] = queue;
+		if (queue.length == 1)
+			showHead(tid);
+		return promise;
+	}
 
-		auto td = requireTask(tid,
-			"Permission prompt target must be a live task");
-		// A zero timeout waits indefinitely.
-		td.pendingPermission = PendingPermission(prompt,
-			timeout > Duration.zero ? Clock.currTime + timeout : SysTime.init);
-
-		host_.sendPermissionPrompt(tid, td.pendingPermission);
+	private void showHead(int tid)
+	{
+		auto td = requireTask(tid, "Permission prompt target must be a live task");
+		auto head = &permissionPromptQueues_[tid][0];
+		auto timeout = head.timeout;
 		if (timeout > Duration.zero)
+		{
+			head.deadline = Clock.currTime + timeout;
 			permissionPromptTimeouts_[tid] = setTimeout({
 				permissionPromptTimeouts_.remove(tid);
-				settlePermissionPrompt(tid, PermissionDecision(false, format!(
+				settleHead(tid, PermissionDecision(false, format!(
 					"Permission denied: nobody answered the permission prompt within %s")(timeout)));
 			}, timeout);
+		}
+		host_.sendPermissionPrompt(tid, PendingPermission(head.prompt, head.deadline));
 
 		td.needsAttention = true;
 		host_.persistNeedsAttention(tid, true);
@@ -1943,8 +1979,6 @@ private:
 		host_.touchTask(tid);
 		host_.persistLastActive(tid, td.lastActive);
 		host_.broadcastTaskUpdate(tid);
-
-		return promise;
 	}
 
 	bool findPendingChildQuestion(int tid, out int childTid,
@@ -5063,4 +5097,192 @@ unittest
 		assert(!answered.isError && answered.text.jsonParse!AnswerResult.status == "delivered");
 		assert(!childAnswer.isError && childAnswer.text.jsonParse!AnswerResult.message == "parent answer");
 	}
+}
+
+version (unittest)
+private final class PermissionQueueTest
+{
+	enum tid = 1;
+
+	TaskData task;
+	WorkflowToolsBackend backend;
+	string[] shown;
+	SysTime[] deadlines;
+	int clears;
+	string[string] decisions;
+
+	this(Duration timeout = Duration.zero)
+	{
+		task = TaskData(tid, "local", "/tmp/project");
+		task.agentName = "claude";
+		WorkflowToolsHost host;
+		host.getTask = (int id) {
+			assert(id == tid);
+			return &task;
+		};
+		host.permissionSettings = (string agentName, string workspaceName) =>
+			PermissionSettings("ask", false, timeout);
+		host.sendPermissionPrompt = (int id, const PendingPermission pending) {
+			assert(id == tid);
+			shown ~= pending.prompt.toolUseId;
+			deadlines ~= pending.deadline;
+		};
+		host.clearPermissionPrompt = (int id) {
+			assert(id == tid);
+			clears++;
+		};
+		host.persistNeedsAttention = (int id, bool needsAttention) {};
+		host.touchTask = (int id) {};
+		host.persistLastActive = (int id, long lastActive) {};
+		host.broadcastTaskUpdate = (int id) {};
+		backend = new WorkflowToolsBackend(host);
+
+		foreach (id; ["first", "second"])
+			request(id);
+	}
+
+	private void request(string id)
+	{
+		auto prompt = PermissionPrompt(id, "Bash", JSONFragment(toJson([
+			"command": "echo " ~ id,
+		])), "");
+		backend.decideToolPermission(tid, prompt, PermissionEscalation.policyAsk)
+			.then((string decision) { decisions[id] = decision; });
+	}
+
+	void respond(string id, string content = `{"behavior":"allow"}`)
+	{
+		WsMessage response;
+		response.type = "permission_prompt_response";
+		response.tid = tid;
+		response.tool_use_id = id;
+		response.content = JSONFragment(toJson(content));
+		backend.handlePermissionPromptResponse(response);
+	}
+
+	string[] replay()
+	{
+		string[] ids;
+		backend.replayPendingClientPrompts(tid, (string payload) {
+			ids ~= jsonParse!PermissionPromptMessage(payload).tool_use_id;
+		});
+		return ids;
+	}
+}
+
+unittest // Answering permission prompts advances the queue in FIFO order.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new PermissionQueueTest;
+	socketManager.loop();
+	assert(t.shown == ["first"]);
+	assert(t.decisions.length == 0);
+
+	t.respond("first");
+	socketManager.loop();
+	assert(t.shown == ["first", "second"]);
+	assert(t.clears == 0);
+	assert(t.decisions["first"] == makePermissionAllowJson(`{"command":"echo first"}`));
+	assert(("second" in t.decisions) is null);
+
+	t.respond("second", `{"behavior":"deny","message":"Second call denied"}`);
+	socketManager.loop();
+	assert(t.decisions["second"] == makePermissionDenyJson("Second call denied"));
+	assert(t.clears == 1);
+}
+
+unittest // An answer for a queued prompt cannot settle either request.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new PermissionQueueTest;
+	t.respond("second");
+	socketManager.loop();
+	assert(t.shown == ["first"]);
+	assert(t.clears == 0);
+	assert(t.decisions.length == 0);
+}
+
+unittest // Every permission response must identify the prompt it answers.
+{
+	import std.exception : assertThrown;
+
+	auto t = new PermissionQueueTest;
+	assertThrown(t.respond(""));
+}
+
+unittest // Withdrawing the queued request leaves the visible prompt in place.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new PermissionQueueTest;
+	t.backend.withdrawToolPermissionPrompt(t.tid, "second");
+	socketManager.loop();
+	assert(t.shown == ["first"]);
+	assert(t.clears == 0);
+	assert(("first" in t.decisions) is null);
+	assert(t.decisions["second"] == makePermissionDenyJson("Permission request withdrawn by the agent"));
+
+	t.respond("first");
+	assert(t.shown == ["first"]);
+	assert(t.clears == 1);
+}
+
+unittest // Withdrawing the visible request shows the next prompt.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new PermissionQueueTest;
+	t.backend.withdrawToolPermissionPrompt(t.tid, "first");
+	socketManager.loop();
+	assert(t.shown == ["first", "second"]);
+	assert(t.clears == 0);
+	assert(t.decisions["first"] == makePermissionDenyJson("Permission request withdrawn by the agent"));
+	assert(("second" in t.decisions) is null);
+}
+
+unittest // Each prompt gets its full timeout once visible.
+{
+	import ae.net.asockets : socketManager;
+	import core.time : MonoTime, msecs;
+	import std.algorithm.searching : canFind;
+
+	enum timeout = 50.msecs;
+	auto started = MonoTime.currTime;
+	auto t = new PermissionQueueTest(timeout);
+	assert(t.shown == ["first"]);
+	socketManager.loop();
+
+	assert(t.shown == ["first", "second"]);
+	assert(t.clears == 1);
+	assert(t.deadlines[0] != SysTime.init);
+	assert(t.deadlines[1] >= t.deadlines[0] + timeout);
+	assert(MonoTime.currTime - started >= timeout * 2);
+	foreach (id; t.shown)
+	{
+		assert(t.decisions[id].canFind(`"behavior":"deny"`));
+		assert(t.decisions[id].canFind("nobody answered the permission prompt"));
+	}
+}
+
+unittest // Reconnecting clients see only the current prompt.
+{
+	auto t = new PermissionQueueTest;
+	assert(t.replay() == ["first"]);
+	t.respond("first");
+	assert(t.replay() == ["second"]);
+}
+
+unittest // Exit denies every queued request without showing another prompt.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new PermissionQueueTest;
+	t.backend.failPendingPermissionPromptOnExit(t.tid);
+	socketManager.loop();
+	assert(t.shown == ["first"]);
+	assert(t.replay().length == 0);
+	assert(t.decisions["first"] == makePermissionDenyJson("Task exited"));
+	assert(t.decisions["second"] == makePermissionDenyJson("Task exited"));
 }

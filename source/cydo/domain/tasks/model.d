@@ -936,7 +936,6 @@ struct TaskData
 	string[] pendingSteeringTexts;
 	string pendingAskToolUseId;  // correlation ID of a pending AskUserQuestion call
 	JSONFragment pendingAskQuestions;  // serialized questions for re-broadcast on reconnect
-	PendingPermission pendingPermission; // kept for late joiners
 	string error;  // last stderr text on non-zero exit; cleared on restart
 }
 

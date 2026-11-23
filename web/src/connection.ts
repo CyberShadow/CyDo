@@ -428,9 +428,18 @@ export class Connection {
     this.send(JSON.stringify({ type: "ask_user_response", tid, content }));
   }
 
-  sendPermissionPromptResponse(tid: number, content: string) {
+  sendPermissionPromptResponse(
+    tid: number,
+    toolUseId: string,
+    content: string,
+  ) {
     this.send(
-      JSON.stringify({ type: "permission_prompt_response", tid, content }),
+      JSON.stringify({
+        type: "permission_prompt_response",
+        tid,
+        tool_use_id: toolUseId,
+        content,
+      }),
     );
   }
 

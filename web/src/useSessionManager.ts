@@ -227,7 +227,11 @@ export interface TaskManager {
   setArchived: (tid: number, archived: boolean) => void;
   saveDraft: (tid: number, draft: string) => void;
   sendAskUserResponse: (tid: number, content: string) => void;
-  sendPermissionPromptResponse: (tid: number, content: string) => void;
+  sendPermissionPromptResponse: (
+    tid: number,
+    toolUseId: string,
+    content: string,
+  ) => void;
   editMessage: (tid: number, uuid: string, content: string) => void;
   editRawEvent: (tid: number, seq: number, content: string) => void;
   draftView: DraftView | null;
@@ -3012,10 +3016,10 @@ export function useTaskManager(
   }, []);
 
   const sendPermissionPromptResponse = useCallback(
-    (tid: number, content: string) => {
-      connRef.current?.sendPermissionPromptResponse(tid, content);
+    (tid: number, toolUseId: string, content: string) => {
+      connRef.current?.sendPermissionPromptResponse(tid, toolUseId, content);
       const t = findByTid(tid);
-      if (t?.pendingPermission) {
+      if (t?.pendingPermission?.toolUseId === toolUseId) {
         const updated = {
           ...t,
           pendingPermission: null,

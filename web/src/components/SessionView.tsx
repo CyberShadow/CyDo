@@ -58,7 +58,11 @@ interface Props {
   ordinaryDraftStore: OrdinaryDraftStore;
   onSaveDraft?: (tid: number, draft: string) => void;
   onAskUserResponse: (tid: number, content: string) => void;
-  onPermissionPromptResponse: (tid: number, content: string) => void;
+  onPermissionPromptResponse: (
+    tid: number,
+    toolUseId: string,
+    content: string,
+  ) => void;
   theme: Theme;
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
@@ -291,24 +295,26 @@ function SessionViewInner({
     );
   }, [onAskUserResponse, tid]);
 
-  const sendingPermission = permissionAwaitingAgent(task);
+  const permission = task.pendingPermission ?? permissionAwaitingAgent(task);
 
-  const handlePermissionAllow = useCallback(() => {
-    onPermissionPromptResponse(tid, JSON.stringify({ behavior: "allow" }));
-  }, [onPermissionPromptResponse, tid]);
+  const handlePermissionAllow = (toolUseId: string) => {
+    onPermissionPromptResponse(
+      tid,
+      toolUseId,
+      JSON.stringify({ behavior: "allow" }),
+    );
+  };
 
-  const handlePermissionDeny = useCallback(
-    (message?: string) => {
-      onPermissionPromptResponse(
-        tid,
-        JSON.stringify({
-          behavior: "deny",
-          ...(message ? { message } : {}),
-        }),
-      );
-    },
-    [onPermissionPromptResponse, tid],
-  );
+  const handlePermissionDeny = (toolUseId: string, message?: string) => {
+    onPermissionPromptResponse(
+      tid,
+      toolUseId,
+      JSON.stringify({
+        behavior: "deny",
+        ...(message ? { message } : {}),
+      }),
+    );
+  };
 
   const quoteSelection = useCallback(() => {
     const sel = window.getSelection();
@@ -515,25 +521,20 @@ function SessionViewInner({
         <div class="resume-bar">
           <span class="session-failed-label">Session failed: {task.error}</span>
         </div>
-      ) : task.pendingPermission ? (
+      ) : permission ? (
         <PermissionPromptForm
-          key={task.pendingPermission.toolUseId}
-          toolName={task.pendingPermission.toolName}
-          input={task.pendingPermission.input}
-          reason={task.pendingPermission.reason}
-          expiresAt={task.pendingPermission.expiresAt}
-          onAllow={handlePermissionAllow}
-          onDeny={handlePermissionDeny}
-        />
-      ) : sendingPermission ? (
-        <PermissionPromptForm
-          key={sendingPermission.toolUseId}
-          toolName={sendingPermission.toolName}
-          input={sendingPermission.input}
-          reason={sendingPermission.reason}
-          sending
-          onAllow={handlePermissionAllow}
-          onDeny={handlePermissionDeny}
+          key={permission.toolUseId}
+          toolName={permission.toolName}
+          input={permission.input}
+          reason={permission.reason}
+          expiresAt={permission.expiresAt}
+          sending={!task.pendingPermission}
+          onAllow={() => {
+            handlePermissionAllow(permission.toolUseId);
+          }}
+          onDeny={(message) => {
+            handlePermissionDeny(permission.toolUseId, message);
+          }}
         />
       ) : task.pendingAskUser ? (
         <AskUserForm
