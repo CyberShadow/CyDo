@@ -63,7 +63,7 @@ struct HistoryEventPipelineHost
 	void delegate(WebSocketAdapter ws, int tid) sendHistoryOperations;
 	void delegate(int tid) broadcastHistoryOperations;
 	void delegate(int tid, size_t seq, string event, string raw, int sourceLine,
-		bool isContextBootstrap, LocalUserProvenance localUserProvenance)
+		LocalUserProvenance localUserProvenance)
 		noteLiveBoundaryCandidate;
 	void delegate(WebSocketAdapter ws, int tid) sendReplaySupplementalState;
 	void delegate(int tid) onHistorySubscribed;
@@ -676,7 +676,7 @@ class HistoryEventPipeline
 				JSONFragment(ev.translated))).representation));
 		if (!merged && host_.noteLiveBoundaryCandidate !is null)
 			host_.noteLiveBoundaryCandidate(tid, seq, ev.translated, ev.raw, ev.sourceLine,
-				ev.isContextBootstrap, localUserProvenance);
+				localUserProvenance);
 		if (ev.turnBoundary.anchor.length > 0)
 			attachTurnBoundary(tid, td, ev.turnBoundary);
 		return seq;

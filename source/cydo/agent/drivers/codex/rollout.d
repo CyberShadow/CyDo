@@ -1,19 +1,12 @@
-/// Reconstructs useful Codex DISPLAY history from rollout JSONL. This
-/// projection is deliberately tolerant and must not authorize native
-/// ROLLBACK; ledger.d supplies the lossless exact-shape evidence for that.
+/// Translate legacy Codex rollout records for display.
 module cydo.agent.drivers.codex.rollout;
 
 import std.conv : to;
 import std.algorithm : canFind;
-import std.json : JSONType, JSONValue, parseJSON;
 import std.logger : tracef;
 import std.typecons : Nullable;
 
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
-import ae.utils.serialization.json : JsonParser;
-import ae.utils.serialization.serialization : isProtocolArray, isProtocolBoolean,
-	isProtocolField, isProtocolMap, isProtocolNull, isProtocolNumeric,
-	isProtocolString;
 
 import cydo.agent.contract : PersistedHistoryBoundary, PersistedHistoryBoundaryKind;
 import cydo.protocol : ContentBlock, decomposeToolName, makeUnrecognizedEvent;
@@ -31,36 +24,6 @@ package enum CodexUserMessageLineClassification
 	normal,
 	contextOnly,
 	turnAborted,
-}
-
-package enum RolloutTopLevelKind
-{
-	unknown,
-	sessionMeta,
-	worldState,
-	turnContext,
-	responseItem,
-	eventMsg,
-	compacted,
-}
-
-
-/// Return the turn id at a 1-based rollout line, or null if it has no turn.
-string rolloutTurnIdAtLine(string content, int lineNumber)
-{
-	import std.string : lineSplitter;
-
-	string turnId;
-	int currentLine;
-	foreach (line; content.lineSplitter)
-	{
-		auto evidence = parseRolloutLineEvidence(line, ++currentLine);
-		if (evidence.probe.isTaskStarted)
-			turnId = evidence.eventTurnIdValid ? evidence.eventTurnId : null;
-		if (currentLine == lineNumber)
-			return turnId;
-	}
-	return null;
 }
 
 /// Parse `num_turns` from a ThreadRolledBack event_msg JSONL line.
@@ -91,247 +54,6 @@ PersistedHistoryBoundary[] applyRollbackToIdsWithInfo(PersistedHistoryBoundary[]
 	}
 	// Fewer user messages than numTurns — remove everything
 	return [];
-}
-
-package PersistedHistoryBoundary[] extractPersistedHistoryBoundariesImpl(string content, int lineOffset = 0)
-{
-	PersistedHistoryBoundary[] ids;
-	auto scan = scanRollout(content, lineOffset);
-	// Codex prepends system context as a role=user response_item before the
-	// first task_started event. Skip role=user lines until task_started is seen
-	// so the system context is not treated as a forkable user message.
-	bool seenTaskStarted = lineOffset > 0;
-	foreach (ref line; scan.lines)
-	{
-		if (!seenTaskStarted && line.probe.isTaskStarted)
-		{
-			seenTaskStarted = true;
-			continue;
-		}
-		if (line.probe.isThreadRolledBack)
-		{
-			if (line.probe.rollbackNumTurns > 0)
-				ids = applyRollbackToIdsWithInfo(ids, line.probe.rollbackNumTurns);
-			continue;
-		}
-		if (!line.probe.isForkableMessage)
-			continue;
-		if (line.probe.isUserMessage && !seenTaskStarted)
-			continue;
-		if (line.probe.isUserMessage)
-		{
-			if (isCodexContextOnlyUserMessage(line.userClassification))
-				continue;
-		}
-		ids ~= PersistedHistoryBoundary("line:" ~ to!string(line.lineNumber),
-			line.probe.isUserMessage ? PersistedHistoryBoundaryKind.user
-				: PersistedHistoryBoundaryKind.agent_turn, null);
-	}
-	return ids;
-}
-
-private bool interruptedToolCallHasKey(ref JSONValue value, string key)
-{
-	return value.type == JSONType.object && key in value.object;
-}
-
-private string interruptedToolCallStringAt(ref JSONValue value, string key)
-{
-	if (!interruptedToolCallHasKey(value, key))
-		return null;
-	auto field = value.object[key];
-	return field.type == JSONType.string ? field.str : null;
-}
-
-private string interruptedToolCallTurnId(ref JSONValue payload)
-{
-	if (!interruptedToolCallHasKey(payload,
-		"internal_chat_message_metadata_passthrough"))
-		return null;
-	auto metadata = payload.object["internal_chat_message_metadata_passthrough"];
-	return interruptedToolCallStringAt(metadata, "turn_id");
-}
-
-/// Repair a Codex rollout after CyDo interrupts a successful continuation MCP
-/// call. Returns null when the expected function-call/output pair is absent.
-package string[] repairInterruptedToolCallImpl(string[] lines, string toolName,
-	string resultText)
-{
-	string splitName;
-	string toolServer;
-	string toolSource;
-	decomposeToolName(toolName, splitName, toolServer, toolSource);
-	auto splitNamespace = toolSource ~ "__" ~ toolServer;
-
-	string callId;
-	string turnId;
-	foreach (line; lines)
-	{
-		JSONValue record;
-		try
-			record = parseJSON(line);
-		catch (Exception)
-			continue;
-		if (interruptedToolCallStringAt(record, "type") != "response_item"
-			|| !interruptedToolCallHasKey(record, "payload"))
-			continue;
-
-		auto payload = record.object["payload"];
-		if (interruptedToolCallStringAt(payload, "type") != "function_call")
-			continue;
-		auto name = interruptedToolCallStringAt(payload, "name");
-		if (name == toolName
-			|| (name == splitName
-				&& interruptedToolCallStringAt(payload, "namespace") == splitNamespace))
-		{
-			callId = interruptedToolCallStringAt(payload, "call_id");
-			turnId = interruptedToolCallTurnId(payload);
-		}
-	}
-	if (callId.length == 0)
-		return null;
-
-	bool rewroteOutput;
-	size_t outputIndex = size_t.max;
-	string[] repaired;
-	foreach (lineIndex, line; lines)
-	{
-		JSONValue record;
-		try
-			record = parseJSON(line);
-		catch (Exception)
-		{
-			repaired ~= line;
-			continue;
-		}
-		if (!interruptedToolCallHasKey(record, "payload"))
-		{
-			repaired ~= line;
-			continue;
-		}
-
-		auto type = interruptedToolCallStringAt(record, "type");
-		auto payload = record.object["payload"];
-		if (!rewroteOutput && type == "response_item"
-			&& interruptedToolCallStringAt(payload, "type") == "function_call_output"
-			&& interruptedToolCallStringAt(payload, "call_id") == callId)
-		{
-			payload.object["output"] = JSONValue(resultText);
-			record.object["payload"] = payload;
-			repaired ~= record.toString();
-			rewroteOutput = true;
-			outputIndex = lineIndex;
-			continue;
-		}
-
-		if (turnId.length > 0 && lineIndex > outputIndex
-			&& type == "response_item"
-			&& interruptedToolCallStringAt(payload, "type") == "message"
-			&& (interruptedToolCallStringAt(payload, "role") == "developer"
-				|| interruptedToolCallStringAt(payload, "role") == "user")
-			&& interruptedToolCallTurnId(payload) == turnId
-			&& interruptedToolCallHasKey(payload, "content")
-			&& payload.object["content"].type == JSONType.array
-			&& payload.object["content"].array.length == 1)
-		{
-			auto firstBlock = payload.object["content"].array[0];
-			if (interruptedToolCallStringAt(firstBlock, "type") == "input_text"
-				&& isCodexTurnAbortedUserText(
-					interruptedToolCallStringAt(firstBlock, "text")))
-				continue;
-		}
-
-		if (turnId.length > 0 && lineIndex > outputIndex && type == "event_msg"
-			&& interruptedToolCallStringAt(payload, "type") == "turn_aborted"
-			&& interruptedToolCallStringAt(payload, "turn_id") == turnId
-			&& interruptedToolCallStringAt(payload, "reason") == "interrupted")
-			continue;
-
-		repaired ~= line;
-	}
-	return rewroteOutput ? repaired : null;
-}
-
-unittest
-{
-	auto call = `{"type":"response_item","payload":{"type":"function_call","name":"SwitchMode","namespace":"mcp__cydo","arguments":"{\"continuation\":\"plan\"}","call_id":"call_switch","internal_chat_message_metadata_passthrough":{"turn_id":"turn_switch"}}}`;
-	auto output = `{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_switch","output":"aborted by user after 0.1s","internal_chat_message_metadata_passthrough":{"turn_id":"turn_switch"}}}`;
-	auto tokenCount = `{"type":"event_msg","payload":{"type":"token_count","info":{}}}`;
-	auto developerMarker = `{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<turn_aborted>\nThe previous turn was interrupted on purpose.\n</turn_aborted>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn_switch"}}}`;
-	auto abortedEvent = `{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn_switch","reason":"interrupted"}}`;
-
-	auto repaired = repairInterruptedToolCallImpl(
-		[call, output, tokenCount, developerMarker, abortedEvent],
-		"mcp__cydo__SwitchMode", "RESULT");
-	assert(repaired !is null && repaired.length == 3);
-	assert(parseJSON(repaired[1])["payload"]["output"].str == "RESULT");
-	assert(repaired[2] == tokenCount);
-
-	auto flattened = repairInterruptedToolCallImpl([
-		`{"type":"response_item","payload":{"type":"function_call","name":"mcp__cydo__SwitchMode","call_id":"flat-call","internal_chat_message_metadata_passthrough":{"turn_id":"flat-turn"}}}`,
-		`{"type":"response_item","payload":{"type":"function_call_output","call_id":"flat-call","output":"aborted by user after 0.2s"}}`,
-	], "mcp__cydo__SwitchMode", "FLAT RESULT");
-	assert(flattened !is null
-		&& parseJSON(flattened[1])["payload"]["output"].str == "FLAT RESULT");
-
-	auto handoffCall = `{"type":"response_item","payload":{"type":"function_call","name":"Handoff","namespace":"mcp__cydo","call_id":"handoff-call","internal_chat_message_metadata_passthrough":{"turn_id":"handoff-turn"}}}`;
-	auto handoffOutput = `{"type":"response_item","payload":{"type":"function_call_output","call_id":"handoff-call","output":"aborted by user after 0.1s"}}`;
-	auto handoffMarker = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"handoff-turn"}}}`;
-	auto handoffEvent = `{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"handoff-turn","reason":"interrupted"}}`;
-	auto handoff = repairInterruptedToolCallImpl(
-		[handoffCall, handoffOutput, handoffMarker, handoffEvent],
-		"mcp__cydo__Handoff", "HANDOFF RESULT");
-	assert(handoff !is null && handoff.length == 2
-		&& parseJSON(handoff[1])["payload"]["output"].str == "HANDOFF RESULT");
-
-	void assertContains(string[] records, string expected)
-	{
-		foreach (record; records)
-			if (record == expected)
-				return;
-		assert(false, "Expected retained record: " ~ expected);
-	}
-
-	auto preOutputMarker = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<turn_aborted>\ninterrupted\n</turn_aborted>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn_switch"}}}`;
-	auto openingOnly = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<turn_aborted>\ninterrupted"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn_switch"}}}`;
-	auto trailingText = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<turn_aborted>\ninterrupted\n</turn_aborted>\nordinary"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn_switch"}}}`;
-	auto wrongContentType = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"text","text":"<turn_aborted>\ninterrupted\n</turn_aborted>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn_switch"}}}`;
-	auto multipleContent = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<turn_aborted>\ninterrupted\n</turn_aborted>"},{"type":"input_text","text":"extra"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn_switch"}}}`;
-	auto unacceptedRole = `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"input_text","text":"<turn_aborted>\ninterrupted\n</turn_aborted>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn_switch"}}}`;
-	auto differentTurn = `{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<turn_aborted>\ninterrupted\n</turn_aborted>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"other-turn"}}}`;
-	auto lookalikes = [openingOnly, trailingText, wrongContentType, multipleContent,
-		unacceptedRole, differentTurn];
-	auto retained = repairInterruptedToolCallImpl(
-		[call, preOutputMarker, output] ~ lookalikes,
-		"mcp__cydo__SwitchMode", "RESULT");
-	assert(retained !is null && retained.length == 3 + lookalikes.length);
-	assert(retained[1] == preOutputMarker);
-	foreach (lookalike; lookalikes)
-		assertContains(retained, lookalike);
-
-	auto noMarkerEvent = repairInterruptedToolCallImpl([call, output, abortedEvent],
-		"mcp__cydo__SwitchMode", "RESULT");
-	assert(noMarkerEvent !is null && noMarkerEvent.length == 2);
-	auto preOutputEvent = `{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn_switch","reason":"interrupted"}}`;
-	auto otherTurnEvent = `{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"other-turn","reason":"interrupted"}}`;
-	auto otherReasonEvent = `{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn_switch","reason":"shutdown"}}`;
-	auto retainedEvents = repairInterruptedToolCallImpl(
-		[call, preOutputEvent, output, otherTurnEvent, otherReasonEvent],
-		"mcp__cydo__SwitchMode", "RESULT");
-	assert(retainedEvents !is null && retainedEvents.length == 5);
-	assertContains(retainedEvents, preOutputEvent);
-	assertContains(retainedEvents, otherTurnEvent);
-	assertContains(retainedEvents, otherReasonEvent);
-
-	auto malformed = repairInterruptedToolCallImpl([call, "not json", output],
-		"mcp__cydo__SwitchMode", "RESULT");
-	assert(malformed !is null && malformed.length == 3 && malformed[1] == "not json");
-	assert(repairInterruptedToolCallImpl([call, output],
-		"mcp__cydo__Handoff", "RESULT") is null);
-	assert(repairInterruptedToolCallImpl([`{"type":"event_msg","payload":{"type":"token_count"}}`],
-		"mcp__cydo__SwitchMode", "RESULT") is null);
-	assert(repairInterruptedToolCallImpl([call],
-		"mcp__cydo__SwitchMode", "RESULT") is null);
 }
 
 package bool isCodexContextOnlyUserText(string text)
@@ -369,31 +91,6 @@ package bool isCodexTurnAbortedUserText(string text)
 	return true;
 }
 
-package bool extractCodexUserMessageText(string line, out string text)
-{
-	auto evidence = parseRolloutLineEvidence(line, 0);
-	if (!evidence.probe.isUserMessage || !evidence.contentClassificationKnown)
-		return false;
-	text = evidence.inputText;
-	return true;
-}
-
-package CodexUserMessageLineClassification classifyCodexUserMessageLine(string line)
-{
-	auto evidence = parseRolloutLineEvidence(line, 0);
-	return evidence.userClassification;
-}
-
-package bool isCodexContextOnlyUserMessage(
-	CodexUserMessageLineClassification classification)
-{
-	return classification != CodexUserMessageLineClassification.normal;
-}
-
-package bool isCodexContextOnlyUserMessageLine(string line)
-{
-	return isCodexContextOnlyUserMessage(classifyCodexUserMessageLine(line));
-}
 
 /// True when a parsed role=user response item represents a Codex rollback turn.
 /// `[SYSTEM:]` retains its existing replay semantics; the Codex-generated
@@ -402,153 +99,6 @@ package bool isCodexRollbackEligibleUserMessage(
 	CodexUserMessageLineClassification classification)
 {
 	return classification != CodexUserMessageLineClassification.turnAborted;
-}
-
-/// Count active persisted message records from `anchor` onward for JSONL undo.
-/// Rollback-dead records are excluded by the active-boundary extraction.
-int countActiveFallbackRecordsFromBoundary(string content, string anchor)
-{
-	auto boundaries = extractPersistedHistoryBoundariesImpl(content);
-	foreach (i, ref boundary; boundaries)
-		if (boundary.anchor == anchor)
-			return cast(int)(boundaries.length - i);
-	return -1;
-}
-
-/// The user-facing assistant boundary is the response item, but a JSONL
-/// fallback cuts at whichever projection comes first so it removes its native
-/// agent event as well.
-string resolveCodexFallbackUndoAnchor(string content,
-	PersistedHistoryBoundaryKind kind, string anchor)
-{
-	if (kind != PersistedHistoryBoundaryKind.agent_turn)
-		return anchor;
-	import std.conv : to;
-	import std.string : startsWith;
-	if (!anchor.startsWith("line:"))
-		return null;
-	int targetLine;
-	try targetLine = to!int(anchor[5 .. $]);
-	catch (Exception) return null;
-	auto scan = scanRollout(content);
-	RolloutLineEvidence target;
-	int targetIndex = -1;
-	foreach (i, ref line; scan.lines)
-		if (line.lineNumber == targetLine)
-		{
-			target = line;
-			targetIndex = cast(int)i;
-			break;
-		}
-	if (targetIndex < 0 || !target.probe.isAssistantMessage || !target.contentKnown
-		|| target.contentText.length == 0)
-		return null;
-	NativeRolloutSegment* segment;
-	foreach (ref candidate; scan.nativeSegments)
-		if (candidate.start <= cast(size_t)targetIndex
-			&& cast(size_t)targetIndex < candidate.end)
-		{
-			if (segment !is null)
-				return null;
-			segment = &candidate;
-		}
-	if (segment is null)
-		return null;
-	int matchedLine;
-	foreach (i; segment.start .. segment.end)
-	{
-		auto line = scan.lines[i];
-		if (isExactNativeAgentEvent(line) && line.eventMessage == target.contentText)
-		{
-			if (matchedLine > 0)
-				return null;
-			matchedLine = line.lineNumber;
-		}
-	}
-	return matchedLine > 0
-		? "line:" ~ to!string(targetLine < matchedLine ? targetLine : matchedLine)
-		: null;
-}
-
-unittest
-{
-	string submitted(string turnId, string answer, bool assistantFirst = false,
-		string telemetry = null)
-	{
-		auto started = `{"type":"event_msg","payload":{"type":"task_started","turn_id":"`
-			~ turnId ~ `","started_at":1,"model_context_window":1,"collaboration_mode_kind":"default"}}`;
-		auto user = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"prompt"}],"internal_chat_message_metadata_passthrough":{"turn_id":"`
-			~ turnId ~ `"}}}`;
-		auto userEvent = `{"type":"event_msg","payload":{"type":"user_message","client_id":"client-`
-			~ turnId ~ `","message":"prompt","images":[],"local_images":[],"text_elements":[]}}`;
-		auto agent = `{"type":"event_msg","payload":{"type":"agent_message","message":"`
-			~ answer ~ `","phase":null,"memory_citation":null}}`;
-		auto assistant = `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"`
-			~ answer ~ `"}],"internal_chat_message_metadata_passthrough":{"turn_id":"`
-			~ turnId ~ `"},"id":"assistant-` ~ turnId ~ `"}}`;
-		auto complete = `{"type":"event_msg","payload":{"type":"task_complete","turn_id":"`
-			~ turnId ~ `","last_agent_message":"` ~ answer
-			~ `","completed_at":1,"duration_ms":1,"time_to_first_token_ms":1}}`;
-		string[] records = [started, user, userEvent];
-		if (assistantFirst) records ~= assistant; else records ~= agent;
-		if (telemetry !is null) records ~= telemetry;
-		if (assistantFirst) records ~= agent; else records ~= assistant;
-		records ~= complete;
-		import std.array : join;
-		return records.join("\n");
-	}
-
-	auto normal = submitted("normal", "answer");
-	assert(resolveCodexFallbackUndoAnchor(normal,
-		PersistedHistoryBoundaryKind.agent_turn, "line:5") == "line:4");
-	assert(resolveCodexFallbackUndoAnchor(normal,
-		PersistedHistoryBoundaryKind.user, "line:2") == "line:2");
-	assert(resolveCodexFallbackUndoAnchor(normal,
-		PersistedHistoryBoundaryKind.agent_turn, "line:1") is null);
-	assert(resolveCodexFallbackUndoAnchor(normal,
-		PersistedHistoryBoundaryKind.agent_turn, "line:99") is null);
-	assert(resolveCodexFallbackUndoAnchor(normal,
-		PersistedHistoryBoundaryKind.agent_turn, "not-a-line") is null);
-
-	// Both observed response/event projections remain valid with their
-	// pre-terminal token telemetry; the fallback anchor selects the earlier
-	// projection so truncation removes both.
-	auto telemetry = `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":42,"reasoning_output_tokens":0,"total_tokens":62},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":6494},"model_context_window":258400},"rate_limits":{"limit_id":"codex","limit_name":null,"primary":null,"secondary":null,"credits":null,"individual_limit":null,"plan_type":null,"rate_limit_reached_type":null}}}`;
-	foreach (assistantFirst; [false, true])
-	{
-		auto projected = submitted(assistantFirst ? "first" : "last", "telemetry",
-			assistantFirst, telemetry);
-		auto scan = scanRollout(projected);
-		assert(scan.nativeSegments.length == 1);
-		auto target = assistantFirst ? "line:4" : "line:6";
-		auto native = assistantFirst ? "line:6" : "line:4";
-		import std.algorithm : min;
-		auto expected = min(target, native);
-		assert(resolveCodexFallbackUndoAnchor(projected,
-			PersistedHistoryBoundaryKind.agent_turn, target)
-			== expected);
-	}
-
-	// A visible assistant record without a complete, corroborated lifecycle
-	// cannot authorize deletion of a coincidental native event.
-	auto uncorroborated = `{"type":"event_msg","payload":{"type":"agent_message","message":"answer","phase":null,"memory_citation":null}}\n`
-		~ `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}`;
-	assert(resolveCodexFallbackUndoAnchor(uncorroborated,
-		PersistedHistoryBoundaryKind.agent_turn, "line:2") is null);
-
-	// Matching twice in the selected lifecycle is ambiguous and fails closed.
-	auto duplicate = submitted("duplicate", "answer");
-	import std.string : replace;
-	duplicate = duplicate.replace(`{"type":"response_item","payload":{"type":"message","role":"assistant"`,
-		`{"type":"event_msg","payload":{"type":"agent_message","message":"answer","phase":null,"memory_citation":null}}\n{"type":"response_item","payload":{"type":"message","role":"assistant"`);
-	assert(resolveCodexFallbackUndoAnchor(duplicate,
-		PersistedHistoryBoundaryKind.agent_turn, "line:6") is null);
-
-	// Equal assistant text in an earlier completed lifecycle does not make the
-	// later response ambiguous: segment membership selects its own event.
-	auto repeated = submitted("earlier", "same") ~ "\n" ~ submitted("later", "same");
-	assert(resolveCodexFallbackUndoAnchor(repeated,
-		PersistedHistoryBoundaryKind.agent_turn, "line:11") == "line:10");
 }
 
 /// Check if a JSONL line is a ThreadRolledBack event_msg.
@@ -566,7 +116,7 @@ bool[int] computeRollbackSkipLines(string content)
 {
 	auto scan = scanRollout(content);
 	bool hasRollback;
-	foreach (ref line; scan.lines)
+	foreach (ref line; scan)
 		if (line.probe.isThreadRolledBack)
 			hasRollback = true;
 	if (!hasRollback)
@@ -578,7 +128,7 @@ bool[int] computeRollbackSkipLines(string content)
 	RollbackInfo[] rollbacks;
 
 	bool seenTaskStarted = false;
-	foreach (ref line; scan.lines)
+	foreach (ref line; scan)
 	{
 		if (!seenTaskStarted && line.probe.isTaskStarted)
 		{
@@ -658,21 +208,6 @@ unittest
 	assert(parseRollbackNumTurns(`{"timestamp":"2025-01-01T00:00:00.000Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":2}}`) == 2);
 	assert(parseRollbackNumTurns(`{"timestamp":"2025-01-01T00:00:00.000Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":0}}`) == 0);
 	assert(parseRollbackNumTurns(`{"type":"event_msg","payload":{"type":"task_started"}}`) == 0);
-	auto validRollbackMarker = classifyNativeRollbackMarker(
-		`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":2}}`);
-	assert(validRollbackMarker.status == NativeRollbackMarkerStatus.valid
-		&& validRollbackMarker.numTurns == 2);
-	auto malformedRollbackMarker = classifyNativeRollbackMarker(
-		`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":"two"}}`);
-	assert(malformedRollbackMarker.status == NativeRollbackMarkerStatus.malformed);
-	assert(classifyNativeRollbackMarker(
-		`{"type":"unexpected","payload":{"type":"thread_rolled_back","num_turns":2}}`)
-		.status == NativeRollbackMarkerStatus.malformed);
-	assert(classifyNativeRollbackMarker(
-		`{"type":"event_msg","payload":{"type":"thread_rolled_back"`)
-		.status == NativeRollbackMarkerStatus.malformed);
-	assert(classifyNativeRollbackMarker(`{"type":"event_msg","payload":{"type":"task_complete"}}`)
-		.status == NativeRollbackMarkerStatus.none);
 
 	// Test applyRollbackToIdsWithInfo
 	auto ids = [
@@ -694,21 +229,6 @@ unittest
 	auto rolledAll = applyRollbackToIdsWithInfo(ids, 10);
 	assert(rolledAll.length == 0, "rollback > total should remove everything");
 
-	// Fallback JSONL preview counts any active boundary, including assistants.
-	{
-		string jsonl =
-			`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
-			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`;
-		assert(countActiveFallbackRecordsFromBoundary(jsonl, "line:3") == 1);
-		assert(countActiveFallbackRecordsFromBoundary(jsonl, "line:2") == 2);
-		assert(countActiveFallbackRecordsFromBoundary(jsonl, "line:5") == -1);
-		assert(countActiveFallbackRecordsFromBoundary(jsonl, "line:999999") == -1);
-	}
-
 	// A v1 interrupted turn persists a contextual role=user abort marker. It
 	// belongs to the interrupted prompt rather than a separate Codex turn.
 	{
@@ -726,8 +246,6 @@ unittest
 			`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"interrupt-undo-running"}]}}` ~ "\n" ~
 			`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>"}]}}`;
 
-		assert(countActiveFallbackRecordsFromBoundary(beforeSecondRollback, "line:4") == 5,
-			"the contextual v1 abort wrapper must not add a fallback history entry");
 		auto skip = computeRollbackSkipLines(beforeSecondRollback ~ "\n" ~
 			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":3}}`);
 		assert(2 !in skip && 3 !in skip,
@@ -751,8 +269,6 @@ unittest
 			`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"` ~ abortLikeText ~ `"}]}}` ~ "\n" ~
 			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}`;
 
-		assert(countActiveFallbackRecordsFromBoundary(beforeRollback, "line:2") == 4,
-			"ordinary abort-like text must retain its fallback history entry");
 		auto skip = computeRollbackSkipLines(beforeRollback ~ "\n" ~
 			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`);
 		assert(2 !in skip && 3 !in skip,
@@ -773,8 +289,6 @@ unittest
 			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
 			`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"  \n<TURN_ABORTED>\nThe user interrupted the previous turn on purpose.\n</TURN_ABORTED>\n\t  "}]}}`;
 
-		assert(countActiveFallbackRecordsFromBoundary(beforeRollback, "line:2") == 4,
-			"the complete v1 abort wrapper must not add a fallback history entry");
 		auto skip = computeRollbackSkipLines(beforeRollback ~ "\n" ~
 			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`);
 		assert(2 !in skip && 3 !in skip,
@@ -1597,34 +1111,4 @@ string extractCommandInput(JSONFragment action)
 	}
 	catch (Exception e)
 	{ tracef("extractBashInput: parse error: %s", e.msg); return `{}`; }
-}
-
-unittest
-{
-	import std.algorithm : filter;
-	import std.array : array;
-
-	// Codex 0.144.1 rollout excerpt with unrelated records and fields omitted.
-	const content = `{"type":"session_meta","payload":{"cli_version":"0.144.1"}}
-{"timestamp":"2026-11-21T15:14:57.959Z","type":"event_msg","payload":{"type":"task_started","turn_id":"01a1feac-c521-7051-be7b-f7934be13a35","started_at":1795274097,"model_context_window":258400,"collaboration_mode_kind":"default"}}
-{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"reply with \"reasoning-fixture\""}]}}
-{"type":"response_item","payload":{"type":"message","id":"msg_mock_00001","role":"assistant","content":[{"type":"output_text","text":"reasoning-fixture"}]}}
-{"type":"event_msg","payload":{"type":"task_complete","turn_id":"01a1feac-c521-7051-be7b-f7934be13a35"}}
-{"timestamp":"2026-11-21T15:14:58.050Z","type":"event_msg","payload":{"type":"task_started","turn_id":"01a1feac-c580-79c3-8ea3-46e1938d56df","started_at":1795274098,"model_context_window":258400,"collaboration_mode_kind":"default"}}
-{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"run command printf legacy-marker"}]}}
-{"type":"response_item","payload":{"type":"message","id":"msg_mock_00002","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}
-{"type":"event_msg","payload":{"type":"task_complete","turn_id":"01a1feac-c580-79c3-8ea3-46e1938d56df"}}
-`;
-	const firstTurn = "01a1feac-c521-7051-be7b-f7934be13a35";
-	const secondTurn = "01a1feac-c580-79c3-8ea3-46e1938d56df";
-
-	auto assistantBoundaries = extractPersistedHistoryBoundariesImpl(content)
-		.filter!(boundary => boundary.kind == PersistedHistoryBoundaryKind.agent_turn).array;
-	assert(assistantBoundaries.length == 2);
-	assert(assistantBoundaries[0].anchor == "line:4");
-	assert(assistantBoundaries[1].anchor == "line:8");
-	assert(rolloutTurnIdAtLine(content, 1) is null);
-	assert(rolloutTurnIdAtLine(content, 4) == firstTurn);
-	assert(rolloutTurnIdAtLine(content, 8) == secondTurn);
-	assert(rolloutTurnIdAtLine(content, 10) is null);
 }

@@ -592,11 +592,10 @@ class App
 				clientHub.sendToSubscribed(tid, Data(toJson(message).representation));
 			},
 			noteLiveBoundaryCandidate: (int tid, size_t seq, string event, string raw, int sourceLine,
-				bool isContextBootstrap, LocalUserProvenance localUserProvenance) {
+				LocalUserProvenance localUserProvenance) {
 				// Boundaries of a driver-served history arrive with its events.
 				if (HistoryAccess.driverServingHistory(tryAgentForTask(tid)) is null)
 					jsonlTracker.noteLiveBoundaryCandidate(tid, seq, event, raw, sourceLine,
-						isContextBootstrap,
 						localUserProvenance == LocalUserProvenance.registeredLocal);
 			},
 			sendReplaySupplementalState: &sendHistoryReplaySupplementalState,
@@ -4523,10 +4522,10 @@ version (unittest) private final class GatedSubmissionFixture
 			normalizeKnownSystemMessageMeta: (string translated, int) => translated,
 			updateClaudeUsageFromEvent: (int, string) => false,
 			noteLiveBoundaryCandidate: (int broadcastTid, size_t seq, string event,
-				string raw, int sourceLine, bool isContextBootstrap,
+				string raw, int sourceLine,
 				LocalUserProvenance localUserProvenance) {
 				app.jsonlTracker.noteLiveBoundaryCandidate(broadcastTid, seq, event, raw,
-					sourceLine, isContextBootstrap,
+					sourceLine,
 					localUserProvenance == LocalUserProvenance.registeredLocal);
 			},
 			planBroadcast: (int broadcastTid, TranslatedEvent event) {

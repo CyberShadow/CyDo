@@ -676,12 +676,8 @@ private:
 					return;
 				}
 
-				bool releasedLease;
 				try
 				{
-					enforce(outcome.historyLease !is null,
-						"Codex native fork returned no history-path lease");
-
 					auto currentChild = host_.getTask(childTid);
 					assert(currentChild !is null,
 						"Fork child task must exist until fork completion");
@@ -694,8 +690,6 @@ private:
 					// The child's history is Codex's to serve, like its parent's.
 					currentChild.history.reset(Watermark.driverServed());
 
-					outcome.historyLease.release();
-					releasedLease = true;
 					cleanupChildLaunch();
 					if (operation !is null)
 						operation.closeStdin();
@@ -704,8 +698,6 @@ private:
 				}
 				catch (Exception e)
 				{
-					if (!releasedLease && outcome.historyLease !is null)
-						outcome.historyLease.release();
 					fail(e.msg);
 				}
 			}, (Exception e) {

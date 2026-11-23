@@ -977,7 +977,6 @@ export function replaceHistoryBoundary(
     );
   if (
     isUserBoundary &&
-    !boundary.anchor.startsWith("line:") &&
     existing.item_id !== (event as { item_id?: string }).item_id
   )
     throw new Error("Replacement target item identity does not match");

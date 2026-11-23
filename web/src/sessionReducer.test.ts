@@ -509,7 +509,7 @@ describe("history boundary replacement", () => {
     ).toThrow("item identity");
   });
 
-  it("accepts differing Codex item IDs for line boundaries", () => {
+  it("rejects differing user item IDs for line boundaries", () => {
     const state = {
       ...makeState(),
       messages: [
@@ -521,7 +521,7 @@ describe("history boundary replacement", () => {
           rawSource: {
             type: "item/started",
             item_type: "user_message",
-            item_id: "01a1feae-9ee3-7df0-b7d2-92928ed204c5",
+            item_id: "original",
           },
         },
       ],
@@ -529,12 +529,12 @@ describe("history boundary replacement", () => {
     const replacement = {
       type: "item/started" as const,
       item_type: "user_message",
-      item_id: "codex-user-hist",
+      item_id: "different",
       history_boundary: { anchor: "line:12", kind: "user" as const },
     };
-    expect(
-      replaceHistoryBoundary(state, replacement, 4).replacementEvents.get(4),
-    ).toEqual(replacement);
+    expect(() => replaceHistoryBoundary(state, replacement, 4)).toThrow(
+      "item identity",
+    );
   });
 
   it("replaces an assistant turn without changing display state", () => {

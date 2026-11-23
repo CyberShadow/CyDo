@@ -412,7 +412,7 @@ public:
     /// See Watermark for the three reset shapes (none/atBytes/unreadable).
     ///
     /// Re-resetting an already-initialized store is legal and used by truncation
-    /// paths (performUndoExecution, handleEditMessage, thread/rollback, etc.) to
+    /// paths (performUndoExecution, handleEditMessage, etc.) to
     /// discard in-memory state and re-snapshot the post-truncation JSONL size.
 	void reset(Watermark wm)
 	{

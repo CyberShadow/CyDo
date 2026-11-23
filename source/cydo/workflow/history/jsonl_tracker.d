@@ -69,11 +69,6 @@ struct JsonlTracker
 	/// the session file, so this feed is where the live queue lifecycle of
 	/// user messages is observed.
 	void delegate(int tid, string line, int lineNum) onJsonlLine;
-	/// Called when a watch registration first attaches to its exact target file,
-	/// before any content is consumed, carrying the immutable registration
-	/// target. Codex creates its rollout file after returning the pathname, so
-	/// this is where a driver may capture the file's identity.
-	void delegate(int tid, LiveHistoryWatchTarget watchedTarget) onJsonlFileAttached;
 
 	private RefCountedINotify rcINotify;
 	private RefCountedINotify.Handle[int] jsonlWatches;
@@ -85,7 +80,7 @@ struct JsonlTracker
 	private ulong[int] lineageGeneration;
 	private TimerTask[int] jsonlRetryTimers;
 	// Snapshot of JSONL content taken just before broadcast, used for undo
-	// when the agent compacts the file (e.g. Codex auto-compaction).
+	// when the agent compacts the file.
 	private string[int] undoJsonl;
 
 	private LiveHistoryContext requireLiveContext(int tid)
@@ -116,7 +111,7 @@ struct JsonlTracker
 	}
 
 	void noteLiveBoundaryCandidate(int tid, size_t seq, string event,
-		string raw = null, int sourceLine = 0, bool isContextBootstrap = false,
+		string raw = null, int sourceLine = 0,
 		bool registeredLocal = false)
 	{
 		import ae.utils.json : JSONOptional, JSONPartial, jsonParse;
@@ -136,9 +131,6 @@ struct JsonlTracker
 		else return;
 		if (tid !in boundaryState)
 			boundaryState[tid] = BoundaryReconcileState.init;
-		if (requireLiveContext(tid).agent.driver == AgentDriver.codex && isContextBootstrap
-			&& kind == PersistedHistoryBoundaryKind.user)
-			return;
 		if (kind == PersistedHistoryBoundaryKind.user && p.is_meta
 			&& requireLiveContext(tid).agent.driver == AgentDriver.claude)
 			return;
@@ -527,8 +519,6 @@ struct JsonlTracker
 
 	void watchJsonlFile(int tid, LiveHistoryWatchTarget watchedTarget)
 	{
-		if (onJsonlFileAttached !is null)
-			onJsonlFileAttached(tid, watchedTarget);
 		attachAndCatchUp(tid, watchedTarget.path);
 	}
 
@@ -579,15 +569,6 @@ struct JsonlTracker
 		foreach (_; completeContent.lineSplitter)
 			newLines++;
 		jsonlLineCount[tid] = lineOffset + newLines;
-
-		import std.algorithm : canFind;
-		bool hasRollback = context.agent.driver == AgentDriver.codex
-			&& completeContent.canFind(`"thread_rolled_back"`);
-		if (hasRollback)
-		{
-			onLineageInvalidated(tid);
-			return;
-		}
 
 		if (onJsonlLine !is null)
 		{
@@ -677,9 +658,7 @@ struct JsonlTracker
 		liveContexts.remove(tid);
 		jsonlLineCount.remove(tid);
 		boundaryState.remove(tid);
-		// Do NOT remove undoJsonl here: for agents that auto-restart (e.g. Codex
-		// exits with SIGTERM and is restarted), the snapshot captured before the
-		// stall message is still valid and must survive the restart cycle.
+		// The snapshot must survive an agent restart.
 	}
 
 	/// Return the pre-compaction JSONL snapshot for undo, or "" if none.
@@ -753,10 +732,12 @@ unittest
 
 unittest
 {
-	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import std.conv : to;
+	auto tasks = [1: TaskData(1, "", "")];
 	JsonlTracker tracker;
-	setTestLiveContext(tracker, 1, new CodexAgent());
+	tracker.getTask = (int tid) => &tasks[tid];
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
 	tracker.historyGeneration = (int) => 0;
 	string[] resolved;
 	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool, ulong) {
@@ -776,51 +757,6 @@ unittest
 	assert(resolved == ["second:10", "third:17"]);
 	auto pending = tracker.boundaryState[1].liveByKind[PersistedHistoryBoundaryKind.user];
 	assert(pending.length == 1 && pending[0].identity == "bootstrap");
-}
-
-unittest
-{
-	import cydo.agent.drivers.codex : CodexAgent;
-	import std.conv : to;
-	JsonlTracker tracker;
-	setTestLiveContext(tracker, 1, new CodexAgent());
-	tracker.historyGeneration = (int) => 0;
-	string[] resolved;
-	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool, ulong) {
-		resolved ~= boundary.anchor ~ ":" ~ to!string(seq);
-	};
-	tracker.noteLiveBoundaryCandidate(1, 4,
-		`{"type":"item/started","item_type":"user_message","item_id":"01a1feae-9e92-7753-9e61-757f909bcc11"}`,
-		null, 0, true);
-	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
-		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("line:18",
-			PersistedHistoryBoundaryKind.user, null), 18, false, 0);
-	tracker.noteLiveBoundaryCandidate(1, 11,
-		`{"type":"item/started","item_type":"user_message","item_id":"01a1feae-9ee3-7df0-b7d2-92928ed204c5"}`);
-	assert(resolved == ["line:18:11"]);
-}
-
-unittest
-{
-	import cydo.agent.drivers.codex : CodexAgent;
-	import std.conv : to;
-	JsonlTracker tracker;
-	setTestLiveContext(tracker, 1, new CodexAgent());
-	tracker.historyGeneration = (int) => 0;
-	string[] resolved;
-	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool, ulong) {
-		resolved ~= boundary.anchor ~ ":" ~ to!string(seq);
-	};
-	tracker.noteLiveBoundaryCandidate(1, 4,
-		`{"type":"item/started","item_type":"user_message","item_id":"01a1feae-9e92-7753-9e61-757f909bcc11"}`,
-		null, 0, true);
-	tracker.noteLiveBoundaryCandidate(1, 11,
-		`{"type":"item/started","item_type":"user_message","item_id":"01a1feae-9ee3-7df0-b7d2-92928ed204c5"}`);
-	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
-		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("line:18",
-			PersistedHistoryBoundaryKind.user, null), 18, false, 0);
-	tracker.drainLiveBoundaries(1, PersistedHistoryBoundaryKind.user);
-	assert(resolved == ["line:18:11"]);
 }
 
 unittest
@@ -887,30 +823,32 @@ unittest
 
 unittest
 {
-	import std.file : remove, write;
-	import cydo.agent.drivers.codex : CodexAgent;
+	import std.file : getSize, remove, write;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	auto path = "/tmp/cydo-jsonl-tracker-attach.jsonl";
-	write(path, `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n"
-		~ `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n");
+	write(path, `{"type":"system","subtype":"init"}` ~ "\n"
+		~ `{"type":"user","uuid":"df9fe96a-5ba5-4188-8ad9-ef654a518202","message":{"role":"user","content":"saved"}}` ~ "\n");
+	scope(exit) remove(path);
 	TaskData task = TaskData(1, "", "");
 	task.history.reset(Watermark.none());
 	JsonlTracker tracker;
 	tracker.getTask = (int) => &task;
-	setTestLiveContext(tracker, 1, new CodexAgent());
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
 	tracker.historyGeneration = (int) => task.history.generation;
 	string[] resolved;
 	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary b, bool, ulong) { resolved ~= b.anchor; };
-	tracker.boundaryState[1] = JsonlTracker.BoundaryReconcileState.init;
-	tracker.boundaryState[1].liveByKind[PersistedHistoryBoundaryKind.user] ~=
-		JsonlTracker.LiveBoundaryCandidate(0, PersistedHistoryBoundaryKind.user, "", task.history.generation);
+	int[] lines;
+	tracker.onJsonlLine = (int, string, int lineNum) { lines ~= lineNum; };
+	tracker.noteLiveBoundaryCandidate(1, 0,
+		`{"type":"item/started","item_type":"user_message","uuid":"df9fe96a-5ba5-4188-8ad9-ef654a518202"}`);
 	tracker.attachAndCatchUp(1, path, false);
-	assert(resolved == ["line:2"]);
+	assert(resolved == ["df9fe96a-5ba5-4188-8ad9-ef654a518202"]);
 	tracker.stopJsonlWatch(1);
-	setTestLiveContext(tracker, 1, new CodexAgent(), true);
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent(), true);
 	tracker.attachAndCatchUp(1, path, false);
-	assert(tracker.jsonlReadPos[1] > 0);
-	assert(resolved == ["line:2"]);
-	remove(path);
+	assert(tracker.jsonlReadPos[1] == getSize(path));
+	assert(lines == [1, 2]);
+	assert(resolved == ["df9fe96a-5ba5-4188-8ad9-ef654a518202"]);
 }
 
 unittest
@@ -995,12 +933,12 @@ unittest
 
 unittest
 {
-	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import std.file : remove, write;
 
 	auto path = "/tmp/cydo-jsonl-tracker-resumed.jsonl";
-	auto preexisting = `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n"
-		~ `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n";
+	auto preexisting = `{"type":"system","subtype":"init"}` ~ "\n"
+		~ `{"type":"user","uuid":"old-user","message":{"role":"user","content":"hi"}}` ~ "\n";
 	write(path, preexisting);
 	scope(exit) remove(path);
 
@@ -1009,7 +947,7 @@ unittest
 	JsonlTracker tracker;
 	tracker.getTask = (int) => &task;
 	tracker.historyGeneration = (int) => task.history.generation;
-	setTestLiveContext(tracker, 1, new CodexAgent(), true);
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent(), true);
 	tracker.onJsonlLine = (int, string, int) {
 		assert(false, "resumed attachment must not publish pre-existing lines");
 	};
@@ -1017,58 +955,23 @@ unittest
 		assert(false, "resumed attachment must not resolve a pre-existing boundary");
 	};
 	tracker.noteLiveBoundaryCandidate(1, 4,
-		`{"type":"item/started","item_type":"user_message","item_id":"live-user"}`);
+		`{"type":"item/started","item_type":"user_message","uuid":"live-user"}`);
 
 	tracker.attachAndCatchUp(1, path, false);
 	assert(tracker.jsonlReadPos[1] == preexisting.length);
 	assert(tracker.jsonlLineCount[1] == 2);
 }
 
-unittest
-{
-	import cydo.agent.drivers.codex : CodexAgent;
-	import std.file : getSize, remove, write;
-
-	auto path = "/tmp/cydo-jsonl-tracker-rollback-reattach.jsonl";
-	auto initial = `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n";
-	write(path, initial);
-	scope(exit) remove(path);
-
-	TaskData task = TaskData(1, "", "");
-	task.history.reset(Watermark.none());
-	JsonlTracker tracker;
-	tracker.getTask = (int) => &task;
-	tracker.historyGeneration = (int) => task.history.generation;
-	setTestLiveContext(tracker, 1, new CodexAgent());
-	int invalidations;
-	tracker.onLineageInvalidated = (int tid) {
-		invalidations++;
-		tracker.invalidateLineage(tid);
-		task.history.reset(Watermark.atBytes(getSize(path)));
-	};
-
-	tracker.attachAndCatchUp(1, path, false);
-	File(path, "a").write(`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}` ~ "\n");
-	tracker.processNewJsonlContent(1, path);
-	assert(invalidations == 1);
-
-	setTestLiveContext(tracker, 1, new CodexAgent());
-	tracker.noteLiveBoundaryCandidate(1, 4,
-		`{"type":"item/started","item_type":"user_message","item_id":"after-rollback"}`);
-	tracker.attachAndCatchUp(1, path, false);
-	assert(invalidations == 1);
-}
-
 @("Resumed reload loads the deferred prefix and tails the rest")
 unittest
 {
-	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import cydo.workflow.history.jsonl_store : loadTaskHistory;
 	import std.file : remove, write;
 
 	auto path = "/tmp/cydo-jsonl-tracker-reload-watermark.jsonl";
-	auto persisted = `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n\n";
-	auto user = `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
+	auto persisted = `{"type":"system","subtype":"init"}` ~ "\n\n";
+	auto user = `{"type":"user","uuid":"old-user","message":{"role":"user","content":"hi"}}`;
 	write(path, persisted ~ user ~ "\n");
 	scope(exit) remove(path);
 
@@ -1077,7 +980,7 @@ unittest
 	JsonlTracker tracker;
 	tracker.getTask = (int) => &task;
 	tracker.historyGeneration = (int) => task.history.generation;
-	setTestLiveContext(tracker, 1, new CodexAgent(), true);
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent(), true);
 	int[] publishedLines;
 	tracker.onJsonlLine = (int, string line, int lineNum) {
 		assert(line == user);
@@ -1098,7 +1001,7 @@ unittest
 @("Resumed attachment tails the whole file when it appears after an unreadable snapshot")
 unittest
 {
-	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import std.file : exists, remove, write;
 
 	auto path = "/tmp/cydo-jsonl-tracker-unreadable-watermark.jsonl";
@@ -1106,15 +1009,15 @@ unittest
 	TaskData task = TaskData(1, "", "");
 	task.history.reset(Watermark.unreadable());
 
-	auto first = `{"type":"event_msg","payload":{"type":"task_started"}}`;
-	auto second = `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
+	auto first = `{"type":"system","subtype":"init"}`;
+	auto second = `{"type":"user","uuid":"old-user","message":{"role":"user","content":"hi"}}`;
 	write(path, first ~ "\n" ~ second ~ "\n");
 	scope(exit) remove(path);
 
 	JsonlTracker tracker;
 	tracker.getTask = (int) => &task;
 	tracker.historyGeneration = (int) => task.history.generation;
-	setTestLiveContext(tracker, 1, new CodexAgent(), true);
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent(), true);
 	string[] lines;
 	int[] lineNumbers;
 	tracker.onJsonlLine = (int, string line, int lineNum) {
@@ -1131,7 +1034,7 @@ version (unittest)
 private void checkSplitRecordAttachment(string path, Watermark watermark,
 	string firstPrefix, string remainingRecords, string[] expectedLines)
 {
-	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import std.file : remove, write;
 
 	write(path, firstPrefix);
@@ -1141,7 +1044,7 @@ private void checkSplitRecordAttachment(string path, Watermark watermark,
 	JsonlTracker tracker;
 	tracker.getTask = (int) => &task;
 	tracker.historyGeneration = (int) => task.history.generation;
-	setTestLiveContext(tracker, 1, new CodexAgent(), true);
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent(), true);
 	string[] lines;
 	int[] lineNumbers;
 	tracker.onJsonlLine = (int, string line, int lineNum) {
@@ -1160,9 +1063,9 @@ private void checkSplitRecordAttachment(string path, Watermark watermark,
 @("Resumed attachment reconstructs a record split at attach-time EOF")
 unittest
 {
-	auto prefix = `{"type":"event_msg","payload":`;
-	auto suffix = `{"type":"task_started"}}`;
-	auto second = `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
+	auto prefix = `{"type":"system","subtype":`;
+	auto suffix = `"init"}`;
+	auto second = `{"type":"user","uuid":"old-user","message":{"role":"user","content":"hi"}}`;
 	checkSplitRecordAttachment("/tmp/cydo-jsonl-tracker-split-eof.jsonl",
 		Watermark.none(), prefix, suffix ~ "\n" ~ second ~ "\n", [prefix ~ suffix, second]);
 }
@@ -1170,10 +1073,10 @@ unittest
 @("Resumed attachment reconstructs a record split by a deferred watermark")
 unittest
 {
-	auto prefix = `{"type":"event_msg",`;
-	auto atAttach = prefix ~ `"payload":`;
-	auto suffix = `{"type":"task_started"}}`;
-	auto second = `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
+	auto prefix = `{"type":"system",`;
+	auto atAttach = prefix ~ `"subtype":`;
+	auto suffix = `"init"}`;
+	auto second = `{"type":"user","uuid":"old-user","message":{"role":"user","content":"hi"}}`;
 	checkSplitRecordAttachment("/tmp/cydo-jsonl-tracker-split-watermark.jsonl",
 		Watermark.atBytes(prefix.length), atAttach, suffix ~ "\n" ~ second ~ "\n",
 		[atAttach ~ suffix, second]);
@@ -1186,8 +1089,8 @@ unittest
 	import std.file : remove, write;
 
 	auto path = "/tmp/cydo-jsonl-tracker-deferred-partial.jsonl";
-	auto first = `{"type":"event_msg","payload":{"type":"task_started"}}`;
-	auto second = `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
+	auto first = `{"type":"system","subtype":"init"}`;
+	auto second = `{"type":"user","uuid":"old-user","message":{"role":"user","content":"hi"}}`;
 	auto prefix = first ~ "\n" ~ second;
 	write(path, prefix ~ "\n");
 	scope(exit) remove(path);
@@ -1199,65 +1102,6 @@ unittest
 		assert(loaded.rawSource == [first]);
 		return loaded;
 	});
-}
-
-unittest
-{
-	// onJsonlFileAttached carries the registration's captured target and fires
-	// before any content is consumed — Codex creates its rollout file after
-	// returning the pathname, so this is where a driver may capture the file's
-	// identity, before catch-up publishes boundaries.
-	import std.algorithm : canFind, startsWith;
-	import std.conv : to;
-	import std.file : remove, write;
-	import cydo.agent.drivers.codex : CodexAgent;
-	import cydo.runtime.launch.types : NativeHistoryProfile;
-	auto path = "/tmp/cydo-jsonl-tracker-attach-delegate.jsonl";
-	write(path, `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n"
-		~ `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n");
-	TaskData task = TaskData(1, "", "");
-	task.history.reset(Watermark.none());
-	JsonlTracker tracker;
-	scope(exit)
-	{
-		tracker.stopJsonlWatch(1);
-		remove(path);
-	}
-	tracker.getTask = (int) => &task;
-	tracker.historyGeneration = (int) => task.history.generation;
-	auto agent = new CodexAgent();
-	auto target = LiveHistoryWatchTarget(LiveHistoryContext(agent,
-		NativeHistoryProfile(agent.driver, "/tmp/cydo-jsonl-tracker-profile"),
-		"sid-a"), path);
-	tracker.attachLiveContext(1, target.context);
-	tracker.boundaryState[1] = JsonlTracker.BoundaryReconcileState.init;
-	tracker.boundaryState[1].liveByKind[PersistedHistoryBoundaryKind.user] ~=
-		JsonlTracker.LiveBoundaryCandidate(0, PersistedHistoryBoundaryKind.user, "", task.history.generation);
-
-	string[] log;
-	bool attachedExpectedAgent;
-	tracker.onJsonlFileAttached = (int tid, LiveHistoryWatchTarget attached) {
-		attachedExpectedAgent = attached.context.agent is agent;
-		log ~= "attach:" ~ to!string(tid) ~ ":"
-			~ to!string(attached.context.profile.driver) ~ ":"
-			~ attached.context.profile.root ~ ":" ~ attached.context.sessionId ~ ":"
-			~ attached.path;
-	};
-	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary b, bool, ulong) {
-		log ~= "boundary:" ~ b.anchor;
-	};
-	tracker.onJsonlLine = (int tid, string line, int lineNum) {
-		log ~= "line:" ~ to!string(lineNum);
-	};
-
-	tracker.watchJsonlFile(1, target);
-	assert(log.length >= 2);
-	assert(attachedExpectedAgent);
-	assert(log[0] == "attach:1:codex:/tmp/cydo-jsonl-tracker-profile:sid-a:" ~ path);
-	foreach (entry; log[1 .. $])
-		assert(entry.startsWith("line:") || entry.startsWith("boundary:"));
-	assert(log[1 .. $].canFind("line:1"));
-	assert(log[1 .. $].canFind("boundary:line:2"));
 }
 
 unittest
@@ -1433,14 +1277,16 @@ unittest
 
 unittest
 {
-	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import std.exception : assertThrown;
 	import core.exception : AssertError;
 	import std.conv : to;
+	auto tasks = [1: TaskData(1, "", ""), 2: TaskData(2, "", ""), 3: TaskData(3, "", "")];
 	JsonlTracker tracker;
-	setTestLiveContext(tracker, 1, new CodexAgent());
-	setTestLiveContext(tracker, 2, new CodexAgent());
-	setTestLiveContext(tracker, 3, new CodexAgent());
+	tracker.getTask = (int tid) => &tasks[tid];
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+	setTestLiveContext(tracker, 2, new ClaudeCodeAgent());
+	setTestLiveContext(tracker, 3, new ClaudeCodeAgent());
 	ulong current = 2;
 	tracker.historyGeneration = (int) => current;
 	string[] resolved;
@@ -1471,13 +1317,14 @@ unittest
 
 unittest
 {
-	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import std.conv : to;
 	// A boundary pair can be captured before a reset but resolved only after it.
 	// Publication must reject that old lineage and accept a replacement pair.
-	JsonlTracker tracker;
-	setTestLiveContext(tracker, 1, new CodexAgent());
 	TaskData task = TaskData(1, "", "");
+	JsonlTracker tracker;
+	tracker.getTask = (int) => &task;
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
 	task.history.reset(Watermark.none());
 	tracker.historyGeneration = (int) => task.history.generation;
 	string[] resolved;
@@ -1611,7 +1458,7 @@ unittest
 	// that ordinary pair remains eligible for Claude's existing FIFO path.
 	tracker.noteLiveBoundaryCandidate(1, 7,
 		`{"type":"item/started","item_type":"user_message","uuid":"echo-native"}`,
-		null, 0, false, true);
+		null, 0, true);
 	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
 		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("ordinary",
 			PersistedHistoryBoundaryKind.user, null), 1, false, 0);
@@ -1637,7 +1484,7 @@ unittest
 			PersistedHistoryBoundaryKind.user, null), 1, true, 0);
 	tracker.noteLiveBoundaryCandidate(2, 9,
 		`{"type":"item/started","item_type":"user_message","uuid":"echo-native-2"}`,
-		null, 0, false, true);
+		null, 0, true);
 	assert(resolved == ["ordinary:8", "echo-native:7", "echo-native-2:9"]);
 
 	// A protected queue-derived persisted identity cannot fall back to FIFO.
@@ -1648,7 +1495,7 @@ unittest
 			PersistedHistoryBoundaryKind.user, null), 1, true, 0);
 	tracker.noteLiveBoundaryCandidate(3, 10,
 		`{"type":"item/started","item_type":"user_message","uuid":"display-empty"}`,
-		null, 0, false, true);
+		null, 0, true);
 	assert(resolved.length == 3);
 
 	// Steering is presentation metadata: an ordinary event retains FIFO.
@@ -1670,13 +1517,13 @@ unittest
 	setTestLiveContext(tracker, 6, new ClaudeCodeAgent());
 	tracker.noteLiveBoundaryCandidate(6, 12,
 		`{"type":"item/started","item_type":"user_message","uuid":"absorbed-live"}`,
-		null, 0, false, true);
+		null, 0, true);
 	tracker.noteAbsorbedLocalUser(6, "absorbed-live", 0);
 	assert(tracker.boundaryState[6].liveByKind[PersistedHistoryBoundaryKind.user].length == 0);
 	tracker.noteAbsorbedLocalUser(6, "absorbed-live", 0);
 	tracker.noteLiveBoundaryCandidate(6, 13,
 		`{"type":"item/started","item_type":"user_message","uuid":"absorbed-live"}`,
-		null, 0, false, true);
+		null, 0, true);
 	assert(tracker.boundaryState[6].liveByKind[PersistedHistoryBoundaryKind.user].length == 0);
 	tracker.boundaryState[6].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
 		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("ordinary-peer",
@@ -1716,7 +1563,6 @@ unittest
 unittest
 {
 	import std.string : lineSplitter;
-	import cydo.agent.drivers.codex : CodexAgent;
 
 	auto firstNotification = `{"type":"user.message","id":"u"}`;
 	assert(completeJsonlPrefix(firstNotification).length == 0);
@@ -1733,67 +1579,60 @@ unittest
 	foreach (_; completeContent.lineSplitter)
 		completeLines++;
 	assert(completeLines == 1);
-
-	auto startup = `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n"
-		~ `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
-	auto startupBytes = completeJsonlPrefix(startup).length;
-	assert(startupBytes > 0 && startupBytes < startup.length);
-	int committedLines;
-	foreach (_; startup[0 .. startupBytes].lineSplitter)
-		committedLines++;
-	Agent agent = new CodexAgent();
-	auto completed = startup[startupBytes .. $] ~ "\n";
-	auto boundaries = agent.extractPersistedHistoryBoundaries(completed, committedLines);
-	assert(boundaries.length == 1);
-	assert(boundaries[0].anchor == "line:2");
 }
 
 unittest
 {
 	import std.conv : to;
-	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import std.file : remove, write;
 
 	// A notification may arrive after stdout supplied the live candidate but
 	// before the writer has finished its JSONL line.  The completed line must
 	// be consumed once, rather than losing or replaying its boundary.
 	auto path = "/tmp/cydo-jsonl-tracker-split-tail.jsonl";
-	auto taskStarted = `{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n";
-	auto line = `{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`;
-	write(path, taskStarted ~ line[0 .. 20]);
+	auto preamble = `{"type":"system","subtype":"init"}` ~ "\n";
+	auto line = `{"type":"user","uuid":"df9fe96a-5ba5-4188-8ad9-ef654a518202","message":{"role":"user","content":"saved"}}`;
+	write(path, preamble ~ line[0 .. 20]);
 
+	scope(exit) remove(path);
 	TaskData task = TaskData(1, "", "");
 	task.history.reset(Watermark.none());
 	JsonlTracker tracker;
-	setTestLiveContext(tracker, 1, new CodexAgent());
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
 	tracker.getTask = (int) => &task;
 	tracker.historyGeneration = (int) => task.history.generation;
 	string[] resolved;
 	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool, ulong) {
 		resolved ~= boundary.anchor ~ ":" ~ to!string(seq);
 	};
+	int[] lines;
+	tracker.onJsonlLine = (int, string, int lineNum) { lines ~= lineNum; };
 	tracker.noteLiveBoundaryCandidate(1, 12,
-		`{"type":"item/started","item_type":"user_message"}`);
+		`{"type":"item/started","item_type":"user_message","uuid":"df9fe96a-5ba5-4188-8ad9-ef654a518202"}`);
 
 	tracker.processNewJsonlContent(1, path);
 	assert(resolved.length == 0);
+	assert(lines == [1]);
 	File(path, "a").write(line[20 .. $] ~ "\n");
 	tracker.processNewJsonlContent(1, path);
 	tracker.processNewJsonlContent(1, path);
+	assert(lines == [1, 2]);
 	assert(resolved.length == 1);
-	assert(resolved[0] == "line:2:12");
-	remove(path);
+	assert(resolved[0] == "df9fe96a-5ba5-4188-8ad9-ef654a518202:12");
 }
 
 unittest
 {
 	import std.conv : to;
-	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 
 	// When both queues already contain consecutive compatible boundaries, one
 	// reconciliation pass preserves their full FIFO order.
+	auto tasks = [1: TaskData(1, "", "")];
 	JsonlTracker tracker;
-	setTestLiveContext(tracker, 1, new CodexAgent());
+	tracker.getTask = (int tid) => &tasks[tid];
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
 	tracker.historyGeneration = (int) => 0;
 	string[] resolved;
 	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool, ulong) {
@@ -2276,7 +2115,7 @@ unittest
 	assert(mismatches.length == 0, mismatches.join("\n"));
 }
 
-@("Claude transcript payloads cannot trigger Codex rollback invalidation")
+@("Claude transcript payloads never invalidate the lineage")
 unittest
 {
 	import std.file : remove, write;
@@ -2292,6 +2131,6 @@ unittest
 	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
 	tracker.getTask = (int) => &task;
 	tracker.historyGeneration = (int) => task.history.generation;
-	tracker.onLineageInvalidated = (int) { assert(false, "Claude tool input is not a Codex rollback"); };
+	tracker.onLineageInvalidated = (int) { assert(false, "a quoted rollback event is not a lineage change"); };
 	tracker.processNewJsonlContent(1, path);
 }
