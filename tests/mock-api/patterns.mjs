@@ -131,6 +131,19 @@ export function matchPattern(userText) {
         name: "mcp__cydo__Answer",
         input: { qid: parseInt(m[1]), message: "non-direct-answer" },
       };
+    // A parent Ask queued while the child's restart-recovery turn is still
+    // running is delivered at turn end in the ordinary form (the child is not
+    // terminal yet). The completed-child form is answered by the generic
+    // follow-up matcher above.
+    m = userText.match(
+      /\[SYSTEM: Question from task \d+ \(qid=(\d+)\)\][\s\S]*restart-follow-up/,
+    );
+    if (m)
+      return {
+        type: "tool_call",
+        name: "mcp__cydo__Answer",
+        input: { qid: parseInt(m[1]), message: "follow-up-answered" },
+      };
   }
 
   // [SYSTEM: Task prompt / Session start / Mode switch / Handoff] wraps
