@@ -2101,6 +2101,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 	package void delegate(TranslatedEvent) outputHandler_;
 	package void delegate(string line) stderrHandler_;
 	private void delegate(int status) exitHandler_;
+	private void delegate() toolCallsAbandonedHandler_;
 
 	this(AppServerProcess server, int tid, SessionConfig config)
 	{
@@ -2785,6 +2786,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 	@property void onOutput(void delegate(TranslatedEvent) dg) { outputHandler_ = dg; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
+	@property void onToolCallsAbandoned(void delegate() dg) { toolCallsAbandonedHandler_ = dg; }
 	@property bool alive() { return alive_ && !server.dead; }
 
 	// ----- Notification handling (routed by CodexServerRouter) -----
@@ -2934,6 +2936,8 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		turnInProgress = false;
 		activeTurnId_ = null;
 		turnHasUserOpener_ = false;
+		if (toolCallsAbandonedHandler_)
+			toolCallsAbandonedHandler_();
 
 		// Do NOT clear activeItemId_ or activeItemTypes_ here — background items
 		// may still complete after the turn ends.
@@ -3250,9 +3254,12 @@ unittest
 	assert(ev.errors == ["Unknown error"]);
 
 	// A successful turn keeps the success subtype.
+	int abandonments;
+	session.onToolCallsAbandoned = () { abandonments++; };
 	auto ok = jsonParse!CompletedNotification(
 		`{"params":{"threadId":"thread-failed","turn":{"id":"turn-4","status":"completed","error":null}}}`);
 	session.handleTurnCompleted(ok.params, "raw-ok");
+	assert(abandonments == 1);
 	ev = jsonParse!EmittedTurnResult(emitted[$ - 1]);
 	assert(ev.subtype == "success");
 	assert(!ev.is_error);
@@ -3262,6 +3269,7 @@ unittest
 	auto interrupted = jsonParse!CompletedNotification(
 		`{"params":{"threadId":"thread-failed","turn":{"id":"turn-5","status":"interrupted","error":null}}}`);
 	session.handleTurnCompleted(interrupted.params, "raw-interrupted");
+	assert(abandonments == 2);
 	assert(indexOf(emitted[$ - 1], `"end_reason":"interrupted"`) >= 0, emitted[$ - 1]);
 }
 

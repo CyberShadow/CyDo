@@ -5,7 +5,7 @@ import std.file : exists, isFile, remove;
 import std.logger : infof, warningf;
 import std.path : buildPath;
 
-import ae.net.asockets : DisconnectType, onNextTick, socketManager;
+import ae.net.asockets : ConnectionAdapter, DisconnectType, IConnection, onNextTick, socketManager;
 import ae.net.http.common : HttpRequest, HttpStatusCode;
 import ae.net.http.responseex : HttpResponseEx;
 import ae.net.http.server : HttpServer, HttpServerConnection, HttpsServer;
@@ -15,7 +15,7 @@ import ae.sys.dataset : joinData;
 import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
 
-import cydo.mcp : McpResult;
+import cydo.mcp : McpResult, ToolCallCancellation;
 import cydo.mcp.payloads : McpContentItem, McpContentResult;
 import cydo.runtime.launch.sandbox : runtimeDir;
 
@@ -58,13 +58,35 @@ struct WebSocketCallbacks
 
 struct McpCallbacks
 {
-	Promise!McpResult delegate(string tool, string tid, JSONFragment args) dispatchTool;
+	Promise!McpResult delegate(string tool, string tid, JSONFragment args, ToolCallCancellation cancellation) dispatchTool;
 	bool delegate(string tid) interruptForPendingContinuation;
 	void delegate(string tid, McpResult result) onDeliveryFailed;
 	void delegate(string tid, McpResult result) onDelivered;
 }
 
 alias RawSourceReady = void delegate(RawSourceLookupResult);
+
+private final class McpConnection : ConnectionAdapter
+{
+	void delegate() onPendingCallDisconnect;
+
+	this(IConnection transport) { super(transport); }
+
+	override void onDisconnect(string reason, DisconnectType type)
+	{
+		super.onDisconnect(reason, type);
+		if (onPendingCallDisconnect)
+			onPendingCallDisconnect();
+	}
+}
+
+private final class McpHttpServer : HttpServer
+{
+	override IConnection adaptConnection(IConnection transport)
+	{
+		return new McpConnection(transport);
+	}
+}
 
 class TransportAdapter
 {
@@ -127,7 +149,7 @@ class TransportAdapter
 		if (exists(mcpSocketPath_))
 			remove(mcpSocketPath_);
 
-		mcpServer_ = new HttpServer();
+		mcpServer_ = new McpHttpServer();
 		mcpServer_.handleRequest = (HttpRequest request, HttpServerConnection conn) {
 			if (request.resource == "/mcp/call" && request.method == "POST")
 				handleMcpCall(request, conn);
@@ -336,6 +358,13 @@ class TransportAdapter
 			return;
 		}
 
+		auto observed = cast(McpConnection) conn.timer.next;
+		auto cancellation = new ToolCallCancellation;
+		observed.onPendingCallDisconnect = () {
+			observed.onPendingCallDisconnect = null;
+			cancellation.cancel();
+		};
+
 		void finishDelivery(McpResult result, bool delivered)
 		{
 			assert(!deliveryFinalized);
@@ -355,6 +384,7 @@ class TransportAdapter
 				result.isError,
 				result.structuredContent,
 			));
+			observed.onPendingCallDisconnect = null;
 			conn.sendResponse(response.serveData(resultJson));
 		}
 
@@ -374,12 +404,13 @@ class TransportAdapter
 			finishDelivery(reply, connected);
 		}
 
-		mcpCallbacks_.dispatchTool(call.tool, call.tid, call.args).then((McpResult result) {
+		mcpCallbacks_.dispatchTool(call.tool, call.tid, call.args, cancellation).then((McpResult result) {
 			if (!conn.connected)
 			{
 				finishDelivery(result, false);
 				return;
 			}
+			observed.onPendingCallDisconnect = null;
 			try
 			{
 				if (mcpCallbacks_.interruptForPendingContinuation(call.tid))
@@ -423,7 +454,7 @@ version (unittest) private HttpServer startMcpTransportTestServer(
 	TransportAdapter adapter, string socketPath,
 	void delegate(HttpRequest, HttpServerConnection) afterRequest = null)
 {
-	auto server = new HttpServer();
+	auto server = new McpHttpServer();
 	server.handleRequest = (HttpRequest request, HttpServerConnection conn) {
 		assert(request.resource == "/mcp/call");
 		adapter.handleMcpCall(request, conn);
@@ -454,7 +485,7 @@ version (unittest) private void assertMcpDispatchFailureIsTerminal(bool throwInF
 		WebSocketCallbacks.init,
 		null,
 		McpCallbacks(
-			dispatchTool: (string tool, string tid, JSONFragment args) {
+			dispatchTool: (string tool, string tid, JSONFragment args, ToolCallCancellation cancellation) {
 				auto promise = new Promise!McpResult;
 				if (throwInFulfillment)
 					promise.fulfill(McpResult("unused", false, JSONFragment.init,
@@ -512,9 +543,10 @@ version (unittest) private void assertMcpDispatchFailureIsTerminal(bool throwInF
 		assert(settlements == [false], "The original result must settle once as undelivered");
 }
 
-version (unittest) private void assertMcpDisconnectedClientFailsDelivery()
+version (unittest) private void assertMcpDisconnectedClientFailsDelivery(bool settleBeforeDisconnect)
 {
-	auto socketPath = mcpTransportTestSocketPath("disconnected");
+	auto socketPath = mcpTransportTestSocketPath(
+		settleBeforeDisconnect ? "settled-disconnect" : "pending-disconnect");
 	if (exists(socketPath))
 		remove(socketPath);
 	scope (exit)
@@ -524,22 +556,34 @@ version (unittest) private void assertMcpDisconnectedClientFailsDelivery()
 	int deliveryFailedCalls;
 	int deliveredCalls;
 	int responseCalls;
+	bool cancelledBeforeSettlement;
+	bool deliveryCalledBeforeSettlement;
 	auto dispatchPromise = new Promise!McpResult;
+	ToolCallCancellation dispatchCancellation;
 	HttpServer server;
 	auto client = new HttpClient(2.seconds, new UnixConnector(socketPath));
 	client.handleResponse = (HttpResponse response, string reason) {
 		if (response)
 			responseCalls++;
 	};
+	auto deliveryTimeout = setTimeout({
+		assert(false, "disconnected MCP call did not finish delivery");
+	}, 2.seconds);
+	scope (exit) if (deliveryTimeout.isWaiting()) deliveryTimeout.cancel();
 	auto adapter = new TransportAdapter(
 		"",
 		WebSocketCallbacks.init,
 		null,
 		McpCallbacks(
-			dispatchTool: (string tool, string tid, JSONFragment args) => dispatchPromise,
+			dispatchTool: (string tool, string tid, JSONFragment args, ToolCallCancellation cancellation) {
+				dispatchCancellation = cancellation;
+				assert(!cancellation.cancelled);
+				return dispatchPromise;
+			},
 			interruptForPendingContinuation: (string) => false,
 			onDeliveryFailed: (string, McpResult result) {
 				deliveryFailedCalls++;
+				deliveryTimeout.cancel();
 				server.close();
 			},
 			onDelivered: (string, McpResult result) {
@@ -549,6 +593,16 @@ version (unittest) private void assertMcpDisconnectedClientFailsDelivery()
 	);
 	server = startMcpTransportTestServer(adapter, socketPath,
 		(HttpRequest request, HttpServerConnection conn) {
+			if (settleBeforeDisconnect)
+			{
+				// Close the server connection before the queued fulfillment handler runs.
+				assert(conn.connected);
+				dispatchPromise.fulfill(McpResult("unused", false));
+				conn.transport.disconnect("simulated server-side disconnect", DisconnectType.error);
+				assert(!conn.connected);
+				return;
+			}
+
 			auto disconnectTimeout = setTimeout({
 				assert(false, "server did not observe client disconnect");
 			}, 2.seconds);
@@ -560,6 +614,8 @@ version (unittest) private void assertMcpDisconnectedClientFailsDelivery()
 					return;
 				}
 				disconnectTimeout.cancel();
+				cancelledBeforeSettlement = dispatchCancellation.cancelled;
+				deliveryCalledBeforeSettlement = deliveryFailedCalls != 0 || deliveredCalls != 0;
 				dispatchPromise.fulfill(McpResult("unused", false));
 			}
 			client.disconnect("simulated client disconnect");
@@ -569,14 +625,19 @@ version (unittest) private void assertMcpDisconnectedClientFailsDelivery()
 
 	socketManager.loop();
 
+	if (!settleBeforeDisconnect)
+	{
+		assert(cancelledBeforeSettlement, "disconnect did not cancel pending dispatch");
+		assert(!deliveryCalledBeforeSettlement);
+	}
 	assert(deliveryFailedCalls == 1);
 	assert(deliveredCalls == 0);
 	assert(responseCalls == 0);
 }
 
-version (unittest) private void assertMcpContinuationInterruptionDoesNotRespond()
+version (unittest) private void assertMcpSettledDispatchIsNotCancelled(bool withholdResponse)
 {
-	auto socketPath = mcpTransportTestSocketPath("continuation");
+	auto socketPath = mcpTransportTestSocketPath(withholdResponse ? "continuation" : "delivered");
 	if (exists(socketPath))
 		remove(socketPath);
 	scope (exit)
@@ -586,20 +647,22 @@ version (unittest) private void assertMcpContinuationInterruptionDoesNotRespond(
 	int failedSettlements;
 	int deliveryFailedCalls;
 	int deliveredCalls;
+	ToolCallCancellation dispatchCancellation;
 	auto adapter = new TransportAdapter(
 		"",
 		WebSocketCallbacks.init,
 		null,
 		McpCallbacks(
-			dispatchTool: (string tool, string tid, JSONFragment args) {
+			dispatchTool: (string tool, string tid, JSONFragment args, ToolCallCancellation cancellation) {
+				dispatchCancellation = cancellation;
 				auto promise = new Promise!McpResult;
-				promise.fulfill(McpResult("unused", false, JSONFragment.init, (bool delivered) {
+				promise.fulfill(McpResult("tool output", false, JSONFragment.init, (bool delivered) {
 					assert(!delivered);
 					failedSettlements++;
 				}));
 				return promise;
 			},
-			interruptForPendingContinuation: (string) => true,
+			interruptForPendingContinuation: (string) => withholdResponse,
 			onDeliveryFailed: (string, McpResult result) {
 				deliveryFailedCalls++;
 				result.settleDelivery(false);
@@ -623,11 +686,24 @@ version (unittest) private void assertMcpContinuationInterruptionDoesNotRespond(
 
 	socketManager.loop();
 
-	assert(observedResponse is null);
-	assert(disconnectReason == "Time-out");
-	assert(failedSettlements == 1);
+	assert(dispatchCancellation !is null && !dispatchCancellation.cancelled);
+	if (withholdResponse)
+	{
+		assert(observedResponse is null);
+		assert(disconnectReason == "Time-out");
+	}
+	else
+	{
+		assert(observedResponse !is null);
+		assert(observedResponse.status == HttpStatusCode.OK);
+		auto body = cast(string) observedResponse.data[].joinData().toGC();
+		auto result = body.jsonParse!McpContentResult;
+		assert(!result.isError);
+		assert(result.content.length == 1 && result.content[0].text == "tool output");
+	}
+	assert(failedSettlements == (withholdResponse ? 1 : 0));
 	assert(deliveryFailedCalls == 0);
-	assert(deliveredCalls == 0);
+	assert(deliveredCalls == (withholdResponse ? 0 : 1));
 }
 
 version (unittest) private void assertMcpCleanupFailureEscapes(
@@ -665,7 +741,7 @@ version (unittest) private void assertMcpCleanupFailureEscapes(
 		WebSocketCallbacks.init,
 		null,
 		McpCallbacks(
-			dispatchTool: (string tool, string tid, JSONFragment args) => dispatchPromise,
+			dispatchTool: (string tool, string tid, JSONFragment args, ToolCallCancellation cancellation) => dispatchPromise,
 			interruptForPendingContinuation: (string) => false,
 			onDeliveryFailed: (string, McpResult result) {
 				deliveryFailedCalls++;
@@ -819,8 +895,10 @@ unittest
 {
 	assertMcpDispatchFailureIsTerminal(false);
 	assertMcpDispatchFailureIsTerminal(true);
-	assertMcpDisconnectedClientFailsDelivery();
-	assertMcpContinuationInterruptionDoesNotRespond();
+	assertMcpDisconnectedClientFailsDelivery(false);
+	assertMcpDisconnectedClientFailsDelivery(true);
+	assertMcpSettledDispatchIsNotCancelled(false);
+	assertMcpSettledDispatchIsNotCancelled(true);
 	assertMcpCleanupFailureEscapes(true, false);
 	assertMcpCleanupFailureEscapes(true, true);
 	assertMcpCleanupFailureEscapes(false, false);

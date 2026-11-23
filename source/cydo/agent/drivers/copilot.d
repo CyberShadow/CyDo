@@ -39,13 +39,13 @@ import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule,
 	ProcessLaunch;
 import cydo.runtime.launch.sandbox : cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
-import cydo.mcp : McpResult;
+import cydo.mcp : McpResult, ToolCallCancellation;
 import cydo.mcp.tools : answerToolDescription, askToolDescription, handoffToolDescription,
 	requestToolDescription, taskToolDescription;
 import cydo.foundation.text.title : truncateTitle;
 
 // Callback type for dispatching custom tool calls.
-alias ToolDispatchFn = Promise!McpResult delegate(string tool, string tid, JSONFragment args);
+alias ToolDispatchFn = Promise!McpResult delegate(string tool, string tid, JSONFragment args, ToolCallCancellation cancellation);
 
 @JSONPartial
 private struct CpPersistedEventBase
@@ -1162,6 +1162,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	package void delegate(TranslatedEvent) outputHandler_;
 	package void delegate(string line) stderrHandler_;
 	private void delegate(int status) exitHandler_;
+	private void delegate() toolCallsAbandonedHandler_;
 
 	this(SdkProcess server, int tid, string sessionId, string model, string workDir,
 		string[] cmdPrefix = null, ToolDispatchFn toolDispatch = null, string agentName = null)
@@ -1468,6 +1469,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	@property string startupFailure() { return null; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
+	@property void onToolCallsAbandoned(void delegate() dg) { toolCallsAbandonedHandler_ = dg; }
 	@property bool alive() { return alive_ && (server is null || !server.dead); }
 
 	// ----- SdkSessionHandler interface -----
@@ -1591,7 +1593,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 					onToolResultDelivered_(to!string(tid), reply);
 			});
 		}
-		toolDispatch_(toolName, to!string(tid), JSONFragment(params.arguments.toJson()))
+		toolDispatch_(toolName, to!string(tid), JSONFragment(params.arguments.toJson()), new ToolCallCancellation)
 			.then(&finish, (Exception e) { finish(McpResult(e.msg, true)); })
 			.except((Exception e) {
 				onNextTick(socketManager, () { throw e; });
@@ -1676,7 +1678,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		}
 		auto rawJson = currentRawJson_; // capture before async dispatch
 
-		toolDispatch_(dispatchName, to!string(tid), req.arguments)
+		toolDispatch_(dispatchName, to!string(tid), req.arguments, new ToolCallCancellation)
 		.then((McpResult mcpResult) {
 			// Emit completion events for the UI.
 			ItemCompletedEvent extCompEv;
@@ -2112,6 +2114,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	private void handleSessionIdle()
 	{
+		if (toolCallsAbandonedHandler_)
+			toolCallsAbandonedHandler_();
 		if (currentAssistantMessageId_.length > 0)
 		{
 			finalizeTurnItemsAndEmitStop(currentAssistantMessageId_);
@@ -2500,7 +2504,8 @@ unittest
 		auto dispatch = new Promise!McpResult;
 		auto session = new CopilotSession(server, 7, "legacy-exit",
 			"test-model", "/test/workdir", null,
-			(string tool, string tid, JSONFragment args) => dispatch);
+			(string tool, string tid, JSONFragment args,
+				ToolCallCancellation cancellation) => dispatch);
 		server.registerSession("legacy-exit", session);
 
 		int delivered, failed, settlements;
@@ -3131,6 +3136,19 @@ unittest
 	assert(output.length == 3);
 	assert(output[2].canFind(`"type":"turn/stop"`));
 	assert(output[2].canFind(`"uuid":"native-assistant-1"`));
+}
+
+unittest
+{
+	auto session = new CopilotSession(null, 1, "session-idle", "", ".");
+	int abandonments;
+	session.onToolCallsAbandoned = () { abandonments++; };
+
+	SdkEvent idle;
+	idle.type = "session.idle";
+	idle.data = jsonParse!(typeof(idle.data))(`{}`);
+	session.handleEvent(idle);
+	assert(abandonments == 1);
 }
 
 unittest

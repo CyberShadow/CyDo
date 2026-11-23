@@ -12,7 +12,7 @@ import std.logger : infof, tracef, warningf;
 
 import core.time : Duration, seconds;
 
-import ae.net.asockets : socketManager;
+import ae.net.asockets : ConnectionAdapter, DisconnectType, IConnection, socketManager;
 import ae.net.http.client : HttpClient, UnixConnector;
 import ae.net.jsonrpc.binding : jsonRpcDispatcher, RPCFlatten, RPCName, RPCNotification;
 import ae.net.jsonrpc.codec : JsonRpcCodec;
@@ -22,7 +22,7 @@ import ae.sys.dataset : DataVec;
 import ae.sys.timing : setInterval, TimerTask;
 import ae.utils.array : asBytes;
 import ae.utils.json : JSONFragment, JSONName, JSONOptional, toJson, jsonParse, JSONPartial;
-import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
+import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcException, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 import ae.utils.serialization.store : SerializedObject;
 
@@ -39,13 +39,12 @@ void runMcpServer()
 	infof("CyDo MCP proxy starting (tid=%s, socket=%s)", tid, socketPath);
 
 	auto conn = stdioLDJsonRpcConnection();
-	auto codec = new JsonRpcCodec(conn);
+	auto codec = new JsonRpcCodec(new McpStdioConnection(conn));
 
 	auto impl = new McpServerImpl(socketPath, tid, (JsonRpcRequest request) {
 		codec.sendNotification(request);
 	});
-	auto dispatcher = jsonRpcDispatcher!McpProtocol(impl);
-	codec.handleRequest = &dispatcher.dispatch;
+	codec.handleRequest = &impl.handleRequest;
 
 	socketManager.loop();
 	infof("CyDo MCP proxy exiting");
@@ -55,6 +54,29 @@ private:
 
 /// MCP protocol version
 enum MCP_PROTOCOL_VERSION = "2024-11-05";
+
+/// MCP 2024-11-05 predates batch support.
+final class McpStdioConnection : ConnectionAdapter
+{
+	this(IConnection connection) { super(connection); }
+
+	override void onReadData(Data data)
+	{
+		import std.algorithm.searching : canFind;
+
+		size_t start;
+		while (start < data.length && " \t\r\n".canFind(cast(char) data[start]))
+			start++;
+		if (start < data.length && data[start] == '[')
+		{
+			auto error = JsonRpcResponse.failure(SO(null), JsonRpcErrorCode.invalidRequest,
+				"JSON-RPC batches are not supported");
+			send(Data(error.toJson().asBytes));
+			return;
+		}
+		super.onReadData(data);
+	}
+}
 
 /// Build the final tools/list JSON by substituting placeholders.
 string buildToolsListJson()
@@ -85,8 +107,9 @@ interface McpProtocol
 	@RPCName("tools/list")
 	Promise!SO toolsList();
 
-	@RPCName("tools/call")
-	Promise!SO toolsCall(ToolsCallParams params);
+	@RPCNotification
+	@RPCName("notifications/cancelled")
+	Promise!void notificationsCancelled(CancelledParams params);
 
 	@RPCName("resources/list")
 	Promise!SO resourcesList();
@@ -98,10 +121,18 @@ interface McpProtocol
 	Promise!SO promptsList();
 }
 
+final class InFlightCall
+{
+	UnixConnector connector;
+	HttpClient client;
+	ProgressKeepalive keepalive;
+}
+
 class McpServerImpl : McpProtocol
 {
 	private string socketPath;
 	private string tid;
+	private InFlightCall[string] inFlight;
 	private void delegate(JsonRpcRequest request) sendNotification;
 
 	this(string socketPath, string tid, void delegate(JsonRpcRequest request) sendNotification)
@@ -126,27 +157,54 @@ class McpServerImpl : McpProtocol
 		return resolve(buildToolsListJson().jsonParse!SO);
 	}
 
-	Promise!SO toolsCall(ToolsCallParams params)
+	Promise!JsonRpcResponse handleRequest(JsonRpcRequest request)
+	{
+		if (request.method != "tools/call")
+			return jsonRpcDispatcher!McpProtocol(this).dispatch(request);
+
+		ToolsCallParams params;
+		try
+			params = request.params.deserializeTo!ToolsCallParams;
+		catch (Exception e)
+			return resolve(JsonRpcResponse.failure(request.id, JsonRpcErrorCode.invalidParams, e.msg));
+
+		try
+			return toolsCall(request.id, params)
+				.then((SO result) => JsonRpcResponse.success(request.id, result))
+				.except((Exception e) {
+					if (auto rpcError = cast(JsonRpcException) e)
+						return JsonRpcResponse.failure(request.id, rpcError.error);
+					return JsonRpcResponse.failure(request.id, JsonRpcErrorCode.internalError, e.msg);
+				});
+		catch (Exception e)
+			return resolve(JsonRpcResponse.failure(request.id, JsonRpcErrorCode.internalError, e.msg));
+	}
+
+	Promise!void notificationsCancelled(CancelledParams params)
+	{
+		auto id = params.requestId.toJson();
+		if (auto entry = id in inFlight)
+		{
+			auto call = *entry;
+			finishCall(id, call);
+			// An ordinary disconnect makes HttpClient reconnect for a queued request.
+			call.connector.getConnection().disconnect("MCP call cancelled", DisconnectType.error);
+		}
+		return resolve();
+	}
+
+	private void finishCall(string id, InFlightCall call)
+	{
+		if (!inFlight.remove(id))
+			return;
+		call.client.handleResponse = null;
+		if (call.keepalive)
+			call.keepalive.cancel();
+	}
+
+	Promise!SO toolsCall(SO requestId, ToolsCallParams params)
 	{
 		auto promise = new Promise!SO;
-		ProgressKeepalive keepalive;
-		if (params.meta.progressToken)
-			keepalive = startProgressKeepalive(params.meta.progressToken);
-		void cleanup()
-		{
-			if (keepalive !is null)
-				keepalive.cancel();
-		}
-		void finishSuccess(SO result)
-		{
-			cleanup();
-			promise.fulfill(result);
-		}
-		void finishError(Exception error)
-		{
-			cleanup();
-			promise.reject(error);
-		}
 
 		auto backendRequest = BackendToolCall(tid, params.name, JSONFragment(params.arguments.toJson()));
 		auto bodyJson = toJson(backendRequest);
@@ -162,11 +220,20 @@ class McpServerImpl : McpProtocol
 		httpReq.headers["Accept-Encoding"] = "identity"; // prevent server from compressing; client doesn't decompress
 		httpReq.data = DataVec(Data(bodyJson.asBytes));
 
-		auto client = new HttpClient(Duration.zero, new UnixConnector(socketPath));
-		client.handleResponse = (HttpResponse response, string disconnectReason) {
+		auto id = requestId.toJson();
+		auto call = new InFlightCall;
+		call.connector = new UnixConnector(socketPath);
+		call.client = new HttpClient(Duration.zero, call.connector);
+		inFlight[id] = call;
+		scope (failure) finishCall(id, call);
+		if (params.meta.progressToken)
+			call.keepalive = startProgressKeepalive(params.meta.progressToken);
+		call.client.handleResponse = (HttpResponse response, string disconnectReason) {
+			finishCall(id, call);
+
 			if (response is null)
 			{
-				finishError(new Exception("Harness connection failed: " ~ disconnectReason));
+				promise.reject(new Exception("Harness connection failed: " ~ disconnectReason));
 				return;
 			}
 			try
@@ -176,15 +243,15 @@ class McpServerImpl : McpProtocol
 				if (response.status / 100 != 2)
 				{
 					warningf("MCP proxy: backend returned HTTP %d", response.status);
-					finishError(new Exception("Harness returned HTTP " ~ to!string(response.status)));
+					promise.reject(new Exception("Harness returned HTTP " ~ to!string(response.status)));
 					return;
 				}
-				finishSuccess(responseText.jsonParse!SO);
+				promise.fulfill(responseText.jsonParse!SO);
 			}
 			catch (Exception e)
-				finishError(new Exception("Failed to parse harness response: " ~ e.msg));
+				promise.reject(new Exception("Failed to parse harness response: " ~ e.msg));
 		};
-		client.request(httpReq);
+		call.client.request(httpReq);
 
 		return promise;
 	}
@@ -213,6 +280,12 @@ class McpServerImpl : McpProtocol
 }
 
 // ---- JSON structures ----
+
+@RPCFlatten @JSONPartial
+struct CancelledParams
+{
+	SO requestId;
+}
 
 @RPCFlatten @JSONPartial
 struct ToolsCallParams
@@ -276,6 +349,60 @@ private final class ProgressKeepalive
 
 unittest
 {
+	import ae.net.asockets : ConnectionState;
+	import ae.sys.dataset : joinData;
+
+	static class TestConnection : IConnection
+	{
+		ReadDataHandler receive;
+		string[] sent;
+
+		@property ConnectionState state() { return ConnectionState.connected; }
+
+		void send(scope Data[] data, int priority)
+		{
+			sent ~= cast(string) data.joinData().toGC();
+		}
+		alias send = IConnection.send;
+
+		void disconnect(string reason = defaultDisconnectReason,
+			DisconnectType type = DisconnectType.requested)
+		{
+			assert(false, reason);
+		}
+		@property void handleConnect(ConnectHandler value) {}
+		@property void handleReadData(ReadDataHandler value) { receive = value; }
+		@property void handleDisconnect(DisconnectHandler value) {}
+		@property void handleBufferFlushed(BufferFlushedHandler value) {}
+	}
+
+	auto connection = new TestConnection;
+	auto codec = new JsonRpcCodec(new McpStdioConnection(connection));
+	string[] dispatched;
+	codec.handleRequest = (JsonRpcRequest request) {
+		dispatched ~= request.method;
+		return resolve(JsonRpcResponse.success(request.id, "pong"));
+	};
+
+	connection.receive(Data((" \t" ~
+		`[{"jsonrpc":"2.0","method":"ping","id":1},{"jsonrpc":"2.0","method":"notify"}]`).asBytes));
+	assert(dispatched.length == 0, "batch requests reached the dispatcher");
+	assert(connection.sent.length == 1, "expected a single response to the batch");
+	auto error = connection.sent[0].jsonParse!JsonRpcResponse;
+	assert(error.isError && error.error.get.code == JsonRpcErrorCode.invalidRequest);
+	assert(error.id.toJson() == "null");
+
+	connection.receive(Data(`{"jsonrpc":"2.0","method":"ping","id":2}`.asBytes));
+	socketManager.loop();
+	assert(dispatched == ["ping"]);
+	assert(connection.sent.length == 2);
+	auto response = connection.sent[1].jsonParse!JsonRpcResponse;
+	assert(!response.isError && response.id.toJson() == "2");
+	assert(response.result.toJson() == `"pong"`);
+}
+
+unittest
+{
 	auto params = `{"name":"Task","arguments":{},"_meta":{"progressToken":42,"x-codex-turn-metadata":{}}}`
 		.jsonParse!ToolsCallParams;
 	auto noTokenParams = `{"name":"Task","arguments":{}}`.jsonParse!ToolsCallParams;
@@ -313,6 +440,157 @@ unittest
 	second.tick();
 	assert(toJson(notifications) ==
 		`[{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"first","progress":1}},{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":2,"progress":1}},{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"first","progress":2}}]`);
+}
+
+unittest
+{
+	import std.array : array, replicate;
+	import ae.sys.timing : mainTimer;
+
+	auto proxy = new McpServerImpl("/" ~ "x".replicate(256), "17", (JsonRpcRequest) {
+		assert(false, "unexpected progress notification");
+	});
+	auto request = `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"Ask","arguments":{},"_meta":{"progressToken":42}}}`
+		.jsonParse!JsonRpcRequest;
+
+	auto pendingTimers = mainTimer.pendingTasks().array;
+	auto result = proxy.handleRequest(request);
+	assert(proxy.inFlight.length == 0, "synchronous failure left a call in flight");
+	assert(mainTimer.pendingTasks().array == pendingTimers, "synchronous failure leaked a timer");
+
+	JsonRpcResponse response;
+	result.then((JsonRpcResponse value) { response = value; }).ignoreResult();
+	socketManager.loop();
+
+	assert(response.id.toJson() == "7");
+	assert(response.isError && response.error.get.code == JsonRpcErrorCode.internalError);
+}
+
+unittest
+{
+	import core.time : msecs;
+	import std.file : exists, remove, tempDir;
+	import std.path : buildPath;
+	import std.process : thisProcessID;
+	import std.socket : AddressFamily, AddressInfo, ProtocolType, SocketType, UnixAddress;
+	import ae.net.http.common : HttpRequest;
+	import ae.net.http.responseex : HttpResponseEx;
+	import ae.net.http.server : HttpServer, HttpServerConnection;
+	import ae.sys.timing : setTimeout;
+
+	auto socketPath = buildPath(tempDir(), "cydo-mcp-proxy-" ~ thisProcessID.to!string ~ ".sock");
+	scope (exit)
+		if (exists(socketPath))
+			remove(socketPath);
+	auto backend = new HttpServer;
+	backend.listen([AddressInfo(AddressFamily.UNIX, SocketType.STREAM,
+		cast(ProtocolType) 0, new UnixAddress(socketPath), socketPath)]);
+	auto proxy = new McpServerImpl(socketPath, "17", (JsonRpcRequest) {
+		assert(false, "unexpected progress notification");
+	});
+
+	void cancel(int id)
+	{
+		JsonRpcRequest notification;
+		notification.method = "notifications/cancelled";
+		notification.params = toJson(CancelledParams(SO(id))).jsonParse!SO;
+		proxy.handleRequest(notification).ignoreResult();
+	}
+
+	enum result = `{"content":[{"type":"text","text":"tool output"}]}`;
+	JsonRpcRequest call(int id)
+	{
+		JsonRpcRequest request;
+		request.method = "tools/call";
+		request.id = SO(id);
+		request.params = (id == 6
+			? `{"name":"Read","arguments":{},"_meta":{"progressToken":42}}`
+			: `{"name":"Ask","arguments":{},"_meta":{"progressToken":42}}`).jsonParse!SO;
+		return request;
+	}
+
+	bool timedOut;
+	HttpClient outstandingClient;
+	auto deadline = setTimeout({
+		timedOut = true;
+		backend.close();
+		outstandingClient.disconnect("MCP proxy test timed out");
+	}, 2.seconds);
+	JsonRpcResponse[] responses;
+	void recordResponse(JsonRpcResponse response)
+	{
+		if (timedOut)
+			return;
+		responses ~= response;
+		assert(responses.length == 1);
+		assert(response.id.toJson() == "8");
+		assert(!response.isError);
+		assert(response.result.toJson() == result);
+		deadline.cancel();
+		backend.close();
+	}
+
+	bool backendSawDisconnect;
+	int backendRequests;
+	backend.handleRequest = (HttpRequest request, HttpServerConnection conn) {
+		import ae.sys.dataset : joinData;
+		assert(request.resource == "/mcp/call");
+		auto body = cast(string) request.data[].joinData().toGC();
+		assert(body.jsonParse!BackendToolCall.tool == "Ask");
+		backendRequests++;
+		if (backendRequests == 2)
+		{
+			conn.sendResponse((new HttpResponseEx).serveData(result));
+			return;
+		}
+		assert(backendRequests == 1);
+
+		auto keepalive = proxy.inFlight["7"].keepalive;
+		assert(keepalive.timer.isWaiting());
+		cancel(999);
+		assert(keepalive.timer.isWaiting());
+
+		void awaitDisconnect()
+		{
+			if (timedOut)
+				return;
+			if (conn.connected)
+			{
+				setTimeout(&awaitDisconnect, 1.msecs);
+				return;
+			}
+			backendSawDisconnect = true;
+			assert(!keepalive.timer.isWaiting());
+			proxy.handleRequest(call(8)).then(&recordResponse).ignoreResult();
+			outstandingClient = proxy.inFlight["8"].client;
+		}
+
+		// Check that the backend stays connected after the unknown cancellation.
+		setTimeout({
+			assert(conn.connected);
+			cancel(7);
+			awaitDisconnect();
+		}, 1.msecs);
+	};
+
+	proxy.handleRequest(call(6)).then((JsonRpcResponse) {
+		assert(false, "call cancelled before sending produced a JSON-RPC response");
+	}).ignoreResult();
+	auto unsent = proxy.inFlight["6"];
+	cancel(6);
+	assert("6" !in proxy.inFlight);
+	assert(!unsent.keepalive.timer.isWaiting());
+	assert(unsent.client.handleResponse is null);
+
+	proxy.handleRequest(call(7)).then((JsonRpcResponse) {
+		assert(false, "cancelled call produced a JSON-RPC response");
+	}).ignoreResult();
+	outstandingClient = proxy.inFlight["7"].client;
+	socketManager.loop();
+	assert(!timedOut, "MCP proxy test timed out");
+	assert(backendSawDisconnect);
+	assert(backendRequests == 2);
+	assert(responses.length == 1);
 }
 
 struct BackendToolCall

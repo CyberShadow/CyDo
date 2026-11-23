@@ -110,6 +110,9 @@ interface AgentSession
 	/// Callback: called when the agent process exits.
 	@property void onExit(void delegate(int status) dg);
 
+	/// The agent no longer awaits any CyDo tool call it has in flight.
+	@property void onToolCallsAbandoned(void delegate() dg);
+
 	/// Whether the session is still alive (process running, pipes open).
 	@property bool alive();
 

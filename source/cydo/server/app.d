@@ -29,7 +29,7 @@ import ae.utils.statequeue : StateQueue;
 
 mixin SSLUseLib;
 
-import cydo.mcp : McpResult;
+import cydo.mcp : McpResult, ToolCallCancellation;
 import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
 	ToolDescriptionViolation, checkRenderedCydoToolDescriptionViolations,
 	mcpToolDescriptionMaxChars;
@@ -189,8 +189,65 @@ private Notice buildMcpToolDescriptionLimitNotice(
 	);
 }
 
+private struct InFlightToolCalls
+{
+	private ToolCallCancellation[][int] byTask;
+
+	void register(int tid, ToolCallCancellation cancellation)
+	{
+		byTask[tid] ~= cancellation;
+	}
+
+	void deregister(int tid, ToolCallCancellation cancellation)
+	{
+		import std.algorithm.mutation : remove;
+		import std.algorithm.searching : countUntil;
+
+		auto calls = tid in byTask;
+		auto index = (*calls).countUntil(cancellation);
+		assert(index >= 0);
+		*calls = (*calls).remove(index);
+		if (!calls.length)
+			byTask.remove(tid);
+	}
+
+	void abandonToolCalls(int tid)
+	{
+		if (auto calls = tid in byTask)
+			foreach (cancellation; (*calls).dup)
+				cancellation.cancel();
+	}
+}
+
+unittest
+{
+	InFlightToolCalls calls;
+	auto first = new ToolCallCancellation;
+	auto second = new ToolCallCancellation;
+	auto settled = new ToolCallCancellation;
+	auto unrelated = new ToolCallCancellation;
+	calls.register(1, first);
+	calls.register(1, second);
+	calls.register(1, settled);
+	calls.register(2, unrelated);
+	calls.deregister(1, settled);
+
+	calls.abandonToolCalls(1);
+	assert(first.cancelled);
+	assert(second.cancelled);
+	assert(!settled.cancelled);
+	assert(!unrelated.cancelled);
+}
+
 class App
 {
+	private InFlightToolCalls inFlightToolCalls;
+
+	private void abandonToolCalls(int tid)
+	{
+		inFlightToolCalls.abandonToolCalls(tid);
+	}
+
 	import cydo.workflow.history.jsonl_tracker : JsonlTracker;
 
 	private TransportAdapter transport;
@@ -682,6 +739,7 @@ class App
 			recordChildTerminal: &workflowTools.recordChildTerminal,
 			failPendingAskUserQuestionOnExit: &workflowTools.failPendingAskUserQuestionOnExit,
 			failPendingPermissionPromptOnExit: &workflowTools.failPendingPermissionPromptOnExit,
+			abandonToolCalls: &abandonToolCalls,
 			decideToolPermission: &workflowTools.decideToolPermission,
 			decidePreToolUse: &workflowTools.decidePreToolUse,
 			withdrawToolPermissionPrompt: &workflowTools.withdrawToolPermissionPrompt,
@@ -1214,7 +1272,8 @@ class App
 	/// Dispatch an MCP tool call. Returns a promise that resolves when the
 	/// tool completes — immediately for sync tools, later for async tools
 	/// (e.g. Task, which awaits the child task's completion in a fiber).
-	private Promise!McpResult dispatchTool(string tool, string tid, JSONFragment args)
+	private Promise!McpResult dispatchTool(string tool, string tid, JSONFragment args,
+		ToolCallCancellation cancellation)
 	{
 		import ae.utils.promise.await : async;
 		import cydo.mcp.binding : mcpToolDispatcher;
@@ -1241,8 +1300,13 @@ class App
 			}
 		}
 
+		if (hasParsedTid)
+			inFlightToolCalls.register(parsedTid, cancellation);
 		return async({
-			auto impl = new CydoToolsImpl(workflowTools, tid);
+			scope (exit)
+				if (hasParsedTid)
+					inFlightToolCalls.deregister(parsedTid, cancellation);
+			auto impl = new CydoToolsImpl(workflowTools, tid, cancellation);
 			auto dispatcher = mcpToolDispatcher!CydoTools(impl);
 			return dispatcher.dispatch(tool, args);
 		});
@@ -2886,8 +2950,8 @@ class App
 			import cydo.agent.drivers.copilot : CopilotAgent;
 			if (auto ca = cast(CopilotAgent) a)
 			{
-				ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
-					dispatchTool(tool, callerTid, args);
+				ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args, ToolCallCancellation cancellation) =>
+					dispatchTool(tool, callerTid, args, cancellation);
 				ca.onToolResultDelivered_ = (string callerTid, McpResult result) =>
 					workflowTools.onToolCallDelivered(callerTid, result);
 				ca.onToolResultDeliveryFailed_ = (string callerTid, McpResult result) =>
@@ -4310,6 +4374,7 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 	@property string startupFailure() { return null; }
 	@property void onStderr(void delegate(string line) dg) {}
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
+	@property void onToolCallsAbandoned(void delegate() dg) {}
 	@property bool alive() { return alive_; }
 }
 
@@ -6063,6 +6128,7 @@ unittest
 		recordChildTerminal: (int tid) => false,
 		failPendingAskUserQuestionOnExit: (int tid) {},
 		failPendingPermissionPromptOnExit: (int tid) {},
+		abandonToolCalls: (int tid) {},
 		decideToolPermission: delegate Promise!string(int tid, PermissionPrompt prompt,
 			PermissionEscalation escalation) { assert(0, "unexpected call"); },
 		decidePreToolUse: delegate ToolCallRuling(int tid, string toolName,

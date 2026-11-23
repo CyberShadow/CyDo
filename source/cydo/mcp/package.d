@@ -38,3 +38,31 @@ struct McpResult
 }
 
 import ae.utils.json : JSONFragment;
+
+/// Cancellation signal for a single dispatched tool call.
+/// A disconnect can cancel the token after the handler has produced its result.
+/// Handlers that opt in must treat cancellation after completion as a no-op.
+final class ToolCallCancellation
+{
+	private bool cancelled_;
+	private void delegate() handler;
+
+	@property bool cancelled() const { return cancelled_; }
+
+	void cancel()
+	{
+		if (cancelled_)
+			return;
+		cancelled_ = true;
+		auto callback = handler;
+		handler = null;
+		if (callback)
+			callback();
+	}
+
+	void onCancel(void delegate() dg)
+	{
+		assert(!cancelled_ && handler is null && dg !is null);
+		handler = dg;
+	}
+}

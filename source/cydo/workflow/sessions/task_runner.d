@@ -210,6 +210,7 @@ struct TaskSessionRunnerHost
 	bool delegate(int tid) recordChildTerminal;
 	void delegate(int tid) failPendingAskUserQuestionOnExit;
 	void delegate(int tid) failPendingPermissionPromptOnExit;
+	void delegate(int tid) abandonToolCalls;
 	/// Decide a Claude `can_use_tool` request (policy or user prompt);
 	/// resolves to the decision JSON sent back to the CLI.
 	Promise!string delegate(int tid, PermissionPrompt prompt,
@@ -1099,6 +1100,12 @@ public:
 			}
 
 			host_.publishTaskSnapshot(tid);
+		};
+
+		session.onToolCallsAbandoned = () {
+			auto stored = tid in sessions_;
+			if (stored !is null && *stored is session)
+				host_.abandonToolCalls(tid);
 		};
 
 		string lastStderr;
@@ -2034,6 +2041,7 @@ version (unittest) private TaskSessionRunner gitMetadataTestRunner(
 			ToolDescriptionViolation[] violations) {},
 		resolveSharedTmpPath: (int tid) => buildPath(fixture.root, "shared-tmp"),
 		mcpSocketPath: () => mcpSocketPath,
+		abandonToolCalls: (int tid) {},
 		taskTypeCatalog: catalog,
 	));
 }
@@ -2341,6 +2349,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 					stopJsonlWatch: (int tid) {},
 				failPendingAskUserQuestionOnExit: (int tid) {},
 				failPendingPermissionPromptOnExit: (int tid) {},
+				abandonToolCalls: (int tid) {},
 				decideToolPermission: delegate Promise!string(int tid, PermissionPrompt prompt,
 					PermissionEscalation escalation) { assert(0, "unexpected call"); },
 				decidePreToolUse: delegate ToolCallRuling(int tid, string toolName,
@@ -2897,6 +2906,7 @@ version (unittest) private final class YieldGateTestSession : AgentSession
 	@property string startupFailure() { return null; }
 	@property void onStderr(void delegate(string) callback) {}
 	@property void onExit(void delegate(int) callback) { exitCallback = callback; }
+	@property void onToolCallsAbandoned(void delegate() dg) {}
 	@property bool alive() { return true; }
 	@property const(BackgroundWork)[] backgroundWork() { return null; }
 
@@ -3051,6 +3061,7 @@ version (unittest) private void assertYieldGateRunnerCase(
 				},
 				failPendingAskUserQuestionOnExit: (int tid) {},
 				failPendingPermissionPromptOnExit: (int tid) {},
+				abandonToolCalls: (int tid) {},
 				pump: (int tid) => backend !is null && backend.pump(tid),
 				cancelExitBackgroundWork: (int tid) {},
 				resetHistoryWatermarkAfterExit: (int tid) => false,
@@ -3564,6 +3575,7 @@ version (unittest) void finishFollowUpSession(TaskData* child, TaskSessionRunner
 			host.publishTaskSnapshot = (int tid) {};
 			host.failPendingAskUserQuestionOnExit = (int tid) {};
 			host.failPendingPermissionPromptOnExit = (int tid) {};
+			host.abandonToolCalls = (int tid) {};
 			host.cancelExitBackgroundWork = (int tid) {};
 			host.resetHistoryWatermarkAfterExit = (int tid) => false;
 			host.touchAndPersistLastActive = (int tid) {};
@@ -3678,6 +3690,7 @@ version (unittest) private final class DeferredExitTestSession : AgentSession
 	@property string startupFailure() { return failureAtExit; }
 	@property void onStderr(void delegate(string) callback) {}
 	@property void onExit(void delegate(int) callback) { exit = callback; }
+	@property void onToolCallsAbandoned(void delegate() callback) {}
 	@property bool alive() { return running; }
 	@property const(BackgroundWork)[] backgroundWork() { return null; }
 }

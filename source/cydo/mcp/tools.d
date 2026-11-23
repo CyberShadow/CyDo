@@ -2,7 +2,7 @@
 module cydo.mcp.tools;
 
 import ae.utils.json : JSONFragment;
-import cydo.mcp : Description, McpName, McpResult;
+import cydo.mcp : Description, McpName, McpResult, ToolCallCancellation;
 import cydo.mcp.payloads : TaskResult;
 
 private enum string mailboxDescription =
@@ -227,11 +227,13 @@ class CydoToolsImpl : CydoTools
 {
 	private ToolsBackend app;
 	private string callerTid;
+	private ToolCallCancellation cancellation;
 
-	this(ToolsBackend app, string callerTid)
+	this(ToolsBackend app, string callerTid, ToolCallCancellation cancellation = null)
 	{
 		this.app = app;
 		this.callerTid = callerTid;
+		this.cancellation = cancellation;
 	}
 
 	McpResult bash(string command)

@@ -1905,6 +1905,9 @@ class ClaudeCodeSession : AgentSession
 		exitHandler = dg;
 	}
 
+	/// Claude cancels individual MCP requests. Tool calls can outlive its turns.
+	@property void onToolCallsAbandoned(void delegate() dg) {}
+
 	/// Callback: the CLI asks whether a tool call may run, after the
 	/// policy's ruling (onPreToolUse) left it open. Fulfil with the decision
 	/// payload: `{"behavior":"allow","updatedInput":{…}}` or
