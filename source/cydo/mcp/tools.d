@@ -154,7 +154,8 @@ interface CydoTools
 	    ~ "After a mcp__cydo__Task call completes, use mcp__cydo__Ask(message, tid) to ask a follow-up "
 	    ~ "question. Pass tid when asking a specific task by ID.\n\n"
 	    ~ "The result includes a `qid` (question ID) that the answerer uses.\n"
-	    ~ "If a sub-task has a pending question, use mcp__cydo__Answer instead of mcp__cydo__Ask."
+	    ~ "If a sub-task asked you a question you have received and still owe an answer to, "
+	    ~ "use mcp__cydo__Answer with its qid instead of asking that sub-task."
 	)
 	@McpName("Ask")
 	McpResult ask(

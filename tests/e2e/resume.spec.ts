@@ -357,24 +357,37 @@ test("MCP tools work after backend restart", async ({
 });
 
 test(
-  "Ask follow-up does not remain blocked after child question is interrupted by restart",
+  "Answer a restored child question before asking the child a follow-up",
   { tag: "@codex-only" },
   async ({ page, restartableBackend }) => {
     const parentTaskUpdates: {
       status: string;
       isProcessing: boolean;
     }[] = [];
+    let refusedQuestionId: string | undefined;
     page.on("websocket", (ws) => {
       ws.on("framereceived", (frame) => {
         try {
           const data = JSON.parse(frame.payload.toString()) as {
             type?: string;
+            tid?: number;
+            event?: { type?: string; is_error?: boolean; content?: unknown };
             task?: {
               tid?: number;
               status?: string;
               isProcessing?: boolean;
             };
           };
+          if (
+            data.tid === 1 &&
+            data.event?.type === "item/result" &&
+            data.event.is_error
+          ) {
+            const match = JSON.stringify(data.event.content)?.match(
+              /Sub-task has a pending question \(qid=(\d+)\)\. Use Answer/,
+            );
+            if (match) refusedQuestionId = match[1];
+          }
           if (
             data.type === "task_updated" &&
             data.task?.tid === 1 &&
@@ -416,8 +429,17 @@ test(
     await expect(page.locator('.sidebar-item[data-tid="2"]')).toBeVisible();
     await page.locator('.sidebar-item[data-tid="1"]').click();
 
-    // The child resumes silently with its original Ask still outstanding.
-    // A new parent-to-child Ask reaches it as an ordinary task question.
+    // The restored question is presented to the parent and must be answered
+    // before a follow-up Ask can reach the child.
+    await sendMessage(page, "call ask 2 restart-follow-up");
+    await expect.poll(() => refusedQuestionId).toMatch(/^\d+$/);
+    await sendMessage(page, `call answer ${refusedQuestionId} restart-reply`);
+    const child = page.locator('.sidebar-item[data-tid="2"]');
+    await expect(
+      child.locator(".task-type-icon.completed, .task-type-icon.resumable"),
+    ).toBeVisible();
+    await page.locator('.sidebar-item[data-tid="1"]').click();
+
     const updateStart = parentTaskUpdates.length;
     await sendMessage(page, "call ask 2 restart-follow-up");
     await expect

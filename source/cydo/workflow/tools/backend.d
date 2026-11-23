@@ -838,7 +838,7 @@ public:
 				~ host_.taskWorkspaceLabel(targetTid) ~ ")", true));
 		if (answerer.parentTid == askerTid)
 		{
-			int pendingQid = presentedQuestionFor(targetTid);
+			int pendingQid = presentedQuestionFor(askerTid, targetTid);
 			if (pendingQid > 0)
 				return resolve(McpResult(
 					"Sub-task has a pending question (qid=" ~ to!string(pendingQid)
@@ -1616,11 +1616,12 @@ private:
 		return false;
 	}
 
-	int presentedQuestionFor(int tid)
+	int presentedQuestionFor(int tid, int askerTid = 0)
 	{
 		int earliest = int.max;
 		foreach (qid, q; questions_)
 			if (q.answererTid == tid && q.state == QuestionState.open
+				&& (askerTid == 0 || q.askerTid == askerTid)
 				&& !hasEvent(tid, MailboxEvent.Kind.question, qid)
 				&& qid < earliest)
 				earliest = qid;
@@ -4960,5 +4961,67 @@ unittest
 		assert(!tasks[requestedTid].archiving);
 		assert(persistedTasks == [requestedTid]);
 		assert(archiveGoals == [requestedTid]);
+	}
+}
+
+unittest
+{
+	// An earlier parent-to-child question does not prevent a second Ask.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		QuestionResult[] presented;
+		foreach (message; ["first question", "second question"])
+		{
+			b.handleAsk("1", message, 2).ignoreResult();
+			b.awaitEvent(2).then((McpResult r) {
+				presented ~= r.text.jsonParse!QuestionResult;
+				b.onToolCallDelivered("2", r);
+			}).ignoreResult();
+			drainPromiseNextTicks();
+		}
+		assert(presented.length == 2);
+		assert(presented[0].message == "first question");
+		assert(presented[1].message == "second question");
+		assert(presented[0].qid != presented[1].qid);
+	}
+
+	// The refusal names the target child's question, even if the parent
+	// received another task's question first.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		f.tasks[2].isProcessing = true;
+		f.tasks[3] = TaskData(3, "local", f.tasks[1].projectPath);
+		f.tasks[3].status = TaskStatus.active;
+		auto b = f.makeBackend();
+		QuestionResult[] presented;
+		McpResult childAnswer;
+		foreach (caller; ["3", "2"])
+		{
+			b.handleAsk(caller, "question for parent", 1).then((McpResult r) {
+				childAnswer = r;
+			}).ignoreResult();
+			b.awaitEvent(1).then((McpResult r) {
+				presented ~= r.text.jsonParse!QuestionResult;
+				b.onToolCallDelivered("1", r);
+			}).ignoreResult();
+			drainPromiseNextTicks();
+		}
+		assert(presented.length == 2 && presented[1].tid == 2);
+		auto qid = presented[1].qid;
+		McpResult refused, answered;
+		b.handleAsk("1", "parent follow-up", 2).then((McpResult r) {
+			refused = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(refused.isError && refused.text.canFind(format!"qid=%d"(qid)));
+		b.handleAnswer("1", qid, "parent answer").then((McpResult r) {
+			answered = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(!answered.isError && answered.text.jsonParse!AnswerResult.status == "delivered");
+		assert(!childAnswer.isError && childAnswer.text.jsonParse!AnswerResult.message == "parent answer");
 	}
 }
