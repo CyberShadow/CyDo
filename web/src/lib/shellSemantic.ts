@@ -649,26 +649,24 @@ function parseStage(
     case "head": {
       const parsed = parseHeadArgs(cmd, first);
       if (!parsed.ok) return parsed;
-      const { count, filePath } = parsed.value;
-      const op: StageOp =
-        count === undefined
-          ? { kind: "identity" }
-          : {
-              kind: "slice",
-              commandName: name,
-              range: { type: "head", count },
-            };
-      return filter(op, name, filePath);
+      const { count = 10, filePath } = parsed.value;
+      return filter(
+        { kind: "slice", commandName: name, range: { type: "head", count } },
+        name,
+        filePath,
+      );
     }
     case "tail": {
       const parsed = parseTailArgs(cmd, first);
       if (!parsed.ok) return parsed;
       const { range, filePath } = parsed.value;
-      const op: StageOp =
-        range.type === "all"
-          ? { kind: "identity" }
-          : { kind: "slice", commandName: name, range };
-      return filter(op, name, filePath);
+      const sliceRange: SliceRange =
+        range.type === "all" ? { type: "tail-count", count: 10 } : range;
+      return filter(
+        { kind: "slice", commandName: name, range: sliceRange },
+        name,
+        filePath,
+      );
     }
     case "sed": {
       const parsed = parseSedArgs(cmd, first);

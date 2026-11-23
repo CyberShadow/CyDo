@@ -289,13 +289,13 @@ describe("head reads", () => {
     expect(v.range).toEqual({ type: "head", count: 25 });
   });
 
-  it("head README.md → read with default range (Codex parity)", async () => {
+  it("head README.md → read with the first 10 lines", async () => {
     const r = await parseShellSemantic("head README.md");
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const v = r.value as ShellReadSemantic;
     expect(v.filePath).toBe("README.md");
-    expect(v.range).toEqual({ type: "all" });
+    expect(v.range).toEqual({ type: "head", count: 10 });
   });
 
   it("head -n50 Cargo.toml → read with no space (Codex parity)", async () => {
@@ -346,13 +346,13 @@ describe("tail reads", () => {
     expect(v.range).toEqual({ type: "tail-count", count: 30 });
   });
 
-  it("tail README.md → read with all range", async () => {
+  it("tail README.md → read with the last 10 lines", async () => {
     const r = await parseShellSemantic("tail README.md");
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const v = r.value as ShellReadSemantic;
     expect(v.filePath).toBe("README.md");
-    expect(v.range).toEqual({ type: "all" });
+    expect(v.range).toEqual({ type: "tail-count", count: 10 });
   });
 
   it("tail -20 README.md → read with compact count", async () => {
@@ -558,6 +558,14 @@ describe("stream composition", () => {
 
   it.each([
     ["cat f.d | cat", "cat", { type: "all" }],
+    ["cat f.d | head", "head", { type: "head", count: 10 }],
+    [
+      "cat f.d | head | sed -n 5,20p",
+      "sed",
+      { type: "lines", start: 5, end: 10 },
+    ],
+    ["head -n 5 f.d | tail", "head", { type: "head", count: 5 }],
+    ["sed -n 2,6p f.d | head", "sed", { type: "lines", start: 2, end: 6 }],
     [
       "sed -n 10,20p f.d | head -5",
       "head",
@@ -655,6 +663,14 @@ describe("stream composition", () => {
       "line range exceeds integer precision",
     ],
     ["head -n 5 f.d | sed -n 7,9p", "slice selects no lines of its input"],
+    [
+      "tail f.d | head -5",
+      "slicing the output of a last-lines slice depends on the file length",
+    ],
+    [
+      "cat f.d | head | tail -n 2",
+      "a last-lines slice of an already sliced range depends on the file length",
+    ],
     [
       "sed -n 10,20p f.d | tail -n 3",
       "a last-lines slice of an already sliced range depends on the file length",
