@@ -1,6 +1,6 @@
 import { useState, useEffect } from "preact/hooks";
 import { langFromPath } from "../highlight";
-import type { CommandStep, ReadRange } from "./commandStep";
+import { derivePlan, type CommandStep, type ReadRange } from "./commandStep";
 import {
   assertValidParsedShellDocument,
   foldParsedShellUnit,
@@ -1172,35 +1172,51 @@ function classifyPipeline(
   return conservativeLower(expr.value, originalCommand);
 }
 
-/**
- * Classify an AST list (&&/; chains) into a structured-output or read semantic.
- * Handles cd-prefix path resolution, echo/printf/wc literal anchors, and
- * read commands (cat/sed/head/tail/nl). Preserves the legacy `kind: "read"`
- * shape for the pure cd-chain + single-read case.
- */
+function resolveAgainstCd(cdPath: string, path: string): string {
+  return path.startsWith("/") || !cdPath ? path : cdPath + "/" + path;
+}
+
+function resolveStepAgainstCd(cdPath: string, step: CommandStep): CommandStep {
+  if (
+    (step.kind === "read-file" ||
+      step.kind === "search" ||
+      step.kind === "plain-output") &&
+    step.filePath !== undefined
+  ) {
+    return { ...step, filePath: resolveAgainstCd(cdPath, step.filePath) };
+  }
+  return step;
+}
+
 function classifyGenericList(
   ast: ShellAST,
   originalCommand: string,
 ): ShellSemanticResult {
-  const commands: SimpleCommand[] = [];
-
+  const members: SimpleCommand[][] = [];
   const pending = [ast];
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (node.type === "list") {
       pending.push(node.right, node.left);
     } else if (node.type === "simple") {
-      commands.push(node.command);
+      members.push([node.command]);
+    } else if (node.type === "pipeline") {
+      members.push(node.stages);
     } else {
       return reject("unsafe_shell_syntax", "unsupported list structure");
     }
   }
 
+  const isCd = (member: SimpleCommand[]) =>
+    member.length === 1 && member[0]!.name === "cd";
+  const singleMember = members.filter((member) => !isCd(member)).length === 1;
   let cdPath = "";
+  let singleResult: ShellSemanticResult | undefined;
   const steps: CommandStep[] = [];
 
-  for (const cmd of commands) {
-    if (cmd.name === "cd") {
+  for (const member of members) {
+    const cmd = member[0]!;
+    if (isCd(member)) {
       const values = cmd.args.filter((a) => a.kind === "value");
       // Use last value (Codex behaviour: cd dir1 dir2 uses dir2)
       const target = values.at(-1)?.text ?? "";
@@ -1210,52 +1226,79 @@ function classifyGenericList(
           "cd target must be a literal path",
         );
       }
-      cdPath = cdPath ? cdPath + "/" + target : target;
+      cdPath = resolveAgainstCd(cdPath, target);
       continue;
     }
 
-    const result = classifySimpleCommandAsListMember(cmd, originalCommand);
-    if (!result) {
-      return reject(
-        "unsupported_command",
-        `unsupported command in list: ${cmd.name ?? "(unnamed)"}`,
-      );
+    if (singleMember) {
+      const result = classifyPipeline(member, originalCommand);
+      if (!result.ok) return result;
+      const value = result.value;
+      if (value.kind !== "read" && value.kind !== "search") {
+        singleResult = result;
+        continue;
+      }
+      if (value.kind === "read" && value.commandName === "git") {
+        return reject(
+          "unsafe_shell_syntax",
+          "git object paths are not relative to cd",
+        );
+      }
+      singleResult = {
+        ok: true,
+        value: {
+          ...value,
+          filePath: resolveAgainstCd(cdPath, value.filePath),
+          steps: value.steps?.map((step) => resolveStepAgainstCd(cdPath, step)),
+        },
+      };
+      continue;
     }
 
-    for (const s of result.steps) {
-      const step = { ...s, order: steps.length, blockId: undefined };
-      if (cdPath) {
-        if (step.kind === "read-file") {
-          step.filePath = cdPath + "/" + step.filePath;
-        } else if (
-          step.kind === "plain-output" &&
-          step.filePath !== undefined
-        ) {
-          step.filePath = cdPath + "/" + step.filePath;
-        }
+    let memberSteps: CommandStep[];
+    if (member.length === 1 && cmd.name !== "git" && cmd.name !== "diff") {
+      const result = classifySimpleCommandAsListMember(cmd, originalCommand);
+      if (!result) {
+        return reject(
+          "unsupported_command",
+          `unsupported command in list: ${cmd.name ?? "(unnamed)"}`,
+        );
       }
-      steps.push(step);
+      memberSteps = result.steps;
+    } else {
+      const result = classifyPipeline(member, originalCommand);
+      if (!result.ok) return result;
+      if (result.value.kind === "read" && result.value.commandName === "git") {
+        return reject(
+          "unsupported_command",
+          "git object reads cannot be combined with other list output",
+        );
+      }
+      if (!result.value.steps) {
+        return reject(
+          "unsupported_command",
+          "diff output cannot be combined with other list output",
+        );
+      }
+      memberSteps = result.value.steps;
+    }
+
+    for (const step of memberSteps) {
+      steps.push({
+        ...resolveStepAgainstCd(cdPath, step),
+        order: steps.length,
+        blockId: undefined,
+      });
     }
   }
+
+  if (singleResult) return singleResult;
 
   if (!steps.some((s) => s.kind === "read-file")) {
     return reject(
       "unsupported_command",
       "list must contain at least one read command",
     );
-  }
-
-  // Preserve the legacy `kind: "read"` shape for the pure cd-chain + single-read
-  // case so existing consumers that special-case `read` see the same shape.
-  if (steps.length === 1 && steps[0]!.kind === "read-file") {
-    const readCmd = commands.find((c) => c.name && c.name !== "cd")!;
-    const r = classifyReadCommand(readCmd, originalCommand);
-    if (!r.ok) return r;
-    const readValue = r.value as ShellReadSemantic;
-    return {
-      ok: true,
-      value: { ...readValue, filePath: steps[0]!.filePath },
-    };
   }
 
   return {
@@ -1758,19 +1801,7 @@ function trailingCatHeredocSteps(
     const readback = parseLsReadbackCommands(commands as SimpleCommand[]);
     return readback === null ? [] : structuredReadbackSteps(readback);
   }
-  if (unit.kind !== "command") return [];
-  const command = directUnitCommand(document, unit);
-  const directory = command === null ? null : parseLsDirectoryCommand(command);
-  return directory === null
-    ? []
-    : [
-        {
-          kind: "plain-output",
-          order: 0,
-          commandName: "ls",
-          outputShape: { kind: "unknown" },
-        },
-      ];
+  return [];
 }
 
 function isMkdirSetup(command: SimpleCommand): boolean {
@@ -1880,14 +1911,6 @@ function classifyLsCommands(
         kind: "structured-output",
         commandName: "ls",
         command: originalCommand,
-        steps: [
-          {
-            kind: "plain-output",
-            order: 0,
-            commandName: "ls",
-            outputShape: { kind: "unknown" },
-          },
-        ],
       },
     };
   return null;
@@ -2006,7 +2029,7 @@ function classifyCatHeredoc(
         content,
         state.literalStdoutPath,
       ),
-      steps,
+      steps: trailingSteps.length > 0 ? steps : undefined,
     },
   };
 }
@@ -2060,16 +2083,6 @@ function classifyScriptHeredoc(
         ),
       },
       segments: heredocSegments(document, redirect, content, language),
-      steps: [
-        {
-          kind: "execute-script",
-          order: 0,
-          commandName: invocation.interpreter.basename,
-          language,
-          contentNodeId: "heredoc-body",
-          outputShape: { kind: "unknown" },
-        },
-      ],
     },
   };
 }
@@ -2346,7 +2359,14 @@ export async function parseShellSemantic(
       );
     return reject("unsafe_shell_syntax", "shell parser initialization failed");
   }
-  return classifyNormalizedDocument(parsed.document, command, true);
+  const result = classifyNormalizedDocument(parsed.document, command, true);
+  if (result.ok && result.value.steps && !derivePlan(result.value.steps)) {
+    return reject(
+      "unsupported_command",
+      "shell output steps do not define an unambiguous output plan",
+    );
+  }
+  return result;
 }
 
 export function useShellSemantic(

@@ -451,12 +451,129 @@ describe("cd && read (should succeed)", () => {
     const v = r.value as ShellReadSemantic;
     expect(v.filePath).toBe("dir1/dir2/file.txt");
   });
+
+  it("cd foo && cat f.d | sed -n 1,150p → read with a D output plan", async () => {
+    const r = await parseShellSemantic("cd foo && cat f.d | sed -n 1,150p");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value).toMatchObject({
+      kind: "read",
+      filePath: "foo/f.d",
+      range: { type: "lines", start: 1, end: 150 },
+    });
+    expect(plan(r.value)?.blocks[0]?.format).toEqual({
+      kind: "content",
+      language: "d",
+    });
+  });
+
+  it("cd foo && grep -n pat f.d → search with a cd-resolved output plan", async () => {
+    const r = await parseShellSemantic("cd foo && grep -n pat f.d");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value).toMatchObject({ kind: "search", filePath: "foo/f.d" });
+    expect(plan(r.value)?.blocks[0]?.source?.filePath).toBe("foo/f.d");
+  });
+
+  it("resolves a pipeline against the cd directory at the pipeline", async () => {
+    const result = await parseShellSemantic("cd x && cat f | head -5 && cd y");
+    expect(result).toMatchObject({
+      ok: true,
+      value: { kind: "read", filePath: "x/f" },
+    });
+    if (!result.ok) return;
+    expect(plan(result.value)?.blocks[0]?.source?.filePath).toBe("x/f");
+  });
+
+  it.each([
+    "cat f && cd",
+    "cd x && cat f && cd",
+    "cd x && cat f | head -5 && cd",
+    "grep -n pat f && cd",
+    "git diff && cd",
+  ])("rejects the missing cd target in %s", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsafe_shell_syntax",
+      reason: "cd target must be a literal path",
+    });
+  });
+
+  it("cd foo && cat f | sed -n 1,5p && echo done → structured output", async () => {
+    await expect(
+      parseShellSemantic("cd foo && cat f | sed -n 1,5p && echo done"),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        kind: "structured-output",
+        steps: [
+          {
+            kind: "read-file",
+            filePath: "foo/f",
+            range: { type: "lines", start: 1, end: 5 },
+          },
+          {
+            kind: "plain-output",
+            commandName: "echo",
+            outputShape: { kind: "literal", text: "done\n" },
+          },
+        ],
+      },
+    });
+  });
+
+  it.each([
+    ["cd /a && cd /b && cat f", "/b/f"],
+    ["cd x && cat /abs/f", "/abs/f"],
+  ])("%s → read with absolute path %s", async (command, filePath) => {
+    await expect(parseShellSemantic(command)).resolves.toMatchObject({
+      ok: true,
+      value: { kind: "read", filePath },
+    });
+  });
 });
 
 describe("cd && read (should reject)", () => {
+  it.each([
+    "git show HEAD:f && cat f",
+    "cat f && git show HEAD:f",
+    "git show HEAD:f | sed -n 1,2p && echo done",
+  ])("rejects the git-object read in %s", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsupported_command",
+      reason: "git object reads cannot be combined with other list output",
+    });
+  });
+
+  it.each(["git diff && cat f", "cat f && git diff", "diff a b && cat f"])(
+    "rejects the diff output in %s",
+    async (command) => {
+      await expect(parseShellSemantic(command)).resolves.toEqual({
+        ok: false,
+        code: "unsupported_command",
+        reason: "diff output cannot be combined with other list output",
+      });
+    },
+  );
+
   it("cd foo && echo hello → reject (echo is not a read command)", async () => {
     const r = await parseShellSemantic("cd foo && echo hello");
     expect(r.ok).toBe(false);
+  });
+
+  it.each([
+    ["cd x && git show HEAD:f", "git object paths are not relative to cd"],
+    ["cd x && cat f | wc -l", "pipeline has multiple read stages"],
+    [
+      "cd x && git diff | cat && echo y",
+      "diff output cannot be combined with other list output",
+    ],
+  ])("%s → reject with reason %s", async (command, reason) => {
+    await expect(parseShellSemantic(command)).resolves.toMatchObject({
+      ok: false,
+      reason,
+    });
   });
 
   it("cd foo && cat file.txt && echo done → structured-output (echo is recognized)", async () => {
@@ -502,20 +619,18 @@ describe("cd newline-separated read (should reject)", () => {
   });
 });
 
-describe("structured-list newline regression", () => {
-  it("cat a.md\\ncat b.md → still classified as structured-output", async () => {
-    const r = await parseShellSemantic("cat a.md\ncat b.md");
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("structured-output");
-  });
-
-  it("cat a.md && cat b.md → structured-output (multi-read && list)", async () => {
-    const r = await parseShellSemantic("cat a.md && cat b.md");
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("structured-output");
-    expect(r.value.steps).toHaveLength(2);
+describe("structured list output boundaries", () => {
+  it.each([
+    "cat a.md\ncat b.md",
+    "cat a.md && cat b.md",
+    "cd . && nl -ba f.svg | sed -n 1,20p && cat empty",
+    "echo same && cat a && echo same",
+  ])("rejects an ambiguous output plan for %s", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsupported_command",
+      reason: "shell output steps do not define an unambiguous output plan",
+    });
   });
 });
 
@@ -1717,13 +1832,8 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.value).toMatchObject({
       filePath: "/tmp/a/output.md",
       heredoc: { content: "# Title" },
-      steps: [
-        {
-          kind: "write-file",
-          targetPath: "/tmp/a/output.md",
-        },
-      ],
     });
+    expect(r.value.steps).toBeUndefined();
   });
 
   it("trailing here-string <<< after heredoc is not treated as second heredoc", async () => {
@@ -2020,16 +2130,7 @@ describe("Unit 2 public shell semantic contracts", () => {
       commandLine: "cd /tmp && python3 - <<'EOF'",
       terminator: "EOF",
     });
-    expect(value.steps).toEqual([
-      {
-        kind: "execute-script",
-        order: 0,
-        commandName: "python3",
-        language: "python",
-        contentNodeId: "heredoc-body",
-        outputShape: { kind: "unknown" },
-      },
-    ]);
+    expect(value.steps).toBeUndefined();
     expect(plan(value)).toBeUndefined();
   });
 
@@ -2076,16 +2177,7 @@ describe("Unit 2 public shell semantic contracts", () => {
           terminator: "PY",
         },
       });
-      expect(result.value.steps).toEqual([
-        {
-          kind: "execute-script",
-          order: 0,
-          commandName: "python3",
-          language: "python",
-          contentNodeId: "heredoc-body",
-          outputShape: { kind: "unknown" },
-        },
-      ]);
+      expect(result.value.steps).toBeUndefined();
     },
   );
 
@@ -2116,15 +2208,7 @@ describe("Unit 2 public shell semantic contracts", () => {
     const result = await parseShellSemantic(command);
     expect(result.ok).toBe(true);
     if (!result.ok || result.value.kind !== "write") return;
-    expect(result.value.steps).toEqual([
-      {
-        kind: "write-file",
-        order: 0,
-        targetPath: "output.md",
-        contentNodeId: "heredoc-body",
-        outputShape: { kind: "none" },
-      },
-    ]);
+    expect(result.value.steps).toBeUndefined();
   });
 
   it("classifies the exact trailing ls readback after a cat heredoc", async () => {
@@ -2175,36 +2259,15 @@ describe("Unit 2 public shell semantic contracts", () => {
     const result = await parseShellSemantic(command);
     expect(result.ok).toBe(true);
     if (!result.ok || result.value.kind !== "write") return;
-    expect(result.value.steps).toEqual([
-      {
-        kind: "write-file",
-        order: 0,
-        targetPath: "output.md",
-        contentNodeId: "heredoc-body",
-        outputShape: { kind: "none" },
-      },
-      {
-        kind: "plain-output",
-        order: 1,
-        commandName: "ls",
-        outputShape: { kind: "unknown" },
-      },
-    ]);
+    expect(result.value.steps).toBeUndefined();
   });
 
-  it("classifies direct ls -1 src as one unknown plain-output step", async () => {
+  it("classifies direct ls -1 src without an output plan", async () => {
     const result = await parseShellSemantic("ls -1 src");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.kind).toBe("structured-output");
-    expect(result.value.steps).toEqual([
-      {
-        kind: "plain-output",
-        order: 0,
-        commandName: "ls",
-        outputShape: { kind: "unknown" },
-      },
-    ]);
+    expect(result.value.steps).toBeUndefined();
   });
 
   it.each([
@@ -2257,7 +2320,7 @@ describe("Unit 2 public shell semantic contracts", () => {
     expect(result.ok, command).toBe(false);
   });
 
-  it.each(["cat a; cat b", "cat a && cat b", "cat a\ncat b"])(
+  it.each(["echo done; cat b", "echo done && cat b", "echo done\ncat b"])(
     "accepts normalized list boundaries: %s",
     async (command) => {
       const result = await parseShellSemantic(command);
@@ -2532,15 +2595,7 @@ describe("Unit 2 public shell semantic contracts", () => {
     const result = await parseShellSemantic(command);
     expect(result.ok).toBe(true);
     if (!result.ok || result.value.kind !== "write") return;
-    expect(result.value.steps).toEqual([
-      {
-        kind: "write-file",
-        order: 0,
-        targetPath: "output.py",
-        contentNodeId: "heredoc-body",
-        outputShape: { kind: "none" },
-      },
-    ]);
+    expect(result.value.steps).toBeUndefined();
   });
 
   it("fails fast on a corrupted direct Python invocation command ID", async () => {
