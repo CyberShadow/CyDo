@@ -14,7 +14,7 @@ import ae.utils.promise.await : async, await;
 
 import cydo.agent.contract : Agent;
 import cydo.agent.terminal : TerminalProcess;
-import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
+import cydo.domain.policy.permissions : PermissionDecision, PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallDecision, ToolCallRuling, evaluatePermissionPolicy,
 	makePermissionAllowJson, makePermissionDenyJson;
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, DjinjaTemplate, TaskTypeDef,
@@ -283,9 +283,7 @@ final class WorkflowToolsBackend : ToolsBackend
 private:
 	WorkflowToolsHost host_;
 	Promise!(McpResult)[int] pendingAskUserQuestions_;
-	/// Fulfilled with the decision payload sent back to the agent.
-	Promise!string[int] pendingPermissionPrompts_;
-	string[int] pendingPermissionInputs_;
+	Promise!PermissionDecision[int] pendingPermissionPrompts_;
 	/// Deny a pending permission prompt nobody answers in time.
 	TimerTask[int] permissionPromptTimeouts_;
 	BatchRegistry batchRegistry_;
@@ -945,11 +943,18 @@ public:
 	{
 		auto td = requireTask(tid, "Tool permission request for a missing task");
 		auto settings = host_.permissionSettings(td.agentName, td.workspace);
+		auto askUser()
+		{
+			return promptUserForPermission(tid, prompt, settings.promptTimeout)
+				.then((PermissionDecision decision) => decision.allow
+					? makePermissionAllowJson(prompt.input.json)
+					: makePermissionDenyJson(decision.message));
+		}
 		final switch (escalation)
 		{
 			case PermissionEscalation.policyAsk:
 			case PermissionEscalation.classifier:
-				return promptUserForPermission(tid, prompt, settings.promptTimeout);
+				return askUser();
 			case PermissionEscalation.safetyCheck:
 				break;
 		}
@@ -967,7 +972,7 @@ public:
 			case ToolCallDecision.ask:
 			// The classifier has had its say already.
 			case ToolCallDecision.classifier:
-				return promptUserForPermission(tid, prompt, settings.promptTimeout);
+				return askUser();
 		}
 	}
 
@@ -1019,7 +1024,7 @@ public:
 			|| td.pendingPermission.prompt.toolUseId != toolUseId)
 			return;
 		settlePermissionPrompt(tid,
-			makePermissionDenyJson("Permission request withdrawn by the agent"));
+			PermissionDecision(false, "Permission request withdrawn by the agent"));
 	}
 
 	void onToolCallDelivered(string callerTidStr, McpResult result)
@@ -1128,7 +1133,7 @@ public:
 		string rawContent = json.content.json !is null
 			? jsonParse!string(json.content.json)
 			: "{}";
-		string resultText;
+		PermissionDecision decision;
 		try
 		{
 			import std.json : parseJSON;
@@ -1137,33 +1142,31 @@ public:
 			if (auto behavior = "behavior" in parsed)
 			{
 				if (behavior.str == "allow")
-					resultText = makePermissionAllowJson(
-						pendingPermissionInputs_[tid]);
+					decision = PermissionDecision(true);
 				else
 				{
 					string denyMsg = "User denied permission";
 					if (auto msg = "message" in parsed)
 						if (msg.str.length > 0)
 							denyMsg = msg.str;
-					resultText = makePermissionDenyJson(denyMsg);
+					decision = PermissionDecision(false, denyMsg);
 				}
 			}
 			else
-				resultText = makePermissionDenyJson("Invalid response");
+				decision = PermissionDecision(false, "Invalid response");
 		}
 		catch (Exception)
-			resultText = makePermissionDenyJson("Invalid response");
+			decision = PermissionDecision(false, "Invalid response");
 
-		settlePermissionPrompt(tid, resultText);
+		settlePermissionPrompt(tid, decision);
 	}
 
 	/// Answer the pending permission prompt of `tid` and take it down.
-	private void settlePermissionPrompt(int tid, string decision)
+	private void settlePermissionPrompt(int tid, PermissionDecision decision)
 	{
 		auto td = requireTask(tid, "Settled permission prompt for a missing task");
 		auto pending = pendingPermissionPrompts_[tid];
 		pendingPermissionPrompts_.remove(tid);
-		pendingPermissionInputs_.remove(tid);
 		cancelPermissionPromptTimeout(tid);
 
 		td.pendingPermission = PendingPermission.init;
@@ -1335,9 +1338,8 @@ public:
 			return;
 		if (auto permPending = tid in pendingPermissionPrompts_)
 		{
-			permPending.fulfill(makePermissionDenyJson("Task exited"));
+			permPending.fulfill(PermissionDecision(false, "Task exited"));
 			pendingPermissionPrompts_.remove(tid);
-			pendingPermissionInputs_.remove(tid);
 			cancelPermissionPromptTimeout(tid);
 			td.pendingPermission = PendingPermission.init;
 		}
@@ -1909,16 +1911,15 @@ private:
 		});
 	}
 
-	Promise!string promptUserForPermission(int tid, PermissionPrompt prompt,
+	Promise!PermissionDecision promptUserForPermission(int tid, PermissionPrompt prompt,
 		Duration timeout)
 	{
 		if (tid in pendingPermissionPrompts_)
-			return resolve(makePermissionDenyJson(
+			return resolve(PermissionDecision(false,
 				"Another permission prompt is already pending"));
 
-		auto promise = new Promise!string;
+		auto promise = new Promise!PermissionDecision;
 		pendingPermissionPrompts_[tid] = promise;
-		pendingPermissionInputs_[tid] = prompt.input.json;
 
 		auto td = requireTask(tid,
 			"Permission prompt target must be a live task");
@@ -1930,7 +1931,7 @@ private:
 		if (timeout > Duration.zero)
 			permissionPromptTimeouts_[tid] = setTimeout({
 				permissionPromptTimeouts_.remove(tid);
-				settlePermissionPrompt(tid, makePermissionDenyJson(format!(
+				settlePermissionPrompt(tid, PermissionDecision(false, format!(
 					"Permission denied: nobody answered the permission prompt within %s")(timeout)));
 			}, timeout);
 

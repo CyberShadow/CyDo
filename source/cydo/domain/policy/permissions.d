@@ -83,9 +83,15 @@ struct PermissionPrompt
 	string toolUseId;
 	string toolName;
 	JSONFragment input;
-	/// Why the agent's own checks flag the call, in its words; empty when
-	/// the policy itself asks.
+	/// Why the agent's safety checks or the tool put the call to a person.
+	/// Empty when the policy asks.
 	string reason;
+}
+
+struct PermissionDecision
+{
+	bool allow;
+	string message;
 }
 
 /// What a permission policy rules for one tool call.
