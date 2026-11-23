@@ -10,15 +10,112 @@ Use the [commented task-type template](../source/cydo/cli/init_templates/task-ty
 for the full option reference and a walkthrough for defining a type. The
 packaged definitions are the starting point for project and user overrides.
 
+## Configuration packs
+
+A pack groups a task-type overlay with its prompt files. Put each pack in
+its own directory under `~/.config/cydo/packs/` for all projects or under
+`<project>/.cydo/packs/` for one project. Each pack can contain any of
+these paths:
+
+```text
+<pack>/
+  task-types.yaml
+  prompts/
+  system_prompts/
+```
+
+Prompt-only and YAML-only packs are both valid. Each directory in
+`packs/` is active. Move it out of `packs/` or remove it to deactivate
+it. To activate a pack shipped under `defs/packs/`, copy or symlink its
+directory into `~/.config/cydo/packs/`.
+
+CyDo merges YAML from lowest to highest precedence in this order:
+
+1. Shipped `defs/task-types.yaml`
+2. User packs, in lexical directory-name order
+3. `~/.config/cydo/task-types.yaml`
+4. Project packs, in lexical directory-name order
+5. `<project>/.cydo/task-types.yaml`
+
+Mappings merge by key. Later values override earlier scalars and
+sequences. Prefix pack names with numbers such as `10-` and `20-` to
+control their relative order. CyDo logs the YAML layer order and prompt
+search path on a successful load. If a layer prevents loading, CyDo logs
+a warning and keeps the last successfully loaded configuration for that
+project.
+
+### Automatic reload
+
+CyDo watches the user `config.yaml`, `task-types.yaml`, and `packs/`.
+For each known project it watches `.cydo/task-types.yaml`, `.cydo/packs/`,
+and the `.cydo/defs` entry. It also watches each pack's `task-types.yaml`.
+User task-type changes reload every project. Project changes reload the
+affected project.
+
+The user configuration files and `packs/`, a project's `.cydo` and its
+`task-types.yaml` and `packs/` entries, each pack directory, and its
+`task-types.yaml` may be symlinks or chains of up to 40 symlinks.
+CyDo detects creating, removing, renaming, or retargeting a link in the
+chain. It also detects creation, removal, renaming, or replacement at the
+final target path, and writes to a watched target file.
+
+Changes to an ancestor or intermediate component of a link's target path
+are picked up on the next re-scan triggered by a watched event, or on
+restart. In particular, replacing a directory reached through a symlink
+target ending in `/..` requires another watched event or a restart.
+The same applies to moving or deleting a project root or
+`~/.config/cydo`, and to retargeting `~/.config/cydo` itself if it is a
+symlink.
+
+CyDo logs a warning when it cannot watch a directory. Changes inside it
+are missed until its permissions or its entry in a watched parent change.
+CyDo watches the `.cydo/defs` entry for presence. It reads prompt files
+when they are used.
+
+### Disabling definitions
+
+Task types, `creatable_tasks` entries, `continuations` entries,
+`on_yield`, and `user_entry_points` entries support a boolean `enabled`
+field that defaults to `true`. Set it to `false` in an overlay to remove
+the entry. A higher layer can set it back to `true` to restore the
+merged definition.
+
+CyDo checks that `enabled` is a boolean and rejects unknown keys at the
+top level of a disabled definition. Its other fields use their defaults
+without validation. CyDo checks enabled entries in full, including routes
+whose target type is disabled.
+
+Disabling a task type also removes every creatable task, continuation,
+`on_yield`, and entry point that targets it. An edge to a name that was
+never defined still produces an unknown-type warning. The `blank` type
+and entry point must stay enabled. If you disable the integrator's
+target type, also set `singletons.integrator.task_type` to `""` to turn
+off the singleton, or point it at an available type. A singleton
+targeting a disabled type causes a load error.
+
+Generated guidance follows the remaining edges. Override any handwritten
+prompts that name a type your pack disables. Existing tasks keep their
+stored type and session history and can still send messages or resume
+their sessions. Subsequent lookups skip type-specific behavior when the
+definition is missing, including prompt wrapping, the model override on
+session launch, and automatic continuation on yield.
+
+In task-type YAML, only `agent` and `model_class` are templates. The
+choice of prompt file, `enabled`, and the workflow edges are fixed for
+the merged configuration. Use separate packs for setups that need
+different wording for different model families.
+
 ## Prompt Templates
 
 Every prompt CyDo sends is a [Jinja](https://jinja.palletsprojects.com/)
-template under `prompts/` or `system_prompts/`. CyDo looks for a template in
-three places and takes the first that has it:
+template under `prompts/` or `system_prompts/`. CyDo takes the first
+matching file in this search order:
 
 1. `<project>/.cydo/defs/`
-2. `~/.config/cydo/defs/`
-3. the definitions shipped with CyDo
+2. Project pack directories, in reverse lexical order
+3. `~/.config/cydo/defs/`
+4. User pack directories, in reverse lexical order
+5. Shipped `defs/`
 
 A file higher up replaces the one below it. To add to a prompt instead of
 replacing it, write `{{ default }}` where the prompt from further down should
