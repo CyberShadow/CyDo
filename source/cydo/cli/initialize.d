@@ -527,6 +527,19 @@ version (unittest)
 		return nodeKeys(root).canFind(mapping) ? nodeKeys(at(root, [mapping])) : [];
 	}
 
+	// Names under `mapping` that the example itself disables.
+	private string[] disabledExampleNames(Node root, string mapping)
+	{
+		string[] result;
+		foreach (name; exampleNames(root, mapping))
+		{
+			auto entry = at(root, [mapping, name]);
+			if (nodeKeys(entry).canFind("enabled") && !at(entry, ["enabled"]).as!bool)
+				result ~= name;
+		}
+		return result;
+	}
+
 	private void checkTaskExampleRendering(TaskTypeConfig catalog, string[] roles,
 		string[] entries, string[] dirs, string workspaceName, string parentDirectory)
 	{
@@ -728,15 +741,23 @@ unittest // The complete examples and documented edits load through the runtime.
 	checkTaskExampleRendering(catalog, roles, entries, promptDirs, workspaceName, parentDirectory);
 	foreach (snippet; taskExamples.snippets)
 	{
-		import std.algorithm : uniq;
+		import std.algorithm : filter, uniq;
 		write(edit, snippet);
 		auto edited = loadTaskTypes(packaged, overlay, edit);
 		errors = validateTaskTypes(edited.types, edited.entryPoints, edited.singletons,
 			configured, promptDirs);
 		assert(errors.length == 0, snippet ~ errors.join("\n"));
 		auto editRoot = Loader.fromString(snippet).load();
-		auto editedRoles = (roles ~ exampleNames(editRoot, "task_types")).sort.uniq.array;
-		auto editedEntries = (entries ~ exampleNames(editRoot, "user_entry_points")).sort.uniq.array;
+		auto disabledRoles = disabledExampleNames(editRoot, "task_types");
+		auto disabledEntries = disabledExampleNames(editRoot, "user_entry_points");
+		auto editedRoles = (roles ~ exampleNames(editRoot, "task_types")).sort.uniq
+			.filter!(name => !disabledRoles.canFind(name)).array;
+		auto editedEntries = (entries ~ exampleNames(editRoot, "user_entry_points")).sort.uniq
+			.filter!(name => !disabledEntries.canFind(name)).array;
+		foreach (name; disabledRoles)
+			assert(edited.types.byName(name) is null, name);
+		foreach (name; disabledEntries)
+			assert(edited.entryPoints.byName(name) is null, name);
 		checkTaskExampleRendering(edited, editedRoles, editedEntries, promptDirs,
 			workspaceName, parentDirectory);
 	}

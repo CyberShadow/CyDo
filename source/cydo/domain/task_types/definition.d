@@ -87,6 +87,7 @@ struct ContinuationDef
 	@Optional WorktreeMode worktree;
 	@Optional string prompt_template;
 	@Optional string description;
+	@Optional bool enabled = true;
 }
 
 struct CreatableTaskDef
@@ -97,6 +98,7 @@ struct CreatableTaskDef
 	@Optional string prompt_template;
 	@Optional string result_note;
 	@Optional string description;
+	@Optional bool enabled = true;
 
 	/// Resolve the actual task type (task_type field, or name if unset).
 	string resolvedType() const
@@ -114,6 +116,7 @@ struct UserEntryPointDef
 	@Optional WorktreeMode worktree;
 	/// CyDo starts tasks here itself; the UI does not offer it.
 	@Optional bool system;
+	@Optional bool enabled = true;
 
 	string resolvedType() const
 	{
@@ -156,6 +159,7 @@ struct TaskTypeDef
 	@Optional bool steward;
 	@Optional string steward_domain;
 	@Optional string knowledge_base;
+	@Optional bool enabled = true;
 }
 
 // Top-level wrapper struct for YAML parsing (configy requires a struct).
@@ -339,6 +343,7 @@ TaskTypeConfig loadTaskTypes(string[] paths...)
 		throw new Exception("No task type files found in: " ~ paths.join(", "));
 
 	auto result = parseConfig!TaskTypesFile(CLIArgs(paths[0]), root);
+	removeDisabled(result, root);
 
 	// Ensure "blank" type always exists even if not in any config file.
 	if (result.task_types.byName("blank") is null)
@@ -438,6 +443,284 @@ unittest
 
 	write(path, types ~ "integrator:\n  task_type: lander\n  prompt_template: p.md\n");
 	assertThrown(loadTaskTypes(path));
+}
+
+unittest
+{
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+
+	auto basePath = buildPath(tempDir, "cydo-test-task-types-enabled.yaml");
+	auto disabledPath = buildPath(tempDir, "cydo-test-task-types-disabled.yaml");
+	auto restoredPath = buildPath(tempDir, "cydo-test-task-types-restored.yaml");
+	enum base = q"YAML
+task_types:
+  parent:
+    model_class: large
+    creatable_tasks:
+      worker:
+        prompt_template: worker.md
+      delegate:
+        task_type: worker
+        prompt_template: delegate.md
+      backup:
+        prompt_template: backup.md
+    continuations:
+      finish:
+        task_type: worker
+        prompt_template: finish.md
+      fallback:
+        task_type: backup
+        prompt_template: fallback.md
+    on_yield:
+      task_type: worker
+      prompt_template: yield.md
+  worker:
+    model_class: large
+    agent_description: Original worker description
+  backup:
+    model_class: large
+user_entry_points:
+  worker:
+    description: Start a worker
+    prompt_template: worker.md
+  start_worker:
+    task_type: worker
+    description: Start a worker by alias
+    prompt_template: start-worker.md
+  backup:
+    description: Start a backup
+    prompt_template: backup.md
+YAML";
+	write(basePath, base);
+	scope(exit) remove(basePath);
+
+	// An edge can be removed while its target and sibling edges stay available.
+	write(disabledPath, "task_types:\n  parent:\n    creatable_tasks:\n      delegate:\n        enabled: false\n");
+	scope(exit) remove(disabledPath);
+	auto config = loadTaskTypes(basePath, disabledPath);
+	auto parent = config.types.byName("parent");
+	assert(parent.creatable_tasks.map!(edge => edge.name).array == ["worker", "backup"],
+		parent.creatable_tasks.to!string);
+	assert(config.types.byName("worker") !is null);
+
+	write(disabledPath, "task_types:\n  parent:\n    continuations:\n      finish:\n        enabled: false\n");
+	auto expected = loadTaskTypes(basePath);
+	expected.types.byName("parent").continuations.remove("finish");
+	assert(loadTaskTypes(basePath, disabledPath) == expected);
+
+	write(disabledPath, "task_types:\n  parent:\n    on_yield:\n      enabled: false\n");
+	expected = loadTaskTypes(basePath);
+	expected.types.byName("parent").on_yield = ContinuationDef.init;
+	assert(loadTaskTypes(basePath, disabledPath) == expected);
+
+	write(disabledPath, "user_entry_points:\n  start_worker:\n    enabled: false\n");
+	expected = loadTaskTypes(basePath);
+	expected.entryPoints = expected.entryPoints.filter!(ep => ep.name != "start_worker").array;
+	assert(loadTaskTypes(basePath, disabledPath) == expected);
+
+	// A disabled type removes all routes to it, including aliases.
+	write(disabledPath, "task_types:\n  worker:\n    enabled: false\n");
+	config = loadTaskTypes(basePath, disabledPath);
+	parent = config.types.byName("parent");
+	assert(config.types.byName("worker") is null);
+	assert(parent.creatable_tasks.map!(edge => edge.name ~ " -> " ~ edge.resolvedType).array
+		== ["backup -> backup"], parent.creatable_tasks.to!string);
+	assert("finish" !in parent.continuations);
+	assert(parent.continuations["fallback"].task_type == "backup");
+	assert(parent.on_yield.task_type.length == 0);
+	assert(config.entryPoints.byName("worker") is null);
+	assert(config.entryPoints.byName("start_worker") is null);
+	assert(config.entryPoints.byName("backup") !is null);
+	auto guidance = formatGeneratedTaskGuidance(config.types, "parent");
+	assert(guidance.canFind("### Task `backup`"), guidance);
+	assert(guidance.canFind("### Handoff `fallback`"), guidance);
+	assert(!guidance.canFind("`worker`") && !guidance.canFind("`delegate`")
+		&& !guidance.canFind("`finish`"), guidance);
+
+	// Re-enabling in a later file keeps the original fields and routes.
+	write(restoredPath, "task_types:\n  worker:\n    enabled: true\n");
+	scope(exit) remove(restoredPath);
+	config = loadTaskTypes(basePath, disabledPath, restoredPath);
+	parent = config.types.byName("parent");
+	assert(config.types.byName("worker").agent_description == "Original worker description");
+	assert(parent.creatable_tasks.byName("worker").prompt_template == "worker.md");
+	assert(parent.creatable_tasks.byName("delegate").prompt_template == "delegate.md");
+	assert(parent.continuations["finish"].prompt_template == "finish.md");
+	assert(parent.on_yield.task_type == "worker" && parent.on_yield.prompt_template == "yield.md");
+	assert(config.entryPoints.byName("worker").prompt_template == "worker.md");
+	assert(config.entryPoints.byName("start_worker").prompt_template == "start-worker.md");
+}
+
+unittest
+{
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+
+	auto path = buildPath(tempDir, "cydo-test-task-types-unknown-target.yaml");
+	write(path, "task_types:\n  parent:\n    model_class: large\n    creatable_tasks:\n"
+		~ "      delegate:\n        task_type: missing\n        prompt_template: delegate.md\n");
+	scope(exit) remove(path);
+	auto config = loadTaskTypes(path);
+	auto errors = validateTaskTypes(config.types, config.entryPoints, config.singletons, &isKnownTestAgent);
+	assert(errors.canFind("parent: creatable_tasks 'delegate' references unknown type 'missing'"),
+		errors.to!string);
+}
+
+unittest
+{
+	import configy.exceptions : ConfigException;
+	import std.exception : assertThrown;
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+
+	auto path = buildPath(tempDir, "cydo-test-task-types-malformed-target.yaml");
+	scope (exit) remove(path);
+	enum types = "task_types:\n  worker:\n    enabled: false\n";
+	enum invalidTarget = "task_type: {'=': worker}\n";
+	foreach (routes; [
+		"  parent:\n    creatable_tasks:\n      delegate:\n        " ~ invalidTarget,
+		"  parent:\n    continuations:\n      finish:\n        " ~ invalidTarget,
+		"  parent:\n    on_yield:\n      " ~ invalidTarget,
+		"user_entry_points:\n  start_worker:\n    description: Start worker\n    " ~ invalidTarget,
+		"  parent:\n    creatable_tasks:\n      worker: []\n",
+		"  parent:\n    continuations:\n      worker: []\n",
+		"  parent:\n    on_yield: []\n",
+		"user_entry_points:\n  worker: []\n",
+		"user_entry_points:\n  worker:\n",
+		"  parent:\n    creatable_tasks: []\n",
+		"  parent:\n    continuations: []\n",
+		"user_entry_points: []\n",
+		// Configy still rejects unknown keys and a non-boolean `enabled` in a disabled struct.
+		"  backup:\n    agent_descripton: Backup\n    enabled: false\n",
+		"  parent:\n    creatable_tasks:\n      delegate:\n        bogus: 1\n        enabled: false\n",
+		"  parent:\n    continuations:\n      finish:\n        bogus: 1\n        enabled: false\n",
+		"  parent:\n    on_yield:\n      bogus: 1\n      enabled: false\n",
+		"user_entry_points:\n  start_worker:\n    bogus: 1\n    enabled: false\n",
+		"  backup:\n    enabled: \"false\"\n",
+		"  backup:\n    enabled: {'=': false}\n",
+		// An enabled route to a disabled type is still validated in full.
+		"  parent:\n    creatable_tasks:\n      worker:\n        worktree: []\n",
+		"  parent:\n    creatable_tasks:\n      delegate:\n        task_type: worker\n        worktree: []\n",
+		"  parent:\n    creatable_tasks:\n      delegate:\n        task_type: worker\n        bogus: 1\n",
+		"  parent:\n    continuations:\n      finish:\n        task_type: worker\n        requires_approval: []\n",
+		"  parent:\n    on_yield:\n      task_type: worker\n      worktree: []\n",
+		"user_entry_points:\n  start_worker:\n    task_type: worker\n",
+		"user_entry_points:\n  start_worker:\n    task_type: worker\n    description: []\n",
+		"user_entry_points:\n  worker:\n    prompt_template: worker.md\n",
+	])
+	{
+		write(path, types ~ routes);
+		assertThrown!ConfigException(loadTaskTypes(path), routes);
+	}
+
+	write(path, types ~ "  backup: {}\n  parent:\n    creatable_tasks:\n      worker:\n      backup:\n");
+	auto config = loadTaskTypes(path);
+	auto creatable = config.types.byName("parent").creatable_tasks;
+	assert(creatable.length == 1 && creatable[0].resolvedType == "backup");
+
+	// Configy skips the other fields of a disabled struct, so they may be invalid or missing.
+	write(path, "task_types:\n  worker:\n    max_turns: many\n    creatable_tasks: []\n    enabled: false\n"
+		~ "  parent:\n    continuations:\n      finish:\n        enabled: false\n"
+		~ "user_entry_points:\n  start_worker:\n    enabled: false\n");
+	config = loadTaskTypes(path);
+	assert(config.types.byName("worker") is null);
+	assert(config.types.byName("parent").continuations.length == 0);
+	assert(config.entryPoints.byName("start_worker") is null);
+
+	// Targets are compared after Configy converts the scalar to a string.
+	write(path, "task_types:\n  42:\n    enabled: false\n  parent:\n    creatable_tasks:\n"
+		~ "      delegate:\n        task_type: 42\n    continuations:\n      finish:\n        task_type: 42\n"
+		~ "    on_yield:\n      task_type: 42\nuser_entry_points:\n  start:\n    task_type: 42\n"
+		~ "    description: Start\n");
+	config = loadTaskTypes(path);
+	auto parent = config.types.byName("parent");
+	assert(config.types.byName("42") is null);
+	assert(parent.creatable_tasks.length == 0 && parent.continuations.length == 0);
+	assert(parent.on_yield == ContinuationDef.init);
+	assert(config.entryPoints.byName("start") is null);
+}
+
+unittest
+{
+	import std.exception : collectException;
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+	import std.typecons : tuple;
+
+	auto path = buildPath(tempDir, "cydo-test-task-types-required-targets.yaml");
+	scope(exit) remove(path);
+	foreach (test; [
+		tuple("task_types:\n  blank:\n    model_class: large\n    enabled: false\n",
+			"The blank task type cannot be disabled"),
+		tuple("task_types:\n  blank:\n    model_class: large\nuser_entry_points:\n"
+			~ "  blank:\n    description: Blank session\n    enabled: false\n",
+			"The blank entry point cannot be disabled"),
+		tuple("task_types:\n  lander:\n    model_class: large\n    enabled: false\n"
+			~ "singletons:\n  integrator:\n    task_type: lander\n    prompt_template: p.md\n    title: Integrator\n",
+			"singletons: 'integrator' has unknown task type 'lander'"),
+	])
+	{
+		write(path, test[0]);
+		auto error = collectException(loadTaskTypes(path));
+		assert(error !is null, test[1]);
+		assert(error.msg == test[1], error.msg);
+	}
+}
+
+/// Configy parses only the `enabled` field of a disabled struct, so a disabled
+/// `@Key` entry has an empty name. Configy decodes a keyed mapping into an
+/// array in mapping order, so restore each name from the key at its index.
+private void restoreDisabledNames(E)(E[] entries, Node mapping)
+{
+	auto pairs = mapping.get!(Node.Pair[]);
+	assert(pairs.length == entries.length);
+	foreach (i, ref entry; entries)
+	{
+		auto key = pairs[i].key.as!string;
+		if (entry.enabled)
+			assert(entry.name == key);
+		else
+			entry.name = key;
+	}
+}
+
+/// Remove disabled definitions and every route that targets a disabled type.
+/// Runs on the Configy result, so every node has already been validated.
+private void removeDisabled(ref TaskTypesFile file, Node root)
+{
+	restoreDisabledNames(file.task_types, root["task_types"]);
+	if (auto entryPoints = "user_entry_points" in root)
+		restoreDisabledNames(file.user_entry_points, *entryPoints);
+
+	bool[string] disabledTypes;
+	foreach (ref type; file.task_types)
+		if (!type.enabled)
+		{
+			enforce(type.name != "blank", "The blank task type cannot be disabled");
+			disabledTypes[type.name] = true;
+		}
+	bool available(string target)
+	{
+		return (target in disabledTypes) is null;
+	}
+
+	file.task_types = file.task_types.filter!(type => type.enabled).array;
+	foreach (ref type; file.task_types)
+	{
+		type.creatable_tasks = type.creatable_tasks
+			.filter!(edge => edge.enabled && available(edge.resolvedType)).array;
+		foreach (name, continuation; type.continuations.dup)
+			if (!continuation.enabled || !available(continuation.task_type))
+				type.continuations.remove(name);
+		if (!type.on_yield.enabled || !available(type.on_yield.task_type))
+			type.on_yield = ContinuationDef.init;
+	}
+
+	foreach (ref entryPoint; file.user_entry_points)
+		enforce(entryPoint.enabled || entryPoint.name != "blank", "The blank entry point cannot be disabled");
+	file.user_entry_points = file.user_entry_points
+		.filter!(entryPoint => entryPoint.enabled && available(entryPoint.resolvedType)).array;
 }
 
 /// Deep-merge two YAML nodes. For mappings, keys from `overlay` are merged

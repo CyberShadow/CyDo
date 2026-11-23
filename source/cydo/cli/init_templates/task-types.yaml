@@ -107,6 +107,18 @@ task_types: {}
 ## Task type fields
 ## ---------------------------------------------------------------------------
 
+## enabled
+## Purpose: Removes the type from the merged configuration when false.
+## Type: Boolean.
+## Default: True.
+## Notes: Disabling a type also removes every child edge, continuation,
+##   on_yield and entry point that targets it. A higher layer can set it
+##   back to true to restore the definition. The blank type cannot be
+##   disabled, and the integrator cannot name a disabled type.
+# task_types:
+#   plan_mode:
+#     enabled: false
+
 ## icon
 ## Purpose: Selects the icon shown for the type.
 ## Type: String.
@@ -326,6 +338,16 @@ task_types: {}
 ## Child edge fields
 ## ---------------------------------------------------------------------------
 
+## enabled
+## Purpose: Removes this child edge when false.
+## Type: Boolean.
+## Default: True.
+# task_types:
+#   coordinator:
+#     creatable_tasks:
+#       quick_research:
+#         enabled: false
+
 ## task_type
 ## Purpose: Selects the child type to create.
 ## Type: Type name string.
@@ -390,6 +412,16 @@ task_types: {}
 ## ---------------------------------------------------------------------------
 ## Continuation and on_yield fields
 ## ---------------------------------------------------------------------------
+
+## enabled
+## Purpose: Removes this continuation or on_yield when false.
+## Type: Boolean.
+## Default: True.
+# task_types:
+#   coordinator:
+#     continuations:
+#       after_research:
+#         enabled: false
 
 ## task_type
 ## Purpose: Selects the successor type.
@@ -498,6 +530,7 @@ task_types: {}
 #         worktree: fork
 #         prompt_template: prompts/implement.md
 #       test:
+#         enabled: true
 #         worktree: inherit
 #         prompt_template: prompts/test.md
 #         result_note: "Record your next steps in {{ output_dir }}/notes.md."
@@ -516,6 +549,7 @@ task_types: {}
 #         prompt_template: prompts/quick_research.md
 #         description: Research the request and return a report.
 #       implement_change:
+#         enabled: true
 #         task_type: implement
 #         worktree: require
 #         prompt_template: prompts/implement.md
@@ -527,6 +561,7 @@ task_types: {}
 #         description: Review in an isolated worktree.
 #     continuations:
 #       after_research:
+#         enabled: true
 #         task_type: implement
 #         requires_approval: true
 #         keep_context: false
@@ -534,6 +569,7 @@ task_types: {}
 #         prompt_template: prompts/implement.md
 #         description: Continue by implementing the findings.
 #     on_yield:
+#       enabled: true
 #       task_type: review
 #       requires_approval: false
 #       keep_context: false
@@ -546,6 +582,7 @@ task_types: {}
 #     memory: true
 
 #   approval_steward:
+#     enabled: true
 #     icon: steward-quality
 #     agent_description: Review a proposed transition.
 #     tool_guidance: Choose this role for a quality review.
@@ -619,6 +656,15 @@ task_types: {}
 ## Entry-point fields
 ## ---------------------------------------------------------------------------
 
+## enabled
+## Purpose: Removes this entry point when false.
+## Type: Boolean.
+## Default: True.
+## Notes: The blank entry point cannot be disabled.
+# user_entry_points:
+#   start_research:
+#     enabled: false
+
 ## task_type
 ## Purpose: Selects which task type to start.
 ## Type: Type name string.
@@ -674,6 +720,7 @@ task_types: {}
 ## cydo-init: complete-example begin
 # user_entry_points:
 #   start_research:
+#     enabled: true
 #     task_type: research_console
 #     description: Start a conversation about a research request.
 #     prompt_template: prompts/blank.md
