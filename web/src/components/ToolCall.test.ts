@@ -903,23 +903,23 @@ describe("ToolCall numbered shell output", () => {
     ).toBeNull();
   }
 
-  it.each(["git show HEAD:x.svg | nl -ba | sed -n 1,20p"])(
-    "renders numbering without preview for %s",
-    async (command) => {
-      const root = await mountResult(
-        command,
-        makeResult({ toolResult: { stdout: numberedSvg } }),
-      );
-      expect(
-        root.querySelector('[data-testid="semantic-shell-block-nl-0"]'),
-      ).not.toBeNull();
-      expect(
-        root.querySelector('[data-testid="semantic-shell-line-prefix"]')
-          ?.textContent,
-      ).toBe("     1\t");
-      expectNoPreview(root);
-    },
-  );
+  it.each([
+    "git show HEAD:x.svg | nl -ba | sed -n 1,20p",
+    "git show HEAD:x.svg | nl -ba | head -n 1",
+  ])("renders numbering without preview for %s", async (command) => {
+    const root = await mountResult(
+      command,
+      makeResult({ toolResult: { stdout: numberedSvg } }),
+    );
+    expect(
+      root.querySelector('[data-testid="semantic-shell-block-nl-0"]'),
+    ).not.toBeNull();
+    expect(
+      root.querySelector('[data-testid="semantic-shell-line-prefix"]')
+        ?.textContent,
+    ).toBe("     1\t");
+    expectNoPreview(root);
+  });
 
   it("keeps all stdout plain when an accepted plan's anchor appears twice", async () => {
     const stdout = `${numberedSvg}     2\t<!-- done -->\n<!-- done -->\n`;
@@ -954,7 +954,7 @@ describe("ToolCall numbered shell output", () => {
     },
   );
 
-  it.each(["nl -ba x.md"])(
+  it.each(["nl -ba x.md", "head -2 x.md | nl -ba"])(
     "renders numbered markdown as text for %s",
     async (command) => {
       const root = await mountResult(

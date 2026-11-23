@@ -407,19 +407,22 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     expect(html).toContain("&lt;svg");
   });
 
-  it("keeps a numbered git-object SVG out of file preview after sed", async () => {
-    const result = await parseShellSemantic(
-      "git show HEAD:x.svg | nl -ba | sed -n 1,20p",
-    );
-    assert(result.ok && result.value.steps);
-    expect(result.value.commandName).toBe("git");
-    const outputPlan = derivePlan(result.value.steps);
-    assert(outputPlan);
+  it.each(["sed -n 1,20p", "head -n 1"])(
+    "keeps a numbered git-object SVG out of file preview after %s",
+    async (slice) => {
+      const result = await parseShellSemantic(
+        `git show HEAD:x.svg | nl -ba | ${slice}`,
+      );
+      assert(result.ok && result.value.steps);
+      expect(result.value.commandName).toBe("git");
+      const outputPlan = derivePlan(result.value.steps);
+      assert(outputPlan);
 
-    const html = renderSemantic(`     1	${SVG_CONTENT}`, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-nl-0"');
-    expect(html).not.toContain('alt="SVG preview"');
-  });
+      const html = renderSemantic(`     1	${SVG_CONTENT}`, outputPlan);
+      expect(html).toContain('data-testid="semantic-shell-block-nl-0"');
+      expect(html).not.toContain('alt="SVG preview"');
+    },
+  );
 
   it.each([
     ["nl x.d", "       \n", "       ", 1],

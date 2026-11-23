@@ -84,14 +84,13 @@ it("returns an unsupported command result for a long && chain with redirects", a
   });
 }, 30_000);
 
-it("returns a typed rejection for a 4,000-stage read pipeline", async () => {
+it("classifies a 4,000-stage read pipeline", async () => {
   const source = ["cat file", ...Array<string>(3_999).fill("head -n 1")].join(
     " | ",
   );
   await expect(parseShellSemantic(source)).resolves.toMatchObject({
-    ok: false,
-    code: "unsafe_shell_syntax",
-    reason: "pipeline has multiple read stages",
+    ok: true,
+    value: { kind: "read", range: { type: "head", count: 1 } },
   });
 }, 30_000);
 
@@ -461,17 +460,24 @@ describe("pipe reads (should succeed as Read)", () => {
     const r = await parseShellSemantic(
       "sed -n '260,640p' src/main.rs | nl -ba",
     );
-    expect(r.ok).toBe(false);
+    expect(r).toMatchObject({
+      ok: false,
+      reason:
+        "nl numbering of a sliced range would not match file line numbers",
+    });
   });
 
   it("cat file.txt | wc -l → reject (opaque transform over file-read)", async () => {
     const r = await parseShellSemantic("cat file.txt | wc -l");
-    expect(r.ok).toBe(false);
+    expect(r).toMatchObject({ ok: false, reason: "wc output is not planned" });
   });
 
-  it("cat file.txt | sort | head -5 → reject (composed transforms are not lowered)", async () => {
+  it("cat file.txt | sort | head -5 → reject at the opaque stage", async () => {
     const r = await parseShellSemantic("cat file.txt | sort | head -5");
-    expect(r.ok).toBe(false);
+    expect(r).toMatchObject({
+      ok: false,
+      reason: "sort output is not planned",
+    });
   });
 });
 
@@ -486,32 +492,293 @@ describe("pipe reads (should reject)", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("sed -n '10,20p' file.txt | rg -n needle → reject (stream-relative line numbers)", async () => {
-    const r = await parseShellSemantic(
-      "sed -n '10,20p' file.txt | rg -n needle",
-    );
-    expect(r.ok).toBe(false);
-  });
-
-  it("cat file.txt | head -5 | tail -2 → reject (nested line-range transforms)", async () => {
-    const r = await parseShellSemantic("cat file.txt | head -5 | tail -2");
-    expect(r.ok).toBe(false);
-  });
-
-  it("cat file.txt | sed -n '1,20p' | head -3 → reject (nested range transforms)", async () => {
-    const r = await parseShellSemantic(
-      "cat file.txt | sed -n '1,20p' | head -3",
-    );
-    expect(r.ok).toBe(false);
-  });
-
-  it("rg -n needle README.md | head -n 5 → reject (search slicing is stream-relative)", async () => {
-    const r = await parseShellSemantic("rg -n needle README.md | head -n 5");
-    expect(r.ok).toBe(false);
+  it("cat file.txt | head -5 | tail -2 rejects a file-length-dependent range", async () => {
+    await expect(
+      parseShellSemantic("cat file.txt | head -5 | tail -2"),
+    ).resolves.toEqual({
+      ok: false,
+      code: "unsafe_shell_syntax",
+      reason:
+        "a last-lines slice of an already sliced range depends on the file length",
+    });
   });
 });
 
+describe("stream composition", () => {
+  it.each([
+    ["tail -n +1 f.d | sed -n 1,5p", { type: "lines", start: 1, end: 5 }],
+    ["sed -n 2,6p f.d | tail -n +1", { type: "lines", start: 2, end: 6 }],
+  ])("preserves the sed range and producer for %s", async (command, range) => {
+    const result = await parseShellSemantic(command);
+    expect(result).toMatchObject({
+      ok: true,
+      value: { kind: "read", commandName: "sed", range },
+    });
+    if (!result.ok) return;
+    expect(plan(result.value)?.blocks[0]).toMatchObject({
+      id: "sed-output",
+      source: { producerName: "sed" },
+    });
+  });
+
+  it("sed followed by head selects the first three file lines", async () => {
+    await expect(
+      parseShellSemantic("cat file.txt | sed -n '1,20p' | head -3"),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        kind: "read",
+        commandName: "head",
+        range: { type: "head", count: 3 },
+      },
+    });
+  });
+
+  it("rg followed by head preserves the search semantic", async () => {
+    const direct = await parseShellSemantic("rg -n needle README.md");
+    const sliced = await parseShellSemantic(
+      "rg -n needle README.md | head -n 5",
+    );
+    expect(direct.ok).toBe(true);
+    expect(sliced.ok).toBe(true);
+    if (!direct.ok || !sliced.ok) return;
+    expect(normalizeSemanticForComparison(sliced.value)).toEqual(
+      normalizeSemanticForComparison(direct.value),
+    );
+  });
+
+  it("searches a sliced file with rg", async () => {
+    await expect(
+      parseShellSemantic("sed -n '10,20p' file.txt | rg -n needle"),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { kind: "search", filePath: "file.txt", pattern: "needle" },
+    });
+  });
+
+  it.each([
+    ["cat f.d | cat", "cat", { type: "all" }],
+    [
+      "sed -n 10,20p f.d | head -5",
+      "head",
+      { type: "lines", start: 10, end: 14 },
+    ],
+    [
+      "head -n 20 f.d | sed -n 5,8p",
+      "sed",
+      { type: "lines", start: 5, end: 8 },
+    ],
+    [
+      "tail -n +10 f.d | head -n 3",
+      "head",
+      { type: "lines", start: 10, end: 12 },
+    ],
+    ["tail -n +10 f.d | tail -n +3", "tail", { type: "tail", startLine: 12 }],
+    ["head -n 5 f.d | head -n 9", "head", { type: "head", count: 5 }],
+    ["sed -n 2,6p f.d | head -n 9", "sed", { type: "lines", start: 2, end: 6 }],
+    ["tail -n 3 f.d | head -n 5", "tail", { type: "tail-count", count: 3 }],
+    ["tail -n 9 f.d | tail -n 3", "tail", { type: "tail-count", count: 3 }],
+  ] as const)(
+    "%s composes the read range and producer",
+    async (command, commandName, range) => {
+      await expect(parseShellSemantic(command)).resolves.toEqual({
+        ok: true,
+        value: {
+          kind: "read",
+          command,
+          commandName,
+          filePath: "f.d",
+          range,
+          presentation: { lineNumbers: false },
+          steps: [
+            {
+              kind: "read-file",
+              order: 0,
+              commandName,
+              filePath: "f.d",
+              range,
+              outputShape: {
+                kind: "content",
+                format: { kind: "content", language: "d" },
+                validator: "non-empty",
+              },
+              blockId: commandName === "sed" ? "sed-output" : undefined,
+            },
+          ],
+        },
+      });
+    },
+  );
+
+  it.each([
+    ["nl f.d | head -5", { type: "head", count: 5 }],
+    ["head -5 f.d | nl", { type: "head", count: 5 }],
+    ["nl f.d | cat", { type: "all" }],
+  ] as const)(
+    "%s preserves nl as the numbered read producer",
+    async (command, range) => {
+      await expect(parseShellSemantic(command)).resolves.toEqual({
+        ok: true,
+        value: {
+          kind: "read",
+          command,
+          commandName: "nl",
+          filePath: "f.d",
+          range,
+          presentation: { lineNumbers: { style: "nl" } },
+          steps: [
+            {
+              kind: "read-file",
+              order: 0,
+              commandName: "nl",
+              filePath: "f.d",
+              range,
+              outputShape: {
+                kind: "content",
+                format: {
+                  kind: "nl-line-number-prefixed",
+                  width: 6,
+                  separator: "\t",
+                  format: { kind: "content", language: "d" },
+                },
+              },
+            },
+          ],
+        },
+      });
+    },
+  );
+
+  it.each([
+    [
+      "tail -n +9007199254740991 f.d | tail -n +3",
+      "line range exceeds integer precision",
+    ],
+    ["head -n 5 f.d | sed -n 7,9p", "slice selects no lines of its input"],
+    [
+      "sed -n 10,20p f.d | tail -n 3",
+      "a last-lines slice of an already sliced range depends on the file length",
+    ],
+    [
+      "tail -n 9 f.d | head -n 2",
+      "slicing the output of a last-lines slice depends on the file length",
+    ],
+    [
+      "sed -n 10,20p f.d | nl",
+      "nl numbering of a sliced range would not match file line numbers",
+    ],
+    ["nl f.d | nl", "nested nl numbering is not supported"],
+    ["nl f.d | grep -n x", "search over nl-numbered output is not supported"],
+    ["nl f.d | wc -l", "wc output is not planned"],
+    ["grep -n p f.d | nl", "nl numbering of search output is not supported"],
+    ["grep -n p f.d | grep -n q", "search over search output is not supported"],
+    ["grep -n p f.d | wc -l", "wc output is not planned"],
+    ["git diff | grep -n x", "search over diff output is not supported"],
+    ["cat f.d | head -n 2 g.d", "pipeline has multiple read stages"],
+  ])("%s rejects with the failing stage's reason", async (command, reason) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsafe_shell_syntax",
+      reason,
+    });
+  });
+
+  it.each([
+    "head -5 | tail -2",
+    "sed -n 1,150p",
+    "head -15",
+    "tail -n 5",
+    "tail -n +3",
+    "head",
+    "cat",
+  ])("grep -n p f.d | %s preserves the search semantic", async (filters) => {
+    const direct = await parseShellSemantic("grep -n p f.d");
+    const filtered = await parseShellSemantic(`grep -n p f.d | ${filters}`);
+    expect(direct.ok).toBe(true);
+    expect(filtered.ok).toBe(true);
+    if (!direct.ok || !filtered.ok) return;
+    expect(normalizeSemanticForComparison(filtered.value)).toEqual(
+      normalizeSemanticForComparison(direct.value),
+    );
+  });
+
+  it.each([
+    "sed -n 10,20p f.d | grep -n x",
+    "tail -n 30 f.d | grep -n x",
+    "git show HEAD:f.d | grep -n x | head -3",
+  ])("%s preserves the search pattern and D output plan", async (command) => {
+    const direct = await parseShellSemantic("grep -n x f.d");
+    const composed = await parseShellSemantic(command);
+    expect(composed).toMatchObject({
+      ok: true,
+      value: { kind: "search", pattern: "x", filePath: "f.d" },
+    });
+    expect(composed.ok).toBe(true);
+    if (!direct.ok || !composed.ok) return;
+    expect(normalizeSemanticForComparison(composed.value)).toEqual(
+      normalizeSemanticForComparison(direct.value),
+    );
+    expect(plan(composed.value)?.blocks[0]?.format).toEqual({
+      kind: "individual-lines",
+      format: {
+        kind: "line-number-prefixed",
+        format: { kind: "content", language: "d" },
+      },
+    });
+  });
+
+  it.each([
+    "git diff | nl | sed -n 1,5p",
+    "git diff | sed -n 1,5p | nl",
+    "git diff | cat",
+  ])("%s preserves the diff semantic", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: true,
+      value: { kind: "diff", commandName: "git", command, subcommand: "diff" },
+    });
+  });
+
+  it("composes a read range over a git object without a worktree output plan", async () => {
+    const command = "git show HEAD:f.d | sed -n 2,4p | head -2";
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: true,
+      value: {
+        kind: "read",
+        command,
+        commandName: "git",
+        filePath: "f.d",
+        range: { type: "lines", start: 2, end: 3 },
+        presentation: { lineNumbers: false },
+      },
+    });
+  });
+
+  it("reports an opaque stage at the end of a 4,000-stage read pipeline", async () => {
+    const command = [
+      "cat file",
+      ...Array<string>(3_998).fill("head -n 1"),
+      "wc -l",
+    ].join(" | ");
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsafe_shell_syntax",
+      reason: "wc output is not planned",
+    });
+  }, 30_000);
+});
+
 describe("argv vs pipeline equivalence", () => {
+  it("nl/read forms normalize to the same semantic", async () => {
+    const direct = await parseShellSemantic("nl f.d");
+    const viaPipe = await parseShellSemantic("cat f.d | nl");
+    expect(direct.ok).toBe(true);
+    expect(viaPipe.ok).toBe(true);
+    if (!direct.ok || !viaPipe.ok) return;
+    expect(normalizeSemanticForComparison(viaPipe.value)).toEqual(
+      normalizeSemanticForComparison(direct.value),
+    );
+  });
+
   it("head/read forms normalize to the same semantic", async () => {
     const direct = await parseShellSemantic("head -n 20 README.md");
     const viaPipe = await parseShellSemantic("cat README.md | head -n 20");
@@ -723,7 +990,7 @@ describe("cd && read (should reject)", () => {
 
   it.each([
     ["cd x && git show HEAD:f", "git object paths are not relative to cd"],
-    ["cd x && cat f | wc -l", "pipeline has multiple read stages"],
+    ["cd x && cat f | wc -l", "wc output is not planned"],
     [
       "cd x && git diff | cat && echo y",
       "diff output cannot be combined with other list output",
@@ -2088,18 +2355,26 @@ describe("batch 1 rg/sed/structured output plans", () => {
     }
   });
 
-  it("grep -n ... /nix/store/... | head rejects (search slicing is stream-relative)", async () => {
+  it("grep -n ... osthread.d | head keeps D highlighting", async () => {
     const r = await parseShellSemantic(
       'grep -n "cbDllUnload\\|ll_removeThread" /nix/store/ab1n7scnjf98w13jwz12r5lm43d30cj9-dmd-2.112.0/include/dmd/core/thread/osthread.d | head -15',
     );
-    expect(r.ok).toBe(false);
+    expect(r).toMatchObject({ ok: true, value: { kind: "search" } });
+    if (!r.ok) return;
+    expect(plan(r.value)?.blocks[0]?.format).toEqual({
+      kind: "individual-lines",
+      format: {
+        kind: "line-number-prefixed",
+        format: { kind: "content", language: "d" },
+      },
+    });
   });
 
-  it("rg -n ... app.d | head rejects (search slicing is stream-relative)", async () => {
+  it("rg -n ... app.d | head remains a search", async () => {
     const r = await parseShellSemantic(
       'rg -n "sessionBroadcast" source/cydo/app.d | head -15',
     );
-    expect(r.ok).toBe(false);
+    expect(r).toMatchObject({ ok: true, value: { kind: "search" } });
   });
 
   it("unsupported search pipeline stage rejects", async () => {

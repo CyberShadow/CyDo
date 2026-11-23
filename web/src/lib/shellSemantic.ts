@@ -192,61 +192,41 @@ const OPAQUE_TRANSFORM_COMMANDS = new Set<string>([
 
 type NlOptions = { width?: number; separator?: string };
 
-type ShellOutputExpr =
+type FileOrigin =
+  | { kind: "worktree"; filePath: string }
+  | { kind: "git-object"; filePath: string };
+type ReadStageName = Exclude<ReadCommandName, "git">;
+type SliceRange = Exclude<ReadRange, { type: "all" }>;
+
+type ShellStream =
   | {
-      kind: "file-read";
-      filePath: string;
-      stageIndex: number;
-      commandName: ReadCommandName;
+      kind: "file-lines";
+      origin: FileOrigin;
+      range: ReadRange;
+      numbering: NlOptions | null;
+      producer: ReadStageName;
     }
+  | { kind: "numbered-rows"; origin: FileOrigin; pattern: string }
   | {
-      kind: "diff-source";
-      subcommand: string | undefined;
+      kind: "diff";
       commandName: "git" | "diff";
-      stageIndex: number;
-    }
+      subcommand: string | undefined;
+    };
+
+type StageOp =
+  | { kind: "identity" }
+  | { kind: "slice"; range: SliceRange; commandName: "head" | "tail" | "sed" }
+  | { kind: "number-lines"; options: NlOptions }
+  | { kind: "search"; pattern: string }
+  | { kind: "opaque"; commandName: string };
+
+type ParsedStage =
+  | { kind: "source"; stream: ShellStream }
   | {
-      kind: "take-first-lines";
-      count?: number;
-      input: ShellOutputExpr;
-      stageIndex: number;
-    }
-  | {
-      kind: "take-last-lines";
-      count: number;
-      input: ShellOutputExpr;
-      stageIndex: number;
-    }
-  | {
-      kind: "take-lines-from";
-      startLine: number;
-      input: ShellOutputExpr;
-      stageIndex: number;
-    }
-  | {
-      kind: "select-lines";
-      start: number;
-      end: number;
-      input: ShellOutputExpr;
-      stageIndex: number;
-    }
-  | {
-      kind: "line-number-prefix";
-      input: ShellOutputExpr;
-      stageIndex: number;
-      options: NlOptions;
-    }
-  | {
-      kind: "sparse-match-lines";
-      input: ShellOutputExpr;
-      pattern: string;
-      stageIndex: number;
-    }
-  | {
-      kind: "opaque-transform";
-      input: ShellOutputExpr;
+      kind: "filter";
       commandName: string;
-      stageIndex: number;
+      operand: string | undefined;
+      op: StageOp;
     };
 
 type ParseResult<T> =
@@ -621,186 +601,143 @@ function parseRgArgs(
   return { ok: true, value: { pattern, filePath } };
 }
 
-function parseStageAsSource(
+function openFile(origin: FileOrigin, producer: ReadStageName): ShellStream {
+  return {
+    kind: "file-lines",
+    origin,
+    range: { type: "all" },
+    numbering: null,
+    producer,
+  };
+}
+
+function parseStage(
   cmd: SimpleCommand,
-  stageIndex: number,
-): ParseResult<ShellOutputExpr> {
+  position: "first" | "later",
+): ParseResult<ParsedStage> {
   const name = cmd.name;
   if (!name) return reject("empty", "empty command");
 
-  if (cmd.redirects.some((r) => r.op !== "<<")) {
+  const first = position === "first";
+  if (first && cmd.redirects.some((r) => r.op !== "<<")) {
     return reject(
       "redirection_on_read",
       "read commands with redirection are not display-only reads",
     );
   }
 
-  if (name === "cat") {
-    const parsed = parseCatArgs(cmd, true);
-    if (!parsed.ok) return parsed;
-    return {
-      ok: true,
-      value: {
-        kind: "file-read",
-        filePath: parsed.value!,
-        stageIndex,
-        commandName: "cat",
-      },
-    };
-  }
-
-  if (name === "head") {
-    const parsed = parseHeadArgs(cmd, true);
-    if (!parsed.ok) return parsed;
-    const base: ShellOutputExpr = {
-      kind: "file-read",
-      filePath: parsed.value.filePath!,
-      stageIndex,
-      commandName: "head",
-    };
-    return {
-      ok: true,
-      value: {
-        kind: "take-first-lines",
-        count: parsed.value.count,
-        input: base,
-        stageIndex,
-      },
-    };
-  }
-
-  if (name === "tail") {
-    const parsed = parseTailArgs(cmd, true);
-    if (!parsed.ok) return parsed;
-    const base: ShellOutputExpr = {
-      kind: "file-read",
-      filePath: parsed.value.filePath!,
-      stageIndex,
-      commandName: "tail",
-    };
-    if (parsed.value.range.type === "tail") {
-      return {
-        ok: true,
-        value: {
-          kind: "take-lines-from",
-          startLine: parsed.value.range.startLine,
-          input: base,
-          stageIndex,
-        },
-      };
+  function filter(
+    op: StageOp,
+    commandName: ReadStageName,
+    operand?: string,
+  ): ParseResult<ParsedStage> {
+    if (first && operand === undefined) {
+      return reject("missing_path", "expected one file path");
     }
-    if (parsed.value.range.type === "tail-count") {
-      return {
-        ok: true,
-        value: {
-          kind: "take-last-lines",
-          count: parsed.value.range.count,
-          input: base,
-          stageIndex,
-        },
-      };
+    if (!first && operand !== undefined) {
+      return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
     }
-    return { ok: true, value: base };
+    return { ok: true, value: { kind: "filter", commandName, operand, op } };
   }
 
-  if (name === "sed") {
-    const parsed = parseSedArgs(cmd, true);
-    if (!parsed.ok) return parsed;
-    const base: ShellOutputExpr = {
-      kind: "file-read",
-      filePath: parsed.value.filePath!,
-      stageIndex,
-      commandName: "sed",
-    };
-    return {
-      ok: true,
-      value: {
-        kind: "select-lines",
-        start: parsed.value.start,
-        end: parsed.value.end,
-        input: base,
-        stageIndex,
-      },
-    };
-  }
-
-  if (name === "nl") {
-    const parsed = parseNlArgs(cmd, true);
-    if (!parsed.ok) return parsed;
-    const base: ShellOutputExpr = {
-      kind: "file-read",
-      filePath: parsed.value.filePath!,
-      stageIndex,
-      commandName: "nl",
-    };
-    return {
-      ok: true,
-      value: {
-        kind: "line-number-prefix",
-        input: base,
-        stageIndex,
-        options: parsed.value.options,
-      },
-    };
-  }
-
-  if (name === "rg" || name === "grep") {
-    const parsed = parseRgArgs(cmd, true);
-    if (!parsed.ok) return parsed;
-    return {
-      ok: true,
-      value: {
-        kind: "sparse-match-lines",
-        input: {
-          kind: "file-read",
-          filePath: parsed.value.filePath!,
-          stageIndex,
-          commandName: "cat",
-        },
-        pattern: parsed.value.pattern,
-        stageIndex,
-      },
-    };
-  }
-
-  if (name === "git") {
-    const git = classifyGitCommand(cmd, "");
-    if (!git.ok) return git;
-    if (git.value.kind === "read") {
-      return {
-        ok: true,
-        value: {
-          kind: "file-read",
-          filePath: git.value.filePath,
-          stageIndex,
-          commandName: "git",
-        },
-      };
+  switch (name) {
+    case "cat": {
+      const parsed = parseCatArgs(cmd, first);
+      if (!parsed.ok) return parsed;
+      return filter({ kind: "identity" }, name, parsed.value);
     }
-    if (git.value.kind === "diff") {
-      return {
-        ok: true,
-        value: {
-          kind: "diff-source",
+    case "head": {
+      const parsed = parseHeadArgs(cmd, first);
+      if (!parsed.ok) return parsed;
+      const { count, filePath } = parsed.value;
+      const op: StageOp =
+        count === undefined
+          ? { kind: "identity" }
+          : {
+              kind: "slice",
+              commandName: name,
+              range: { type: "head", count },
+            };
+      return filter(op, name, filePath);
+    }
+    case "tail": {
+      const parsed = parseTailArgs(cmd, first);
+      if (!parsed.ok) return parsed;
+      const { range, filePath } = parsed.value;
+      const op: StageOp =
+        range.type === "all"
+          ? { kind: "identity" }
+          : { kind: "slice", commandName: name, range };
+      return filter(op, name, filePath);
+    }
+    case "sed": {
+      const parsed = parseSedArgs(cmd, first);
+      if (!parsed.ok) return parsed;
+      const { start, end, filePath } = parsed.value;
+      return filter(
+        {
+          kind: "slice",
+          commandName: name,
+          range: { type: "lines", start, end },
+        },
+        name,
+        filePath,
+      );
+    }
+    case "nl": {
+      const parsed = parseNlArgs(cmd, first);
+      if (!parsed.ok) return parsed;
+      return filter(
+        { kind: "number-lines", options: parsed.value.options },
+        name,
+        parsed.value.filePath,
+      );
+    }
+    case "grep":
+    case "rg": {
+      const parsed = parseRgArgs(cmd, first);
+      if (!parsed.ok) return parsed;
+      return filter(
+        { kind: "search", pattern: parsed.value.pattern },
+        "cat",
+        parsed.value.filePath,
+      );
+    }
+    case "git":
+    case "diff": {
+      if (!first)
+        return reject(
+          "unsafe_shell_syntax",
+          "pipeline has multiple diff stages",
+        );
+      if (name === "diff") {
+        return {
+          ok: true,
+          value: {
+            kind: "source",
+            stream: { kind: "diff", commandName: name, subcommand: undefined },
+          },
+        };
+      }
+      const git = classifyGitCommand(cmd, "");
+      if (!git.ok) return git;
+      if (git.value.kind === "read") {
+        const stream = openFile(
+          { kind: "git-object", filePath: git.value.filePath },
+          "cat",
+        );
+        return { ok: true, value: { kind: "source", stream } };
+      }
+      if (git.value.kind === "diff") {
+        const stream: ShellStream = {
+          kind: "diff",
+          commandName: name,
           subcommand: git.value.subcommand,
-          commandName: "git",
-          stageIndex,
-        },
-      };
+        };
+        return { ok: true, value: { kind: "source", stream } };
+      }
+      return reject("unsupported_command", "unsupported git stage in pipeline");
     }
-    return reject("unsupported_command", "unsupported git stage in pipeline");
-  }
-
-  if (name === "diff") {
-    return {
-      ok: true,
-      value: {
-        kind: "diff-source",
-        subcommand: undefined,
-        commandName: "diff",
-        stageIndex,
-      },
-    };
   }
 
   if (
@@ -808,175 +745,260 @@ function parseStageAsSource(
     (name === "awk" &&
       cmd.args.every((a) => a.kind === "flag" || a.text.startsWith("{")))
   ) {
+    if (first) {
+      return reject(
+        "unsafe_shell_syntax",
+        "pipeline has no recognized file-reading, search, or diff stage",
+      );
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "filter",
+        commandName: name,
+        operand: undefined,
+        op: { kind: "opaque", commandName: name },
+      },
+    };
+  }
+
+  return first
+    ? reject(
+        "unsupported_command",
+        "only cat, nl, sed, head, tail, git, diff, and interpreters are recognized",
+      )
+    : reject(
+        "unsafe_shell_syntax",
+        `pipeline stage "${name}" is not a recognized formatting command`,
+      );
+}
+
+type IntervalRange = Exclude<SliceRange, { type: "tail-count" }>;
+type LineInterval = { start: number; end: number | null };
+
+function toInterval(range: IntervalRange): LineInterval {
+  switch (range.type) {
+    case "head":
+      return { start: 1, end: range.count };
+    case "tail":
+      return { start: range.startLine, end: null };
+    case "lines":
+      return { start: range.start, end: range.end };
+  }
+}
+
+function fromInterval({ start, end }: LineInterval): IntervalRange {
+  if (end === null) return { type: "tail", startLine: start };
+  if (start === 1) return { type: "head", count: end };
+  return { type: "lines", start, end };
+}
+
+function applySlice(
+  input: ReadRange,
+  applied: SliceRange,
+): ParseResult<ReadRange | "unchanged"> {
+  if (
+    input.type === "all" ||
+    (input.type === "tail" && input.startLine === 1)
+  ) {
+    return { ok: true, value: applied };
+  }
+
+  const base = input.type === "tail-count" ? null : toInterval(input);
+  const rowBound =
+    input.type === "tail-count"
+      ? input.count
+      : base!.end === null
+        ? Infinity
+        : base!.end - base!.start + 1;
+  const slice = applied.type === "tail-count" ? null : toInterval(applied);
+  if (
+    slice === null
+      ? applied.type === "tail-count" && applied.count >= rowBound
+      : slice.start === 1 && (slice.end === null || slice.end >= rowBound)
+  ) {
+    return { ok: true, value: "unchanged" };
+  }
+
+  if (input.type === "tail-count") {
+    if (applied.type === "tail-count") {
+      return {
+        ok: true,
+        value: {
+          type: "tail-count",
+          count: Math.min(input.count, applied.count),
+        },
+      };
+    }
     return reject(
       "unsafe_shell_syntax",
-      "pipeline has no recognized file-reading, search, or diff stage",
+      "slicing the output of a last-lines slice depends on the file length",
+    );
+  }
+  if (applied.type === "tail-count") {
+    return reject(
+      "unsafe_shell_syntax",
+      "a last-lines slice of an already sliced range depends on the file length",
     );
   }
 
-  return reject(
-    "unsupported_command",
-    "only cat, nl, sed, head, tail, git, diff, and interpreters are recognized",
-  );
-}
-
-function parseStageAsTransform(
-  cmd: SimpleCommand,
-  stageIndex: number,
-): ParseResult<(input: ShellOutputExpr) => ShellOutputExpr> {
-  const name = cmd.name;
-  if (!name) return reject("empty", "empty command");
-
-  if (name === "cat") {
-    const parsed = parseCatArgs(cmd, false);
-    if (!parsed.ok) return parsed;
-    if (parsed.value === undefined)
-      return { ok: true, value: (input) => input };
-    return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
-  }
-
-  if (name === "head") {
-    const parsed = parseHeadArgs(cmd, false);
-    if (!parsed.ok) return parsed;
-    if (parsed.value.filePath) {
-      return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
-    }
-    if (parsed.value.count === undefined) {
-      return { ok: true, value: (input) => input };
-    }
-    return {
-      ok: true,
-      value: (input) => ({
-        kind: "take-first-lines",
-        count: parsed.value.count,
-        input,
-        stageIndex,
-      }),
-    };
-  }
-
-  if (name === "tail") {
-    const parsed = parseTailArgs(cmd, false);
-    if (!parsed.ok) return parsed;
-    if (parsed.value.filePath) {
-      return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
-    }
-    if (parsed.value.range.type === "all") {
-      return { ok: true, value: (input) => input };
-    }
-    return {
-      ok: true,
-      value: (input) => {
-        if (parsed.value.range.type === "tail") {
-          return {
-            kind: "take-lines-from",
-            startLine: parsed.value.range.startLine,
-            input,
-            stageIndex,
-          };
-        }
-        if (parsed.value.range.type === "tail-count") {
-          return {
-            kind: "take-last-lines",
-            count: parsed.value.range.count,
-            input,
-            stageIndex,
-          };
-        }
-        return input;
-      },
-    };
-  }
-
-  if (name === "sed") {
-    const parsed = parseSedArgs(cmd, false);
-    if (!parsed.ok) return parsed;
-    if (parsed.value.filePath) {
-      return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
-    }
-    return {
-      ok: true,
-      value: (input) => ({
-        kind: "select-lines",
-        start: parsed.value.start,
-        end: parsed.value.end,
-        input,
-        stageIndex,
-      }),
-    };
-  }
-
-  if (name === "nl") {
-    const parsed = parseNlArgs(cmd, false);
-    if (!parsed.ok) return parsed;
-    if (parsed.value.filePath) {
-      return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
-    }
-    return {
-      ok: true,
-      value: (input) => ({
-        kind: "line-number-prefix",
-        input,
-        stageIndex,
-        options: parsed.value.options,
-      }),
-    };
-  }
-
-  if (name === "rg" || name === "grep") {
-    const parsed = parseRgArgs(cmd, false);
-    if (!parsed.ok) return parsed;
-    return {
-      ok: true,
-      value: (input) => ({
-        kind: "sparse-match-lines",
-        input,
-        pattern: parsed.value.pattern,
-        stageIndex,
-      }),
-    };
-  }
-
-  if (name === "git" || name === "diff") {
-    return reject("unsafe_shell_syntax", "pipeline has multiple diff stages");
-  }
-
+  const { start: baseStart, end: baseEnd } = toInterval(input);
+  const { start: sliceStart, end: sliceEnd } = toInterval(applied);
+  const offset = baseStart - 1;
+  const start = offset + sliceStart;
+  const end =
+    sliceEnd === null
+      ? baseEnd
+      : Math.min(baseEnd ?? Infinity, offset + sliceEnd);
   if (
-    OPAQUE_TRANSFORM_COMMANDS.has(name) ||
-    (name === "awk" &&
-      cmd.args.every((a) => a.kind === "flag" || a.text.startsWith("{")))
+    !Number.isSafeInteger(start) ||
+    (end !== null && !Number.isSafeInteger(end))
   ) {
-    return {
-      ok: true,
-      value: (input) => ({
-        kind: "opaque-transform",
-        input,
-        commandName: name,
-        stageIndex,
-      }),
-    };
+    return reject(
+      "unsafe_shell_syntax",
+      "line range exceeds integer precision",
+    );
   }
+  if (end !== null && start > end) {
+    return reject("unsafe_shell_syntax", "slice selects no lines of its input");
+  }
+  return { ok: true, value: fromInterval({ start, end }) };
+}
 
-  return reject(
-    "unsafe_shell_syntax",
-    `pipeline stage "${name}" is not a recognized formatting command`,
+function rangeStartsAtLine1(range: ReadRange): boolean {
+  return (
+    range.type === "all" ||
+    (range.type !== "tail-count" && toInterval(range).start === 1)
   );
 }
 
-function buildShellOutputExpr(
-  stages: SimpleCommand[],
-): ParseResult<ShellOutputExpr> {
-  if (stages.length === 0) return reject("empty", "empty pipeline");
-  const first = parseStageAsSource(stages[0]!, 0);
-  if (!first.ok) return first;
-
-  let expr = first.value;
-  for (let i = 1; i < stages.length; i++) {
-    const transform = parseStageAsTransform(stages[i]!, i);
-    if (!transform.ok) return transform;
-    expr = transform.value(expr);
+function applyStage(
+  stream: ShellStream,
+  op: StageOp,
+  commandName: string,
+): ParseResult<ShellStream> {
+  const unchanged = { ok: true, value: stream } as const;
+  switch (op.kind) {
+    case "identity":
+      return unchanged;
+    case "slice":
+      switch (stream.kind) {
+        case "diff":
+        case "numbered-rows":
+          return unchanged;
+        default: {
+          const range = applySlice(stream.range, op.range);
+          if (!range.ok) return range;
+          if (range.value === "unchanged") return unchanged;
+          return {
+            ok: true,
+            value: {
+              ...stream,
+              range: range.value,
+              producer: stream.numbering ? "nl" : op.commandName,
+            },
+          };
+        }
+      }
+    case "number-lines":
+      switch (stream.kind) {
+        case "diff":
+          return unchanged;
+        case "numbered-rows":
+          return reject(
+            "unsafe_shell_syntax",
+            "nl numbering of search output is not supported",
+          );
+        default:
+          if (stream.numbering) {
+            return reject(
+              "unsafe_shell_syntax",
+              "nested nl numbering is not supported",
+            );
+          }
+          if (!rangeStartsAtLine1(stream.range)) {
+            return reject(
+              "unsafe_shell_syntax",
+              "nl numbering of a sliced range would not match file line numbers",
+            );
+          }
+          return {
+            ok: true,
+            value: { ...stream, numbering: op.options, producer: "nl" },
+          };
+      }
+    case "search":
+      switch (stream.kind) {
+        case "diff":
+          return reject(
+            "unsafe_shell_syntax",
+            "search over diff output is not supported",
+          );
+        case "numbered-rows":
+          return reject(
+            "unsafe_shell_syntax",
+            "search over search output is not supported",
+          );
+        default:
+          if (stream.numbering) {
+            return reject(
+              "unsafe_shell_syntax",
+              "search over nl-numbered output is not supported",
+            );
+          }
+          return {
+            ok: true,
+            value: {
+              kind: "numbered-rows",
+              origin: stream.origin,
+              pattern: op.pattern,
+            },
+          };
+      }
+    case "opaque":
+      switch (stream.kind) {
+        case "diff":
+          return unchanged;
+        case "numbered-rows":
+        case "file-lines":
+          return reject(
+            "unsafe_shell_syntax",
+            `${commandName} output is not planned`,
+          );
+      }
   }
-  return { ok: true, value: expr };
+}
+
+function buildPipelineStream(
+  stages: SimpleCommand[],
+): ParseResult<ShellStream> {
+  if (stages.length === 0) return reject("empty", "empty pipeline");
+  const first = parseStage(stages[0]!, "first");
+  if (!first.ok) return first;
+  const source = first.value;
+  const opened =
+    source.kind === "source"
+      ? ({ ok: true, value: source.stream } as const)
+      : applyStage(
+          openFile(
+            { kind: "worktree", filePath: source.operand! },
+            source.commandName as ReadStageName,
+          ),
+          source.op,
+          source.commandName,
+        );
+  if (!opened.ok) return opened;
+  let stream = opened.value;
+  for (let index = 1; index < stages.length; index++) {
+    const parsed = parseStage(stages[index]!, "later");
+    if (!parsed.ok) return parsed;
+    if (parsed.value.kind !== "filter")
+      throw new Error("Expected a pipeline filter");
+    const next = applyStage(stream, parsed.value.op, parsed.value.commandName);
+    if (!next.ok) return next;
+    stream = next.value;
+  }
+  return { ok: true, value: stream };
 }
 
 const NL_DEFAULT_WIDTH = 6;
@@ -991,227 +1013,26 @@ function nlNumberedFormat(options: NlOptions, language: string): OutputFormat {
   };
 }
 
-function lowerReadFromFileExpr(
-  expr: Extract<ShellOutputExpr, { kind: "file-read" }>,
-  originalCommand: string,
-  range: ReadRange,
-  presentation: ShellReadSemantic["presentation"] = { lineNumbers: false },
-  commandNameOverride?: "cat" | "nl" | "sed" | "head" | "tail",
+function lowerStream(
+  stream: ShellStream,
+  command: string,
 ): ShellSemanticResult {
-  if (expr.commandName === "git" && presentation.lineNumbers === false) {
+  if (stream.kind === "diff") {
+    const { commandName, subcommand } = stream;
     return {
       ok: true,
-      value: {
-        kind: "read",
-        command: originalCommand,
-        commandName: "git",
-        filePath: expr.filePath,
-        range,
-        presentation,
-      },
+      value: { kind: "diff", commandName, command, subcommand },
     };
   }
-
-  const language = langFromPath(expr.filePath) || "text";
-  const commandName =
-    expr.commandName === "git"
-      ? "nl"
-      : (commandNameOverride ?? expr.commandName);
-  const steps: CommandStep[] = [
-    {
-      kind: "read-file",
-      order: 0,
-      commandName,
-      filePath: expr.filePath,
-      range,
-      outputShape: {
-        kind: "content",
-        format: presentation.lineNumbers
-          ? nlNumberedFormat(presentation.lineNumbers, language)
-          : { kind: "content", language },
-        validator: presentation.lineNumbers ? undefined : "non-empty",
-      },
-      blockId: commandName === "sed" ? "sed-output" : undefined,
-    },
-  ];
-  return {
-    ok: true,
-    value: {
-      kind: "read",
-      command: originalCommand,
-      commandName: expr.commandName === "git" ? "git" : commandName,
-      filePath: expr.filePath,
-      range,
-      presentation,
-      steps,
-    },
-  };
-}
-
-function lowerDiffSource(
-  expr: Extract<ShellOutputExpr, { kind: "diff-source" }>,
-  originalCommand: string,
-): ShellSemanticResult {
-  return {
-    ok: true,
-    value: {
-      kind: "diff",
-      commandName: expr.commandName,
-      command: originalCommand,
-      subcommand: expr.subcommand,
-    },
-  };
-}
-
-function conservativeLower(
-  expr: ShellOutputExpr,
-  originalCommand: string,
-): ShellSemanticResult {
-  const rejectUnsupportedPipeline = () =>
-    reject("unsafe_shell_syntax", "pipeline has multiple read stages");
-  const lowerAsDiffOnly = (input: ShellOutputExpr): ShellSemanticResult => {
-    let current = input;
-    while (current.kind !== "diff-source") {
-      if (
-        current.kind === "file-read" ||
-        current.kind === "sparse-match-lines" ||
-        (current.kind === "select-lines" &&
-          current.input.kind === "line-number-prefix") ||
-        (current.kind === "line-number-prefix" &&
-          current.input.kind === "select-lines")
-      )
-        return rejectUnsupportedPipeline();
-      current = current.input;
-    }
-    return lowerDiffSource(current, originalCommand);
-  };
-
-  if (expr.kind === "file-read") {
-    return lowerReadFromFileExpr(expr, originalCommand, { type: "all" });
-  }
-  if (expr.kind === "diff-source")
-    return lowerDiffSource(expr, originalCommand);
-  if (expr.kind === "take-first-lines") {
-    if (expr.input.kind === "file-read") {
-      const range = expr.count
-        ? ({ type: "head", count: expr.count } as const)
-        : ({ type: "all" } as const);
-      return lowerReadFromFileExpr(
-        expr.input,
-        originalCommand,
-        range,
-        undefined,
-        "head",
-      );
-    }
-    return lowerAsDiffOnly(expr.input);
-  }
-  if (expr.kind === "take-last-lines") {
-    if (expr.input.kind === "file-read") {
-      return lowerReadFromFileExpr(
-        expr.input,
-        originalCommand,
-        {
-          type: "tail-count",
-          count: expr.count,
-        },
-        undefined,
-        "tail",
-      );
-    }
-    return lowerAsDiffOnly(expr.input);
-  }
-  if (expr.kind === "take-lines-from") {
-    if (expr.input.kind === "file-read") {
-      return lowerReadFromFileExpr(
-        expr.input,
-        originalCommand,
-        {
-          type: "tail",
-          startLine: expr.startLine,
-        },
-        undefined,
-        "tail",
-      );
-    }
-    return lowerAsDiffOnly(expr.input);
-  }
-  if (expr.kind === "select-lines") {
-    if (expr.input.kind === "file-read") {
-      return lowerReadFromFileExpr(
-        expr.input,
-        originalCommand,
-        {
-          type: "lines",
-          start: expr.start,
-          end: expr.end,
-        },
-        undefined,
-        "sed",
-      );
-    }
-    if (expr.input.kind === "line-number-prefix") {
-      if (expr.input.input.kind !== "file-read")
-        return rejectUnsupportedPipeline();
-      const lineNumbers = {
-        style: "nl" as const,
-        ...(expr.input.options.width !== undefined
-          ? { width: expr.input.options.width }
-          : {}),
-        ...(expr.input.options.separator !== undefined
-          ? { separator: expr.input.options.separator }
-          : {}),
-      };
-      return lowerReadFromFileExpr(
-        expr.input.input,
-        originalCommand,
-        {
-          type: "lines",
-          start: expr.start,
-          end: expr.end,
-        },
-        { lineNumbers },
-        "nl",
-      );
-    }
-    return lowerAsDiffOnly(expr.input);
-  }
-  if (expr.kind === "line-number-prefix") {
-    if (expr.input.kind === "select-lines") {
-      return rejectUnsupportedPipeline();
-    }
-    if (expr.input.kind === "file-read") {
-      const lineNumbers = {
-        style: "nl" as const,
-        ...(expr.options.width !== undefined
-          ? { width: expr.options.width }
-          : {}),
-        ...(expr.options.separator !== undefined
-          ? { separator: expr.options.separator }
-          : {}),
-      };
-      return lowerReadFromFileExpr(
-        expr.input,
-        originalCommand,
-        { type: "all" },
-        { lineNumbers },
-        "nl",
-      );
-    }
-    return lowerAsDiffOnly(expr.input);
-  }
-  if (expr.kind === "sparse-match-lines") {
-    if (expr.input.kind !== "file-read") {
-      return rejectUnsupportedPipeline();
-    }
-    const language = langFromPath(expr.input.filePath) || "text";
+  if (stream.kind === "numbered-rows") {
+    const language = langFromPath(stream.origin.filePath) || "text";
     const steps: CommandStep[] = [
       {
         kind: "search",
         order: 0,
         commandName: "rg",
-        pattern: expr.pattern,
-        filePath: expr.input.filePath,
+        pattern: stream.pattern,
+        filePath: stream.origin.filePath,
         outputShape: {
           kind: "content",
           format: {
@@ -1231,32 +1052,69 @@ function conservativeLower(
       value: {
         kind: "search",
         commandName: "rg",
-        command: originalCommand,
-        pattern: expr.pattern,
-        filePath: expr.input.filePath,
+        command,
+        pattern: stream.pattern,
+        filePath: stream.origin.filePath,
         steps,
       },
     };
   }
-  return lowerAsDiffOnly(expr.input);
-}
-
-function classifyReadCommand(
-  cmd: SimpleCommand,
-  originalCommand: string,
-): ShellSemanticResult {
-  const expr = buildShellOutputExpr([cmd]);
-  if (!expr.ok) return expr;
-  return conservativeLower(expr.value, originalCommand);
+  const { filePath } = stream.origin;
+  const { range, numbering, producer } = stream;
+  const presentation: ShellReadSemantic["presentation"] = {
+    lineNumbers: numbering ? { style: "nl", ...numbering } : false,
+  };
+  if (stream.origin.kind === "git-object" && !numbering) {
+    return {
+      ok: true,
+      value: {
+        kind: "read",
+        command,
+        commandName: "git",
+        filePath,
+        range,
+        presentation,
+      },
+    };
+  }
+  const language = langFromPath(filePath) || "text";
+  const steps: CommandStep[] = [
+    {
+      kind: "read-file",
+      order: 0,
+      commandName: producer,
+      filePath,
+      range,
+      outputShape: {
+        kind: "content",
+        format: numbering
+          ? nlNumberedFormat(numbering, language)
+          : { kind: "content", language },
+        validator: numbering ? undefined : "non-empty",
+      },
+      blockId: producer === "sed" ? "sed-output" : undefined,
+    },
+  ];
+  return {
+    ok: true,
+    value: {
+      kind: "read",
+      command,
+      commandName: stream.origin.kind === "git-object" ? "git" : producer,
+      filePath,
+      range,
+      presentation,
+      steps,
+    },
+  };
 }
 
 function classifyPipeline(
   stages: SimpleCommand[],
   originalCommand: string,
 ): ShellSemanticResult {
-  const expr = buildShellOutputExpr(stages);
-  if (!expr.ok) return expr;
-  return conservativeLower(expr.value, originalCommand);
+  const stream = buildPipelineStream(stages);
+  return stream.ok ? lowerStream(stream.value, originalCommand) : stream;
 }
 
 function resolveAgainstCd(cdPath: string, path: string): string {
@@ -2254,9 +2112,7 @@ function classifyNormalizedAST(
       name === "git" ||
       name === "diff"
     ) {
-      const expr = buildShellOutputExpr([ast.command]);
-      if (!expr.ok) return expr;
-      return conservativeLower(expr.value, originalCommand);
+      return classifyPipeline([ast.command], originalCommand);
     }
     return reject(
       "unsupported_command",
@@ -2418,7 +2274,7 @@ function classifySimpleCommandAsListMember(
     case "head":
     case "tail":
     case "nl": {
-      const r = classifyReadCommand(cmd, originalCommand);
+      const r = classifyPipeline([cmd], originalCommand);
       return r.ok ? { steps: r.value.steps ?? [] } : null;
     }
     case "printf":
