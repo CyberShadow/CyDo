@@ -25,6 +25,21 @@ private string[] orderedPackDirectories(string[] paths)
 	return dirs;
 }
 
+private string[] taskTypePackDirectories(string path)
+{
+	import core.stdc.errno : ENOENT, ENOTDIR;
+	import std.file : FileException;
+
+	try
+		return orderedPackDirectories(directoryEntryPaths(path));
+	catch (FileException e)
+	{
+		if (e.errno != ENOENT && e.errno != ENOTDIR)
+			throw e;
+		return null;
+	}
+}
+
 private struct TaskTypeLayer
 {
 	string yamlPath;
@@ -68,7 +83,7 @@ class TaskTypeCatalog
 
 		void addConfigDirectory(string dir)
 		{
-			foreach (pack; orderedPackDirectories(directoryEntryPaths(buildPath(dir, "packs"))))
+			foreach (pack; taskTypePackDirectories(buildPath(dir, "packs")))
 				layers ~= TaskTypeLayer(buildPath(pack, "task-types.yaml"), pack);
 			layers ~= TaskTypeLayer(buildPath(dir, "task-types.yaml"), buildPath(dir, "defs"));
 		}

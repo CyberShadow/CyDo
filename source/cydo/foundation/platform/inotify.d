@@ -118,3 +118,85 @@ private:
 		}
 	}
 }
+
+/// A private inotify instance that reports kernel watch descriptors as-is.
+/// Adding an already-watched inode returns its existing descriptor.
+final class KernelINotify
+{
+	import core.sys.linux.sys.inotify : inotify_add_watch, inotify_event, inotify_init1,
+		inotify_rm_watch, IN_CLOEXEC, IN_NONBLOCK;
+	import core.stdc.errno : errno, EINVAL;
+	import std.exception : enforce, errnoEnforce;
+	import std.string : indexOf, toStringz;
+
+	import ae.net.asockets : Data, FileConnection;
+
+	private int fd;
+	private FileConnection conn;
+	private void delegate(int wd, in char[] name, INotify.Mask mask) handler;
+
+	this(void delegate(int wd, in char[] name, INotify.Mask mask) handler)
+	{
+		this.handler = handler;
+		fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+		errnoEnforce(fd >= 0, "inotify_init1");
+		conn = new FileConnection(fd);
+		conn.handleReadData = &onReadData;
+	}
+
+	private void onReadData(Data data)
+	{
+		while (data.length)
+			data.enter((scope contents) {
+				enforce(data.length >= inotify_event.sizeof, "Incomplete inotify event");
+				auto event = cast(const(inotify_event)*) contents.ptr;
+				auto end = inotify_event.sizeof + event.len;
+				enforce(data.length >= end, "Incomplete inotify name");
+				auto name = cast(const(char)[]) contents[inotify_event.sizeof .. end];
+				auto nul = name.indexOf('\0');
+				if (nul >= 0)
+					name = name[0 .. nul];
+				handler(event.wd, name, cast(INotify.Mask) event.mask);
+				data = data[end .. $];
+			});
+	}
+
+	int add(string path, INotify.Mask mask)
+	{
+		auto wd = inotify_add_watch(fd, path.toStringz, mask);
+		errnoEnforce(wd >= 0, "inotify_add_watch: " ~ path);
+		return wd;
+	}
+
+	void remove(int wd)
+	{
+		auto result = inotify_rm_watch(fd, wd);
+		errnoEnforce(result == 0 || errno == EINVAL, "inotify_rm_watch");
+	}
+
+	void close()
+	{
+		conn.disconnect();
+	}
+}
+
+unittest
+{
+	import std.file : mkdirRecurse, rmdir, rmdirRecurse, symlink, tempDir;
+	import std.path : buildPath;
+
+	auto root = buildPath(tempDir, "cydo-test-kernel-inotify");
+	auto dir = buildPath(root, "dir");
+	auto link = buildPath(root, "link");
+	mkdirRecurse(dir);
+	scope (exit) rmdirRecurse(root);
+	symlink(dir, link);
+
+	auto kernel = new KernelINotify((int wd, in char[] name, INotify.Mask mask) {});
+	scope (exit) kernel.close();
+	enum mask = INotify.Mask.create | INotify.Mask.onlyDir;
+	auto wd = kernel.add(dir, mask);
+	assert(kernel.add(link, mask) == wd);
+	rmdir(dir);
+	kernel.remove(wd);
+}

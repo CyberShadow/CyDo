@@ -27,20 +27,11 @@ string bestEffortProjectPathIdentity(string path)
 /// Snapshot names without asking the directory iterator for lazy metadata.
 string[] directoryEntryPaths(string path)
 {
-	import core.stdc.errno : ENOENT, ENOTDIR;
-	import std.file : dirEntries, FileException, SpanMode;
+	import std.file : dirEntries, SpanMode;
 
 	string[] paths;
-	try
-	{
-		foreach (entry; dirEntries(path, SpanMode.shallow))
-			paths ~= entry.name;
-	}
-	catch (FileException e)
-	{
-		if (e.errno != ENOENT && e.errno != ENOTDIR)
-			throw e;
-	}
+	foreach (entry; dirEntries(path, SpanMode.shallow))
+		paths ~= entry.name;
 	return paths;
 }
 
