@@ -1417,6 +1417,8 @@ public:
 	// Rebuild recorded child results from current task state. If a follow-up
 	// Ask revived the child, the batch can wait for that turn or carry its
 	// newer result text. The parent can Ask the child to clarify or resend.
+	// A legacy pending child keeps its slot until it is started manually or
+	// deleted. Startup resumes only children that had already started.
 	void rebuildWaits()
 	{
 		auto batches = host_.loadTaskDeps();
@@ -2064,12 +2066,6 @@ private:
 				return;
 			}
 
-			host_.transitionTaskFrom(tid,
-				[TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
-					TaskStatus.waiting, TaskStatus.failed], TaskStatus.completed,
-				TaskNotificationChange.preserve);
-			host_.emitTaskReload(tid, "continuation", excludedUserUuid);
-
 			auto successorPrompt = handoffPrompt.length > 0
 				? handoffPrompt
 				: td.description;
@@ -2093,14 +2089,6 @@ private:
 				childTid, td.workspace, td.projectPath, tid, "continuation"));
 			host_.broadcastTaskUpdate(childTid);
 			host_.broadcastFocusHint(tid, childTid);
-
-			BatchHandle owner;
-			size_t slot;
-			if (batchRegistry_.findOwnerOfChild(tid, owner, slot))
-			{
-				batchRegistry_.replaceChild(tid, childTid);
-				host_.persistReplaceTaskDepChild(owner.batchId, tid, childTid);
-			}
 
 			host_.setupWorktreeForEdge(childTid, tid, contDef.worktree);
 
@@ -2145,6 +2133,20 @@ private:
 				}
 				recordChildTerminal(childTid);
 			}).ignoreResult();
+
+			BatchHandle owner;
+			size_t slot;
+			if (batchRegistry_.findOwnerOfChild(tid, owner, slot))
+			{
+				batchRegistry_.replaceChild(tid, childTid);
+				host_.persistReplaceTaskDepChild(owner.batchId, tid, childTid);
+			}
+
+			host_.transitionTaskFrom(tid,
+				[TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
+					TaskStatus.waiting, TaskStatus.failed], TaskStatus.completed,
+				TaskNotificationChange.preserve);
+			host_.emitTaskReload(tid, "continuation", excludedUserUuid);
 		}
 	}
 }
@@ -2687,6 +2689,128 @@ version (unittest)
 				generateTitle: (int tid, string prompt) {},
 			));
 		}
+	}
+}
+
+unittest
+{
+	import ae.utils.statequeue : StateQueue;
+	import cydo.domain.tasks.model : ProcessState;
+	import cydo.workflow.sessions.task_runner : TaskSessionRunner, TaskSessionRunnerHost;
+	import std.exception : assertThrown;
+
+	void assertRestart(BatchInvariantFixture f, int[] taskIds, int[] expectedNudges, int[] expectedRetries)
+	{
+		auto b = f.makeBackend();
+		b.rebuildWaits();
+		foreach (tid; taskIds)
+			f.tasks[tid].processQueue = new StateQueue!ProcessState(
+				(ProcessState goal) => resolve(goal), ProcessState.Dead);
+		int[] nudged, retries;
+		auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
+			getTask: (int tid) => tid in f.tasks,
+			snapshotTaskIds: () => taskIds,
+			hasRestoredWork: &b.hasRestoredWork,
+			sendSystemRestartNudge: (int tid, bool retryToolCall) {
+				nudged ~= tid;
+				if (retryToolCall)
+					retries ~= tid;
+				return resolve();
+			},
+		));
+		runner.resumeInFlightTasks();
+		drainPromiseNextTicks();
+		foreach (tid; taskIds)
+			assert(f.tasks[tid].processQueue.goalState == ProcessState.Alive);
+		assert(nudged == expectedNudges);
+		assert(retries == expectedRetries);
+	}
+
+	// Restart on either side of batch registration.
+	enum ParentWait { beforeRegistration, waitingBatch, activeBatch, activeAsk }
+	foreach (wait; [ParentWait.beforeRegistration, ParentWait.waitingBatch,
+		ParentWait.activeBatch, ParentWait.activeAsk])
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		auto b = f.makeBackend();
+		auto first = b.handleCreateTask("1", 0, "first", "child", "first prompt").launch();
+		auto second = b.handleCreateTask("1", 1, "second", "child", "second prompt").launch();
+		final switch (wait)
+		{
+		case ParentWait.beforeRegistration:
+			break;
+		case ParentWait.activeBatch:
+		case ParentWait.waitingBatch:
+			b.registerBatchAndAwait("1", [first, second]).ignoreResult();
+			if (wait == ParentWait.activeBatch)
+				f.tasks[1].status = TaskStatus.active;
+			break;
+		case ParentWait.activeAsk:
+			f.persistence.insertQuestion(1, 2, "still waiting for this answer");
+			break;
+		}
+		f.tasks[1].isProcessing = false;
+		assertRestart(f, [1, 3, 4],
+			wait == ParentWait.waitingBatch ? [3, 4] : [1, 3, 4],
+			wait == ParentWait.beforeRegistration ? [1, 3, 4] : [3, 4]);
+	}
+
+	enum HandoffOutcome { started, renderFailure, startFailure }
+	foreach (outcome; [HandoffOutcome.started, HandoffOutcome.renderFailure, HandoffOutcome.startFailure])
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].status = TaskStatus.waiting;
+		f.tasks[2].taskType = "parent";
+		f.tasks[2].pendingContinuation = new PendingContinuation(
+			PendingContinuation.Kind.handoff, "continue", "successor prompt");
+		f.persistence.addTaskDep(1, 2, 2, 0);
+		auto b = f.makeBackend();
+		b.rebuildWaits();
+		b.host_.persistReplaceTaskDepChild = (ulong batchId, int source, int successor) {
+			assert(f.tasks[source].status == TaskStatus.active);
+			assert(f.tasks[successor].status == TaskStatus.active);
+			f.persistence.replaceTaskDepChild(batchId, source, successor);
+		};
+		if (outcome == HandoffOutcome.renderFailure)
+		{
+			b.host_.taskSystemPromptForMessage = (int tid, TaskTypeDef* typeDef) {
+				throw new Exception("successor system prompt unavailable");
+			};
+			assertThrown!Exception(b.spawnContinuation(2));
+			assert(f.persistence.loadTaskDeps() == [PersistedBatch(1, 2, [2])]);
+			assert(f.tasks[2].status == TaskStatus.active);
+			assert(f.tasks[3].status == TaskStatus.pending && !b.hasBatchChild(3));
+			continue;
+		}
+
+		if (outcome == HandoffOutcome.startFailure)
+			b.host_.ensureProcessQueueAlive = (int tid) {
+				if (tid == 1)
+					return resolve();
+				f.tasks[tid].status = TaskStatus.active;
+				return reject!void(new Exception("successor failed to start"));
+			};
+
+		b.spawnContinuation(2);
+		assert(f.tasks[2].status == TaskStatus.completed);
+		assert(f.persistence.loadTaskDeps() == [PersistedBatch(1, 2, [3])]);
+
+		if (outcome == HandoffOutcome.started)
+		{
+			assertRestart(f, [1, 3], [3], [3]);
+			b = f.makeBackend();
+			b.rebuildWaits();
+			f.tasks[3].status = TaskStatus.completed;
+			f.tasks[3].resultText = "successor result";
+			assert(b.recordChildTerminal(3));
+		}
+		drainPromiseNextTicks();
+
+		assert(f.sentTids == [1]);
+		assert(f.sentBodies[0].canFind(outcome == HandoffOutcome.started
+			? "successor result" : "successor failed to start"));
+		assert(f.persistence.loadTaskDeps().length == 0);
 	}
 }
 
