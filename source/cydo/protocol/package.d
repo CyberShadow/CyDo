@@ -433,7 +433,12 @@ struct TurnStopEvent
 	@JSONOptional UsageInfo usage;
 	@JSONOptional string parent_tool_use_id;
 	@JSONOptional bool is_sidechain;
+	/// Claude uses the API message id for this stop identity.
 	@JSONOptional string uuid;
+	/// Claude live stops carry the exclusive upper bound on persisted
+	/// apiBlockIndex: blocks started, capped by abandoned_blocks.from_block_index.
+	/// Zero publishes no live boundary.
+	@JSONOptional int api_block_count = -1;
 	@JSONOptional HistoryBoundary history_boundary;
 	@JSONOptional JSONFragment extras;
 }

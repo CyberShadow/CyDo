@@ -605,6 +605,10 @@ class ClaudeCodeAgent : Agent
 		assert(agent.historyPath(idB, profile) == fresh);
 	}
 
+	/// Rule E (task 42281): prompts, queue operations, terminal rows and a
+	/// different root assistant ID end an open API message. Its stop precedes
+	/// the ending row's events. Inside rows do not render relative to the open
+	/// assistant; same-ID root assistant rows extend it.
 	private enum HistoryRowKind { inside, assistant, prompt, enqueue, end, detachedSidechain }
 
 	@JSONPartial private static struct HistoryRow
@@ -618,6 +622,8 @@ class ClaudeCodeAgent : Agent
 		@JSONOptional string subtype;
 		@JSONOptional string operation;
 		@JSONOptional string uuid;
+		@JSONOptional int apiBlockIndex = -1;
+		@JSONOptional bool joinedApiReply;
 		@JSONOptional Message message;
 		@JSONOptional string parent_tool_use_id;
 		@JSONOptional bool isSidechain;
@@ -656,6 +662,12 @@ class ClaudeCodeAgent : Agent
 		}
 	}
 
+	private static bool endsHistoryMessage(HistoryRowKind kind)
+	{
+		return kind == HistoryRowKind.prompt || kind == HistoryRowKind.end
+			|| kind == HistoryRowKind.enqueue;
+	}
+
 	private static HistoryRow parseHistoryRow(string line)
 	{
 		try return jsonParse!HistoryRow(line);
@@ -664,9 +676,72 @@ class ClaudeCodeAgent : Agent
 
 	HistoryReplay createHistoryReplay()
 	{
-		return HistoryReplay((line, lineNum) =>
-			parseHistoryRow(line).kind == HistoryRowKind.detachedSidechain
-				? [] : translateClaudeHistoryEvent(line));
+		auto replay = new ClaudeHistoryReplay;
+		return HistoryReplay(&replay.translateHistoryLine, &replay.finishHistoryReplay);
+	}
+
+	private static final class ClaudeHistoryReplay
+	{
+		private struct HistoryMessage
+		{
+			string id;
+			size_t blockCount;
+			TranslatedEvent stop;
+		}
+		private HistoryMessage pendingHistoryMessage_;
+		private bool[string] seenMessageIds_;
+
+		TranslatedEvent[] translateHistoryLine(string line, int lineNum)
+		{
+			auto row = parseHistoryRow(line);
+			auto kind = row.kind;
+			if (kind == HistoryRowKind.detachedSidechain)
+				return [];
+			bool continuation = kind == HistoryRowKind.assistant
+				&& pendingHistoryMessage_.stop.translated !is null
+				&& row.message.id == pendingHistoryMessage_.id;
+			auto base = continuation ? pendingHistoryMessage_.blockCount : 0;
+			auto events = translateClaudeHistoryEvent(line, base);
+			if (events.length == 0 && kind == HistoryRowKind.assistant)
+				return events;
+
+			if (kind == HistoryRowKind.assistant)
+			{
+				assert(row.message.id.length > 0, "Claude assistant message ID is required");
+				@JSONPartial static struct StopProbe { string type; }
+				assert(jsonParse!StopProbe(events[$ - 1].translated).type == "turn/stop");
+				auto items = events[0 .. $ - 1];
+				assert(items.length % 2 == 0);
+				TranslatedEvent[] previous;
+				if (!continuation)
+				{
+					assert(row.message.id !in seenMessageIds_,
+						"Claude API message records must be contiguous among boundaries");
+					previous = finishPendingHistoryMessage();
+					seenMessageIds_[row.message.id] = true;
+				}
+				auto stop = events[$ - 1];
+				stop.sourceLine = lineNum;
+				pendingHistoryMessage_ = HistoryMessage(row.message.id, base + items.length / 2, stop);
+				return previous ~ items;
+			}
+
+			if (endsHistoryMessage(kind))
+				return finishPendingHistoryMessage() ~ events;
+			return events;
+		}
+
+		private TranslatedEvent[] finishPendingHistoryMessage()
+		{
+			auto stop = pendingHistoryMessage_.stop;
+			pendingHistoryMessage_ = HistoryMessage.init;
+			return stop.translated !is null ? [stop] : null;
+		}
+
+		TranslatedEvent[] finishHistoryReplay()
+		{
+			return finishPendingHistoryMessage();
+		}
 	}
 
 	TranslatedEvent[] translateLiveEvent(string rawLine)
@@ -715,19 +790,29 @@ class ClaudeCodeAgent : Agent
 
 	PersistedHistoryBoundary[] extractPersistedHistoryBoundaries(string content, int lineOffset = 0)
 	{
+		PersistedHistoryBoundary[] boundaries;
+		visitPersistedHistoryRows(content, lineOffset, (boundary, index, joined) { boundaries ~= boundary; });
+		return boundaries;
+	}
+
+	package(cydo) void visitPersistedHistoryRows(string content, int lineOffset,
+		scope void delegate(PersistedHistoryBoundary, int apiBlockIndex, bool joinedApiReply) visitBoundary,
+		scope void delegate() endMessage = null)
+	{
 		import std.string : lineSplitter;
 
-		PersistedHistoryBoundary[] boundaries;
 		int lineNum = lineOffset;
 		foreach (line; content.lineSplitter)
 		{
 			lineNum++;
 			auto row = parseHistoryRow(line);
-			auto boundary = historyBoundary(row, row.kind, lineNum);
+			auto kind = row.kind;
+			if (endMessage !is null && endsHistoryMessage(kind))
+				endMessage();
+			auto boundary = historyBoundary(row, kind, lineNum);
 			if (!boundary.isNull)
-				boundaries ~= boundary.get;
+				visitBoundary(boundary.get, row.apiBlockIndex, row.joinedApiReply);
 		}
-		return boundaries;
 	}
 
 	private static Nullable!PersistedHistoryBoundary historyBoundary(
@@ -738,17 +823,13 @@ class ClaudeCodeAgent : Agent
 		switch (kind)
 		{
 			case HistoryRowKind.assistant:
-			{
-				auto anchor = row.uuid.length > 0 ? row.uuid : format!"line:%d"(lineNum);
+				assert(row.message.id.length > 0, "Claude assistant record without message.id");
 				return Nullable!PersistedHistoryBoundary(PersistedHistoryBoundary(
-					anchor, PersistedHistoryBoundaryKind.agent_turn, null, lineNum));
-			}
+					row.message.id, PersistedHistoryBoundaryKind.agent_turn, null, lineNum));
 			case HistoryRowKind.prompt:
-			{
 				auto anchor = row.uuid.length > 0 ? row.uuid : format!"line:%d"(lineNum);
 				return Nullable!PersistedHistoryBoundary(PersistedHistoryBoundary(
 					anchor, PersistedHistoryBoundaryKind.user, null, lineNum));
-			}
 			case HistoryRowKind.enqueue:
 				return Nullable!PersistedHistoryBoundary(PersistedHistoryBoundary(
 					format!"enqueue-%d"(lineNum), PersistedHistoryBoundaryKind.provisional_user, null, lineNum));
@@ -1469,6 +1550,7 @@ class ClaudeCodeSession : AgentSession
 
 	// Stateful translation: track active content blocks per index.
 	private string[] activeItemIds_;   // index → item_id for current turn
+	private string currentMessageId_;
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
 	/// What an assistant frame says about a streamed block, held until the
 	/// block's content_block_stop (the frame arrives just before it).
@@ -2467,14 +2549,47 @@ class ClaudeCodeSession : AgentSession
 			case "message_stop":
 			{
 				import cydo.protocol : TurnStopEvent;
+				import std.algorithm : min;
+
+				@JSONPartial static struct Abandoned
+				{
+					string api_message_id;
+					int from_block_index;
+				}
+				@JSONPartial static struct StopProbe
+				{
+					@JSONOptional Nullable!Abandoned abandoned_blocks;
+				}
+				assert(currentMessageId_.length > 0, "Claude message_stop without message_start");
+				auto abandoned = jsonParse!StopProbe(rawLine).abandoned_blocks;
 				TurnStopEvent tsev;
+				tsev.uuid = currentMessageId_;
+				tsev.api_block_count = cast(int) activeItemIds_.length;
+				if (!abandoned.isNull)
+				{
+					auto blocks = abandoned.get;
+					assert(blocks.api_message_id == currentMessageId_,
+						"Claude abandoned_blocks names a different API message");
+					tsev.api_block_count = min(tsev.api_block_count, blocks.from_block_index);
+				}
 				emitEvent(TranslatedEvent(toJson(tsev), rawLine));
+				currentMessageId_ = null;
 				activeItemIds_ = null;
 				activeItemTypes_ = null;
 				blockCompletions_ = null;
 				return;
 			}
 			case "message_start":
+			{
+				@JSONPartial static struct MessageProbe { string id; }
+				@JSONPartial static struct StartProbe { MessageProbe message; }
+				auto start = jsonParse!StartProbe(innerEvent);
+				assert(currentMessageId_.length == 0 && activeItemIds_.length == 0,
+					"Claude message_start while another message is open");
+				assert(start.message.id.length > 0, "Claude message_start without message.id");
+				currentMessageId_ = start.message.id;
+				return;
+			}
 			case "message_delta":
 				return; // drop
 
@@ -2504,6 +2619,7 @@ class ClaudeCodeSession : AgentSession
 		}
 		@JSONPartial static struct ClaudeMessage
 		{
+			@JSONOptional string id;
 			@JSONOptional string model;
 			@JSONOptional JSONFragment usage;
 			@JSONOptional ClaudeBlock[] content;
@@ -2644,7 +2760,7 @@ class ClaudeCodeSession : AgentSession
 			tsev.usage              = subUsage;
 			tsev.parent_tool_use_id = raw.parent_tool_use_id;
 			tsev.is_sidechain       = raw.isSidechain;
-			tsev.uuid               = raw.uuid;
+			tsev.uuid               = raw.message.id;
 			tsev.extras = extrasToFragment(collectAllExtras(raw));
 			emitEvent(TranslatedEvent(toJson(tsev), rawLine));
 			return;
@@ -3217,7 +3333,7 @@ unittest
 		session.translateLiveLine(streamEvent(`{"type":"content_block_stop","index":` ~ i ~ `}`));
 	}
 
-	session.translateLiveLine(streamEvent(`{"type":"message_start","message":{}}`));
+	session.translateLiveLine(streamEvent(`{"type":"message_start","message":{"id":"narration-message"}}`));
 	block(0, "thinking", `{"type":"thinking","thinking":"private reasoning","signature":"s"}`, ``);
 	block(1, "thinking", `{"type":"thinking","thinking":"Checking the fixture.","signature":"s","fixture_extra":1}`,
 		`,"narration_block_indexes":[0]`);
@@ -3269,6 +3385,7 @@ unittest
 
 	auto historyRaw =
 		`{"type":"assistant","isApiErrorMessage":true,"message":{"id":"history-error","content":[{"type":"thinking","thinking":"history reasoning"},{"type":"text","text":"history error"}]}}`;
+	assert((new ClaudeCodeAgent()).extractPersistedHistoryBoundaries(historyRaw).length == 0);
 	auto historyEvents = translateAssistantHistory(historyRaw);
 	assert(historyEvents.length == 1);
 	auto history = jsonParse!DiagnosticProbe(historyEvents[0].translated);
@@ -3594,7 +3711,7 @@ private JSONFragment buildClaudeContentBlocks(const(ContentBlock)[] blocks)
 
 /// Route a raw Claude JSONL history line to the appropriate translator.
 /// Returns zero or more agnostic event pairs.
-private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
+private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine, size_t blockIndexBase = 0)
 {
 	import cydo.protocol : parseIso8601Timestamp;
 
@@ -3619,7 +3736,7 @@ private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 	switch (probe.type)
 	{
 		case "assistant":
-			result = translateAssistantHistory(rawLine);
+			result = translateAssistantHistory(rawLine, blockIndexBase);
 			break;
 		case "user":
 			result = normalizeUserHistory(rawLine);
@@ -3635,6 +3752,115 @@ private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 		if (ev.ts == AbsTime.init)
 			ev.ts = ts;
 	return result;
+}
+
+unittest
+{
+	import core.exception : AssertError;
+	import std.exception : assertThrown;
+	import std.algorithm : canFind;
+
+	auto agent = new ClaudeCodeAgent();
+	auto replay = agent.createHistoryReplay();
+	auto malformed = replay.translateHistoryLine("null", 1);
+	assert(malformed.length == 1
+		&& malformed[0].translated.canFind("agent/unrecognized")
+		&& malformed[0].raw == "null");
+	assert(replay.finishHistoryReplay().length == 0);
+	string assistant(string id, string uuid, string content, string extra = "")
+	{
+		return `{"type":"assistant","uuid":"` ~ uuid ~ `","timestamp":"2026-06-11T06:00:0` ~ uuid ~ `Z","message":{"id":"` ~ id ~ `","content":[` ~ content ~ `]}` ~ extra ~ `}`;
+	}
+	auto a1 = assistant("X", "1", `{"type":"text","text":"a"}`);
+	auto a2 = assistant("X", "2", `{"type":"text","text":"b"}`);
+	auto a3 = assistant("Y", "3", `{"type":"text","text":"c"}`);
+	auto result = `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}`;
+	auto prompt = `{"type":"user","message":{"content":"next"}}`;
+	replay = agent.createHistoryReplay();
+	auto first = replay.translateHistoryLine(a1, 1);
+	assert(first.length == 2 && first[0].translated.canFind(`"text":"a"`));
+	foreach (event; first)
+		assert(!event.translated.canFind(`"type":"turn/stop"`)
+			&& event.translated.canFind(`"item_id":"cc-hist-0"`));
+	assert(replay.translateHistoryLine(result, 2).length > 0);
+	auto second = replay.translateHistoryLine(a2, 3);
+	assert(second.length == 2 && second[0].translated.canFind(`"text":"b"`));
+	foreach (event; second)
+		assert(!event.translated.canFind(`"type":"turn/stop"`)
+			&& event.translated.canFind(`"item_id":"cc-hist-1"`));
+	auto next = replay.translateHistoryLine(a3, 4);
+	assert(next.length == 3 && next[0].translated.canFind(`"type":"turn/stop"`));
+	assert(next[0].raw == a2 && next[0].sourceLine == 3);
+	assert(next[0].ts == translateClaudeHistoryEvent(a2)[$ - 1].ts);
+	assert(next[1].translated.canFind(`"text":"c"`));
+	assert(next[1].translated.canFind(`"item_id":"cc-hist-0"`)
+		&& next[2].translated.canFind(`"item_id":"cc-hist-0"`));
+	assert(!next[1].translated.canFind(`"type":"turn/stop"`)
+		&& !next[2].translated.canFind(`"type":"turn/stop"`));
+	auto last = replay.finishHistoryReplay();
+	assert(last.length == 1 && last[0].raw == a3
+		&& last[0].translated.canFind(`"type":"turn/stop"`));
+
+	replay = agent.createHistoryReplay();
+	replay.translateHistoryLine(a1, 1);
+	replay.translateHistoryLine(prompt, 2);
+	assertThrown!AssertError(replay.translateHistoryLine(a2, 3));
+	replay = agent.createHistoryReplay();
+	replay.translateHistoryLine(a1, 1);
+	replay.translateHistoryLine(a3, 2);
+	assertThrown!AssertError(replay.translateHistoryLine(a2, 3));
+
+	replay = agent.createHistoryReplay();
+	replay.translateHistoryLine(a1, 1);
+	auto child = assistant("C", "5", `{"type":"text","text":"child"}`, `,"parent_tool_use_id":"tool"`);
+	auto apiError = assistant("E", "6", `{"type":"text","text":"error"}`, `,"isApiErrorMessage":true`);
+	replay.translateHistoryLine(child, 3);
+	auto denial = `{"type":"system","subtype":"permission_denied","tool_use_id":"tool","decision_reason_type":"rule"}`;
+	assert(replay.translateHistoryLine(denial, 4)[0].translated.canFind(`"type":"item/denied"`));
+	foreach (inside; [
+		`{"type":"system","subtype":"informational","level":"info","content":"Fixture notice"}`,
+		`{"type":"system","subtype":"scheduled_task_fire"}`,
+		`{"type":"api-request-blob"}`,
+		`{"type":"user","isMeta":true,"turnCompanion":true,"message":{"content":"[Image: original 2x2]"}}`,
+		`{"type":"user","parent_tool_use_id":"tool","message":{"content":"nested prompt"}}`,
+	])
+		foreach (event; replay.translateHistoryLine(inside, 5))
+			assert(!event.translated.canFind(`"type":"turn/stop"`));
+	auto afterOtherLines = replay.translateHistoryLine(a2, 6);
+	assert(afterOtherLines.length == 2);
+	foreach (event; afterOtherLines)
+		assert(event.translated.canFind(`"item_id":"cc-hist-1"`));
+	assert(replay.finishHistoryReplay()[0].raw == a2);
+
+	enum companion = `{"type":"user","isMeta":true,"turnCompanion":true,"message":{"content":"[Image: original 2x2]"}}`;
+	foreach (ending; [prompt, apiError,
+		`{"type":"system","subtype":"compact_boundary"}`,
+		`{"type":"summary","summary":"summary"}`,
+		`{"type":"system","subtype":"model_refusal_fallback","content":"Refused; using fallback","retractedMessageUuids":["other"]}`])
+	{
+		replay = agent.createHistoryReplay();
+		replay.translateHistoryLine(a1, 1);
+		auto metadata = replay.translateHistoryLine(companion, 2);
+		assert(metadata.length == 1 && metadata[0].translated.canFind(`"is_meta":true`));
+		auto ended = replay.translateHistoryLine(ending, 3);
+		assert(ended.length >= 2 && ended[0].raw == a1 && ended[0].sourceLine == 1);
+		assert(ended[0].translated.canFind(`"type":"turn/stop"`));
+		assert(ended[1].raw == ending);
+		assert(replay.finishHistoryReplay().length == 0);
+	}
+
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	auto line = `{"type":"assistant","uuid":"record","message":{"id":"message","content":[{"type":"text","text":"one"},{"type":"text","text":"two"},{"type":"tool_use","id":"tool-id","name":"Bash","input":{"command":"true"}}]}}`;
+	auto events = translateAssistantHistory(line, 2);
+	assert(events.length == 7);
+	assert(events[0].translated.canFind(`"item_id":"cc-hist-2"`));
+	assert(events[2].translated.canFind(`"item_id":"cc-hist-3"`));
+	assert(events[4].translated.canFind(`"item_id":"tool-id"`));
 }
 
 unittest
@@ -3701,7 +3927,7 @@ private mixin template ClaudeAssistantUnhandledFields()
 }
 
 /// Translate a Claude history assistant message to item/started+completed per block + turn/stop.
-private TranslatedEvent[] translateAssistantHistory(string rawLine)
+private TranslatedEvent[] translateAssistantHistory(string rawLine, size_t blockIndexBase = 0)
 {
 	import cydo.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent,
 		UsageInfo, decomposeToolName;
@@ -3787,7 +4013,7 @@ private TranslatedEvent[] translateAssistantHistory(string rawLine)
 	foreach (idx, ref b; raw.message.content)
 	{
 		auto itemId = b.type == "tool_use" && b.id.length > 0
-			? b.id : "cc-hist-" ~ to!string(idx);
+			? b.id : "cc-hist-" ~ to!string(blockIndexBase + idx);
 
 		ItemStartedEvent startEv;
 		startEv.item_id              = itemId;
@@ -3838,7 +4064,7 @@ private TranslatedEvent[] translateAssistantHistory(string rawLine)
 	tsev.usage             = usage;
 	tsev.parent_tool_use_id = raw.parent_tool_use_id;
 	tsev.is_sidechain      = raw.isSidechain;
-	tsev.uuid              = raw.uuid;
+	tsev.uuid              = raw.message.id;
 	tsev.extras = extrasToFragment(collectAllExtras(raw));
 	events ~= TranslatedEvent(toJson(tsev), rawLine);
 
@@ -6169,6 +6395,125 @@ unittest
 }
 
 
+@("Interleaved Claude history replays keep their own turn stops")
+unittest
+{
+	import std.format : format;
+
+	auto agent = new ClaudeCodeAgent();
+	enum aFirst = `{"type":"assistant","uuid":"a-first","message":{"id":"A","content":[{"type":"text","text":"A first"}]}}`;
+	enum aLast = `{"type":"assistant","uuid":"a-last","message":{"id":"A","content":[{"type":"text","text":"A last"}]}}`;
+	enum bOnly = `{"type":"assistant","uuid":"b-only","message":{"id":"B","content":[{"type":"text","text":"B only"}]}}`;
+
+	string[] stops(TranslatedEvent[] events)
+	{
+		string[] result;
+		foreach (event; events)
+		{
+			@JSONPartial static struct Probe
+			{
+				string type;
+				@JSONOptional string uuid;
+			}
+			auto probe = jsonParse!Probe(event.translated);
+			if (probe.type == "turn/stop")
+				result ~= format!"%s:%s"(probe.uuid, event.sourceLine);
+		}
+		return result;
+	}
+
+	auto replayA = agent.createHistoryReplay();
+	auto a = replayA.translateHistoryLine(aFirst, 1);
+	auto replayB = agent.createHistoryReplay();
+	auto b = replayB.translateHistoryLine(bOnly, 1);
+	a ~= replayA.translateHistoryLine(aLast, 2);
+	b ~= replayB.finishHistoryReplay();
+	a ~= replayA.finishHistoryReplay();
+
+	auto aStops = stops(a);
+	auto bStops = stops(b);
+	assert(aStops == ["A:2"] && bStops == ["B:1"],
+		format!"expected A replay [A:2] and B replay [B:1], got A=%s B=%s"(aStops, bStops));
+}
+
+@("Claude live stop counts stream blocks, including trailing empty text")
+unittest
+{
+	import core.exception : AssertError;
+	import std.algorithm : canFind;
+
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	string[] stops;
+	session.onOutput = (TranslatedEvent event) {
+		if (event.translated.canFind(`"type":"turn/stop"`))
+			stops ~= event.translated;
+	};
+	foreach (id; ["M1", "M2"])
+	{
+		session.translateLiveLine(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"` ~ id ~ `"}}}`);
+		if (id == "M1")
+		{
+			session.translateLiveLine(`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`);
+			session.translateLiveLine(`{"type":"assistant","uuid":"record","message":{"id":"` ~ id ~ `","content":[{"type":"text","text":"hello"}]}}`);
+			session.translateLiveLine(`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`);
+			session.translateLiveLine(`{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}}`);
+			session.translateLiveLine(`{"type":"stream_event","event":{"type":"content_block_stop","index":1}}`);
+		}
+		session.translateLiveLine(`{"type":"stream_event","event":{"type":"message_stop"}}`);
+	}
+	assert(stops.length == 2);
+	assert(stops[0].canFind(`"uuid":"M1"`));
+	assert(stops[1].canFind(`"uuid":"M2"`));
+	assert(stops[0].canFind(`"api_block_count":2`) && stops[1].canFind(`"api_block_count":0`),
+		"live stops must carry both a two-block count and a zero-block count");
+
+	auto orphan = new ClaudeCodeSession("true");
+	scope(exit) orphan.stop();
+	bool rejected;
+	try orphan.translateLiveLine(`{"type":"stream_event","event":{"type":"message_stop"}}`);
+	catch (AssertError) rejected = true;
+	assert(rejected);
+}
+
+unittest
+{
+	import core.exception : AssertError;
+	auto agent = new ClaudeCodeAgent();
+	auto content =
+		`{"type":"assistant","uuid":"a1","message":{"id":"X"}}` ~ "\n" ~
+		`{"type":"user","uuid":"result","message":{"content":[{"type":"tool_result","content":"ok"}]}}` ~ "\n" ~
+		`{"type":"assistant","uuid":"a2","message":{"id":"X"}}`;
+	auto boundaries = agent.extractPersistedHistoryBoundaries(content);
+	assert(boundaries.length == 2);
+	assert(boundaries[0].anchor == "X" && boundaries[0].sourceLine == 1);
+	assert(boundaries[1].anchor == "X" && boundaries[1].sourceLine == 3);
+	assert(agent.extractPersistedHistoryBoundaries(
+		`{"type":"assistant","isSidechain":true,"message":{"id":"side"}}` ~ "\n" ~
+		`{"type":"assistant","parent_tool_use_id":"tool","message":{"id":"child"}}` ~ "\n" ~
+		`{"type":"assistant","isApiErrorMessage":true,"message":{"id":"error"}}`).length == 0);
+	auto synthetic = agent.extractPersistedHistoryBoundaries(
+		`{"type":"assistant","uuid":"placeholder","isApiErrorMessage":false,"message":{"id":"synthetic-id","model":"<synthetic>"}}`);
+	assert(synthetic.length == 1 && synthetic[0].anchor == "synthetic-id");
+	bool rejected;
+	try agent.extractPersistedHistoryBoundaries(`{"type":"assistant","uuid":"missing","message":{}}`);
+	catch (AssertError) rejected = true;
+	assert(rejected);
+}
+
+unittest
+{
+	auto agent = new ClaudeCodeAgent();
+	auto assistant = `{"type":"assistant","uuid":"record","message":{"id":"X"}}`;
+	assert(agent.forkIdMatchesLine(assistant, 1, "X"));
+	assert(!agent.forkIdMatchesLine(assistant, 1, "record"));
+	assert(agent.forkIdMatchesLine(`{"type":"user","uuid":"user","message":{"content":"hello"}}`, 2, "user"));
+	assert(!agent.forkIdMatchesLine(`{"type":"user","uuid":"result","message":{"content":"\\\"id\\\":\\\"X\\\""}}`, 3, "X"));
+	assert(agent.forkIdMatchesLine(`{"type":"queue-operation","operation":"enqueue"}`, 4, "enqueue-4"));
+	assert(!agent.forkIdMatchesLine(assistant, 5, "line:5"));
+	assert(agent.forkIdMatchesLine(`{"type":"user","message":{"content":"hi"}}`, 5, "line:5"));
+}
+
 version (unittest)
 package(cydo) string[] claudeHistoryAgreementFixture(string toolInputType)
 {
@@ -6193,6 +6538,239 @@ package(cydo) string[] claudeHistoryAgreementFixture(string toolInputType)
 	];
 }
 
+@("Claude replay, extracted boundaries and cuts agree on root message members")
+unittest
+{
+	import std.array : join;
+
+	auto agent = new ClaudeCodeAgent();
+	foreach (toolInputType; ["ordinary", "user", "queue-operation"])
+	{
+		auto rows = claudeHistoryAgreementFixture(toolInputType);
+		auto replaySession = agent.createHistoryReplay();
+		auto boundaries = agent.extractPersistedHistoryBoundaries(rows.join("\n"));
+		assert(boundaries.length == 2);
+		int[] matchingLines;
+		TranslatedEvent[] replay;
+		foreach (i, row; rows)
+		{
+			auto line = cast(int) i + 1;
+			if (agent.forkIdMatchesLine(row, line, "X"))
+				matchingLines ~= line;
+			replay ~= replaySession.translateHistoryLine(row, line);
+		}
+		replay ~= replaySession.finishHistoryReplay();
+		assert(matchingLines == [4, 11]);
+		foreach (i, boundary; boundaries)
+		{
+			assert(boundary.kind == PersistedHistoryBoundaryKind.agent_turn);
+			assert(boundary.anchor == "X" && boundary.sourceLine == matchingLines[i]);
+		}
+		int[] stopLines;
+		string[] replayedMembers;
+		foreach (event; replay)
+		{
+			@JSONPartial static struct Probe
+			{
+				string type;
+				@JSONOptional string uuid;
+				@JSONOptional string item_type;
+				@JSONOptional string parent_tool_use_id;
+			}
+			auto p = jsonParse!Probe(event.translated);
+			assert(event.raw != rows[0] && event.raw != rows[$ - 1]);
+			if (p.type == "item/started" && p.item_type == "tool_use"
+				&& p.parent_tool_use_id.length == 0)
+				replayedMembers ~= event.raw;
+			if (p.type == "turn/stop" && p.parent_tool_use_id.length == 0)
+			{
+				assert(p.uuid == boundaries[$ - 1].anchor);
+				assert(event.raw == rows[10]);
+				stopLines ~= event.sourceLine;
+			}
+		}
+		assert(stopLines == [boundaries[$ - 1].sourceLine]);
+		assert(replayedMembers == [rows[3], rows[10]]);
+		import core.exception : AssertError;
+		import std.exception : assertThrown;
+		replaySession = agent.createHistoryReplay();
+		replaySession.translateHistoryLine(rows[3], 1);
+		replaySession.translateHistoryLine(rows[13], 2); // root API error ends the attempt
+		assertThrown!AssertError(replaySession.translateHistoryLine(rows[10], 3));
+	}
+}
+
+@("Claude history traversal projects physical API block indexes")
+unittest
+{
+	import std.array : join;
+	auto agent = new ClaudeCodeAgent();
+	auto rows = claudeHistoryAgreementFixture("ordinary");
+	int[] indexes;
+	agent.visitPersistedHistoryRows([rows[3], rows[10],
+		`{"type":"assistant","message":{"id":"older"}}`].join("\n"), 0,
+		(boundary, index, joined) { indexes ~= index; });
+	assert(indexes == [0, 1, -1]);
+
+	// Pinned CLI captures: cap-edge (signature-only thinking),
+	// cap-int-between, and cap-int-mid.
+	indexes = null;
+	agent.visitPersistedHistoryRows([
+		`{"type":"assistant","apiBlockIndex":3,"message":{"id":"signature","content":[{"type":"thinking","signature":"sig"}]}}`,
+		`{"type":"assistant","apiBlockIndex":0,"message":{"id":"between","content":[{"type":"text","text":"done"}]}}`,
+		`{"type":"assistant","apiBlockIndex":0,"message":{"id":"mid","content":[{"type":"text","text":"done"}]}}`,
+		`{"type":"assistant","apiBlockIndex":1,"message":{"id":"mid","content":[{"type":"text","text":"interrupted"}]}}`,
+	].join("\n"), 0, (boundary, index, joined) { indexes ~= index; });
+	assert(indexes == [3, 0, 0, 1]);
+}
+
+@("Claude replay closes the open message at every queue operation")
+unittest
+{
+	import std.array : join;
+	import std.format : format;
+
+	@JSONPartial static struct Event
+	{
+		string type;
+		@JSONOptional string uuid;
+	}
+
+	auto agent = new ClaudeCodeAgent();
+	auto rows = claudeHistoryAgreementFixture("ordinary");
+	string[] mismatches;
+	foreach (operation; ["enqueue", "dequeue", "remove", "popAll"])
+	{
+		auto replay = agent.createHistoryReplay();
+		replay.translateHistoryLine(rows[3], 1);
+		replay.translateHistoryLine(rows[5], 2);
+		auto closed = replay.translateHistoryLine(
+			format!`{"type":"queue-operation","operation":"%s","content":"queued"}`(operation), 3);
+		auto next = replay.translateHistoryLine(
+			`{"type":"assistant","apiBlockIndex":0,"message":{"id":"Y","content":[{"type":"text","text":"next"}]}}`, 4);
+		bool closedX;
+		if (closed.length == 1)
+		{
+			auto event = jsonParse!Event(closed[0].translated);
+			closedX = event.type == "turn/stop" && event.uuid == "X" && closed[0].sourceLine == 1;
+		}
+		bool lateStop;
+		foreach (entry; next)
+		{
+			auto event = jsonParse!Event(entry.translated);
+			lateStop |= event.type == "turn/stop" && event.uuid == "X";
+		}
+		if (!closedX || lateStop)
+			mismatches ~= format!"%s: queue returned %s events, stopped X at line 1: %s, stopped X at Y: %s"(
+				operation, closed.length, closedX, lateStop);
+	}
+	assert(mismatches.length == 0, mismatches.join("\n"));
+}
+
+@("Claude replay rejects a message that reappears after a queue operation")
+unittest
+{
+	import core.exception : AssertError;
+	import std.exception : assertThrown;
+
+	auto replay = (new ClaudeCodeAgent()).createHistoryReplay();
+	auto rows = claudeHistoryAgreementFixture("ordinary");
+	replay.translateHistoryLine(rows[3], 1);
+	replay.translateHistoryLine(`{"type":"queue-operation","operation":"enqueue","content":"queued"}`, 2);
+	assertThrown!AssertError(replay.translateHistoryLine(rows[10], 3));
+}
+
+@("Claude abandoned blocks cap the live block count")
+unittest
+{
+	import std.format : format;
+
+	@JSONPartial static struct Stop
+	{
+		string type;
+		@JSONOptional int api_block_count = -1;
+	}
+
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	int[] counts;
+	session.onOutput = (TranslatedEvent event) {
+		auto parsed = jsonParse!Stop(event.translated);
+		if (parsed.type == "turn/stop")
+			counts ~= parsed.api_block_count;
+	};
+	foreach (limit; [1, 5])
+	{
+		session.translateLiveLine(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"A"}}}`);
+		foreach (index; 0 .. 2)
+		{
+			session.translateLiveLine(format!`{"type":"stream_event","event":{"type":"content_block_start","index":%s,"content_block":{"type":"text","text":""}}}`(index));
+			session.translateLiveLine(format!`{"type":"stream_event","event":{"type":"content_block_stop","index":%s}}`(index));
+		}
+		session.translateLiveLine(format!`{"type":"stream_event","event":{"type":"message_stop"},"abandoned_blocks":{"api_message_id":"A","from_block_index":%s}}`(limit));
+	}
+	assert(counts == [1, 2], format!"limits 1 and 5: expected counts [1, 2], got %s"(counts));
+}
+
+@("Claude rejects abandoned blocks naming a different open message")
+unittest
+{
+	import core.exception : AssertError;
+	import std.exception : assertThrown;
+
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.translateLiveLine(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"A"}}}`);
+	assertThrown!AssertError(session.translateLiveLine(
+		`{"type":"stream_event","event":{"type":"message_stop"},"abandoned_blocks":{"api_message_id":"B","from_block_index":0}}`));
+}
+
+@("Claude rejects message_start while a message is open")
+unittest
+{
+	import core.exception : AssertError;
+	import std.exception : assertThrown;
+
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.translateLiveLine(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"A"}}}`);
+	session.translateLiveLine(`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`);
+	assertThrown!AssertError(session.translateLiveLine(
+		`{"type":"stream_event","event":{"type":"message_start","message":{"id":"B"}}}`));
+}
+
+@("Claude retry after an empty stream keeps both stop counts")
+unittest
+{
+	@JSONPartial static struct Stop
+	{
+		string type;
+		@JSONOptional int api_block_count = -1;
+	}
+
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	int[] counts;
+	session.onOutput = (TranslatedEvent event) {
+		auto parsed = jsonParse!Stop(event.translated);
+		if (parsed.type == "turn/stop")
+			counts ~= parsed.api_block_count;
+	};
+	// Stream events from cap-start-only-drop, reduced to the translated fields.
+	foreach (event; [
+		`{"type":"message_start","message":{"id":"msg_mock_00001"}}`,
+		`{"type":"message_stop"}`,
+		`{"type":"message_start","message":{"id":"msg_mock_00002"}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"retry-first"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":20}}`,
+		`{"type":"message_stop"}`,
+	])
+		session.translateLiveLine(`{"type":"stream_event","event":` ~ event ~ "}");
+	assert(counts == [0, 1]);
+}
+
 version (unittest)
 package(cydo) string claudeParentLinkedQueueFixture(string queueType,
 	string operation = "enqueue", string content = "queued")
@@ -6207,6 +6785,7 @@ package(cydo) string claudeParentLinkedQueueFixture(string queueType,
 unittest
 {
 	import std.array : join;
+	import std.format : format;
 
 	@JSONPartial static struct Event
 	{
@@ -6221,21 +6800,27 @@ unittest
 	foreach (operation; ["enqueue", "dequeue", "remove", "popAll"])
 	{
 		auto replay = agent.createHistoryReplay();
-		auto first = replay.translateHistoryLine(rows[3], 1);
+		replay.translateHistoryLine(rows[3], 1);
 		replay.translateHistoryLine(rows[5], 2);
 		auto closed = replay.translateHistoryLine(
 			claudeParentLinkedQueueFixture(queueType, operation), 3);
 		auto next = replay.translateHistoryLine(
 			`{"type":"assistant","apiBlockIndex":0,"message":{"id":"Y","content":[{"type":"text","text":"next"}]}}`, 4);
-		auto stop = jsonParse!Event(first[$ - 1].translated);
+		bool closedX;
+		if (closed.length == 1)
+		{
+			auto event = jsonParse!Event(closed[0].translated);
+			closedX = event.type == "turn/stop" && event.uuid == "X" && closed[0].sourceLine == 1;
+		}
 		bool lateStop;
 		foreach (entry; next)
 		{
 			auto event = jsonParse!Event(entry.translated);
-			lateStop |= event.type == "turn/stop" && event.uuid == "head";
+			lateStop |= event.type == "turn/stop" && event.uuid == "X";
 		}
-		assert(stop.type == "turn/stop" && stop.uuid == "head");
-		assert(closed.length == 0 && !lateStop);
+		if (!closedX || lateStop)
+			mismatches ~= format!"%s %s: queue returned %s events, stopped X at line 1: %s, stopped X at Y: %s"(
+				queueType, operation, closed.length, closedX, lateStop);
 	}
 	foreach (queueType; ["queue-operation", "queue/operation"])
 	{

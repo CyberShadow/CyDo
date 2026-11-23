@@ -1941,3 +1941,95 @@ describe("turn retraction reducer", () => {
     expect(s.messages[0]!.retracted).toBeUndefined();
   });
 });
+
+describe("Claude image companion replay", () => {
+  const readA = asEvent({
+    type: "item/started",
+    item_type: "tool_use",
+    item_id: "read-a",
+    name: "Read",
+  });
+  const readB = { ...readA, item_id: "read-b" };
+  const resultA = asEvent({
+    type: "item/result",
+    item_id: "read-a",
+    content: [{ type: "text", text: "image result" }],
+  });
+  const companion = asEvent({
+    type: "item/started",
+    item_type: "user_message",
+    item_id: "cc-user-msg",
+    uuid: "image-companion",
+    is_meta: true,
+    content: [{ type: "text", text: "[Image: original 2400x2400]" }],
+  });
+  const stop = asEvent({
+    type: "turn/stop",
+    uuid: "X",
+    history_boundary: { kind: "agent_turn", anchor: "X" },
+  });
+
+  it("keeps two reads in one reply above their interleaved companion", () => {
+    const events = [
+      readA,
+      asEvent({ type: "item/completed", item_id: "read-a" }),
+      resultA,
+      companion,
+      readB,
+      asEvent({ type: "item/completed", item_id: "read-b" }),
+      stop,
+    ];
+    const landed = events.reduce<TaskState>(
+      (state, event, index) => reduceMessage(state, event, index + 1),
+      makeState(),
+    );
+    expect(landed.messages.map((message) => message.type)).toEqual([
+      "assistant",
+      "user",
+    ]);
+    expect(landed.messages[0]).toMatchObject({
+      streaming: false,
+      uuid: "X",
+      blockIds: ["read-a", "read-b"].map((id) => landed.itemIdMap.get(id)),
+    });
+    expect(landed.messages[1]).toMatchObject({
+      isMeta: true,
+      uuid: "image-companion",
+    });
+    const raw = landed.messages[0]?.rawSource as Array<{ type: string }>;
+    expect(raw.filter((event) => event.type === "turn/stop")).toEqual([stop]);
+  });
+
+  it("keeps a trailing companion before the next prompt or refusal notice", () => {
+    const prompt = asEvent({
+      type: "item/started",
+      item_type: "user_message",
+      item_id: "cc-user-msg",
+      uuid: "next-prompt",
+    });
+    const refusal = asEvent({
+      type: "turn/retracted",
+      uuids: ["other-message"],
+      notice: {
+        type: "cydo/task_diagnostic",
+        severity: "warning",
+        subject: "Model refused; switched",
+        body: "Using fallback",
+      },
+    });
+    for (const ending of [prompt, refusal]) {
+      const events = [readA, companion, stop, ending];
+      const landed = events.reduce<TaskState>(
+        (state, event, index) => reduceMessage(state, event, index + 1),
+        makeState(),
+      );
+      expect(landed.messages.map((message) => message.type)).toEqual([
+        "assistant",
+        "user",
+        ending === prompt ? "user" : "diagnostic",
+      ]);
+      expect(landed.messages[0]).toMatchObject({ streaming: false });
+      expect(landed.messages[1]).toMatchObject({ uuid: "image-companion" });
+    }
+  });
+});

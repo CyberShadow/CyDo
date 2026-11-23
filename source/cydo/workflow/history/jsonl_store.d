@@ -119,8 +119,10 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid,
 		&& isAbsolute(destination.path),
 		"History fork destination must provide an absolute path and session ID");
 
-	// Read source, rewrite sessionId, truncate after target line
+	// An anchor can match several records. Fork keeps through the last match;
+	// undo truncation cuts before the first match.
 	string output;
+	size_t prefixLength;
 	bool found = false;
 	int lineNum = 0;
 	foreach (line; readText(source.path).lineSplitter)
@@ -136,7 +138,7 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid,
 		if (matchFn(line, lineNum, afterForkId))
 		{
 			found = true;
-			break;
+			prefixLength = output.length;
 		}
 	}
 
@@ -150,7 +152,7 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid,
 		if (destDir.length > 0)
 			mkdirRecurse(destDir);
 	}
-	write(destination.path, output);
+	write(destination.path, output[0 .. prefixLength]);
 
 	// Create DB entry with the new agent session ID
 	return ForkResult(createForkTask(persistence, sourceTid, destination.sessionId,
@@ -718,6 +720,89 @@ private string generateUUID()
 		bytes[8], bytes[9], bytes[10], bytes[11],
 		bytes[12], bytes[13], bytes[14], bytes[15]);
 }
+
+unittest
+{
+	import std.file : exists, mkdirRecurse, readText, rmdirRecurse, write;
+	import std.path : buildPath;
+	import cydo.agent.contract : Agent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.runtime.launch.types : NativeHistoryProfile;
+
+	auto root = buildPath("/tmp", "cydo-multiple-record-anchor-fork");
+	if (exists(root)) rmdirRecurse(root);
+	mkdirRecurse(root);
+	scope(exit) if (exists(root)) rmdirRecurse(root);
+	auto persistence = Persistence(buildPath(root, "cydo.db"));
+	auto sourceTid = persistence.createTask("", "/tmp/fork-project", "claude");
+	Agent agent = new ClaudeCodeAgent();
+	auto profile = NativeHistoryProfile(agent.driver, buildPath(root, "profile"));
+	auto path = buildPath(profile.root, "projects", "-tmp-fork-project", "source.jsonl");
+	mkdirRecurse(buildPath(profile.root, "projects", "-tmp-fork-project"));
+	write(path, "one\ntwo\nthree\nfour\nfive\n");
+	bool match(string, int lineNum, string anchor) {
+		return anchor == "shared" && (lineNum == 2 || lineNum == 4);
+	}
+	string rewrite(string line, string, string) { return line; }
+	bool count(string) { return true; }
+	auto source = HistoryAccess(agent, profile, "source", path);
+	auto dest = HistoryForkDestination("child", buildPath(root, "child.jsonl"));
+	auto result = forkTask(persistence, sourceTid, source, "shared", "/tmp/fork-project",
+		"", "parent", dest, &rewrite, &match);
+	assert(result.tid > 0);
+	assert(readText(dest.path) == "one\ntwo\nthree\nfour\n");
+	assert(countLinesAfterForkId(path, "shared", &match, &count, null) == 3);
+	assert(truncateJsonl(path, "shared", &match, true) == 4);
+	assert(readText(path) == "one\n");
+}
+
+@("Claude fork and undo cut at the last and first root message records")
+unittest
+{
+	import std.array : join;
+	import std.file : exists, mkdirRecurse, readText, rmdirRecurse, write;
+	import std.path : buildPath;
+	import cydo.agent.contract : Agent;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent, claudeHistoryAgreementFixture;
+	import cydo.runtime.launch.types : NativeHistoryProfile;
+
+	auto root = buildPath("/tmp", "cydo-claude-classified-cut");
+	if (exists(root)) rmdirRecurse(root);
+	mkdirRecurse(root);
+	scope(exit) rmdirRecurse(root);
+	auto persistence = Persistence(buildPath(root, "cydo.db"));
+	auto sourceTid = persistence.createTask("", "/tmp/fork-project", "claude");
+	Agent agent = new ClaudeCodeAgent();
+	auto profile = NativeHistoryProfile(agent.driver, root);
+	auto path = buildPath(root, "source.jsonl");
+	auto source = HistoryAccess(agent, profile, "source", path);
+	foreach (toolInputType; ["ordinary", "user", "queue-operation"])
+	{
+		auto rows = claudeHistoryAgreementFixture(toolInputType);
+		write(path, rows.join("\n") ~ "\n");
+		auto dest = HistoryForkDestination(toolInputType, buildPath(root, toolInputType ~ ".jsonl"));
+		auto result = forkTask(persistence, sourceTid, source, "X", "/tmp/fork-project",
+			"", "parent", dest, &agent.rewriteSessionId, &agent.forkIdMatchesLine);
+		assert(result.tid > 0);
+		assert(readText(dest.path) == rows[0 .. 11].join("\n") ~ "\n");
+		assert(countLinesAfterForkId(path, "X", &agent.forkIdMatchesLine, &agent.isForkableLine, null) == 1);
+		assert(truncateJsonl(path, "X", &agent.forkIdMatchesLine, true) == rows.length - 3);
+		assert(readText(path) == rows[0 .. 3].join("\n") ~ "\n");
+
+		// The next prompt's run-up is trimmed, while the complete retained
+		// reply and any companion rows for its surviving tool results remain.
+		foreach (end; [11, 13])
+		{
+			auto kept = rows[0 .. end].join("\n") ~ "\n";
+			write(path, kept
+				~ `{"type":"queue-operation","operation":"enqueue","content":"next"}` ~ "\n"
+				~ `{"type":"user","uuid":"next","message":{"content":"next"}}` ~ "\n");
+			assert(truncateJsonl(path, "next", &agent.forkIdMatchesLine, true) == 2);
+			assert(readText(path) == kept);
+		}
+	}
+}
+
 
 @("Editing a Claude meta image companion preserves both assistant members")
 unittest

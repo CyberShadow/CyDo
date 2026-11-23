@@ -35,12 +35,16 @@ struct JsonlTracker
 		string identity;
 		ulong generation;
 		bool requiresExactIdentity;
+		int apiBlockCount;
 	}
 	struct PersistedBoundaryCandidate {
 		PersistedHistoryBoundary boundary;
 		size_t sourceLine;
 		bool requiresExactIdentity;
 		ulong generation;
+		int lastBlockIndex = -1;
+		bool joined;
+		bool unindexed;
 	}
 	struct BoundaryReconcileState {
 		size_t readPos;
@@ -49,6 +53,8 @@ struct JsonlTracker
 		PersistedBoundaryCandidate[][PersistedHistoryBoundaryKind] persistedByKind;
 		bool[string] queueCanonicalIdentities;
 		bool[string] absorbedLocalIdentities;
+		string lastAgentTurnAnchor;
+		bool[string] seenAgentTurnAnchors;
 		ubyte[] partialLine;
 	}
 	TaskData* delegate(int tid) getTask;
@@ -117,7 +123,8 @@ struct JsonlTracker
 		@JSONPartial static struct Probe { string type; @JSONOptional string item_type;
 			@JSONOptional string uuid; @JSONOptional string item_id;
 			@JSONOptional bool is_meta; @JSONOptional bool is_synthetic; @JSONOptional bool pending; @JSONOptional bool is_sidechain;
-			@JSONOptional string parent_tool_use_id; }
+			@JSONOptional string parent_tool_use_id;
+			@JSONOptional int api_block_count = -1; }
 		auto p = jsonParse!Probe(event);
 		PersistedHistoryBoundaryKind kind;
 		if (p.type == "item/started" && p.item_type == "user_message"
@@ -136,11 +143,19 @@ struct JsonlTracker
 			&& requireLiveContext(tid).agent.driver == AgentDriver.claude)
 			return;
 		auto identity = p.uuid.length > 0 ? p.uuid : p.item_id;
+		if (kind == PersistedHistoryBoundaryKind.agent_turn
+			&& requireLiveContext(tid).agent.driver == AgentDriver.claude)
+		{
+			assert(identity.length > 0, "Claude live turn/stop requires the API message id");
+			assert(p.api_block_count >= 0, "Claude live turn/stop requires the API block count");
+			if (p.api_block_count == 0)
+				return;
+		}
 		if (kind == PersistedHistoryBoundaryKind.user
 			&& identity in boundaryState[tid].absorbedLocalIdentities)
 			return;
 		boundaryState[tid].liveByKind[kind] ~= LiveBoundaryCandidate(seq, kind,
-			identity, historyGeneration(tid), registeredLocal);
+			identity, historyGeneration(tid), registeredLocal, p.api_block_count);
 		drainLiveBoundaries(tid, kind);
 	}
 
@@ -185,9 +200,92 @@ struct JsonlTracker
 		drainLiveBoundaries(tid, PersistedHistoryBoundaryKind.user);
 	}
 
+	/// Rule C (task 42281): only the final indexed member can publish a live
+	/// Claude stop. The stream and file order then make earlier candidates
+	/// impossible to match, so retire them together with the published pair.
+	private void drainClaudeMessageBoundaries(int tid)
+	{
+		auto state = tid in boundaryState;
+		if (state is null)
+			return;
+		enum kind = PersistedHistoryBoundaryKind.agent_turn;
+		auto lives = kind in state.liveByKind;
+		auto persisted = kind in state.persistedByKind;
+		auto current = historyGeneration(tid);
+
+		void dropStale(Candidate)(ref Candidate[] candidates)
+		{
+			foreach (candidate; candidates)
+				assert(candidate.generation <= current,
+					"history boundary candidate belongs to a future generation");
+			while (candidates.length > 0 && candidates[0].generation < current)
+				candidates = candidates[1 .. $];
+		}
+
+		if (lives !is null)
+			dropStale(*lives);
+		if (persisted !is null)
+			dropStale(*persisted);
+		if (lives is null || persisted is null)
+			return;
+
+		while ((*lives).length > 0 && (*persisted).length > 0)
+		{
+			bool published;
+			foreach (j, live; *lives)
+			{
+				foreach (i, candidate; *persisted)
+				{
+					if (candidate.boundary.anchor != live.identity)
+						continue;
+					assert(!candidate.unindexed, "Claude assistant record requires apiBlockIndex");
+					// The 2.1.330 joined-text path strips apiBlockIndex.
+					// The joined-mixed probe has an indexed tool in the same ID.
+					if (candidate.joined)
+						break;
+					assert(candidate.lastBlockIndex < live.apiBlockCount,
+						"Claude persisted block index exceeds the live message");
+					if (candidate.lastBlockIndex != live.apiBlockCount - 1)
+						break;
+					*lives = (*lives)[j + 1 .. $];
+					*persisted = (*persisted)[i + 1 .. $];
+					resolveBoundary(tid, live.seq, candidate.boundary, true, current);
+					published = true;
+					break;
+				}
+				if (published)
+					break;
+			}
+			if (!published)
+				return;
+		}
+	}
+
+	private static void absorbClaudeMember(ref PersistedBoundaryCandidate candidate,
+		int apiBlockIndex, bool joined)
+	{
+		if (joined)
+			candidate.joined = true;
+		else if (apiBlockIndex < 0)
+			candidate.unindexed = true;
+		else
+		{
+			assert(apiBlockIndex > candidate.lastBlockIndex,
+				"Claude persisted block indexes must strictly increase");
+			candidate.lastBlockIndex = apiBlockIndex;
+		}
+	}
+
 	private void drainLiveBoundaries(int tid, PersistedHistoryBoundaryKind kind)
 	{
 		import std.algorithm : startsWith;
+
+		if (kind == PersistedHistoryBoundaryKind.agent_turn
+			&& requireLiveContext(tid).agent.driver == AgentDriver.claude)
+		{
+			drainClaudeMessageBoundaries(tid);
+			return;
+		}
 		while (true)
 		{
 			auto state = tid in boundaryState;
@@ -241,9 +339,7 @@ struct JsonlTracker
 						auto nativeRecord = !persisted.boundary.anchor.startsWith("enqueue-");
 						if ((nativeRecord && persisted.boundary.anchor.startsWith("line:"))
 							|| (nativeRecord && requireLiveContext(tid).agent.driver == AgentDriver.claude
-								&& kind == PersistedHistoryBoundaryKind.user)
-							|| (kind == PersistedHistoryBoundaryKind.agent_turn
-								&& live.identity.length == 0))
+								&& kind == PersistedHistoryBoundaryKind.user))
 						{
 							liveIndex = cast(ptrdiff_t) j;
 							persistedIndex = cast(ptrdiff_t) i;
@@ -475,8 +571,8 @@ struct JsonlTracker
 
 		auto lineOffset = jsonlLineCount.get(tid, 0);
 		auto context = requireLiveContext(tid);
-		auto boundaries = context.agent.extractPersistedHistoryBoundaries(completeContent, lineOffset);
-		tracef("[jsonl] processNewJsonlContent tid=%d path=%s newBytes=%d boundaries=%d", tid, jsonlPath, got.length, boundaries.length);
+		import cydo.agent.drivers.claude : ClaudeCodeAgent;
+		auto claude = cast(ClaudeCodeAgent) context.agent;
 
 		import std.string : lineSplitter;
 		int newLines = 0;
@@ -503,19 +599,54 @@ struct JsonlTracker
 					onJsonlLine(tid, line, n);
 			}
 		}
-		foreach (boundary; boundaries)
+		void processBoundary(PersistedHistoryBoundary boundary, int apiBlockIndex = -1, bool joinedApiReply = false)
 		{
-			if (context.agent.driver == AgentDriver.claude
-				&& boundary.kind == PersistedHistoryBoundaryKind.provisional_user)
-				continue;
+			if (claude !is null && boundary.kind == PersistedHistoryBoundaryKind.provisional_user)
+				return;
 			if (tid !in boundaryState)
 				boundaryState[tid] = BoundaryReconcileState.init;
-			boundaryState[tid].persistedByKind[boundary.kind] ~= PersistedBoundaryCandidate(boundary,
-				cast(size_t) boundary.sourceLine,
-				(boundary.anchor in boundaryState[tid].queueCanonicalIdentities) !is null,
+			auto state = &boundaryState[tid];
+			if (claude !is null && boundary.kind == PersistedHistoryBoundaryKind.agent_turn)
+			{
+				if (boundary.anchor == state.lastAgentTurnAnchor)
+				{
+					foreach (ref candidate; state.persistedByKind[boundary.kind])
+					{
+						if (candidate.boundary.anchor != boundary.anchor
+							|| candidate.generation != historyGeneration(tid))
+							continue;
+						absorbClaudeMember(candidate, apiBlockIndex, joinedApiReply);
+						drainLiveBoundaries(tid, boundary.kind);
+						return;
+					}
+					assert(false, "Claude assistant record arrived after boundary publication");
+					return;
+				}
+				assert(boundary.anchor !in state.seenAgentTurnAnchors,
+					"Claude API message records must be contiguous among boundaries");
+				state.seenAgentTurnAnchors[boundary.anchor] = true;
+				state.lastAgentTurnAnchor = boundary.anchor;
+			}
+			auto candidate = PersistedBoundaryCandidate(boundary, cast(size_t) boundary.sourceLine,
+				(boundary.anchor in state.queueCanonicalIdentities) !is null,
 				historyGeneration(tid));
+			if (claude !is null && boundary.kind == PersistedHistoryBoundaryKind.agent_turn)
+				absorbClaudeMember(candidate, apiBlockIndex, joinedApiReply);
+			state.persistedByKind[boundary.kind] ~= candidate;
 			drainLiveBoundaries(tid, boundary.kind);
 		}
+
+		if (claude !is null)
+		{
+			claude.visitPersistedHistoryRows(completeContent, lineOffset, &processBoundary, () {
+				// A turn.step rewrite can drop a block. Leave an incomplete
+				// message unpublished when its persisted span closes.
+				boundaryState[tid].lastAgentTurnAnchor = null;
+			});
+		}
+		else
+			foreach (boundary; context.agent.extractPersistedHistoryBoundaries(completeContent, lineOffset))
+				processBoundary(boundary);
 	}
 
 	/// Stop all JSONL watches and clear all snapshots (used during shutdown).
@@ -1415,8 +1546,8 @@ unittest
 	setTestLiveContext(tracker, 2, new ClaudeCodeAgent());
 	tracker.boundaryState[2] = JsonlTracker.BoundaryReconcileState.init;
 	tracker.boundaryState[2].persistedByKind[PersistedHistoryBoundaryKind.agent_turn] ~=
-		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("turn", PersistedHistoryBoundaryKind.agent_turn, null), 1, false, 0);
-	tracker.noteLiveBoundaryCandidate(2, 8, `{"type":"turn/stop","uuid":"turn"}`);
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("turn", PersistedHistoryBoundaryKind.agent_turn, null), 1, false, 0, 0);
+	tracker.noteLiveBoundaryCandidate(2, 8, `{"type":"turn/stop","uuid":"turn","api_block_count":1}`);
 	assert(resolved == ["u:7", "turn:8"]);
 	assert(tracker.boundaryState[2].liveByKind[PersistedHistoryBoundaryKind.agent_turn].length == 0);
 	assert(tracker.boundaryState[2].persistedByKind[PersistedHistoryBoundaryKind.agent_turn].length == 0);
@@ -1430,16 +1561,21 @@ unittest
 		`{"type":"item/started","item_type":"user_message"}`);
 	assert(resolved == ["u:7", "turn:8", "line:10:9"]);
 
-	// Claude assistant message_stop has no UUID in its live turn/stop event;
-	// its persisted assistant UUID must therefore resolve FIFO, unlike users.
+	// Claude turn stops require a message id and cannot pair with another id.
 	setTestLiveContext(tracker, 4, new ClaudeCodeAgent());
 	tracker.boundaryState[4] = JsonlTracker.BoundaryReconcileState.init;
+	import core.exception : AssertError;
+	bool rejectedEmptyIdentity;
+	try tracker.noteLiveBoundaryCandidate(4, 10, `{"type":"turn/stop"}`);
+	catch (AssertError) rejectedEmptyIdentity = true;
+	assert(rejectedEmptyIdentity);
 	tracker.boundaryState[4].liveByKind[PersistedHistoryBoundaryKind.agent_turn] ~=
-		JsonlTracker.LiveBoundaryCandidate(10, PersistedHistoryBoundaryKind.agent_turn, "", 0);
+		JsonlTracker.LiveBoundaryCandidate(10, PersistedHistoryBoundaryKind.agent_turn, "X", 0);
 	tracker.boundaryState[4].persistedByKind[PersistedHistoryBoundaryKind.agent_turn] ~=
-		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("assistant", PersistedHistoryBoundaryKind.agent_turn, null), 1, false, 0);
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("Y", PersistedHistoryBoundaryKind.agent_turn, null), 1, false, 0);
 	tracker.drainLiveBoundaries(4, PersistedHistoryBoundaryKind.agent_turn);
-	assert(resolved[$ - 1] == "assistant:10");
+	assert(tracker.boundaryState[4].liveByKind[PersistedHistoryBoundaryKind.agent_turn].length == 1);
+	assert(tracker.boundaryState[4].persistedByKind[PersistedHistoryBoundaryKind.agent_turn].length == 1);
 
 	setTestLiveContext(tracker, 5, new ClaudeCodeAgent());
 	tracker.boundaryState[5] = JsonlTracker.BoundaryReconcileState.init;
@@ -1689,6 +1825,453 @@ unittest
 		`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`;
 	auto skipped = computeRollbackSkipLines(jsonl);
 	assert(4 in skipped && 5 in skipped);
+}
+
+unittest
+{
+	import core.exception : AssertError;
+	import std.file : remove, write;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	enum assistant1 = `{"type":"assistant","uuid":"a1","apiBlockIndex":0,"message":{"id":"X"}}`;
+	enum assistant2 = `{"type":"assistant","uuid":"a2","apiBlockIndex":1,"message":{"id":"X"}}`;
+	enum toolResult = `{"type":"user","uuid":"tool-result","message":{"content":[{"type":"tool_result","content":"ok"}]}}`;
+	foreach (liveFirst; [true, false])
+	{
+		auto path = liveFirst ? "/tmp/cydo-message-anchor-live-first.jsonl"
+			: "/tmp/cydo-message-anchor-file-first.jsonl";
+		write(path, assistant1 ~ "\n" ~ toolResult ~ "\n" ~ assistant2 ~ "\n");
+		scope(exit) remove(path);
+		TaskData task = TaskData(1, "", "");
+		task.history.reset(Watermark.none());
+		JsonlTracker tracker;
+		setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+		tracker.getTask = (int) => &task;
+		tracker.historyGeneration = (int) => task.history.generation;
+		string[] resolved;
+		tracker.onBoundaryResolved = (int, size_t, HistoryBoundary boundary, bool, ulong) {
+			resolved ~= boundary.anchor;
+		};
+		if (liveFirst) tracker.noteLiveBoundaryCandidate(1, 1, `{"type":"turn/stop","uuid":"X","api_block_count":2}`);
+		tracker.processNewJsonlContent(1, path);
+		if (!liveFirst) tracker.noteLiveBoundaryCandidate(1, 1, `{"type":"turn/stop","uuid":"X","api_block_count":2}`);
+		assert(resolved == ["X"]);
+		assert(tracker.boundaryState[1].liveByKind[PersistedHistoryBoundaryKind.agent_turn].length == 0);
+		assert(tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.agent_turn].length == 0);
+	}
+
+	auto path = "/tmp/cydo-message-anchor-reused.jsonl";
+	write(path, assistant1 ~ "\n" ~
+		`{"type":"user","uuid":"prompt","message":{"content":"hello"}}` ~ "\n" ~
+		assistant2 ~ "\n");
+	scope(exit) remove(path);
+	TaskData task = TaskData(2, "", "");
+	task.history.reset(Watermark.none());
+	JsonlTracker tracker;
+	setTestLiveContext(tracker, 2, new ClaudeCodeAgent());
+	tracker.getTask = (int) => &task;
+	tracker.historyGeneration = (int) => task.history.generation;
+	bool rejected;
+	try tracker.processNewJsonlContent(2, path);
+	catch (AssertError) rejected = true;
+	assert(rejected);
+}
+
+unittest
+{
+	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.copilot : CopilotAgent;
+	foreach (driver; ["codex", "copilot"])
+	{
+		JsonlTracker tracker;
+		if (driver == "codex") setTestLiveContext(tracker, 1, new CodexAgent());
+		else setTestLiveContext(tracker, 1, new CopilotAgent());
+		tracker.historyGeneration = (int) => 0;
+		string[] resolved;
+			tracker.onBoundaryResolved = (int, size_t, HistoryBoundary boundary, bool, ulong) {
+				resolved ~= boundary.anchor;
+			};
+			auto anchor = driver == "codex" ? "line:2" : "copilot-id";
+			tracker.boundaryState[1] = JsonlTracker.BoundaryReconcileState.init;
+		tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.agent_turn] ~=
+			JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary(anchor,
+				PersistedHistoryBoundaryKind.agent_turn, null), 2, false, 0);
+		tracker.noteLiveBoundaryCandidate(1, 1, driver == "codex"
+			? `{"type":"turn/stop"}` : `{"type":"turn/stop","uuid":"copilot-id"}`);
+		assert(resolved == [anchor]);
+	}
+}
+
+@("Claude live reconciliation absorbs history rows belonging to one root message")
+unittest
+{
+	import std.array : join;
+	import std.file : remove, write;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent, claudeHistoryAgreementFixture;
+
+	enum path = "/tmp/cydo-tracker-shared-claude-history-rows.jsonl";
+	foreach (toolInputType; ["ordinary", "user", "queue-operation"])
+	{
+		auto rows = claudeHistoryAgreementFixture(toolInputType);
+		write(path, rows[0 .. 9].join("\n") ~ "\n");
+		scope(exit) remove(path);
+
+		TaskData task = TaskData(1, "", "");
+		task.history.reset(Watermark.none());
+		JsonlTracker tracker;
+		setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+		tracker.getTask = (int) => &task;
+		tracker.historyGeneration = (int) => task.history.generation;
+		string[] resolved;
+		tracker.onBoundaryResolved = (int, size_t, HistoryBoundary boundary, bool, ulong) {
+			resolved ~= boundary.anchor;
+		};
+		tracker.noteLiveBoundaryCandidate(1, 1, `{"type":"turn/stop","uuid":"X","api_block_count":2}`);
+		tracker.processNewJsonlContent(1, path);
+		assert(resolved.length == 0, "first member must not publish the boundary");
+		File(path, "a").write(rows[9 .. $].join("\n") ~ "\n");
+		tracker.processNewJsonlContent(1, path);
+		assert(resolved == ["X"]);
+		assert(tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.agent_turn].length == 0);
+		assert(PersistedHistoryBoundaryKind.user !in tracker.boundaryState[1].persistedByKind);
+
+		// A terminal row with no public boundary must still close X across
+		// chunks, so its reappearance is rejected just as it is in replay.
+		import core.exception : AssertError;
+		import std.exception : assertThrown;
+		tracker.invalidateLineage(1);
+		setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+		write(path, rows[3] ~ "\n" ~ rows[13] ~ "\n");
+		tracker.processNewJsonlContent(1, path);
+		File(path, "a").write(rows[10] ~ "\n");
+		assertThrown!AssertError(tracker.processNewJsonlContent(1, path));
+	}
+}
+
+@("Claude boundaries wait for the final complete persisted block")
+unittest
+{
+	import std.file : remove, write;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	enum path = "/tmp/cydo-tracker-final-claude-block.jsonl";
+	enum member0 = `{"type":"assistant","apiBlockIndex":0,"message":{"id":"X","content":[{"type":"tool_use"}]}}`;
+	enum member1 = `{"type":"assistant","apiBlockIndex":1,"message":{"id":"X","content":[{"type":"text","text":""}]}}`;
+	enum toolResult = `{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}`;
+	enum stop = `{"type":"turn/stop","uuid":"X","api_block_count":2}`;
+	string[] earlyPublication;
+	foreach (scenario; ["split writes", "torn final line", "file first", "closed short"])
+	{
+		TaskData task = TaskData(1, "", "");
+		task.history.reset(Watermark.none());
+		JsonlTracker tracker;
+		setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+		tracker.getTask = (int) => &task;
+		tracker.historyGeneration = (int) => task.history.generation;
+		size_t[] resolved;
+		tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool, ulong) {
+			assert(boundary.anchor == "X");
+			resolved ~= seq;
+		};
+
+		auto prefix = member0 ~ "\n" ~ toolResult ~ "\n";
+		if (scenario == "closed short")
+			prefix ~= `{"type":"summary","summary":"end"}` ~ "\n";
+		if (scenario == "file first")
+			prefix ~= member1 ~ "\n";
+		else if (scenario == "torn final line")
+			prefix ~= member1;
+		write(path, prefix);
+		scope(exit) remove(path);
+		if (scenario != "file first")
+			tracker.noteLiveBoundaryCandidate(1, 7, stop);
+		tracker.processNewJsonlContent(1, path);
+		if (resolved.length > 0)
+			earlyPublication ~= scenario;
+		if (scenario == "closed short")
+			continue;
+		if (scenario == "file first")
+			tracker.noteLiveBoundaryCandidate(1, 7, stop);
+		else
+		{
+			File(path, "a").write(scenario == "torn final line" ? "\n" : member1 ~ "\n");
+			tracker.processNewJsonlContent(1, path);
+		}
+		assert(resolved == [7]);
+	}
+	import std.array : join;
+	assert(earlyPublication.length == 0,
+		"Claude published prematurely for " ~ earlyPublication.join(", "));
+}
+
+@("An empty Claude block resolves and a message without rows does not block its successor")
+unittest
+{
+	import std.file : remove, write;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import std.format : format;
+
+	enum path = "/tmp/cydo-tracker-empty-claude-block.jsonl";
+	foreach (absentCount; [0, 1])
+	{
+		TaskData task = TaskData(1, "", "");
+		task.history.reset(Watermark.none());
+		JsonlTracker tracker;
+		setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+		tracker.getTask = (int) => &task;
+		tracker.historyGeneration = (int) => task.history.generation;
+		string[] resolved;
+		tracker.onBoundaryResolved = (int, size_t, HistoryBoundary boundary, bool, ulong) {
+			resolved ~= boundary.anchor;
+		};
+		write(path, "");
+		scope(exit) remove(path);
+		tracker.noteLiveBoundaryCandidate(1, 1,
+			format!`{"type":"turn/stop","uuid":"X","api_block_count":%d}`(absentCount));
+		if (absentCount == 0)
+		{
+			enum kind = PersistedHistoryBoundaryKind.agent_turn;
+			auto state = 1 in tracker.boundaryState;
+			assert(state is null || kind !in state.liveByKind || state.liveByKind[kind].length == 0,
+				"a zero-block Claude stop must register no live candidate");
+		}
+		tracker.processNewJsonlContent(1, path);
+		assert(resolved.length == 0);
+		tracker.noteLiveBoundaryCandidate(1, 2, `{"type":"turn/stop","uuid":"Y","api_block_count":1}`);
+		write(path, `{"type":"assistant","apiBlockIndex":0,"message":{"id":"Y","content":[{"type":"text","text":""}]}}` ~ "\n");
+		tracker.processNewJsonlContent(1, path);
+		assert(resolved == ["Y"]);
+	}
+}
+
+@("Claude boundary reconciliation rejects inconsistent persisted indexes")
+unittest
+{
+	import core.exception : AssertError;
+	import std.exception : assertThrown;
+	import std.file : remove, write;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	enum path = "/tmp/cydo-tracker-invalid-claude-index.jsonl";
+	enum member0 = `{"type":"assistant","apiBlockIndex":0,"message":{"id":"X"}}` ~ "\n";
+	enum member1 = `{"type":"assistant","apiBlockIndex":1,"message":{"id":"X"}}` ~ "\n";
+	enum member2 = `{"type":"assistant","apiBlockIndex":2,"message":{"id":"X"}}` ~ "\n";
+	enum stop1 = `{"type":"turn/stop","uuid":"X","api_block_count":1}`;
+	enum stop2 = `{"type":"turn/stop","uuid":"X","api_block_count":2}`;
+	foreach (testCase; [
+		[stop2, "", member2],
+		[stop2, member0, member0],
+		[stop1, member0, member1],
+		[stop2, "", `{"type":"assistant","message":{"id":"X"}}` ~ "\n"],
+	])
+	{
+		TaskData task = TaskData(1, "", "");
+		task.history.reset(Watermark.none());
+		JsonlTracker tracker;
+		setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+		tracker.getTask = (int) => &task;
+		tracker.historyGeneration = (int) => task.history.generation;
+		tracker.noteLiveBoundaryCandidate(1, 1, testCase[0]);
+		write(path, testCase[1]);
+		scope(exit) remove(path);
+		tracker.processNewJsonlContent(1, path);
+		File(path, "a").write(testCase[2]);
+		assertThrown!AssertError(tracker.processNewJsonlContent(1, path));
+	}
+}
+
+@("Claude joined text replies stay unpublished without blocking the next message")
+unittest
+{
+	import std.file : remove, write;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	enum path = "/tmp/cydo-tracker-joined-claude-reply.jsonl";
+	// Pinned CLI with CLAUDE_CODE_WEBSEARCH_CITATIONS=1, simplified to
+	// the fields relevant to reconciliation. The second probe mixes in a tool.
+	enum joined = `{"type":"assistant","uuid":"404c6bdd-8831-451b-9278-28d2e9239942","message":{"id":"msg_mock_00001","content":[{"type":"text","text":"steering-probe-first-blocksteering-probe-second-block","citations":null}]},"joinedApiReply":true}`;
+	enum tool = `{"type":"assistant","apiBlockIndex":2,"message":{"id":"msg_mock_00001","content":[{"type":"tool_use","name":"Bash"}]}}`;
+	enum next = `{"type":"assistant","uuid":"329e3779-df0b-45d0-80b4-c267c0089ad8","apiBlockIndex":0,"message":{"id":"msg_mock_00002","content":[{"type":"text","text":"steering-probe-second"}]}}`;
+	string[] retained;
+	foreach (mixed; [false, true])
+	{
+		TaskData task = TaskData(1, "", "");
+		task.history.reset(Watermark.none());
+		JsonlTracker tracker;
+		setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+		tracker.getTask = (int) => &task;
+		tracker.historyGeneration = (int) => task.history.generation;
+		string[] resolved;
+		tracker.onBoundaryResolved = (int, size_t, HistoryBoundary boundary, bool, ulong) {
+			resolved ~= boundary.anchor;
+		};
+		write(path, joined ~ "\n");
+		scope(exit) remove(path);
+		tracker.noteLiveBoundaryCandidate(1, 1, mixed
+			? `{"type":"turn/stop","uuid":"msg_mock_00001","api_block_count":3}`
+			: `{"type":"turn/stop","uuid":"msg_mock_00001","api_block_count":2}`);
+		tracker.processNewJsonlContent(1, path);
+		if (mixed)
+		{
+			File(path, "a").write(tool ~ "\n");
+			tracker.processNewJsonlContent(1, path);
+		}
+		assert(resolved.length == 0);
+		tracker.noteLiveBoundaryCandidate(1, 2,
+			`{"type":"turn/stop","uuid":"msg_mock_00002","api_block_count":1}`);
+		File(path, "a").write(next ~ "\n");
+		tracker.processNewJsonlContent(1, path);
+		assert(resolved == ["msg_mock_00002"]);
+		enum kind = PersistedHistoryBoundaryKind.agent_turn;
+		auto state = &tracker.boundaryState[1];
+		auto live = kind in state.liveByKind;
+		auto persisted = kind in state.persistedByKind;
+		if ((live !is null && (*live).length != 0) || (persisted !is null && (*persisted).length != 0))
+			retained ~= mixed ? "joined reply with tool retained candidates" : "joined reply retained candidates";
+	}
+	import std.array : join;
+	assert(retained.length == 0, retained.join("\n"));
+}
+
+@("Claude tracker rejects a message that reappears after a parent-linked queue operation")
+unittest
+{
+	import core.exception : AssertError;
+	import std.exception : assertThrown;
+	import std.file : remove, write;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent, claudeParentLinkedQueueFixture;
+
+	enum path = "/tmp/cydo-tracker-claude-queue-contiguity.jsonl";
+	write(path, `{"type":"assistant","apiBlockIndex":0,"message":{"id":"X"}}` ~ "\n" ~
+		claudeParentLinkedQueueFixture("queue-operation") ~ "\n");
+	scope(exit) remove(path);
+
+	TaskData task = TaskData(1, "", "");
+	task.history.reset(Watermark.none());
+	JsonlTracker tracker;
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+	tracker.getTask = (int) => &task;
+	tracker.historyGeneration = (int) => task.history.generation;
+	tracker.processNewJsonlContent(1, path);
+	File(path, "a").write(`{"type":"assistant","apiBlockIndex":1,"message":{"id":"X"}}` ~ "\n");
+	assertThrown!AssertError(tracker.processNewJsonlContent(1, path));
+}
+
+@("Claude tracker rejects a missing block index in both arrival orders")
+unittest
+{
+	import core.exception : AssertError;
+	import std.array : join;
+	import std.file : remove, write;
+	import std.format : format;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	enum path = "/tmp/cydo-tracker-claude-missing-index.jsonl";
+	enum stop = `{"type":"turn/stop","uuid":"X","api_block_count":2}`;
+	string[] mismatches;
+	foreach (liveFirst; [true, false])
+	{
+		write(path, `{"type":"assistant","message":{"id":"X"}}` ~ "\n" ~
+			`{"type":"assistant","apiBlockIndex":1,"message":{"id":"X"}}` ~ "\n");
+		scope(exit) remove(path);
+
+		TaskData task = TaskData(1, "", "");
+		task.history.reset(Watermark.none());
+		JsonlTracker tracker;
+		setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+		tracker.getTask = (int) => &task;
+		tracker.historyGeneration = (int) => task.history.generation;
+		string[] resolved;
+		tracker.onBoundaryResolved = (int, size_t, HistoryBoundary boundary, bool, ulong) {
+			resolved ~= boundary.anchor;
+		};
+
+		bool rejected;
+		if (liveFirst)
+		{
+			tracker.noteLiveBoundaryCandidate(1, 1, stop);
+			try tracker.processNewJsonlContent(1, path);
+			catch (AssertError) rejected = true;
+		}
+		else
+		{
+			tracker.processNewJsonlContent(1, path);
+			try tracker.noteLiveBoundaryCandidate(1, 1, stop);
+			catch (AssertError) rejected = true;
+		}
+		if (!rejected || resolved.length != 0)
+			mismatches ~= format!"%s first: rejection=%s, published=%s"(
+				liveFirst ? "stop" : "file", rejected, resolved);
+	}
+	assert(mismatches.length == 0, mismatches.join("\n"));
+}
+
+@("Claude publication retires older unmatched message candidates")
+unittest
+{
+	import std.array : join;
+	import std.file : remove, write;
+	import std.format : format;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	enum path = "/tmp/cydo-tracker-claude-retirement.jsonl";
+	enum kind = PersistedHistoryBoundaryKind.agent_turn;
+	enum successor = `{"type":"assistant","apiBlockIndex":0,"message":{"id":"Z"}}` ~ "\n";
+	enum successorStop = `{"type":"turn/stop","uuid":"Z","api_block_count":1}`;
+	struct Scenario
+	{
+		string name;
+		string[] stops;
+		string rows;
+	}
+	auto scenarios = [
+		Scenario("refusal", [
+			`{"type":"turn/stop","uuid":"R1","api_block_count":1}`,
+			`{"type":"turn/stop","uuid":"R2","api_block_count":1}`,
+		], ""),
+		Scenario("interrupted stream", [`{"type":"turn/stop","uuid":"X","api_block_count":2}`],
+			`{"type":"assistant","apiBlockIndex":0,"message":{"id":"X"}}` ~ "\n"),
+		Scenario("synthetic reply", [],
+			`{"type":"assistant","message":{"id":"535a0cf3-a555-4b47-a2db-e41463b473df","model":"<synthetic>"}}` ~ "\n"),
+	];
+	string[] mismatches;
+	foreach (scenario; scenarios)
+		foreach (liveFirst; [true, false])
+		{
+			write(path, scenario.rows ~ successor);
+			scope(exit) remove(path);
+
+			TaskData task = TaskData(1, "", "");
+			task.history.reset(Watermark.none());
+			JsonlTracker tracker;
+			setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+			tracker.getTask = (int) => &task;
+			tracker.historyGeneration = (int) => task.history.generation;
+			string[] resolved;
+			tracker.onBoundaryResolved = (int, size_t, HistoryBoundary boundary, bool, ulong) {
+				resolved ~= boundary.anchor;
+			};
+
+			void sendStops()
+			{
+				foreach (i, stop; scenario.stops)
+					tracker.noteLiveBoundaryCandidate(1, i + 1, stop);
+				tracker.noteLiveBoundaryCandidate(1, scenario.stops.length + 1, successorStop);
+			}
+			if (liveFirst) sendStops();
+			tracker.processNewJsonlContent(1, path);
+			if (!liveFirst) sendStops();
+
+			auto state = &tracker.boundaryState[1];
+			auto live = kind in state.liveByKind;
+			auto persisted = kind in state.persistedByKind;
+			auto liveCount = live is null ? 0 : (*live).length;
+			auto persistedCount = persisted is null ? 0 : (*persisted).length;
+			if (resolved != ["Z"] || liveCount != 0 || persistedCount != 0)
+				mismatches ~= format!"%s, %s first: published=%s, retained live=%s persisted=%s"(
+					scenario.name, liveFirst ? "stop" : "file", resolved, liveCount, persistedCount);
+		}
+	assert(mismatches.length == 0, mismatches.join("\n"));
 }
 
 @("Claude transcript payloads cannot trigger Codex rollback invalidation")

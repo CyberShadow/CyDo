@@ -157,6 +157,7 @@ class HistoryEventPipeline
 
 		bool hasQueueOps = false;
 		int userMsgFromJsonl = 0;
+		// Queue rows close the open API message before queue events (Rule E).
 		// The enqueue record is the authoritative "user
 		// sent this" fact and emits the message immediately (pending
 		// presentation, identity enqueue-N). Its outcome, classified up front
@@ -204,6 +205,7 @@ class HistoryEventPipeline
 					queueOutcomeTargets, lineNum);
 				if (isQueueOperation(line))
 				{
+					auto closed = replay.translateHistoryLine(line, lineNum);
 					auto op = jsonParse!QueueOperationProbe(line);
 					if (op.operation == "enqueue")
 					{
@@ -211,11 +213,11 @@ class HistoryEventPipeline
 						auto enqueueUuid = format!"enqueue-%d"(lineNum);
 						auto synEv = buildSyntheticUserEvent(op.content, false, true);
 						synEv.uuid = enqueueUuid;
-						return stripTransientStatus([TranslatedEvent(
+						return stripTransientStatus(closed ~ [TranslatedEvent(
 							toJsonWithSyntheticUserMeta(op.content, synEv, tid),
 							line, AbsTime.init, lineNum)]);
 					}
-					return stripTransientStatus(confirmations);
+					return stripTransientStatus(closed ~ confirmations);
 				}
 				if (confirmations.length > 0)
 				{
@@ -1150,7 +1152,7 @@ unittest
 	assert(sawToolResult, "tool_result event missing from loaded history");
 }
 
-@("Claude replay enriches record stops with structural boundaries")
+@("Claude replay preserves source lines and stops before the next prompt")
 unittest
 {
 	import std.algorithm : canFind;
@@ -1202,7 +1204,7 @@ unittest
 	auto extracted = agent.extractPersistedHistoryBoundaries(lastAssistantLine, 4);
 	if (extracted.length != 1 || extracted[0].kind != PersistedHistoryBoundaryKind.agent_turn
 		|| extracted[0].sourceLine != 5)
-		replayMismatches ~= "final assistant record must extract as an agent turn at line 5";
+		replayMismatches ~= "final grouped assistant member must extract as an agent turn at line 5";
 	auto jsonl = [
 		enqueueLine,
 		`{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-11T06:00:01Z","sessionId":"S"}`,
@@ -1246,25 +1248,131 @@ unittest
 			"queued steering event must keep the enqueue physical line");
 	}
 	assert(sawQueuedSteering, "queued steering replay event missing from loaded history");
-	int[] assistantBoundaries;
+	int assistantBoundaries;
 	foreach (i, ref ev; td.history)
 	{
 		auto s = cast(string) ev.toGC();
-		auto line = td.history.sourceLineAt(i);
-		assert(line <= 5, "partial row reached replay");
+		assert(td.history.sourceLineAt(i) <= 5, "partial row reached replay");
 		if (s.canFind(`"type":"turn/stop"`) && s.canFind(`"history_boundary"`))
 		{
-			assistantBoundaries ~= line;
-			if (line == 5)
-			{
-				assert(td.history.rawAt(i) == lastAssistantLine);
-				assert(s.canFind(`"anchor":"record-2"`));
-			}
+			assistantBoundaries++;
+			assert(td.history.rawAt(i) == lastAssistantLine);
+			assert(td.history.sourceLineAt(i) == 5);
+			assert(s.canFind(`"uuid":"msg-1"`));
+			assert(s.canFind(`"anchor":"msg-1"`));
 		}
 	}
-	if (assistantBoundaries != [3, 5])
-		replayMismatches ~= "both record stops must be enriched despite nested queue and user types";
+	assert(assistantBoundaries == 1,
+		"multi-content assistant replay enriches only its final top-level turn");
+	// Both the ordinary prompt and the canonical queue echo close reply 1
+	// at the same point, including when the snapshot ends with that prompt.
+	enum firstPrompt = `{"type":"user","uuid":"prompt-1","message":{"content":"first prompt"}}`;
 	enum secondPrompt = `{"type":"user","uuid":"prompt-2","message":{"content":"second prompt"}}`;
+	enum secondReply = `{"type":"assistant","uuid":"record-3","message":{"id":"msg-2","content":[{"type":"text","text":"second reply"}]}}`;
+	foreach (queued; [false, true])
+	{
+		auto rows = [firstPrompt, assistantLine, toolResultLine, lastAssistantLine];
+		if (queued)
+			rows ~= [
+				`{"type":"queue-operation","operation":"enqueue","content":"second prompt"}`,
+				`{"type":"queue-operation","operation":"dequeue"}`,
+			];
+		rows ~= secondPrompt;
+		auto prefix = rows.join("\n") ~ "\n";
+		write(jsonlPath, prefix ~ secondReply ~ "\n");
+		foreach (bounded; [false, true])
+		{
+			td.history.reset(Watermark.atBytes(bounded ? prefix.length : getSize(jsonlPath)));
+			pipeline.ensureHistoryLoaded(tid);
+
+			@JSONPartial static struct ReplayEvent
+			{
+				string type;
+				@JSONOptional string uuid;
+				@JSONOptional string native_uuid;
+				@JSONOptional HistoryBoundary history_boundary;
+			}
+			string[] order;
+			foreach (i, ref entry; td.history)
+			{
+				auto envelope = cast(string) entry.toGC();
+				auto event = jsonParse!ReplayEvent(extractEventFromEnvelope(envelope));
+				switch (event.type)
+				{
+					case "turn/stop":
+						assert(event.history_boundary.kind == HistoryBoundaryKind.agent_turn);
+						assert(event.history_boundary.anchor == event.uuid);
+						goto case "item/started";
+					case "item/started", "item/completed", "item/result":
+						order ~= event.type ~ ":" ~ event.uuid ~ ":" ~ format!"%d"(td.history.sourceLineAt(i));
+						break;
+					case "user_message/consumed":
+						order ~= event.type ~ ":" ~ event.uuid ~ ":" ~ event.native_uuid;
+						break;
+					default: break;
+				}
+			}
+			string[] expected = [
+				"item/started:prompt-1:1",
+				"item/started::2", "item/completed::2", "item/result::3",
+				"item/started::4", "item/completed::4",
+			];
+			expected ~= "turn/stop:msg-1:4";
+			if (queued)
+				expected ~= "item/started:enqueue-5:5";
+			if (queued)
+				expected ~= "user_message/consumed:enqueue-5:prompt-2";
+			expected ~= queued ? "item/started:prompt-2:7" : "item/started:prompt-2:5";
+			if (!bounded)
+				expected ~= queued
+					? ["item/started::8", "item/completed::8", "turn/stop:msg-2:8"]
+					: ["item/started::6", "item/completed::6", "turn/stop:msg-2:6"];
+			if (order != expected)
+				replayMismatches ~= format!"queued=%s bounded=%s: %s, expected %s"(queued, bounded, order, expected);
+		}
+	}
+	// A prompt queued during the tool follows the completed API message.
+	// A prompt queued during streaming precedes both persisted members.
+	enum toolMember = `{"type":"assistant","uuid":"record-1","apiBlockIndex":0,"message":{"id":"msg-1","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{}}]}}`;
+	enum text0 = `{"type":"assistant","uuid":"text-0","apiBlockIndex":0,"message":{"id":"msg-1","content":[{"type":"text","text":"first block"}]}}`;
+	enum text1 = `{"type":"assistant","uuid":"text-1","apiBlockIndex":1,"message":{"id":"msg-1","content":[{"type":"text","text":"second block"}]}}`;
+	enum queuedPrompt = `{"type":"queue-operation","operation":"enqueue","content":"queued"}`;
+	foreach (duringTool; [false, true])
+	{
+		auto rows = duringTool
+			? [toolMember, queuedPrompt, toolResultLine,
+				`{"type":"queue-operation","operation":"remove"}`,
+				`{"type":"attachment","attachment":{"type":"queued_command","prompt":"queued"}}`,
+				secondReply, secondPrompt]
+			: [queuedPrompt, text0, text1];
+		write(jsonlPath, rows.join("\n") ~ "\n");
+		td.history.reset(Watermark.atBytes(getSize(jsonlPath)));
+		pipeline.ensureHistoryLoaded(tid);
+
+		@JSONPartial static struct Event
+		{
+			string type;
+			@JSONOptional string item_type;
+			@JSONOptional string uuid;
+		}
+		string[] order;
+		foreach (i, ref entry; td.history)
+		{
+			auto event = jsonParse!Event(extractEventFromEnvelope(cast(string) entry.toGC()));
+			if (event.type == "turn/stop" && event.uuid == "msg-1")
+				order ~= "stop";
+			if (event.type == "item/started" && event.item_type == "user_message"
+				&& event.uuid == (duringTool ? "enqueue-2" : "enqueue-1"))
+				order ~= "queued";
+			if (!duringTool && event.type == "item/started" && event.item_type == "text"
+				&& td.history.sourceLineAt(i) == 2)
+				order ~= "first block";
+		}
+		auto expected = duringTool ? ["stop", "queued"] : ["queued", "first block", "stop"];
+		if (order != expected)
+			replayMismatches ~= format!"queued during %s: got %s, expected %s"(
+				duringTool ? "tool" : "stream", order, expected);
+	}
 	// A confirmed enqueue uses its canonical echo, while an unconsumed
 	// enqueue still resolves by its provisional anchor.
 	foreach (queueType; ["queue-operation", "queue/operation"])
@@ -1454,7 +1562,7 @@ unittest
 	auto boundaries = agent.extractPersistedHistoryBoundaries(
 		`{"type":"queue-operation","operation":"enqueue"}` ~ "\n" ~
 		`{"type":"user","uuid":"user-checkpoint","message":{"role":"user","content":"canonical prompt"}}` ~ "\n" ~
-		`{"type":"assistant","uuid":"agent-checkpoint"}`);
+		`{"type":"assistant","uuid":"agent-checkpoint","message":{"id":"agent-msg"}}`);
 
 	assert(boundaries.length == 3);
 	assert(boundaries[0].anchor == "enqueue-1");
@@ -1463,7 +1571,7 @@ unittest
 	assert(boundaries[1].anchor == "user-checkpoint");
 	assert(boundaries[1].kind == PersistedHistoryBoundaryKind.user);
 	assert(boundaries[1].checkpointUuid.length == 0);
-	assert(boundaries[2].anchor == "agent-checkpoint");
+	assert(boundaries[2].anchor == "agent-msg");
 	assert(boundaries[2].kind == PersistedHistoryBoundaryKind.agent_turn);
 	assert(boundaries[2].checkpointUuid.length == 0);
 }

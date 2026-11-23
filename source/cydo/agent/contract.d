@@ -62,6 +62,8 @@ enum PersistedHistoryBoundaryKind
 }
 
 /// Persisted history boundary with its public kind and optional checkpoint.
+/// An anchor may match consecutive records of one Claude API message. Fork
+/// keeps through the last match; undo cuts before the first.
 struct PersistedHistoryBoundary {
 	string anchor;
 	PersistedHistoryBoundaryKind kind;

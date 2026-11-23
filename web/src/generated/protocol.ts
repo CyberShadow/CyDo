@@ -279,6 +279,7 @@ export interface TurnStopEvent {
   parent_tool_use_id?: string;
   is_sidechain?: boolean;
   uuid?: string;
+  api_block_count?: number;
   history_boundary?: HistoryBoundary;
   extras?: Record<string, unknown>;
 }
