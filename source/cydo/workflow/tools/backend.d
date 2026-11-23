@@ -1673,9 +1673,7 @@ private:
 						foreach (childTid; batchChildren[event.batchId])
 							host_.broadcastFocusHint(childTid, tid);
 						host_.persistRemoveTaskBatch(handle.batchId);
-						string error;
-						auto removed = batchRegistry_.remove(handle, error);
-						assert(removed, error);
+						batchRegistry_.remove(handle);
 						break;
 					case MailboxEvent.Kind.answer:
 						removeQuestion(event.qid);

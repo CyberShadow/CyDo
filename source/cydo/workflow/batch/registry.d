@@ -192,20 +192,15 @@ public:
 		ownerByChild_[newTid] = handle.batchId;
 	}
 
-	bool remove(BatchHandle handle, out string error)
+	void remove(BatchHandle handle)
 	{
 		auto batch = handle.batchId in batches_;
 		if (batch is null)
-		{
-			error = null;
-			return true;
-		}
+			return;
 		assert(batch.parentTid == handle.parentTid);
 		foreach (childTid; batch.childTids)
 			ownerByChild_.remove(childTid);
 		batches_.remove(handle.batchId);
-		error = null;
-		return true;
 	}
 }
 
@@ -225,7 +220,7 @@ unittest
 	assert(registry.recordChildDone(handle, 0, 2, McpResult("second", false)));
 	assert(registry.envelope(handle)[0].text == "second");
 	assert(registry.envelope(handle)[1].text == "third");
-	assert(registry.remove(handle, error));
+	registry.remove(handle);
 	assert(!registry.isRecorded(3));
 	assert(!registry.hasBatches(1));
 }
