@@ -1489,9 +1489,11 @@ private:
 
 	void submitInitialTaskMessage(int tid, KnownSystemMessageKind kind, string prompt,
 		string subject, string meta, void delegate(Exception) failed,
-		void delegate() accepted = null)
+		void delegate() accepted = null, Promise!void delegate() beforeSubmit = null)
 	{
 		host_.ensureProcessQueueAlive(tid).then(() {
+			return beforeSubmit is null ? resolve() : beforeSubmit();
+		}).then(() {
 			auto message = wrapKnownSystemMessage(host_.systemKeyword(), kind, prompt, subject);
 			return host_.sendTaskMessage(tid, [ContentBlock("text", message)],
 				null, meta, null).then(() {
@@ -1955,6 +1957,23 @@ private:
 		return true;
 	}
 
+	void failContinuationSubmission(int tid, string diagnostic, Exception error)
+	{
+		auto failed = requireTask(tid, "Continuation task must exist when submission fails");
+		if (failed.status != TaskStatus.failed)
+		{
+			assert(failed.status == TaskStatus.active,
+				"Continuation submission failed outside an active task");
+			failed.error = error.msg;
+			failed.resultText = error.msg;
+			host_.persistResultText(tid, failed.resultText);
+			host_.transitionTask(tid, TaskStatus.active, TaskStatus.failed,
+				TaskNotificationChange.preserve);
+			host_.appendTaskDiagnostic(tid, diagnostic, error.msg);
+		}
+		recordChildTerminal(tid);
+	}
+
 	/// `acceptedSwitchMode`: the result of the SwitchMode call that asked for
 	/// this continuation, when the agent's session ended without receiving it.
 	void executeContinuation(int tid, ContinuationDef contDef,
@@ -2012,39 +2031,18 @@ private:
 			auto contMeta = host_.buildKnownSystemMessageMeta(
 				KnownSystemMessageKind.modeSwitch,
 				modeSwitchMsgSubject, null, null);
-			auto projectPath = td.projectPath;
-			host_.ensureProcessQueueAlive(tid).then(() {
-				if (acceptedSwitchMode.length == 0)
-					return resolve();
-				return host_.correctAbortedToolCall(tid, host_.readPromptFile(
+			Promise!void delegate() beforeSubmit;
+			if (acceptedSwitchMode.length > 0)
+			{
+				auto projectPath = td.projectPath;
+				beforeSubmit = () => host_.correctAbortedToolCall(tid, host_.readPromptFile(
 					"prompts/aborted_tool_call_accepted.md", projectPath,
 					["tool_name": "SwitchMode", "result": acceptedSwitchMode]));
-			}).then(() {
-				return host_.sendTaskMessage(tid,
-					[ContentBlock("text", wrapKnownSystemMessage(
-						host_.systemKeyword(),
-						KnownSystemMessageKind.modeSwitch,
-						renderedContinuationPrompt,
-						modeSwitchMsgSubject))],
-					null, contMeta, null);
-			}).then(() {
-				sendPendingChildAnswerReminder(tid);
-			}, (Exception e) {
-				auto failed = requireTask(tid,
-					"Continuation task must exist when message submission fails");
-				if (failed.status != TaskStatus.failed)
-				{
-					assert(failed.status == TaskStatus.active,
-						"Continuation submission failed outside an active task");
-					failed.error = e.msg;
-					failed.resultText = e.msg;
-					host_.persistResultText(tid, failed.resultText);
-					host_.transitionTask(tid, TaskStatus.active, TaskStatus.failed,
-						TaskNotificationChange.preserve);
-					host_.appendTaskDiagnostic(tid, "Continuation failed", e.msg);
-				}
-				recordChildTerminal(tid);
-			}).ignoreResult();
+			}
+			submitInitialTaskMessage(tid, KnownSystemMessageKind.modeSwitch,
+				renderedContinuationPrompt, modeSwitchMsgSubject, contMeta,
+				(Exception e) { failContinuationSubmission(tid, "Continuation failed", e); },
+				() { sendPendingChildAnswerReminder(tid); }, beforeSubmit);
 			if (wasActive)
 				host_.broadcastTaskUpdate(tid);
 		}
@@ -2110,30 +2108,9 @@ private:
 				handoffMsgSubject,
 				["task_description": successorPrompt],
 				"task_description");
-			host_.ensureProcessQueueAlive(childTid).then(() {
-				return host_.sendTaskMessage(childTid,
-					[ContentBlock("text", wrapKnownSystemMessage(
-						host_.systemKeyword(),
-						KnownSystemMessageKind.handoff,
-						renderedSuccessorPrompt,
-						handoffMsgSubject))],
-					null, handoffMeta, null);
-			}).except((Exception e) {
-				auto failed = requireTask(childTid,
-					"Handoff successor must exist when message submission fails");
-				if (failed.status != TaskStatus.failed)
-				{
-					assert(failed.status == TaskStatus.active,
-						"Handoff successor submission failed outside an active task");
-					failed.error = e.msg;
-					failed.resultText = e.msg;
-					host_.persistResultText(childTid, failed.resultText);
-					host_.transitionTask(childTid, TaskStatus.active, TaskStatus.failed,
-						TaskNotificationChange.preserve);
-					host_.appendTaskDiagnostic(childTid, "Handoff failed", e.msg);
-				}
-				recordChildTerminal(childTid);
-			}).ignoreResult();
+			submitInitialTaskMessage(childTid, KnownSystemMessageKind.handoff,
+				renderedSuccessorPrompt, handoffMsgSubject, handoffMeta,
+				(Exception e) { failContinuationSubmission(childTid, "Handoff failed", e); });
 
 			BatchHandle owner;
 			size_t slot;
@@ -2689,6 +2666,67 @@ version (unittest)
 				onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); },
 				generateTitle: (int tid, string prompt) {},
 			));
+		}
+	}
+}
+
+// An accepted SwitchMode waits for queue preparation and history correction.
+unittest
+{
+	foreach (rejectCorrection; [false, true])
+	{
+		auto f = new BatchInvariantFixture;
+		f.wakeGate = new Promise!void;
+		auto correctionGate = new Promise!void;
+		auto b = f.makeBackend();
+		auto accepted = b.handleSwitchMode("1", "keep");
+		assert(!accepted.isError);
+
+		b.host_.readPromptFile = (string path, string projectPath, string[string] vars) {
+			assert(path == "prompts/aborted_tool_call_accepted.md");
+			assert(projectPath == f.tasks[1].projectPath);
+			assert(vars["tool_name"] == "SwitchMode");
+			assert(vars["result"] == accepted.text);
+			return "accepted mode switch correction";
+		};
+		string[] corrections;
+		b.host_.correctAbortedToolCall = (int tid, string correction) {
+			assert(tid == 1);
+			corrections ~= correction;
+			return correctionGate;
+		};
+		string[] prompts;
+		b.host_.sendTaskMessage = (int tid, const(ContentBlock)[] content,
+			const(ContentBlock)[] broadcastContent, string meta, string nonce) {
+			assert(tid == 1 && content.length == 1);
+			prompts ~= content[0].text;
+			return resolve();
+		};
+
+		b.spawnContinuation(1);
+		drainPromiseNextTicks();
+		assert(f.wakeCalls == 1 && corrections.length == 0 && prompts.length == 0);
+
+		f.wakeGate.fulfill();
+		drainPromiseNextTicks();
+		assert(corrections == ["accepted mode switch correction"]);
+		assert(prompts.length == 0);
+
+		if (rejectCorrection)
+		{
+			correctionGate.reject(new Exception("history correction rejected"));
+			drainPromiseNextTicks();
+			assert(f.tasks[1].status == TaskStatus.failed);
+			assert(f.diagnosticSubjects == ["Continuation failed"]);
+			assert(f.diagnosticBodies == ["history correction rejected"]);
+			assert(prompts.length == 0);
+		}
+		else
+		{
+			correctionGate.fulfill();
+			drainPromiseNextTicks();
+			assert(f.tasks[1].status == TaskStatus.active);
+			assert(prompts.length == 1 && prompts[0].canFind("Continue from where you left off."));
 		}
 	}
 }
