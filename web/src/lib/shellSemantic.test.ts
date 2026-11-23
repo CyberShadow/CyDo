@@ -183,6 +183,90 @@ describe("nl reads", () => {
   });
 });
 
+describe("strict shell argv", () => {
+  it.each([
+    ["cat f | sed -z -n 1,1p | head -2", "-z"],
+    ["sed junk -n 1,2p f", "junk"],
+    ["sed -n 1,2p f -z", "-z"],
+    ["sed -n 1,2p f extra", "extra"],
+    ["sed -n 1,9007199254740993p f", "9007199254740993"],
+    [
+      "head -n 9007199254740993 f | head -n 9007199254740994",
+      "9007199254740993",
+    ],
+    ["head -n9007199254740993 f", "-n9007199254740993"],
+    ["head -9007199254740993 f", "-9007199254740993"],
+    ["head -n 0x10 f", "0x10"],
+    ["head -n 2e0 f", "2e0"],
+    ["head f -2", "-2"],
+    ["tail -n +9007199254740993 f", "+9007199254740993"],
+    ["tail -n9007199254740993 f", "-n9007199254740993"],
+    ["tail -9007199254740993 f", "-9007199254740993"],
+    ["tail -2 -n 1 f", "-n"],
+    ["tail -n +2 -n 1 f", "-n"],
+    ["head -n 2 -n1 f", "-n1"],
+    ["tail f -2", "-2"],
+    ["nl -w 2147483648 f", "2147483648"],
+    ["nl -w 9007199254740991 f", "9007199254740991"],
+    ["nl -w 9007199254740993 f", "9007199254740993"],
+    ["nl -w 2e0 f", "2e0"],
+    ["nl f -z", "-z"],
+    ["cat f -n", "-n"],
+    ["cat f extra", "extra"],
+    ["cat -- -", "-"],
+    ['cat ""', '""'],
+    ["cat f && cd -Z /tmp", "-Z"],
+    ["cd -Z y && cat f", "-Z"],
+    ["cd a b && cat f", "b"],
+    ["cd a >out && cat f", ">"],
+    ["grep -n p f -z", "-z"],
+    ["rg -n p f --json", "--json"],
+    ["rg -n p f extra", "extra"],
+    ["cat f | grep -n p extra", "extra"],
+  ])("rejects %s and names %s", async (command, token) => {
+    const result = await parseShellSemantic(command);
+    expect(result.ok, command).toBe(false);
+    if (!result.ok) expect(result.reason).toContain(token);
+  });
+
+  it.each([
+    ["cat -- -n", "-n"],
+    ["head -n 2 -- -n", "-n"],
+    ["tail -n +2 -- -n", "-n"],
+    ["sed -n -- 1,2p -n", "-n"],
+    ["sed -n 1,2p -- -n", "-n"],
+    ["nl -ba -- -n", "-n"],
+  ])("uses the literal file operand in %s", async (command, filePath) => {
+    await expect(parseShellSemantic(command)).resolves.toMatchObject({
+      ok: true,
+      value: { kind: "read", filePath },
+    });
+  });
+
+  it("accepts GNU nl's maximum field width", async () => {
+    await expect(
+      parseShellSemantic("nl -w 2147483647 f"),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        kind: "read",
+        presentation: { lineNumbers: { width: 2147483647 } },
+      },
+    });
+  });
+
+  it("rejects unsafe sed addresses on the ls readback path", async () => {
+    await expect(
+      parseShellSemantic("ls -l f && sed -n 1,9007199254740993p f"),
+    ).resolves.toEqual({
+      ok: false,
+      code: "invalid_range",
+      reason:
+        "sed line numbers must be positive safe decimal integers: 1,9007199254740993p",
+    });
+  });
+});
+
 describe("sed reads", () => {
   it("sed -n '10,20p' web/src/main.tsx → read with lines range", async () => {
     const r = await parseShellSemantic("sed -n '10,20p' web/src/main.tsx");

@@ -253,129 +253,142 @@ type ParseResult<T> =
   | { ok: true; value: T }
   | { ok: false; code: RejectCode; reason: string };
 
-function parseHeadArgs(
+function isFileOperand(text: string): boolean {
+  return text.length > 0 && text !== "-";
+}
+
+function parsePositiveDecimal(text: string): number | undefined {
+  if (!/^\d+$/.test(text)) return undefined;
+  const number = Number(text);
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
+}
+
+function parseCatArgs(
   cmd: SimpleCommand,
   requireFile: boolean,
-): ParseResult<{ count?: number; filePath?: string }> {
-  let count: number | undefined;
+): ParseResult<string | undefined> {
   let filePath: string | undefined;
-
-  for (let i = 0; i < cmd.args.length; i++) {
-    const arg = cmd.args[i]!;
-    const text = arg.text;
-
-    if (text === "--") continue;
-
-    if (text === "-n") {
-      const next = cmd.args[++i];
-      const nextText = next?.kind === "value" ? next.text : "";
-      const parsed = Number(nextText);
-      if (!Number.isInteger(parsed) || parsed < 1) {
-        return reject(
-          "unsupported_option",
-          "head -n requires a positive integer",
-        );
-      }
-      count = parsed;
+  let options = true;
+  for (const { text, kind } of cmd.args) {
+    if (options && text === "--") {
+      options = false;
       continue;
     }
-
-    const joined = text.match(/^-n([1-9]\d*)$/);
-    if (joined) {
-      count = Number(joined[1]);
-      continue;
+    if (options && kind === "flag") {
+      return reject("unsupported_option", `unsupported cat option ${text}`);
     }
-
-    const legacy = text.match(/^-([1-9]\d*)$/);
-    if (legacy) {
-      count = Number(legacy[1]);
-      continue;
-    }
-
-    if (arg.kind === "flag") {
-      return reject("unsupported_option", `unsupported head option ${text}`);
-    }
-
-    if (filePath !== undefined) {
+    if (!isFileOperand(text)) {
       return reject(
-        "multiple_paths",
-        "multiple file operands are not supported",
+        "missing_path",
+        `invalid cat file operand ${JSON.stringify(text)}`,
       );
     }
+    if (filePath !== undefined) {
+      return reject("multiple_paths", `unexpected cat file operand ${text}`);
+    }
     filePath = text;
+  }
+  if (requireFile && filePath === undefined) {
+    return reject("missing_path", "expected one file path");
+  }
+  return { ok: true, value: filePath };
+}
+
+function parseLineCountArgs(
+  cmd: SimpleCommand,
+  requireFile: boolean,
+  tool: "head" | "tail",
+): ParseResult<{
+  count: number | undefined;
+  fromStart: boolean;
+  filePath?: string;
+}> {
+  let count: number | undefined;
+  let fromStart = false;
+  let filePath: string | undefined;
+  let options = true;
+
+  for (let i = 0; i < cmd.args.length; i++) {
+    const { text, kind } = cmd.args[i]!;
+    if (options && text === "--") {
+      options = false;
+      continue;
+    }
+    if (!options || kind === "value") {
+      if (!isFileOperand(text)) {
+        return reject(
+          "missing_path",
+          `invalid ${tool} file operand ${JSON.stringify(text)}`,
+        );
+      }
+      if (filePath !== undefined) {
+        return reject(
+          "multiple_paths",
+          `unexpected ${tool} file operand ${text}`,
+        );
+      }
+      filePath = text;
+      continue;
+    }
+
+    const legacy = i === 0 ? /^-(\d+)$/.exec(text) : null;
+    let numberText: string | undefined;
+    if (legacy) {
+      numberText = legacy[1]!;
+    } else if (text === "-n") {
+      numberText = cmd.args[++i]?.text;
+      if (numberText === undefined) {
+        return reject("unsupported_option", `${tool} -n requires a line count`);
+      }
+    } else if (text.startsWith("-n")) {
+      numberText = text.slice(2);
+    }
+    if (numberText === undefined) {
+      return reject("unsupported_option", `unsupported ${tool} option ${text}`);
+    }
+    if (count !== undefined) {
+      return reject(
+        "unsupported_option",
+        `unexpected ${tool} line count option ${text}`,
+      );
+    }
+    const plus = numberText.startsWith("+");
+    count = parsePositiveDecimal(plus ? numberText.slice(1) : numberText);
+    if (count === undefined) {
+      return reject(
+        "unsupported_option",
+        `${tool} line count must be a positive safe decimal integer: ${JSON.stringify(text === "-n" ? numberText : text)}`,
+      );
+    }
+    fromStart = tool === "tail" && plus;
   }
 
   if (requireFile && filePath === undefined) {
     return reject("missing_path", "expected one file path");
   }
-  return { ok: true, value: { count, filePath } };
+  return { ok: true, value: { count, fromStart, filePath } };
+}
+
+function parseHeadArgs(
+  cmd: SimpleCommand,
+  requireFile: boolean,
+): ParseResult<{ count: number | undefined; filePath?: string }> {
+  return parseLineCountArgs(cmd, requireFile, "head");
 }
 
 function parseTailArgs(
   cmd: SimpleCommand,
   requireFile: boolean,
 ): ParseResult<{ range: ReadRange; filePath?: string }> {
-  let range: ReadRange = { type: "all" };
-  let filePath: string | undefined;
-
-  for (let i = 0; i < cmd.args.length; i++) {
-    const arg = cmd.args[i]!;
-    const text = arg.text;
-
-    if (text === "--") continue;
-
-    if (text === "-n") {
-      const next = cmd.args[++i];
-      if (!next || next.kind !== "value") {
-        return reject("unsupported_option", "tail -n requires an argument");
-      }
-      const plusMatch = next.text.match(/^\+([1-9]\d*)$/);
-      if (plusMatch) {
-        range = { type: "tail", startLine: Number(plusMatch[1]) };
-        continue;
-      }
-      const countMatch = next.text.match(/^([1-9]\d*)$/);
-      if (countMatch) {
-        range = { type: "tail-count", count: Number(countMatch[1]) };
-        continue;
-      }
-      return reject("unsupported_option", "tail -n requires +N or N");
-    }
-
-    const plus = text.match(/^-n\+([1-9]\d*)$/);
-    if (plus) {
-      range = { type: "tail", startLine: Number(plus[1]) };
-      continue;
-    }
-
-    const joined = text.match(/^-n([1-9]\d*)$/);
-    if (joined) {
-      range = { type: "tail-count", count: Number(joined[1]) };
-      continue;
-    }
-
-    const legacy = text.match(/^-([1-9]\d*)$/);
-    if (legacy) {
-      range = { type: "tail-count", count: Number(legacy[1]) };
-      continue;
-    }
-
-    if (arg.kind === "flag") {
-      return reject("unsupported_option", `unsupported tail option ${text}`);
-    }
-
-    if (filePath !== undefined) {
-      return reject(
-        "multiple_paths",
-        "multiple file operands are not supported",
-      );
-    }
-    filePath = text;
-  }
-
-  if (requireFile && filePath === undefined) {
-    return reject("missing_path", "expected one file path");
-  }
+  const parsed = parseLineCountArgs(cmd, requireFile, "tail");
+  if (!parsed.ok) return parsed;
+  const { count, fromStart, filePath } = parsed.value;
+  const range: ReadRange =
+    count === undefined
+      ? { type: "all" }
+      : fromStart
+        ? { type: "tail", startLine: count }
+        : { type: "tail-count", count };
   return { ok: true, value: { range, filePath } };
 }
 
@@ -383,42 +396,79 @@ function parseSedArgs(
   cmd: SimpleCommand,
   requireFile: boolean,
 ): ParseResult<{ start: number; end: number; filePath?: string }> {
-  const nFlagIdx = cmd.args.findIndex(
-    (a) => a.kind === "flag" && a.text === "-n",
-  );
-  if (nFlagIdx < 0) {
-    return reject("unsupported_option", "only sed -n 'N,Mp' path is supported");
+  const [first] = cmd.args;
+  if (first?.text !== "-n") {
+    return reject(
+      "unsupported_option",
+      first
+        ? `unsupported sed argument ${first.text} before -n`
+        : "sed requires -n",
+    );
   }
-  const exprArg = cmd.args[nFlagIdx + 1];
-  if (!exprArg || exprArg.kind !== "value") {
-    return reject("missing_path", "sed requires expression and path");
+  const marked = cmd.args[1]?.text === "--";
+  const exprIndex = marked ? 2 : 1;
+  const exprArg = cmd.args[exprIndex];
+  if (!exprArg) return reject("missing_path", "sed requires an expression");
+  if (!marked && exprArg.kind === "flag") {
+    return reject(
+      "unsupported_option",
+      `unsupported sed option ${exprArg.text}`,
+    );
   }
-  const m = exprArg.text.match(/^([1-9]\d*),([1-9]\d*)p$/);
-  if (!m) return reject("invalid_range", "sed expression must be N,Mp");
-  const start = Number(m[1]);
-  const end = Number(m[2]);
+  const match = /^(\d+),(\d+)p$/.exec(exprArg.text);
+  if (!match)
+    return reject(
+      "invalid_range",
+      `unsupported sed expression ${exprArg.text}`,
+    );
+  const start = parsePositiveDecimal(match[1]!);
+  const end = parsePositiveDecimal(match[2]!);
+  if (start === undefined || end === undefined) {
+    return reject(
+      "invalid_range",
+      `sed line numbers must be positive safe decimal integers: ${exprArg.text}`,
+    );
+  }
   if (end < start) {
-    return reject("invalid_range", "sed end line must be >= start line");
+    return reject(
+      "invalid_range",
+      `sed end line must be >= start line: ${exprArg.text}`,
+    );
   }
-  const pathArg = cmd.args[nFlagIdx + 2];
-  if (requireFile && (!pathArg || pathArg.kind !== "value")) {
-    return reject("missing_path", "sed requires expression and path");
+
+  const pathMarked = !marked && cmd.args[exprIndex + 1]?.text === "--";
+  const pathIndex = exprIndex + (pathMarked ? 2 : 1);
+  const path = cmd.args[pathIndex];
+  if (path && !marked && !pathMarked && path.kind === "flag") {
+    return reject("unsupported_option", `unsupported sed option ${path.text}`);
   }
-  if (
-    cmd.args.length >
-    nFlagIdx + (requireFile ? 3 : pathArg?.kind === "value" ? 3 : 2)
-  ) {
-    return reject("multiple_paths", "sed supports exactly one file operand");
+  const extra = cmd.args[pathIndex + 1];
+  if (extra) {
+    if (!marked && !pathMarked && extra.kind === "flag") {
+      return reject(
+        "unsupported_option",
+        `unsupported sed option ${extra.text}`,
+      );
+    }
+    return reject(
+      "multiple_paths",
+      `unexpected sed file operand ${extra.text}`,
+    );
   }
-  return {
-    ok: true,
-    value: {
-      start,
-      end,
-      filePath: pathArg?.kind === "value" ? pathArg.text : undefined,
-    },
-  };
+  if (path && !isFileOperand(path.text)) {
+    return reject(
+      "missing_path",
+      `invalid sed file operand ${JSON.stringify(path.text)}`,
+    );
+  }
+  if (requireFile && !path) {
+    return reject("missing_path", "sed requires a file path");
+  }
+  return { ok: true, value: { start, end, filePath: path?.text } };
 }
+
+// GNU nl parses the field width as a positive C int.
+const MAX_NL_WIDTH = 2_147_483_647;
 
 function parseNlArgs(
   cmd: SimpleCommand,
@@ -426,14 +476,25 @@ function parseNlArgs(
 ): ParseResult<{ options: NlOptions; filePath?: string }> {
   let filePath: string | undefined;
   const options: NlOptions = {};
+  let parseOptions = true;
 
   for (let i = 0; i < cmd.args.length; i++) {
     const arg = cmd.args[i]!;
-    if (arg.kind === "value") {
+    if (parseOptions && arg.text === "--") {
+      parseOptions = false;
+      continue;
+    }
+    if (!parseOptions || arg.kind === "value") {
+      if (!isFileOperand(arg.text)) {
+        return reject(
+          "missing_path",
+          `invalid nl file operand ${JSON.stringify(arg.text)}`,
+        );
+      }
       if (filePath !== undefined) {
         return reject(
           "multiple_paths",
-          "multiple file operands are not supported",
+          `unexpected nl file operand ${arg.text}`,
         );
       }
       filePath = arg.text;
@@ -441,14 +502,15 @@ function parseNlArgs(
     }
 
     const flag = arg.text;
-    if (flag === "--" || flag === "-ba") continue;
+    if (flag === "-ba") continue;
     if (flag === "-w") {
       const next = cmd.args[++i];
-      const width = next && next.kind === "value" ? Number(next.text) : NaN;
-      if (!Number.isInteger(width) || width < 1) {
+      if (!next) return reject("unsupported_option", "nl -w requires a width");
+      const width = parsePositiveDecimal(next.text);
+      if (width === undefined || width > MAX_NL_WIDTH) {
         return reject(
           "unsupported_option",
-          "nl -w requires a positive integer",
+          `nl -w width must be a decimal integer from 1 to ${MAX_NL_WIDTH}: ${JSON.stringify(next.text)}`,
         );
       }
       options.width = width;
@@ -456,7 +518,7 @@ function parseNlArgs(
     }
     if (flag === "-s") {
       const next = cmd.args[++i];
-      if (!next || next.kind !== "value") {
+      if (!next) {
         return reject("unsupported_option", "nl -s requires a separator");
       }
       if (/[\r\n]/.test(next.text)) {
@@ -500,11 +562,14 @@ function parseRgArgs(
       `${toolName} redirections are not supported`,
     );
   }
-  const hasOtherFlags = cmd.args.some(
+  const unsupported = cmd.args.find(
     (a) => a.kind === "flag" && a.text !== "-n" && a.text !== "--line-number",
   );
-  if (hasOtherFlags) {
-    return reject("unsupported_option", `unsupported ${toolName} option`);
+  if (unsupported) {
+    return reject(
+      "unsupported_option",
+      `unsupported ${toolName} option ${unsupported.text}`,
+    );
   }
   const hasLineNumbers = cmd.args.some(
     (a) => a.kind === "flag" && (a.text === "-n" || a.text === "--line-number"),
@@ -520,9 +585,15 @@ function parseRgArgs(
     .filter((a): a is { kind: "value"; text: string } => a.kind === "value")
     .map((a) => a.text);
   const expectedCount = requireFile ? 2 : 1;
-  if (values.length !== expectedCount) {
+  if (values.length > expectedCount) {
     return reject(
-      values.length < expectedCount ? "missing_path" : "multiple_paths",
+      "multiple_paths",
+      `unexpected ${toolName} operand ${values[expectedCount]!}`,
+    );
+  }
+  if (values.length < expectedCount) {
+    return reject(
+      "missing_path",
       requireFile
         ? `${toolName} -n requires exactly one pattern and one file operand`
         : `${toolName} -n requires exactly one pattern`,
@@ -534,7 +605,7 @@ function parseRgArgs(
   if (!pattern)
     return reject("variable_path", `${toolName} pattern/path must be literal`);
   if (requireFile) {
-    if (!filePath)
+    if (filePath === undefined || !isFileOperand(filePath))
       return reject(
         "variable_path",
         `${toolName} pattern/path must be literal`,
@@ -565,28 +636,13 @@ function parseStageAsSource(
   }
 
   if (name === "cat") {
-    const flags = cmd.args.filter((a) => a.kind === "flag" && a.text !== "--");
-    if (flags.length > 0) {
-      return reject(
-        "unsupported_option",
-        `unsupported cat option ${flags[0]!.text}`,
-      );
-    }
-    const values = cmd.args
-      .filter((a) => a.kind === "value")
-      .map((a) => a.text);
-    if (values.length === 0)
-      return reject("missing_path", "expected one file path");
-    if (values.length > 1)
-      return reject(
-        "multiple_paths",
-        "multiple file operands are not supported",
-      );
+    const parsed = parseCatArgs(cmd, true);
+    if (!parsed.ok) return parsed;
     return {
       ok: true,
       value: {
         kind: "file-read",
-        filePath: values[0]!,
+        filePath: parsed.value!,
         stageIndex,
         commandName: "cat",
       },
@@ -772,15 +828,10 @@ function parseStageAsTransform(
   if (!name) return reject("empty", "empty command");
 
   if (name === "cat") {
-    const flags = cmd.args.filter((a) => a.kind === "flag" && a.text !== "--");
-    if (flags.length > 0) {
-      return reject(
-        "unsupported_option",
-        `unsupported cat option ${flags[0]!.text}`,
-      );
-    }
-    const values = cmd.args.filter((a) => a.kind === "value");
-    if (values.length === 0) return { ok: true, value: (input) => input };
+    const parsed = parseCatArgs(cmd, false);
+    if (!parsed.ok) return parsed;
+    if (parsed.value === undefined)
+      return { ok: true, value: (input) => input };
     return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
   }
 
@@ -1253,16 +1304,9 @@ function classifyGenericList(
   for (const member of members) {
     const cmd = member[0]!;
     if (isCd(member)) {
-      const values = cmd.args.filter((a) => a.kind === "value");
-      // Use last value (Codex behaviour: cd dir1 dir2 uses dir2)
-      const target = values.at(-1)?.text ?? "";
-      if (!target) {
-        return reject(
-          "unsafe_shell_syntax",
-          "cd target must be a literal path",
-        );
-      }
-      cdPath = resolveAgainstCd(cdPath, target);
+      const parsed = parseCdArgs(cmd);
+      if (!parsed.ok) return parsed;
+      cdPath = resolveAgainstCd(cdPath, parsed.value);
       continue;
     }
 
@@ -1589,14 +1633,30 @@ function adaptUnitFromChildren(
   return { type: "unsupported", reason: "opaque shell unit" };
 }
 
+function parseCdArgs(command: SimpleCommand): ParseResult<string> {
+  for (const { kind, text } of command.args) {
+    if (kind === "flag") {
+      return reject("unsupported_option", `unsupported cd option ${text}`);
+    }
+  }
+  const [target, extra] = command.args;
+  if (!target?.text) {
+    return reject("unsafe_shell_syntax", "cd target must be a literal path");
+  }
+  if (extra) {
+    return reject("multiple_paths", `unexpected cd operand ${extra.text}`);
+  }
+  if (command.redirects.length > 0) {
+    return reject(
+      "unsafe_shell_syntax",
+      `unsupported cd redirection ${command.redirects[0]!.op}`,
+    );
+  }
+  return { ok: true, value: target.text };
+}
+
 function isLiteralCd(command: SimpleCommand | null): command is SimpleCommand {
-  return (
-    command !== null &&
-    command.name === "cd" &&
-    command.args.length === 1 &&
-    command.args[0]!.kind === "value" &&
-    command.redirects.length === 0
-  );
+  return command !== null && command.name === "cd" && parseCdArgs(command).ok;
 }
 
 function invocationContextCommand(
@@ -1835,7 +1895,7 @@ function trailingCatHeredocSteps(
     );
     if (commands.some((command) => command === null)) return [];
     const readback = parseLsReadbackCommands(commands as SimpleCommand[]);
-    return readback === null ? [] : structuredReadbackSteps(readback);
+    return readback?.ok ? structuredReadbackSteps(readback.value) : [];
   }
   return [];
 }
@@ -1853,7 +1913,7 @@ function isMkdirSetup(command: SimpleCommand): boolean {
 
 function parseLsReadbackCommands(
   commands: readonly SimpleCommand[],
-): { filePath: string; sedStart: number; sedEnd: number } | null {
+): ParseResult<{ filePath: string; sedStart: number; sedEnd: number }> | null {
   if (commands.length !== 2) return null;
   const ls = commands[0]!;
   const sed = commands[1]!;
@@ -1865,22 +1925,17 @@ function parseLsReadbackCommands(
     ls.args[1]!.kind !== "value" ||
     ls.redirects.length > 0 ||
     sed.name !== "sed" ||
-    sed.args.length !== 3 ||
-    sed.args[0]!.kind !== "flag" ||
-    sed.args[0]!.text !== "-n" ||
-    sed.args[1]!.kind !== "value" ||
-    sed.args[2]!.kind !== "value" ||
     sed.redirects.length > 0
   )
     return null;
-  const range = sed.args[1]!.text.match(/^([1-9]\d*),([1-9]\d*)p$/);
-  if (!range) return null;
+  const parsed = parseSedArgs(sed, true);
   const filePath = ls.args[1]!.text;
-  const sedPath = sed.args[2]!.text;
-  const sedStart = Number(range[1]);
-  const sedEnd = Number(range[2]);
-  if (filePath !== sedPath || sedEnd < sedStart) return null;
-  return { filePath, sedStart, sedEnd };
+  if (!parsed.ok) return parsed;
+  if (filePath !== parsed.value.filePath) return null;
+  return {
+    ok: true,
+    value: { filePath, sedStart: parsed.value.start, sedEnd: parsed.value.end },
+  };
 }
 
 function parseLsDirectoryCommand(command: SimpleCommand): string | null {
@@ -1967,14 +2022,14 @@ function classifyLsReadbackAST(
     ast.left.command,
     ast.right.command,
   ]);
-  if (readback === null) return null;
+  if (readback === null || !readback.ok) return readback;
   return {
     ok: true,
     value: {
       kind: "structured-output",
       commandName: "ls",
       command: originalCommand,
-      steps: structuredReadbackSteps(readback),
+      steps: structuredReadbackSteps(readback.value),
     },
   };
 }
