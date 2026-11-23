@@ -1338,13 +1338,13 @@ public:
 		}
 	}
 
+	private enum sessionEnded = "Session ended while waiting for Ask response";
+
 	void onTaskTerminal(int tid, bool deleting = false)
 	{
 		cleanUpAskedQuestions(tid);
-		auto askers = failQuestionsForAnswerer(tid,
-			"Session ended while waiting for Ask response");
-		mailbox(tid).release(new Exception(
-			"Session ended while waiting for Ask response"));
+		auto askers = failQuestionsForAnswerer(tid, sessionEnded);
+		mailbox(tid).release(new Exception(sessionEnded));
 		foreach (askerTid; askers)
 			pump(askerTid);
 		if (deleting)
@@ -1854,8 +1854,21 @@ private:
 	{
 		return async({
 			MailboxEvent ev;
-			try ev = mailbox(tid).take().await;
-			catch (Exception e) return McpResult(e.msg, true);
+			do
+			{
+				try ev = mailbox(tid).take().await;
+				catch (Exception e) return McpResult(e.msg, true);
+				auto task = host_.getTask(tid);
+				if (task is null || task.status == TaskStatus.completed
+					|| task.status == TaskStatus.failed)
+				{
+					if (deliverable(tid, ev))
+						mailbox(tid).putBack([ev]);
+					pump(tid);
+					return McpResult(sessionEnded, true);
+				}
+			}
+			while (!deliverable(tid, ev));
 			McpResult result;
 			final switch (ev.kind)
 			{
@@ -1864,8 +1877,7 @@ private:
 					break;
 				case MailboxEvent.Kind.question:
 				{
-					auto q = ev.qid in questions_;
-					assert(q !is null && q.state != QuestionState.failed);
+					auto q = questions_[ev.qid];
 					auto asker = host_.getTask(q.askerTid);
 					result = McpResult.structured(toJson(QuestionResult("question",
 						q.askerTid, q.qid, asker is null ? null : asker.title, q.text)));
@@ -1873,7 +1885,6 @@ private:
 				}
 				case MailboxEvent.Kind.answer:
 				{
-					assert(deliverable(tid, ev));
 					auto q = questions_[ev.qid];
 					auto answerer = host_.getTask(q.answererTid);
 					result = McpResult.structured(toJson(AnswerResult("answered",
@@ -4597,4 +4608,127 @@ unittest
 		assert(f.tasks[1].status == TaskStatus.active);
 		assert(f.persistence.loadTaskDeps().length == 0);
 	}
+}
+
+// A question handed to an answerer whose session ends fails the Ask once.
+unittest
+{
+	auto f = new BatchInvariantFixture;
+	f.tasks[2].isProcessing = true;
+	auto b = f.makeBackend();
+	McpResult[] carrier, asker;
+	b.awaitEvent(2).then((McpResult r) { carrier ~= r; }).ignoreResult();
+	drainPromiseNextTicks();
+	assert(b.mailbox(2).hasWaiter);
+
+	b.handleAsk("1", "handed-off question", 2)
+		.then((McpResult r) { asker ~= r; }).ignoreResult();
+	assert(!b.mailbox(2).hasWaiter && b.mailbox(2).empty);
+	assert(carrier.length == 0);
+
+	f.shuttingDown = true;
+	f.tasks[2].status = TaskStatus.failed;
+	b.onTaskTerminal(2);
+	drainPromiseNextTicks();
+
+	assert(carrier.length == 1 && carrier[0].isError
+		&& carrier[0].text == "Session ended while waiting for Ask response");
+	assert(asker.length == 1 && asker[0].isError
+		&& asker[0].text.canFind("Session ended while waiting for Ask response"));
+	b.onToolCallDelivered("1", asker[0]);
+	assert(b.mailbox(1).empty && b.questions_.length == 0);
+	assert(f.sendCalls == 0);
+}
+
+// An answer handed to an asker whose session ends loses its owning record.
+unittest
+{
+	auto f = new BatchInvariantFixture;
+	f.tasks[1].isProcessing = f.tasks[2].isProcessing = true;
+	auto b = f.makeBackend();
+	McpResult question;
+	McpResult[] carrier;
+	b.handleAsk("1", "question to answer", 2)
+		.then((McpResult r) { carrier ~= r; }).ignoreResult();
+	b.awaitEvent(2).then((McpResult r) { question = r; }).ignoreResult();
+	drainPromiseNextTicks();
+	auto qid = question.text.jsonParse!QuestionResult.qid;
+	b.onToolCallDelivered("2", question);
+	assert(b.mailbox(1).hasWaiter);
+
+	b.handleAnswer("2", qid, "handed-off answer").ignoreResult();
+	assert(!b.mailbox(1).hasWaiter && b.mailbox(1).empty);
+	assert(carrier.length == 0);
+
+	f.shuttingDown = true;
+	f.tasks[1].status = TaskStatus.failed;
+	b.onTaskTerminal(1);
+	drainPromiseNextTicks();
+
+	assert(carrier.length == 1 && carrier[0].isError
+		&& carrier[0].text == "Session ended while waiting for Ask response");
+	assert((qid in b.questions_) is null && b.mailbox(1).empty);
+}
+
+// A completed batch survives the end of the carrier's session.
+unittest
+{
+	auto f = new BatchInvariantFixture;
+	f.tasks[1].isProcessing = true;
+	auto b = f.makeBackend();
+	BatchHandle handle;
+	string error;
+	assert(b.batchRegistry_.create(1, [2], handle, error), error);
+	McpResult[] carrier, nextCarrier;
+	b.awaitEvent(1).then((McpResult r) { carrier ~= r; }).ignoreResult();
+	drainPromiseNextTicks();
+	assert(b.mailbox(1).hasWaiter);
+
+	f.tasks[2].resultText = "handed-off batch result";
+	assert(b.finalizeCompletedSubTask(2));
+	assert(!b.mailbox(1).hasWaiter && b.mailbox(1).empty);
+	assert(carrier.length == 0);
+
+	f.shuttingDown = true;
+	f.tasks[1].status = TaskStatus.failed;
+	b.onTaskTerminal(1);
+	drainPromiseNextTicks();
+
+	assert(carrier.length == 1 && carrier[0].isError
+		&& carrier[0].text == "Session ended while waiting for Ask response");
+	assert(b.batchRegistry_.exists(handle));
+
+	f.shuttingDown = false;
+	f.tasks[1].status = TaskStatus.active;
+	b.awaitEvent(1).then((McpResult r) { nextCarrier ~= r; }).ignoreResult();
+	drainPromiseNextTicks();
+	assert(nextCarrier.length == 1 && !nextCarrier[0].isError
+		&& nextCarrier[0].text.canFind("handed-off batch result"));
+	b.onToolCallDelivered("1", nextCarrier[0]);
+	assert(!b.batchRegistry_.exists(handle) && b.mailbox(1).empty);
+	assert(f.sendCalls == 0);
+}
+
+// A live carrier skips a cancelled handoff and returns the next question.
+unittest
+{
+	auto f = new BatchInvariantFixture;
+	f.tasks[2].isProcessing = true;
+	f.tasks[3] = TaskData(3, "local", f.tasks[1].projectPath);
+	f.tasks[3].status = TaskStatus.active;
+	auto b = f.makeBackend();
+	McpResult[] results;
+	b.awaitEvent(2).then((McpResult r) { results ~= r; }).ignoreResult();
+	drainPromiseNextTicks();
+	assert(b.mailbox(2).hasWaiter);
+	b.handleAsk("1", "cancel this handoff", 2).ignoreResult();
+	assert(!b.mailbox(2).hasWaiter && b.mailbox(2).empty);
+	f.tasks[1].status = TaskStatus.failed;
+	b.onTaskTerminal(1);
+	assert(f.tasks[2].status == TaskStatus.active);
+	b.handleAsk("3", "deliver this live question", 2).ignoreResult();
+	drainPromiseNextTicks();
+	assert(results.length == 1 && !results[0].isError
+		&& results[0].text.canFind("deliver this live question"),
+		"live carrier must skip cancelled question and take the next event");
 }
