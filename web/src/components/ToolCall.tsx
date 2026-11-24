@@ -1,3 +1,4 @@
+import { parseCreatedTaskResult } from "../cydoToolResults";
 import { h, Fragment, ComponentChildren } from "preact";
 import { memo } from "preact/compat";
 import { useState, useMemo, useEffect, useRef } from "preact/hooks";
@@ -1224,16 +1225,7 @@ function formatTaskSpecsInput(
                 {description && <span class="field-value"> {description}</span>}
               </div>
               {childTid != null && getTaskHref && (
-                <a
-                  class="cydo-task-spec-open"
-                  data-testid="cydo-task-spec-open"
-                  href={getTaskHref(String(childTid))}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                  }}
-                >
-                  Open task →
-                </a>
+                <OpenTaskLink href={getTaskHref(String(childTid))} />
               )}
             </div>
             {prompt && <Markdown text={prompt} />}
@@ -2576,6 +2568,15 @@ function formatInput(
   }
   // --- CyDo MCP tools ---
   if (
+    toolIs(name, driver, toolServer, "cydo:CreateTask") &&
+    typeof input.prompt === "string"
+  ) {
+    return formatGenericInput(
+      typeof input.project === "string" ? { project: input.project } : {},
+      <Markdown text={input.prompt} />,
+    );
+  }
+  if (
     toolIs(
       name,
       driver,
@@ -3107,6 +3108,27 @@ const askToolNames = new Set([
   "cydo:AskUserQuestion",
 ]);
 
+function OpenTaskLink({
+  href,
+  testId = "cydo-task-spec-open",
+}: {
+  href: string;
+  testId?: string;
+}) {
+  return (
+    <a
+      class="cydo-task-spec-open"
+      data-testid={testId}
+      href={href}
+      onClick={(e) => {
+        e.stopPropagation();
+      }}
+    >
+      Open task →
+    </a>
+  );
+}
+
 export const ToolCall = memo(
   function ToolCall({
     name,
@@ -3140,7 +3162,32 @@ export const ToolCall = memo(
     const resultOpen =
       resultOpenOverride ??
       defaultResultExpanded(name, toolServer, driver, result);
-    const subtitle = getHeaderSubtitle(name, toolServer, driver, input, result);
+    const isCreateTask = toolIs(name, driver, toolServer, "cydo:CreateTask");
+    const createdTask =
+      isCreateTask && result && !result.isError
+        ? (parseCreatedTaskResult(result.toolResult) ??
+          parseCreatedTaskResult(extractResultText(result.content)))
+        : undefined;
+    const entryPoint = createdTask?.entry_point ?? input.entry_point;
+    const createTaskTitle =
+      typeof input.title === "string" && input.title
+        ? input.title
+        : typeof input.prompt === "string"
+          ? input.prompt.split("\n", 1)[0]
+          : undefined;
+    const subtitle = isCreateTask ? (
+      <span class="tool-subtitle">
+        {typeof entryPoint === "string" && entryPoint && (
+          <span class="tool-subtitle-tag">{entryPoint}</span>
+        )}{" "}
+        {createTaskTitle}{" "}
+        <span class="tool-subtitle-tag">
+          {createdTask?.status ?? (input.start === true ? "started" : "draft")}
+        </span>
+      </span>
+    ) : (
+      getHeaderSubtitle(name, toolServer, driver, input, result)
+    );
     const viewPaths = onViewFile
       ? getToolCallFilePaths(name, driver, input)
       : [];
@@ -3457,6 +3504,12 @@ export const ToolCall = memo(
           )}
           <span class="tool-name">{name}</span>
           {subtitle}
+          {createdTask && getTaskHref && (
+            <OpenTaskLink
+              href={getTaskHref(String(createdTask.tid))}
+              testId="cydo-create-task-open"
+            />
+          )}
           {(toolIs(name, driver, toolServer, "claude/Edit") ||
             toolIs(name, driver, toolServer, "codex/apply_patch") ||
             isFileWriteTool(name, driver)) &&
@@ -3590,16 +3643,9 @@ export const ToolCall = memo(
                               {tidVal != null &&
                                 Number.isFinite(tidVal) &&
                                 getTaskHref && (
-                                  <a
-                                    class="cydo-task-spec-open"
-                                    data-testid="cydo-task-spec-open"
+                                  <OpenTaskLink
                                     href={getTaskHref(String(tidVal))}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                    }}
-                                  >
-                                    Open task →
-                                  </a>
+                                  />
                                 )}
                             </div>
                             {Object.keys(rest).length > 0 &&

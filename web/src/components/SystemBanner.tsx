@@ -1,3 +1,4 @@
+import type { CreatedByLink } from "../createdByLink";
 import { useState } from "preact/hooks";
 import type { SessionInfo } from "../types";
 import type { AgentUsageLimitWindow, AgentUsageMessage } from "../protocol";
@@ -31,6 +32,7 @@ interface Props {
   onResume?: () => void;
   exportMode?: boolean;
   claudeUsage?: AgentUsageMessage;
+  createdBy?: CreatedByLink;
 }
 
 /** How far ahead to warn that the login expires (as the Claude CLI does). */
@@ -161,6 +163,7 @@ export function SystemBanner({
   onResume,
   exportMode,
   claudeUsage,
+  createdBy,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const liveStatus = normalizeSessionStatus(sessionStatus);
@@ -231,6 +234,13 @@ export function SystemBanner({
           </button>
         )}
         <span class="banner-title">CyDo</span>
+        {createdBy && (
+          <a class="banner-created-by" href={createdBy.href}>
+            {createdBy.title
+              ? `Created by “${createdBy.title}”`
+              : `Created by task ${createdBy.tid}`}
+          </a>
+        )}
         {sessionInfo && (
           <span
             class="banner-model clickable"

@@ -21,6 +21,7 @@ import { RefreshWorkspacesButton } from "./components/RefreshWorkspacesButton";
 import { SearchPopup } from "./components/SearchPopup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Toast } from "./components/Toast";
+import { createdByLink } from "./createdByLink";
 import { subtaskResultParent } from "./subtaskResultParent";
 import {
   createControlledImageStore,
@@ -486,6 +487,13 @@ function AppContent() {
             <div key={draftView.viewKey} style={{ display: "contents" }}>
               <DraftSessionView
                 draftView={draftView}
+                createdBy={createdByLink(
+                  draftView.kind === "resolved" && draftView.remoteTid !== null
+                    ? getByTid(draftView.remoteTid)
+                    : undefined,
+                  getByTid,
+                  getTaskHref,
+                )}
                 connected={connected}
                 tasksLoading={tasksLoading}
                 entryPoints={entryPoints}
@@ -547,6 +555,7 @@ function AppContent() {
                 >
                   <SessionView
                     task={task}
+                    createdBy={createdByLink(task, getByTid, getTaskHref)}
                     connected={connected}
                     tasksLoading={tasksLoading}
                     isActive={isActive}

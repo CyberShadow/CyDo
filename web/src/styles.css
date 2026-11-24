@@ -648,6 +648,11 @@ body,
   color: var(--accent);
 }
 
+.banner-created-by {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 .banner-model {
   color: var(--text-dim);
   font-size: 12px;

@@ -427,6 +427,7 @@ export function taskStateFromEntry(
       ...base,
       uuid: existingUuid ?? base.uuid,
       childCount: entry.child_count,
+      creatorTid: entry.creator_tid || undefined,
       serverDraft: hasDraft ? entry.draft || undefined : base.serverDraft,
       error: entry.error || undefined,
     };
@@ -452,6 +453,7 @@ export function taskStateFromEntry(
     parentTid: entry.parent_tid || existing.parentTid,
     childCount: entry.child_count,
     relationType: entry.relation_type || existing.relationType,
+    creatorTid: entry.creator_tid || existing.creatorTid,
     status: entry.status || existing.status,
     taskType: entry.task_type || existing.taskType,
     entryPoint: entry.entry_point || existing.entryPoint,

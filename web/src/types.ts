@@ -349,6 +349,7 @@ export interface TaskState {
   childCount: number;
   /** Relation type to parent (e.g. "fork"). */
   relationType?: string;
+  creatorTid?: number;
   historyOperations: import("./protocol").HistoryOperations | null;
   /** Current task type (e.g. "conversation", "plan", "implement"). */
   taskType?: string;

@@ -265,3 +265,25 @@ describe("draft projection validation", () => {
     ).toThrow("Draft projection entry point does not match task 71");
   });
 });
+
+describe("taskStateFromEntry creator", () => {
+  const entry: TaskSnapshotEntry = {
+    tid: 11,
+    alive: false,
+    resumable: false,
+    isProcessing: false,
+    child_count: 0,
+  };
+
+  it("maps the creator on new snapshots and later updates", () => {
+    const uncreated = taskStateFromEntry(entry, undefined, undefined);
+    expect(uncreated.creatorTid).toBeUndefined();
+    const snapshot = { ...entry, creator_tid: 7 };
+    expect(taskStateFromEntry(snapshot, undefined, undefined).creatorTid).toBe(
+      7,
+    );
+    const updated = taskStateFromEntry(snapshot, uncreated, uncreated.uuid);
+    expect(updated.creatorTid).toBe(7);
+    expect(taskStateFromEntry(entry, updated, updated.uuid).creatorTid).toBe(7);
+  });
+});

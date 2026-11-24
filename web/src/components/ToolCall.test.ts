@@ -1572,3 +1572,44 @@ describe("MCP tool headers", () => {
     expect(html).toContain("cydo-tool-logo");
   });
 });
+
+describe("CreateTask", () => {
+  function render(result?: ToolResult) {
+    const html = renderToString(
+      h(ToolCall, {
+        name: "CreateTask",
+        toolServer: "cydo",
+        toolUseId: "create",
+        input: { title: "Fix the widget", prompt: "Inspect the widget" },
+        result,
+        getTaskHref: (tid) => `/task/${tid}`,
+      }),
+    );
+    const container = document.createElement("div");
+    container.innerHTML = html;
+    return container.querySelector('a[data-testid="cydo-create-task-open"]');
+  }
+
+  const createdTask: ToolResult = {
+    toolUseId: "create",
+    content: "",
+    toolResult: {
+      tid: 7,
+      workspace: "local",
+      project_path: "/project",
+      entry_point: "agentic",
+      status: "draft",
+    },
+  };
+
+  it("links to the created task", () => {
+    const link = render(createdTask);
+    expect(link?.textContent).toBe("Open task →");
+    expect(link?.getAttribute("href")).toBe("/task/7");
+  });
+
+  it("omits the link while pending and on error", () => {
+    expect(render()).toBeNull();
+    expect(render({ ...createdTask, isError: true })).toBeNull();
+  });
+});

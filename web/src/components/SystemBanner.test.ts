@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { h } from "preact";
 import renderToString from "preact-render-to-string";
+import type { CreatedByLink } from "../createdByLink";
 import type { AgentUsageMessage } from "../protocol";
 import {
   computeUsagePaceRatio,
@@ -17,11 +18,13 @@ function renderSystemBanner({
   connected = true,
   tasksLoading = false,
   exportMode = false,
+  createdBy,
 }: {
   claudeUsage?: AgentUsageMessage;
   connected?: boolean;
   tasksLoading?: boolean;
   exportMode?: boolean;
+  createdBy?: CreatedByLink;
 } = {}): string {
   return renderToString(
     h(SystemBanner, {
@@ -39,6 +42,7 @@ function renderSystemBanner({
       onCloseStdin: () => {},
       claudeUsage,
       exportMode,
+      createdBy,
     }),
   );
 }
@@ -219,5 +223,20 @@ describe("loginExpiryWarning", () => {
     expect(loginExpiryWarning("2026-11-09T12:00:00Z", now)).toBe(
       "Login expired",
     );
+  });
+});
+
+describe("SystemBanner creator link", () => {
+  it("uses the creator title or task ID", () => {
+    const createdBy = { href: "/task/7", tid: 7 };
+    expect(
+      renderSystemBanner({ createdBy: { ...createdBy, title: "T" } }),
+    ).toContain(
+      '<a class="banner-created-by" href="/task/7">Created by “T”</a>',
+    );
+    expect(renderSystemBanner({ createdBy })).toContain(
+      '<a class="banner-created-by" href="/task/7">Created by task 7</a>',
+    );
+    expect(renderSystemBanner()).not.toContain("banner-created-by");
   });
 });

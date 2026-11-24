@@ -1,3 +1,4 @@
+import type { CreatedByLink } from "../createdByLink";
 import { memo } from "preact/compat";
 import {
   useRef,
@@ -74,6 +75,7 @@ interface Props {
   exportMode?: boolean;
   getTaskHref?: (id: string) => string;
   subtaskEnd?: SubtaskEnd;
+  createdBy?: CreatedByLink;
   agentUsage?: Record<string, AgentUsageMessage>;
 }
 
@@ -131,6 +133,7 @@ function SessionViewInner({
   exportMode,
   getTaskHref,
   subtaskEnd,
+  createdBy,
   agentUsage,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -390,6 +393,7 @@ function SessionViewInner({
   return (
     <>
       <SystemBanner
+        createdBy={createdBy}
         sessionInfo={task.sessionInfo}
         defaultAgent={defaultAgent}
         sessionStatus={task.sessionStatus}
@@ -593,6 +597,7 @@ interface DraftSessionViewProps {
   onToggleSidebar: () => void;
   hasGlobalAttention?: boolean;
   imageStore?: ControlledImageStore;
+  createdBy?: CreatedByLink;
 }
 
 export function DraftSessionView({
@@ -608,6 +613,7 @@ export function DraftSessionView({
   onToggleSidebar,
   hasGlobalAttention,
   imageStore,
+  createdBy,
 }: DraftSessionViewProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -704,6 +710,7 @@ export function DraftSessionView({
   return (
     <>
       <SystemBanner
+        createdBy={createdBy}
         sessionInfo={null}
         defaultAgent={defaultAgent}
         connected={connected}
