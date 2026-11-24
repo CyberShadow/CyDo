@@ -495,6 +495,20 @@ unittest
 	assert(combined.entryPoints == packaged.entryPoints);
 }
 
+unittest
+{
+	import std.algorithm : map;
+	import cydo.domain.task_types.definition : creatableEntryPointsOf;
+
+	auto packaged = loadTaskTypes(packagedTaskTypesPath());
+	assert(creatableEntryPointsOf(packaged.types, packaged.entryPoints, "conversation")
+		.map!(edge => edge.target.name).array == ["agentic"]);
+	foreach (ref type; packaged.types)
+		if (type.name != "conversation")
+			assert(creatableEntryPointsOf(packaged.types, packaged.entryPoints, type.name).length == 0,
+				type.name);
+}
+
 version (unittest)
 {
 	import cydo.domain.task_types.definition : TaskTypeConfig, buildTaskGuidancePromptVars,

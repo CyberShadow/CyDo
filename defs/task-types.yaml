@@ -66,6 +66,7 @@
 #     interface, not in task type definitions.
 #
 # Flow control:
+#   - creatable_entry_points: top-level user tasks this type may create (CreateTask)
 #   - creatable_tasks: modal sub-tasks (agent stays alive, gets results back)
 #   - continuations: exec-style successors (agent is done, next task takes over)
 #   - requires_approval: all stewards must approve before successor spawns
@@ -133,6 +134,8 @@ task_types:
     model_class: large
     read_only: true
     output_type: []
+    creatable_entry_points:
+      agentic: {}
     creatable_tasks:
       quick_research:
         prompt_template: prompts/quick_research.md
