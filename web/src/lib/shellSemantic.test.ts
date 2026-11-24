@@ -897,14 +897,117 @@ describe("later-stage redirections", () => {
       normalizeSemanticForComparison(plain.value),
     );
   });
+});
 
-  it("keeps the first-stage redirect rejection", async () => {
-    await expect(parseShellSemantic("cat f.d 2>&1 | head -5")).resolves.toEqual(
-      {
-        ok: false,
-        code: "redirection_on_read",
-        reason: "read commands with redirection are not display-only reads",
-      },
+describe("redirect effects", () => {
+  const output = "output redirection diverts the command output";
+  const input = "input redirection replaces the pipeline input";
+  const merge = "stderr redirection mixes diagnostics into the output";
+
+  it.each([
+    ["cat f.d <g.py", "cat", input],
+    ["cat f.d <<<x", "cat", input],
+    ["cat f.d >out", "cat", output],
+    ["grep -n x f.d >out", "grep", output],
+    ["cat f.d &>out", "cat", output],
+    ["cat f.d 2>&1 | head -5", "cat", merge],
+    ["grep -n x f.d 2>&1", "grep", merge],
+    ['cat f.d 2>"$TARGET"', "cat", merge],
+    ['cat f.d | head -1 2>"$TARGET"', "head", merge],
+    ['grep -n x f.d 2>"$TARGET"', "grep", merge],
+    ['git diff 2>"$TARGET"', "git", merge],
+    ['echo done 2>"$TARGET" && cat f.d', "echo", merge],
+    ['printf "done\\n" 2>"$TARGET" && cat f.d', "printf", merge],
+    ['wc -l g.d 2>"$TARGET" && cat f.d', "wc", merge],
+    ["cat missing.d 2>/dev//stdout", "cat", merge],
+    ["cat missing.d 2>//dev/stdout | head -1", "cat", merge],
+    ["cat missing.d 2>/dev/./fd/1 | head -1", "cat", merge],
+    ["cat missing.d 2>|/dev//stdout", "cat", merge],
+    ["cat f.d 2>/tmp/err", "cat", merge],
+    ["cat missing.d 2>/dev/fd/1 | head -1", "cat", merge],
+    ["cat f.d 2>/dev/stdout", "cat", merge],
+    ["cat f.d | head -1 2>/dev/stdout", "head", merge],
+    ["cat f.d 3>&1 2>&3", "cat", output],
+    ["cat f.d 2>/proc/self/fd/1", "cat", merge],
+    ["echo done 2>/dev/stdout && cat f.d", "echo", merge],
+    ["cat f.d 2147483648>out", "cat", output],
+    ["cat f.d | head -1 4294967296<g.py", "head", input],
+    ["cat f.d | head -1 <&1", "head", input],
+    ["cat f.d | head -1 <&01", "head", input],
+    ["cat f.d | head -1 1<&1", "head", output],
+    ["cat f.d 3>&1", "cat", output],
+    ["cat f.d >&out", "cat", output],
+    ["cat f.d 3>&01", "cat", output],
+    ["cat f.d | head -5 2>&01", "head", merge],
+    ["printf 'x\\n' >out && cat f.d", "printf", output],
+  ])("reports the redirect effect in %s", async (command, name, effect) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "redirection_on_read",
+      reason: `${name} ${effect}`,
+    });
+  });
+
+  it.each([
+    ["bash -c 'cat f.d' >out", "bash", output],
+    ["bash -c 'cat f.d | head -1' 1>&2", "bash", output],
+    ["bash -c 'cat missing.d | head -1' 2>&1", "bash", merge],
+    ["bash -c 'cat f.d 2>/dev/null' >out", "bash", output],
+    ["bash -c 'cat missing.d 2>&3' 3>&1", "bash", output],
+    ["bash -c 'echo done; cat f.d' >out", "bash", output],
+    ["zsh -lc 'cat f.d' >out", "zsh", output],
+    ["sh -cl 'cat f.d' >out", "sh", output],
+    ["env FOO=bar bash -c 'cat f.d' >out", "env", output],
+  ])("checks the outer redirect in %s", async (command, name, effect) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "redirection_on_read",
+      reason: `${name} ${effect}`,
+    });
+  });
+
+  it.each([
+    "python3 -c 'print(1)' >out",
+    "env FOO=bar python3 -c 'print(1)' >out",
+    "env FOO=bar python3 - 2>&1 <<'PY'\nprint(1)\nPY",
+  ])("preserves script execution metadata in %s", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toMatchObject({
+      ok: true,
+      value: { kind: "script-exec", command },
+    });
+  });
+
+  it("rejects a stdout alias on fd 3 in a cat list member", async () => {
+    // Single-stage cat list members report their generic unsupported-command reason.
+    await expect(
+      parseShellSemantic("echo done; cat f.d 3>/dev/stdout"),
+    ).resolves.toEqual({
+      ok: false,
+      code: "unsupported_command",
+      reason: "unsupported command in list: cat",
+    });
+  });
+
+  it.each([
+    ["bash -c 'cat f.d 2>/dev/null'", "bash -c 'cat f.d'"],
+    ["bash -c 'cat f.d' 2>/dev/null", "bash -c 'cat f.d'"],
+    ["cat f.d 2>/dev/null", "cat f.d"],
+    ["cat f.d 2>sub/err", "cat f.d"],
+    ["cat f.d 2>err | head -3", "cat f.d | head -3"],
+    ["grep -n x f.d 2>/dev/null", "grep -n x f.d"],
+    ["git diff 2>/dev/null", "git diff"],
+    ["cat f.d 2147483647>x", "cat f.d 3>x"],
+    ["cat f.d 3>x", "cat f.d"],
+    ["echo done 2>/dev/null && cat f.d", "echo done && cat f.d"],
+    ["wc -l g.d 2>/dev/null && cat f.d", "wc -l g.d && cat f.d"],
+  ])("preserves the output semantics of %s", async (command, plainCommand) => {
+    const redirected = await parseShellSemantic(command);
+    const plain = await parseShellSemantic(plainCommand);
+    expect(redirected.ok).toBe(true);
+    expect(plain.ok).toBe(true);
+    if (!redirected.ok || !plain.ok) return;
+    expect(normalizeSemanticForComparison(redirected.value)).toEqual(
+      normalizeSemanticForComparison(plain.value),
     );
   });
 });
@@ -1528,10 +1631,13 @@ describe("rejected forms", () => {
   });
 
   it("redirection on read: cat README.md > out.txt → reject (redirection_on_read)", async () => {
-    const r = await parseShellSemantic("cat README.md > out.txt");
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect(r.code).toBe("redirection_on_read");
+    await expect(
+      parseShellSemantic("cat README.md > out.txt"),
+    ).resolves.toEqual({
+      ok: false,
+      code: "redirection_on_read",
+      reason: "cat output redirection diverts the command output",
+    });
   });
 
   it("invalid range: sed -n '20,10p' README.md → reject (invalid_range)", async () => {

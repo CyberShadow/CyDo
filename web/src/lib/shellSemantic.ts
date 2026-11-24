@@ -149,7 +149,7 @@ type CommandArg =
 type Redirect = {
   op: ParsedShellRedirect["operator"];
   descriptor: string | null;
-  destination: string | null;
+  destination: string | null | undefined;
 };
 
 type ShellAST =
@@ -543,12 +543,6 @@ function parseRgArgs(
   requireFile: boolean,
 ): ParseResult<{ pattern: string; filePath?: string; context: boolean }> {
   const toolName = cmd.name === "grep" ? "grep" : "rg";
-  if (cmd.redirects.length > 0) {
-    return reject(
-      "unsafe_shell_syntax",
-      `${toolName} redirections are not supported`,
-    );
-  }
   let hasLineNumbers = false;
   let context = false;
   const values: string[] = [];
@@ -640,24 +634,56 @@ function redirectEffect(
   redirect: Redirect,
 ): "stdin" | "stdout" | "stderr-into-stdout" | null {
   const { op, descriptor, destination } = redirect;
-  if (
-    op === "&>" ||
-    op === "&>>" ||
-    (op === ">&" && destination !== null && !/^\d+$/.test(destination))
-  ) {
-    return "stdout";
-  }
-
-  const fd = descriptor ?? (op.startsWith("<") ? "0" : "1");
+  if (op === "&>" || op === "&>>") return "stdout";
+  // Bash treats a descriptor above INT_MAX as an argument and uses the default fd.
+  const fd =
+    descriptor !== null && Number(descriptor) <= 2147483647
+      ? descriptor
+      : op.startsWith("<")
+        ? "0"
+        : "1";
   if (fd === "0") return "stdin";
   if (fd === "1") return "stdout";
+
+  const duplicatesDescriptor = op === ">&" || op === "<&";
+  const duplicatesStdout =
+    duplicatesDescriptor &&
+    typeof destination === "string" &&
+    /^0*1$/.test(destination);
+  if (duplicatesStdout) return fd === "2" ? "stderr-into-stdout" : "stdout";
   if (
-    fd === "2" &&
-    (op === ">&" || op === "<&") &&
-    destination !== null &&
-    /^0*1$/.test(destination)
+    !duplicatesDescriptor &&
+    (destination === null ||
+      (destination !== undefined &&
+        destination.startsWith("/") &&
+        destination !== "/dev/null"))
   ) {
-    return "stderr-into-stdout";
+    return fd === "2" ? "stderr-into-stdout" : "stdout";
+  }
+  return null;
+}
+
+function rejectRedirectEffect(
+  cmd: Pick<SimpleCommand, "name" | "redirects">,
+): ReturnType<typeof reject> | null {
+  for (const redirect of cmd.redirects) {
+    switch (redirectEffect(redirect)) {
+      case "stdin":
+        return reject(
+          "redirection_on_read",
+          `${cmd.name} input redirection replaces the pipeline input`,
+        );
+      case "stdout":
+        return reject(
+          "redirection_on_read",
+          `${cmd.name} output redirection diverts the command output`,
+        );
+      case "stderr-into-stdout":
+        return reject(
+          "redirection_on_read",
+          `${cmd.name} stderr redirection mixes diagnostics into the output`,
+        );
+    }
   }
   return null;
 }
@@ -671,34 +697,8 @@ function parseStage(
   if (!name) return reject("empty", "empty command");
 
   const first = position === "first";
-  if (first && cmd.redirects.some((r) => r.op !== "<<")) {
-    return reject(
-      "redirection_on_read",
-      "read commands with redirection are not display-only reads",
-    );
-  }
-
-  if (!first) {
-    for (const redirect of cmd.redirects) {
-      switch (redirectEffect(redirect)) {
-        case "stdin":
-          return reject(
-            "redirection_on_read",
-            `${name} input redirection replaces the pipeline input`,
-          );
-        case "stdout":
-          return reject(
-            "redirection_on_read",
-            `${name} output redirection diverts the command output`,
-          );
-        case "stderr-into-stdout":
-          return reject(
-            "redirection_on_read",
-            `${name} stderr redirection mixes diagnostics into the output`,
-          );
-      }
-    }
-  }
+  const redirectRejection = rejectRedirectEffect(cmd);
+  if (redirectRejection) return redirectRejection;
 
   function filter(
     op: StageOp,
@@ -1256,6 +1256,10 @@ function classifyGenericList(
 
     let memberSteps: CommandStep[];
     if (member.length === 1 && cmd.name !== "git" && cmd.name !== "diff") {
+      if (cmd.name === "echo" || cmd.name === "printf" || cmd.name === "wc") {
+        const redirectRejection = rejectRedirectEffect(cmd);
+        if (redirectRejection) return redirectRejection;
+      }
       const result = classifySimpleCommandAsListMember(
         cmd,
         originalCommand,
@@ -1416,6 +1420,19 @@ function redirectForId(
   return document.redirects[redirectId]!;
 }
 
+function adaptRedirect(redirect: ParsedShellRedirect): Redirect {
+  return {
+    op: redirect.operator,
+    descriptor: redirect.descriptor?.value ?? null,
+    destination:
+      redirect.kind !== "file"
+        ? undefined
+        : redirect.destination?.kind === "literal"
+          ? redirect.destination.value
+          : null,
+  };
+}
+
 function adaptCommand(
   document: ParsedShellDocument,
   commandId: number,
@@ -1431,17 +1448,9 @@ function adaptCommand(
       text: argument.word.value,
     });
   }
-  const redirects = command.redirectIds.map((redirectId) => {
-    const redirect = redirectForId(document, redirectId);
-    return {
-      op: redirect.operator,
-      descriptor: redirect.descriptor?.value ?? null,
-      destination:
-        redirect.kind === "file" && redirect.destination?.kind === "literal"
-          ? redirect.destination.value
-          : null,
-    };
-  });
+  const redirects = command.redirectIds.map((id) =>
+    adaptRedirect(redirectForId(document, id)),
+  );
   return {
     id: command.id,
     name: basename(command.name.value),
@@ -2137,10 +2146,21 @@ function classifyInlineInvocation(
   originalCommand: string,
 ): ShellSemanticResult {
   if (invocation.interpreter.language === "bash") {
+    const command = commandForId(document, invocation.commandId);
+    const wrapperRejection = rejectRedirectEffect({
+      name:
+        invocation.prefix.kind === "env"
+          ? "env"
+          : invocation.interpreter.basename,
+      redirects: command.redirectIds.map((id) =>
+        adaptRedirect(redirectForId(document, id)),
+      ),
+    });
     return classifyNormalizedDocument(
       invocation.child!,
       originalCommand,
       false,
+      wrapperRejection,
     );
   }
   const metadata = invocationFlagAndPayload(document, invocation);
@@ -2174,6 +2194,7 @@ function classifyInlineInvocation(
 function classifyNormalizedAST(
   ast: ShellAST,
   originalCommand: string,
+  wrapperRejection: ReturnType<typeof rejectRedirectEffect>,
 ): ShellSemanticResult {
   if (ast.type === "unsupported")
     return reject("unsupported_command", ast.reason);
@@ -2191,7 +2212,9 @@ function classifyNormalizedAST(
       name === "git" ||
       name === "diff"
     ) {
-      return classifyPipeline([ast.command], originalCommand, "");
+      return (
+        wrapperRejection ?? classifyPipeline([ast.command], originalCommand, "")
+      );
     }
     return reject(
       "unsupported_command",
@@ -2199,9 +2222,12 @@ function classifyNormalizedAST(
     );
   }
   if (ast.type === "pipeline")
-    return classifyPipeline(ast.stages, originalCommand, "");
+    return (
+      wrapperRejection ?? classifyPipeline(ast.stages, originalCommand, "")
+    );
   return (
     classifyLsReadbackAST(ast, originalCommand) ??
+    wrapperRejection ??
     classifyGenericList(ast, originalCommand)
   );
 }
@@ -2210,6 +2236,7 @@ function classifyNormalizedDocument(
   document: ParsedShellDocument,
   originalCommand: string,
   allowWholeCommand: boolean,
+  wrapperRejection: ReturnType<typeof rejectRedirectEffect> = null,
 ): ShellSemanticResult {
   assertValidParsedShellDocument(document);
   const invocation = oneEligibleInvocation(document);
@@ -2243,6 +2270,7 @@ function classifyNormalizedDocument(
   return classifyNormalizedAST(
     adaptUnit(document, document.program),
     originalCommand,
+    wrapperRejection,
   );
 }
 
@@ -2299,7 +2327,6 @@ function classifyWcSummary(
   const values = cmd.args.filter((a) => a.kind === "value");
   if (flags.length !== 1 || flags[0]!.text !== "-l") return null;
   if (values.length !== 1) return null;
-  if (cmd.redirects.length > 0) return null;
   const filePath = resolveAgainstCd(cdPath, values[0]!.text);
   return {
     steps: [
@@ -2324,7 +2351,6 @@ function classifyEchoListMember(
 ): { steps: CommandStep[] } | null {
   // Reject flags: -n (no trailing newline) and -e (interpret escapes) change output.
   if (cmd.args.some((a) => a.kind === "flag")) return null;
-  if (cmd.redirects.length > 0) return null;
   const valueArgs = cmd.args.filter((a) => a.kind === "value");
   // POSIX: echo joins args with single spaces and appends a newline.
   const text = valueArgs.map((v) => v.text).join(" ") + "\n";
