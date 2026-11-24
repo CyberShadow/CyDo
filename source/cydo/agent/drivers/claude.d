@@ -2043,6 +2043,7 @@ class ClaudeCodeSession : AgentSession
 		string tool_name;
 		string tool_use_id;
 		JSONFragment tool_input;
+		@JSONOptional string agent_id;
 	}
 
 	private static PreToolUseHookInput parsePreToolUseHookInput(JSONFragment hookInput)
@@ -2057,11 +2058,6 @@ class ClaudeCodeSession : AgentSession
 	/// or nothing to leave the call to the CLI (and its classifier).
 	private string answerPreToolUseHook(PreToolUseHookInput input)
 	{
-		assert(preToolUseHandler_ !is null,
-			"Claude consulted the permission policy hook, but no handler is attached");
-		auto ruling = preToolUseHandler_(ToolPermissionRequest(input.tool_use_id,
-			input.tool_name, input.tool_input));
-
 		static struct Decision
 		{
 			string hookEventName;
@@ -2073,6 +2069,28 @@ class ClaudeCodeSession : AgentSession
 		{
 			return Output(Decision("PreToolUse", decision, reason));
 		}
+
+		if (input.agent_id.length &&
+			(input.tool_name == "mcp__cydo__Ask" || input.tool_name == "mcp__cydo__Answer"))
+		{
+			// The hook parser has already validated and captured this JSON value.
+			if (input.tool_name == "mcp__cydo__Ask" && input.tool_input.json.startsWith("{"))
+			{
+				@JSONPartial static struct AskInput { @JSONOptional JSONFragment tid; }
+				auto tid = jsonParse!AskInput(input.tool_input.json).tid.json;
+				if (!tid.length || tid == "null")
+					return toJson(decide("deny",
+						"You are a Claude Code sub-agent. CyDo Ask reaches CyDo tasks. "
+						~ "Use SendMessage to contact the agent that spawned you, or return your result."));
+			}
+			return toJson(decide("deny",
+				"CyDo Ask and Answer are available only in the main Claude Code session."));
+		}
+
+		assert(preToolUseHandler_ !is null,
+			"Claude consulted the permission policy hook, but no handler is attached");
+		auto ruling = preToolUseHandler_(ToolPermissionRequest(input.tool_use_id,
+			input.tool_name, input.tool_input));
 		final switch (ruling.decision)
 		{
 			case ToolCallDecision.allow:
@@ -3099,6 +3117,71 @@ unittest
 	assert(events[5 .. $] == [stage("toolu_3", "asked"), stage("toolu_3", "answered"),
 		stage("toolu_3", "withdrawn")]);
 	assert(session.answeredPermissionRequests_.length == 0);
+}
+
+// Native subagents get hook denials for CyDo messaging, while the main
+// session's Ask still gets its ruling from the permission policy.
+unittest
+{
+	import std.algorithm : canFind;
+
+	static struct Decision
+	{
+		string hookEventName;
+		string permissionDecision;
+		string permissionDecisionReason;
+	}
+	static struct Output { Decision hookSpecificOutput; }
+
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	ToolPermissionRequest[] policyRequests;
+	session.onPreToolUse = (ToolPermissionRequest request) {
+		policyRequests ~= request;
+		return ToolCallRuling(ToolCallDecision.allow);
+	};
+
+	Decision decide(string tool, string input, string agentField)
+	{
+		auto hook = `{"hook_event_name":"PreToolUse","tool_use_id":"toolu_ask","tool_name":`
+			~ toJson(tool) ~ `,"tool_input":` ~ input ~ agentField ~ "}";
+		return jsonParse!Output(session.answerPreToolUseHook(
+			ClaudeCodeSession.parsePreToolUseHookInput(JSONFragment(hook)))).hookSpecificOutput;
+	}
+
+	enum askParent = `{"message":"What should I do next?"}`;
+	enum nativeAgent = `,"agent_id":"native-subagent"`;
+	static struct Example
+	{
+		string tool;
+		string input;
+		bool suggestsSendMessage;
+	}
+	foreach (example; [
+		Example("Ask", askParent, true),
+		Example("Ask", `{"tid":42,"message":"What should I do next?"}`, false),
+		Example("Ask", `{"tid":1.5}`, false),
+		Example("Ask", `{"tid":2147483648}`, false),
+		Example("Ask", `{"tid":{"id":42}}`, false),
+		Example("Ask", `{"tid":null}`, true),
+		Example("Ask", `[42]`, false),
+		Example("Answer", `{"qid":7,"message":"Here is the answer."}`, false),
+	])
+	{
+		auto tool = "mcp__cydo__" ~ example.tool;
+		auto decision = decide(tool, example.input, nativeAgent);
+		assert(decision.permissionDecision == "deny", tool ~ " " ~ example.input);
+		assert(decision.permissionDecisionReason.length > 0, tool ~ " needs a denial reason");
+		assert(decision.permissionDecisionReason.canFind("SendMessage") == example.suggestsSendMessage,
+			decision.permissionDecisionReason);
+		assert(policyRequests.length == 0, tool ~ " reached the main-session policy");
+	}
+
+	auto decision = decide("mcp__cydo__Ask", askParent, "");
+	assert(decision.permissionDecision == "allow");
+	assert(policyRequests.length == 1);
+	assert(policyRequests[0].toolName == "mcp__cydo__Ask");
+	assert(policyRequests[0].input.json == askParent);
 }
 
 // The rewind capability is probed once per CLI version: a supporting CLI
