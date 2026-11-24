@@ -1693,7 +1693,7 @@ unittest
 unittest
 {
 	import cydo.agent.contract : SessionConfig;
-	import cydo.agent.drivers.codex : AppServerProcess, CodexForkSourceOwner;
+	import cydo.agent.drivers.codex : AppServerProcess, CodexForkSourceOwner, makeUnattachedCodexSessionForTest;
 	import cydo.agent.drivers.codex.history : CodexHistoryMode;
 	import cydo.domain.storage.persistence : LoadedHistory;
 	import cydo.protocol : TaskEventEnvelope;
@@ -1707,20 +1707,24 @@ unittest
 
 	enum tid = 72;
 
-	class StubCodexSession : CodexSession
+	static class StubCodexSession : CodexSession
 	{
 		bool idle = true;
 		bool closed;
 		bool throwOnRevert;
 
 		override @property bool alive() { return !closed; }
-		override void closeStdin() { closed = true; }
+		override void closeStdin()
+		{
+			closed = true;
+			super.closeStdin();
+		}
 		string[] reverts;
 		Promise!void revert;
 
-		this()
+		this(AppServerProcess server, int tid, SessionConfig config, string systemKeyword)
 		{
-			super(cast(AppServerProcess) null, tid, SessionConfig.init, "SYSTEM");
+			super(server, tid, config, systemKeyword);
 		}
 
 		override @property bool canRevertThread() const
@@ -1736,6 +1740,12 @@ unittest
 			revert = new Promise!void;
 			return revert;
 		}
+	}
+
+	StubCodexSession makeSession()
+	{
+		void delegate(int) confirmedExit;
+		return makeUnattachedCodexSessionForTest!StubCodexSession(tid, SessionConfig.init, confirmedExit);
 	}
 
 	auto agent = new CodexAgent;
@@ -1792,7 +1802,7 @@ unittest
 	assert(!opensConversation && userBoundariesFrom == 1);
 	loadHistory();
 
-	auto session = new StubCodexSession;
+	auto session = makeSession();
 	bool alive = true;
 	string[] replies;
 	string[] effects;
@@ -1823,7 +1833,7 @@ unittest
 	host.transitionTaskFrom = (int, TaskStatus[], TaskStatus, TaskNotificationChange) {};
 	host.generateSuggestions = (int) {};
 	host.stopTask = (int) { effects ~= "stop"; };
-	auto privateSession = new StubCodexSession;
+	auto privateSession = makeSession();
 	auto owner = new CodexForkSourceOwner(privateSession, access.sessionId);
 	auto operation = new CodexForkSourceOperation(ProcessLaunch.init);
 	operation.attachOwner(owner);
@@ -1904,8 +1914,8 @@ unittest
 		loadHistory();
 		task.status = kind == Kind.stopped ? TaskStatus.completed : TaskStatus.active;
 		alive = kind != Kind.stopped;
-		session = new StubCodexSession;
-		privateSession = new StubCodexSession;
+		session = makeSession();
+		privateSession = makeSession();
 		owner = new CodexForkSourceOwner(privateSession, access.sessionId);
 		operation = new CodexForkSourceOperation(ProcessLaunch.init);
 		operation.attachOwner(owner);

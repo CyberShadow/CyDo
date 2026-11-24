@@ -5,6 +5,7 @@ import core.time : Duration;
 import std.conv : to;
 import std.exception : enforce;
 import std.format : format;
+import std.logger : warningf;
 import std.path : buildPath, dirName, expandTilde;
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.time.types : AbsTime;
@@ -797,22 +798,13 @@ class CopilotAgent : Agent
 				: executableName(launch.sandbox.env);
 			string[] copilotArgs = [copilotBin, "--headless", "--no-auto-update", "--stdio"];
 			string[] args = launch.cmdPrefix !is null ? launch.cmdPrefix ~ copilotArgs : copilotArgs;
-			auto srv = new SdkProcess(args, null, null, "copilot");
+			SdkProcess srv;
+			try
+				srv = new SdkProcess(args, null, null, "copilot");
+			catch (Exception e)
+				return session.handleStartupFailure(e);
 
-			// Set cleanup callback before registering
-			session.onFulfill_ = () {
-				srv.unregisterSession(sessionId);
-				SessionIdParams destP;
-				destP.sessionId = sessionId;
-				srv.sendRequest("session.destroy", toJson(destP))
-				.finish(&srv.shutdown).ignoreResult();
-			};
-
-			srv.registerSession(sessionId, session);
-
-			srv.onReady(() {
-				startOneShot(srv, session, sessionId, model, cwd, prompt);
-			});
+			startOneShotSession(srv, session, sessionId, model, cwd, prompt);
 		}
 
 		// If the shared server exists and is still initializing, wait for it to
@@ -823,7 +815,7 @@ class CopilotAgent : Agent
 		if (sharedSdkServer_ !is null && !sharedSdkServer_.dead
 			&& sharedSdkServer_.state == SdkProcess.State.initializing)
 		{
-			sharedSdkServer_.onReady(&startOwnProcess);
+			sharedSdkServer_.onReady(&startOwnProcess, &session.handleStartupFailure);
 		}
 		else
 		{
@@ -991,30 +983,6 @@ unittest
 	assert(ancestorPaths.exact(executableDir).isNull);
 }
 
-private void startOneShot(SdkProcess srv, OneShotCopilotSession session,
-	string sessionId, string model, string cwd, string prompt)
-{
-	srv.requireAuthentication().then(() {
-		return srv.sendRequest("session.create",
-			buildSessionCreateParams(sessionId, model, cwd, SessionConfig.init));
-	})
-	.then((JsonRpcResponse createResp) {
-		if (createResp.isError)
-			throw new JsonRpcException(createResp.error.get);
-		SessionSendParams oneShotSendP;
-		oneShotSendP.sessionId = sessionId;
-		oneShotSendP.prompt    = prompt;
-		return srv.sendRequest("session.send", toJson(oneShotSendP));
-	}).then((JsonRpcResponse sendResp) {
-		if (sendResp.isError)
-			throw new JsonRpcException(sendResp.error.get);
-		// session.idle completes the one-shot promise.
-	}).except((Exception e) {
-		session.handleStartupFailure(e);
-		srv.shutdown();
-	}).ignoreResult();
-}
-
 private CopilotSession attachSession(SdkProcess server, int tid,
 	string sessionId, string resumeSessionId, string model, string workDir,
 	string[] cmdPrefix, ToolDispatchFn toolDispatch,
@@ -1031,11 +999,18 @@ private CopilotSession attachSession(SdkProcess server, int tid,
 
 	void failSetup(Exception e)
 	{
+		if (server.dead)
+		{
+			session.recordStartupFailure(e);
+			return;
+		}
 		server.unregisterSession(sessionId);
 		session.handleStartupFailure(e);
 	}
 
 	server.onReady(() {
+		if (!session.alive)
+			return;
 		server.requireAuthentication().then(() {
 			if (resumeSessionId.length > 0)
 			{
@@ -1046,7 +1021,6 @@ private CopilotSession attachSession(SdkProcess server, int tid,
 				.then((JsonRpcResponse resp) {
 					if (resp.isError)
 					{
-						import std.logger : warningf;
 						warningf("session.resume error: %s", resp.error.get.message);
 						session.replayMode = false;
 						ProcessStderrEvent resumeErrEv;
@@ -1054,7 +1028,9 @@ private CopilotSession attachSession(SdkProcess server, int tid,
 						session.emitEvent(toJson(resumeErrEv));
 						throw new Exception(resumeErrEv.text);
 					}
-					session.onSessionStarted(model, workDir);
+					// Confirmed exit will settle the registered session.
+					if (session.alive)
+						session.onSessionStarted(model, workDir);
 				});
 			}
 			return server.sendRequest("session.create",
@@ -1062,10 +1038,12 @@ private CopilotSession attachSession(SdkProcess server, int tid,
 			.then((JsonRpcResponse resp) {
 				if (resp.isError)
 					throw new Exception("session.create error: " ~ resp.error.get.message);
-				session.onSessionStarted(model, workDir);
+				// Confirmed exit will settle the registered session.
+				if (session.alive)
+					session.onSessionStarted(model, workDir);
 			});
 		}).except(&failSetup).ignoreResult();
-	});
+	}, &failSetup);
 
 	return session;
 }
@@ -1296,7 +1274,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	private void drainPendingMessages()
 	{
-		if (!alive_ || !sessionReady_ || turnInProgress
+		if (!alive || !sessionReady_ || turnInProgress
 			|| pendingMessages.length == 0)
 			return;
 		auto submission = pendingMessages[0];
@@ -1372,7 +1350,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 		auto submission = new PendingMessage(content, text, correlationId,
 			isContextBootstrap);
-		if (!alive_)
+		if (!alive)
 		{
 			submission.promise.reject(new Exception(
 				"Copilot session is no longer alive"));
@@ -1388,6 +1366,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	void invalidatePendingSubmittedMessages()
 	{
+		if (!alive)
+			return;
 		rejectUnsettledMessages(new SubmissionHistoryCancelled(
 			"Copilot message submission was invalidated"));
 	}
@@ -1396,12 +1376,14 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	void interrupt()
 	{
-		if (!alive_ || sessionId.length == 0)
+		if (!alive || sessionId.length == 0)
 			return;
 		SessionIdParams abortP;
 		abortP.sessionId = sessionId;
 		server.sendRequest("session.abort", toJson(abortP))
-		.ignoreResult();
+		.then((JsonRpcResponse) {}, (Exception e) {
+			warningf("session.abort failed: %s", e.msg);
+		}).ignoreResult();
 	}
 
 	void sigint()
@@ -1411,17 +1393,11 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	void stop()
 	{
-		if (!alive_)
+		if (!alive)
 			return;
 		rejectUnsettledMessages(new Exception(
 			"Copilot session closed before accepting message submission"));
-		if (sessionId.length > 0)
-		{
-			SessionIdParams stopP;
-			stopP.sessionId = sessionId;
-			server.sendRequest("session.abort", toJson(stopP))
-			.ignoreResult();
-		}
+		interrupt();
 		alive_ = false;
 		forcedStop_ = true;
 		server.shutdown();
@@ -1429,17 +1405,11 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	void closeStdin()
 	{
+		if (!alive)
+			return;
 		rejectUnsettledMessages(new Exception(
 			"Copilot session closed before accepting message submission"));
-		if (!alive_)
-			return;
-		if (sessionId.length > 0)
-		{
-			SessionIdParams closeP;
-			closeP.sessionId = sessionId;
-			server.sendRequest("session.abort", toJson(closeP))
-			.ignoreResult();
-		}
+		interrupt();
 		alive_ = false;
 		gracefulShutdown_ = true;
 		server.shutdown();
@@ -1789,7 +1759,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		prp.requestId = req.requestId;
 		prp.result    = permissionDecisionForCopilotVersion(copilotVersion_);
 		server.sendRequest("session.permissions.handlePendingPermissionRequest", toJson(prp))
-			.ignoreResult();
+			.then((JsonRpcResponse) {}, (Exception e) {
+				warningf("Copilot permission response failed: %s", e.msg);
+			}).ignoreResult();
 	}
 
 	/// Handle subagent.started — set the current sub-agent parent context
@@ -1815,21 +1787,25 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			stderrHandler_(line);
 	}
 
+	private void recordStartupFailure(Exception error)
+	{
+		startupFailure_ = error.msg;
+		// Queued submissions cannot reach the wire after setup fails.
+		rejectUnsettledMessages(error);
+	}
+
 	void handleStartupFailure(Exception error)
 	{
-		if (startupFailure_ !is null)
-			return;
-		startupFailure_ = error.msg;
-		rejectUnsettledMessages(error);
+		recordStartupFailure(error);
 		handleExit(1);
 		server.shutdown();
 	}
 
 	void handleExit(int status)
 	{
+		alive_ = false;
 		rejectUnsettledMessages(new Exception(
 			"Copilot session exited before accepting message submission"));
-		alive_ = false;
 		if (exitHandler_ is null)
 			return;
 		auto cb = exitHandler_;
@@ -2199,6 +2175,50 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	}
 }
 
+private void startOneShotSession(SdkProcess server, OneShotCopilotSession session,
+	string sessionId, string model, string cwd, string prompt)
+{
+	session.release_ = (bool success) {
+		server.unregisterSession(sessionId);
+		if (!success)
+		{
+			server.shutdown();
+			return;
+		}
+		server.sendRequest("session.destroy", toJson(SessionIdParams(sessionId)))
+			.finish(&server.shutdown).ignoreResult();
+	};
+	server.registerSession(sessionId, session);
+	void failRequest(Exception error)
+	{
+		if (server.dead)
+			session.requestError_ = error;
+		else
+			session.handleStartupFailure(error);
+	}
+
+	server.onReady(() {
+		server.requireAuthentication().then(() {
+			return server.sendRequest("session.create",
+				buildSessionCreateParams(sessionId, model, cwd, SessionConfig.init));
+		}).then((JsonRpcResponse response) {
+			if (response.isError)
+				return failRequest(new Exception(response.error.get.message));
+			// Confirmed exit will settle the registered one-shot.
+			if (server.dead)
+				return;
+			session.sendStarted_ = true;
+			server.sendRequest("session.send", toJson(SessionSendParams(sessionId, prompt)))
+			.then((JsonRpcResponse sent) {
+				if (sent.isError)
+					failRequest(new Exception(sent.error.get.message));
+				else
+					session.acceptSend();
+			}, &failRequest).ignoreResult();
+		}).except(&failRequest).ignoreResult();
+	}, &failRequest);
+}
+
 // ---------------------------------------------------------------------------
 // OneShotCopilotSession — minimal SdkSessionHandler for completeOneShot.
 // ---------------------------------------------------------------------------
@@ -2206,9 +2226,13 @@ class CopilotSession : AgentSession, SdkSessionHandler
 private final class OneShotCopilotSession : SdkSessionHandler
 {
 	private string text_;
-	private bool fulfilled_;
+	private bool settled_;
+	private bool sendStarted_;
+	private bool sendAccepted_;
+	private bool idle_;
+	private Exception requestError_;
 	private Promise!string promise_;
-	package void delegate() onFulfill_;
+	package void delegate(bool) release_;
 
 	this(Promise!string p) { promise_ = p; }
 
@@ -2226,12 +2250,11 @@ private final class OneShotCopilotSession : SdkSessionHandler
 				break;
 			}
 			case "session.idle":
-				if (!fulfilled_)
-				{
-					fulfilled_ = true;
-					if (onFulfill_) onFulfill_();
-					promise_.fulfill(text_);
-				}
+				if (!sendStarted_)
+					break;
+				idle_ = true;
+				if (sendAccepted_)
+					settle(null);
 				break;
 			case "permission.requested":
 				break; // One-shot sessions can't respond; tools are not used.
@@ -2257,25 +2280,33 @@ private final class OneShotCopilotSession : SdkSessionHandler
 		stderr.writeln("[one-shot-sdk/stderr] " ~ line);
 	}
 
-	void handleStartupFailure(Exception error)
+	void acceptSend()
 	{
-		if (!fulfilled_)
-		{
-			fulfilled_ = true;
-			promise_.reject(error);
-		}
+		sendAccepted_ = true;
+		if (idle_)
+			settle(null);
 	}
+
+	void handleStartupFailure(Exception error) { settle(error); }
 
 	void handleExit(int status)
 	{
-		if (!fulfilled_)
-		{
-			import std.stdio : stderr;
-			stderr.writeln("[one-shot-sdk] process exited status=" ~ to!string(status) ~ " before session.idle");
-			fulfilled_ = true;
-			promise_.reject(new Exception(
-				"completeOneShot: process exited with status " ~ to!string(status)));
-		}
+		settle(requestError_ is null
+			? new Exception("completeOneShot: process exited with status " ~ to!string(status))
+			: requestError_);
+	}
+
+	private void settle(Exception error)
+	{
+		if (settled_)
+			return;
+		settled_ = true;
+		if (release_ !is null)
+			release_(error is null);
+		if (error is null)
+			promise_.fulfill(text_);
+		else
+			promise_.reject(error);
 	}
 }
 
@@ -2283,6 +2314,7 @@ version (unittest) private final class TestCopilotConnection : IConnection
 {
 	string[] sentMessages;
 	private ReadDataHandler readDataHandler;
+	private DisconnectHandler disconnectHandler;
 
 	@property ConnectionState state()
 	{
@@ -2310,6 +2342,18 @@ version (unittest) private final class TestCopilotConnection : IConnection
 		return request;
 	}
 
+	/// Answer the authentication check that precedes session setup.
+	void acceptAuthentication()
+	{
+		import cydo.foundation.testing : drainNextTicksAndDueTimers;
+
+		auto request = takeRequest("auth.getStatus");
+		JsonRpcResponse response;
+		response.result = jsonParse!(typeof(response.result))(`{"isAuthenticated":true,"login":"u"}`);
+		respond(request, response);
+		drainNextTicksAndDueTimers();
+	}
+
 	void respond(JsonRpcRequest request, JsonRpcResponse response)
 	{
 		import ae.utils.array : asBytes;
@@ -2332,11 +2376,11 @@ version (unittest) private final class TestCopilotConnection : IConnection
 	void disconnect(string reason = defaultDisconnectReason,
 		DisconnectType type = DisconnectType.requested)
 	{
-		assert(false, reason);
+		disconnectHandler(reason, type);
 	}
 	@property void handleConnect(ConnectHandler value) {}
 	@property void handleReadData(ReadDataHandler value) { readDataHandler = value; }
-	@property void handleDisconnect(DisconnectHandler value) {}
+	@property void handleDisconnect(DisconnectHandler value) { disconnectHandler = value; }
 	@property void handleBufferFlushed(BufferFlushedHandler value) {}
 }
 
@@ -2463,22 +2507,8 @@ private PermissionDecision permissionDecisionForCopilotVersion(string versionTex
 
 unittest
 {
-	import ae.net.asockets : socketManager;
+	import cydo.foundation.testing : drainNextTicksAndDueTimers;
 	import std.algorithm.searching : canFind;
-
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager,
-				"nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
 
 	JsonRpcResponse acceptedResponse(string resultJson = `{}`)
 	{
@@ -2540,14 +2570,14 @@ unittest
 		request.toolName = "cydo-Ask";
 		request.arguments = jsonParse!(typeof(request.arguments))("{}");
 		session.handleToolCall(request).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		server.shutdown();
 		if (rejectDispatch)
 			dispatch.reject(new Exception("dispatch rejected"));
 		else
 			dispatch.fulfill(McpResult("mailbox event", false, JSONFragment.init,
 				(bool accepted) { assert(!accepted); settlements++; }));
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assert(delivered == 1 && failed == 0);
 		assert(settlements == (rejectDispatch ? 0 : 1));
 	}
@@ -2556,10 +2586,10 @@ unittest
 	void finishAuthentication(TestCopilotConnection connection, JsonRpcResponse response)
 	{
 		auto request = connection.takeRequest("auth.getStatus");
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assert(connection.sentMessages.length == 0);
 		connection.respond(request, response);
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 	}
 
 	enum authenticated = `{"isAuthenticated":true,"login":"u"}`;
@@ -2595,7 +2625,7 @@ unittest
 		assert(connection.sentMessages.length == 0);
 
 		connection.respond(createRequest, acceptedResponse());
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertPending(submission);
 		assert(session.sessionReady_ && session.pendingMessages.length == 0
 			&& session.expectedUserMessages.length == 1);
@@ -2609,14 +2639,14 @@ unittest
 			&& sendParams.prompt == "pre-ready");
 		connection.respond(sendRequest,
 			acceptedResponse(`{"messageId":"accepted-pre-ready"}`));
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertAcceptedOnce(submission);
 		assert(session.turnInProgress);
 		assert(emitted.length == 0,
 			"session.send acceptance fabricated a translated event");
 
 		session.invalidatePendingSubmittedMessages();
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertAcceptedOnce(submission);
 	}
 
@@ -2656,7 +2686,7 @@ unittest
 		connection.respond(firstRequest, acceptedResponse());
 		connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"echo-order","event":{"id":"first-native","timestamp":"2026-07-24T00:00:00Z","type":"user.message","data":{"content":"first prompt"}}}}`);
 		assert(!firstAccepted && correlations.length == 0);
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assert(firstAccepted && correlations == ["first-nonce"]);
 
 		session.handleSessionIdle();
@@ -2669,7 +2699,7 @@ unittest
 		connection.respond(secondRequest, acceptedResponse());
 		connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"echo-order","event":{"id":"second-native","timestamp":"2026-07-24T00:00:01Z","type":"user.message","data":{"content":"second prompt"}}}}`);
 		assert(!secondAccepted && correlations == ["first-nonce"]);
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assert(secondAccepted && correlations == ["first-nonce", "second-nonce"]);
 	}
 
@@ -2698,7 +2728,7 @@ unittest
 
 		connection.respond(rejectedRequest,
 			rejectedResponse("session.send rejected"));
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertRejectedOnce(rejected, "session.send rejected");
 		assertPending(successor);
 		assert(session.pendingMessages.length == 0
@@ -2714,7 +2744,7 @@ unittest
 		assert(rejectedRequest.id.toJson() != successorRequest.id.toJson());
 		connection.respond(successorRequest,
 			acceptedResponse(`{"messageId":"accepted-successor"}`));
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertRejectedOnce(rejected, "session.send rejected");
 		assertAcceptedOnce(successor);
 		assert(emitted.length == 0);
@@ -2741,7 +2771,7 @@ unittest
 
 		loseLifecycle(session);
 		loseLifecycle(session);
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertRejectedOnce(inFlight);
 		assertRejectedOnce(queued);
 		assert(session.alive_ == remainsAlive);
@@ -2750,7 +2780,7 @@ unittest
 
 		connection.respond(captured,
 			acceptedResponse(`{"messageId":"late-` ~ label ~ `"}`));
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertRejectedOnce(inFlight);
 		assertRejectedOnce(queued);
 		assert(session.expectedUserMessages.length == 0
@@ -2804,7 +2834,7 @@ unittest
 		auto abortParams = jsonParse!SessionIdParams(toJson(abortRequest.params));
 		assert(abortParams.sessionId == sessionId);
 		assert(connection.sentMessages.length == 0);
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertRejectedOnce(inFlight);
 		assertRejectedOnce(queued);
 		assert(exitStatuses == [expectedExitStatus]);
@@ -2812,7 +2842,7 @@ unittest
 
 		connection.respond(captured,
 			acceptedResponse(`{"messageId":"late-close"}`));
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertRejectedOnce(inFlight);
 		assertRejectedOnce(queued);
 		assert(connection.sentMessages.length == 0);
@@ -2838,13 +2868,13 @@ unittest
 		assertPending(queued);
 
 		connection.respond(pingRequest, rejectedResponse("ping rejected"));
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertRejectedOnce(queued, "ping rejected");
-		assert(server.state == SdkProcess.State.failed && server.dead);
+		assert(server.state == SdkProcess.State.dead && server.dead);
 		assert(!session.alive_);
 
 		session.handleStartupFailure(new Exception("duplicate ping failure"));
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertRejectedOnce(queued, "ping rejected");
 	}
 
@@ -2916,7 +2946,7 @@ unittest
 
 		connection.respond(setupRequest,
 			rejectedResponse("setup rejected"));
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		auto expectedError = expectedMethod ~ " error: setup rejected";
 		assertRejectedOnce(queued, expectedError);
 		assert(session.startupFailure == expectedError && server.dead);
@@ -2934,7 +2964,7 @@ unittest
 			assert(emitted.length == 0);
 
 		session.handleStartupFailure(new Exception("duplicate setup failure"));
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assertRejectedOnce(queued, expectedError);
 	}
 
@@ -2946,11 +2976,10 @@ unittest
 		auto server = makeTestSdkProcess(connection);
 		auto completion = new Promise!string;
 		auto session = new OneShotCopilotSession(completion);
-		server.registerSession("one-shot-auth-failure", session);
 		string[] errors;
 		completion.except((Exception e) { errors ~= e.msg; }).ignoreResult();
 
-		startOneShot(server, session, "one-shot-auth-failure",
+		startOneShotSession(server, session, "one-shot-auth-failure",
 			"test-model", "/test/workdir", "test prompt");
 		finishAuthentication(connection, acceptedResponse(unauthenticated));
 
@@ -2964,44 +2993,29 @@ unittest
 		auto server = makeTestSdkProcess(connection);
 		auto completion = new Promise!string;
 		auto session = new OneShotCopilotSession(completion);
-		server.registerSession("one-shot-auth-success", session);
 
-		startOneShot(server, session, "one-shot-auth-success",
+		startOneShotSession(server, session, "one-shot-auth-success",
 			"test-model", "/test/workdir", "test prompt");
 		finishAuthentication(connection, acceptedResponse(authenticated));
 		auto createRequest = connection.takeRequest("session.create");
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assert(connection.sentMessages.length == 0);
 
 		connection.respond(createRequest, acceptedResponse());
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		auto sendRequest = connection.takeRequest("session.send");
 		auto params = jsonParse!SessionSendParams(toJson(sendRequest.params));
 		assert(params.sessionId == "one-shot-auth-success" && params.prompt == "test prompt");
 		connection.respond(sendRequest, acceptedResponse());
-		drainPromiseNextTicks();
+		drainNextTicksAndDueTimers();
 		assert(connection.sentMessages.length == 0);
 	}
 }
 
 unittest
 {
-	import ae.net.asockets : socketManager;
+	import cydo.foundation.testing : drainNextTicksAndDueTimers;
 	import std.algorithm.searching : canFind;
-
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager,
-				"nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
 
 	JsonRpcResponse acceptedResponse()
 	{
@@ -3031,7 +3045,7 @@ unittest
 		}).ignoreResult();
 	auto systemRequest = connection.takeRequest("session.send");
 	connection.respond(systemRequest, acceptedResponse());
-	drainPromiseNextTicks();
+	drainNextTicksAndDueTimers();
 	assert(systemAccepted && session.expectedUserMessages.length == 1);
 
 	// Copilot can declare the preceding turn idle before it emits that turn's
@@ -3045,13 +3059,13 @@ unittest
 		}).ignoreResult();
 	auto userRequest = connection.takeRequest("session.send");
 	connection.respond(userRequest, acceptedResponse());
-	drainPromiseNextTicks();
+	drainNextTicksAndDueTimers();
 	assert(systemAccepted && userAccepted);
 	assert(session.expectedUserMessages.length == 2);
 	assert(userEchoes.length == 0);
 
 	connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"pre-echo-order","event":{"id":"native-system","timestamp":"2026-07-24T00:00:00Z","type":"user.message","data":{"content":"[SYSTEM: internal reminder]"}}}}`);
-	drainPromiseNextTicks();
+	drainNextTicksAndDueTimers();
 	assert(userEchoes.length == 1);
 	auto systemEcho = jsonParse!ItemStartedEvent(userEchoes[0].translated);
 	assert(systemEcho.correlation_id.length == 0);
@@ -3059,7 +3073,7 @@ unittest
 		&& systemEcho.content[0].text == "[SYSTEM: internal reminder]");
 
 	connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"pre-echo-order","event":{"id":"native-user","timestamp":"2026-07-24T00:00:01Z","type":"user.message","data":{"content":"ordinary prompt"}}}}`);
-	drainPromiseNextTicks();
+	drainNextTicksAndDueTimers();
 	assert(userEchoes.length == 2);
 	auto userEcho = jsonParse!ItemStartedEvent(userEchoes[1].translated);
 	assert(userEcho.correlation_id == "user-nonce");
@@ -3070,22 +3084,8 @@ unittest
 
 unittest
 {
-	import ae.net.asockets : socketManager;
+	import cydo.foundation.testing : drainNextTicksAndDueTimers;
 	import std.algorithm.searching : canFind;
-
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager,
-				"nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
 
 	JsonRpcResponse acceptedResponse()
 	{
@@ -3117,7 +3117,7 @@ unittest
 	auto firstParams = jsonParse!SessionSendParams(toJson(firstRequest.params));
 	assert(firstParams.prompt == "first prompt");
 	connection.respond(firstRequest, acceptedResponse());
-	drainPromiseNextTicks();
+	drainNextTicksAndDueTimers();
 	assert(firstAccepted && session.expectedUserMessages.length == 1);
 
 	// Copilot can become idle before its first user.message event reaches us.
@@ -3132,12 +3132,12 @@ unittest
 	auto secondParams = jsonParse!SessionSendParams(toJson(secondRequest.params));
 	assert(secondParams.prompt == "second prompt");
 	connection.respond(secondRequest, acceptedResponse());
-	drainPromiseNextTicks();
+	drainNextTicksAndDueTimers();
 	assert(firstAccepted && secondAccepted
 		&& session.expectedUserMessages.length == 2 && userEchoes.length == 0);
 
 	connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"two-nonce-pre-echo","event":{"id":"native-first","timestamp":"2026-07-24T00:00:00Z","type":"user.message","data":{"content":"first prompt"}}}}`);
-	drainPromiseNextTicks();
+	drainNextTicksAndDueTimers();
 	assert(userEchoes.length == 1);
 	auto firstEcho = jsonParse!ItemStartedEvent(userEchoes[0].translated);
 	assert(firstEcho.correlation_id == "first-nonce"
@@ -3145,7 +3145,7 @@ unittest
 		&& firstEcho.content[0].text == "first prompt");
 
 	connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"two-nonce-pre-echo","event":{"id":"native-second","timestamp":"2026-07-24T00:00:01Z","type":"user.message","data":{"content":"second prompt"}}}}`);
-	drainPromiseNextTicks();
+	drainNextTicksAndDueTimers();
 	assert(userEchoes.length == 2);
 	auto secondEcho = jsonParse!ItemStartedEvent(userEchoes[1].translated);
 	assert(secondEcho.correlation_id == "second-nonce"
@@ -3179,22 +3179,8 @@ unittest
 
 unittest
 {
-	import ae.net.asockets : socketManager;
+	import cydo.foundation.testing : drainNextTicks;
 	import std.algorithm : canFind;
-
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager,
-				"nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
 
 	auto session = new CopilotSession(null, 1, "session-123", "", ".");
 	string[] output;
@@ -3215,7 +3201,7 @@ unittest
 	internal.type = "user.message";
 	internal.data = jsonParse!(typeof(internal.data))(`{"content":"[SYSTEM: internal]"}`);
 	session.handleEvent(internal);
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(output.length == 1);
 	assert(output[0].canFind(`"uuid":"native-system-1"`));
 	assert(!output[0].canFind(`"correlation_id"`));
@@ -3225,7 +3211,7 @@ unittest
 	user.type = "user.message";
 	user.data = jsonParse!(typeof(user.data))(`{"content":"ordinary"}`);
 	session.handleEvent(user);
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(output.length == 2);
 	assert(output[1].canFind(`"uuid":"native-user-1"`));
 	assert(output[1].canFind(`"correlation_id":"nonce-1"`));
@@ -3670,4 +3656,374 @@ string extractResultText(JSONFragment frag)
 	}
 	catch (Exception) {}
 	return "";
+}
+
+// A disconnect during the SDK handshake fails startup and prevents further RPCs.
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+
+	auto connection = new TestCopilotConnection;
+	auto server = makeTestSdkProcess(connection, true, false);
+	connection.takeRequest("ping");
+	auto session = new CopilotSession(server, 1, "sdk-eof", "model", "/work");
+	server.registerSession("sdk-eof", session);
+	auto queued = new TestCopilotSubmissionOutcome(session.sendMessage(
+		[ContentBlock("text", "waiting for SDK readiness")], "sdk-eof-queued"));
+
+	connection.disconnect("SDK EOF", DisconnectType.graceful);
+	assert(server.dead);
+
+	string failure;
+	server.sendRequest("ping", "{}")
+		.then((JsonRpcResponse) { assert(false, "a failed SDK answered a request"); },
+			(Exception e) { failure = e.msg; }).ignoreResult();
+	drainNextTicks();
+	assert(failure == "Copilot SDK is not running" && connection.sentMessages.length == 0);
+	assert(queued.acceptedCount == 0 && queued.rejectedCount == 0);
+	server.confirmedExit(42);
+	drainNextTicksAndDueTimers();
+	assert(queued.acceptedCount == 0 && queued.rejectedCount == 1
+		&& queued.rejectionMessage == "JSON-RPC connection closed: SDK EOF");
+}
+
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+
+	foreach (ending; ["pending ping", "answered ping", "ping error",
+		"ping error before EOF", "unsupported version before EOF"])
+	{
+		auto connection = new TestCopilotConnection;
+		auto agent = new CopilotAgent;
+		auto sdk = agent.sharedSdkServer_ = makeTestSdkProcess(connection, true, false);
+		auto ping = connection.takeRequest("ping");
+		auto session = new CopilotSession(sdk, 1, "starting", "model", "/work");
+		sdk.registerSession("starting", session);
+		int[] exits;
+		session.onExit = (int status) { exits ~= status; };
+		ProcessLaunch launch;
+		launch.executablePath = "/dev/null";
+		auto oneShot = agent.completeOneShot("probe", "default", launch);
+		string[] failures;
+		oneShot.promise.then((string) { assert(false, "disconnected SDK became ready"); },
+			(Exception e) { failures ~= e.msg; }).ignoreResult();
+
+		if (ending == "answered ping")
+			respondToTestSdkPing(connection, ping);
+		auto diagnostic = "JSON-RPC connection closed: shared SDK EOF";
+		if (ending == "ping error" || ending == "ping error before EOF")
+		{
+			diagnostic = "ping refused";
+			JsonRpcResponse refused;
+			refused.error = JsonRpcError.fromCode(JsonRpcErrorCode.internalError, diagnostic);
+			connection.respond(ping, refused);
+		}
+		if (ending == "unsupported version before EOF")
+		{
+			diagnostic = "Copilot SDK protocol version is unsupported";
+			JsonRpcResponse unsupported;
+			unsupported.result = jsonParse!(typeof(unsupported.result))(
+				`{"message":"health check","timestamp":0,"protocolVersion":1}`);
+			connection.respond(ping, unsupported);
+		}
+		if (ending != "ping error")
+			connection.disconnect("shared SDK EOF", DisconnectType.graceful);
+		drainNextTicks();
+		assert(sdk.state == SdkProcess.State.retiring && failures.length == 0);
+		assert(exits.length == 0 && connection.sentMessages.length == 0);
+		sdk.confirmedExit(42);
+		drainNextTicksAndDueTimers();
+		assert(sdk.state == SdkProcess.State.dead && connection.sentMessages.length == 0);
+		assert(failures == [diagnostic], toJson(failures));
+		assert(exits == [1] && session.startupFailure == diagnostic);
+	}
+}
+
+unittest
+{
+	import cydo.foundation.testing : drainNextTicksAndDueTimers;
+
+	foreach (resumeId; ["", "resume-after-exit"])
+	{
+		auto connection = new TestCopilotConnection;
+		auto server = makeTestSdkProcess(connection, false, false);
+		auto sessionId = resumeId.length ? resumeId : "create-after-exit";
+		auto session = attachSession(server, 1, sessionId, resumeId,
+			"model", "/work", null, null, null, null, SessionConfig.init);
+		int[] exits;
+		session.onExit = (int status) { exits ~= status; };
+		auto queued = new TestCopilotSubmissionOutcome(session.sendMessage(
+			[ContentBlock("text", "queued during setup")], "queued"));
+		int emitted;
+		session.onOutput = (TranslatedEvent) { ++emitted; };
+		connection.acceptAuthentication();
+		auto request = connection.takeRequest(resumeId.length ? "session.resume" : "session.create");
+		JsonRpcResponse response;
+		response.result = jsonParse!(typeof(response.result))("{}");
+		connection.respond(request, response);
+		connection.disconnect("after setup reply", DisconnectType.graceful);
+		server.confirmedExit(42);
+		drainNextTicksAndDueTimers();
+		assert(!session.alive && !session.sessionReady_ && emitted == 0);
+		assert(exits == [42] && queued.acceptedCount == 0 && queued.rejectedCount == 1);
+		assert(connection.sentMessages.length == 0);
+	}
+}
+
+// EOF during unanswered setup leaves the route registered for confirmed exit.
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+
+	foreach (resumeId; ["", "resumed-session"])
+	foreach (queueSubmission; [false, true])
+	{
+		auto connection = new TestCopilotConnection;
+		auto server = makeTestSdkProcess(connection, false, false);
+		auto sessionId = resumeId.length ? resumeId : "new-session";
+		auto session = attachSession(server, 1, sessionId, resumeId,
+			"model", "/work", null, null, null, null, SessionConfig.init);
+		int[] exits;
+		enum error = "JSON-RPC connection closed: while setup is pending";
+		session.onExit = (int status) {
+			assert(session.startupFailure == error, session.startupFailure);
+			exits ~= status;
+		};
+		TestCopilotSubmissionOutcome queued;
+		if (queueSubmission)
+			queued = new TestCopilotSubmissionOutcome(session.sendMessage(
+				[ContentBlock("text", "queued during setup")], "queued"));
+		connection.acceptAuthentication();
+		connection.takeRequest(resumeId.length ? "session.resume" : "session.create");
+
+		connection.disconnect("while setup is pending", DisconnectType.graceful);
+		drainNextTicks();
+		assert(exits.length == 0);
+		assert(session.startupFailure == error, session.startupFailure);
+		if (queueSubmission)
+			assert(queued.acceptedCount == 0 && queued.rejectedCount == 1
+				&& queued.rejectionMessage == error);
+
+		server.confirmedExit(73);
+		drainNextTicksAndDueTimers();
+		server.confirmedExit(74);
+		drainNextTicksAndDueTimers();
+		assert(exits == [73] && !session.alive);
+		if (queueSubmission)
+			assert(queued.acceptedCount == 0 && queued.rejectedCount == 1);
+		assert(connection.sentMessages.length == 0);
+	}
+}
+
+unittest
+{
+	import cydo.foundation.testing : drainNextTicksAndDueTimers;
+
+	foreach (retireAction; [
+		(CopilotSession session) { session.stop(); },
+		(CopilotSession session) { session.closeStdin(); },
+		(CopilotSession session) { session.invalidatePendingSubmittedMessages(); },
+	])
+	{
+		auto connection = new TestCopilotConnection;
+		auto server = makeTestSdkProcess(connection, false, false);
+		auto session = new CopilotSession(server, 1, "send-after-exit", "model", "/work");
+		server.registerSession("send-after-exit", session);
+		session.onSessionStarted("model", "/work");
+		int[] exits;
+		string[] order;
+		session.onExit = (int status) {
+			exits ~= status;
+			order ~= "exit";
+		};
+		session.sendMessage([ContentBlock("text", "submitted")], "submitted")
+			.then((AgentSubmissionReceipt receipt) {
+				assert(receipt == AgentSubmissionReceipt.appServerAccepted);
+				assert(exits.length == 0, "The send consumer must run before session exit");
+				order ~= "accepted";
+			}, (Exception e) { assert(false, e.msg); }).ignoreResult();
+		JsonRpcResponse response;
+		response.result = jsonParse!(typeof(response.result))("{}");
+		connection.respond(connection.takeRequest("session.send"), response);
+		connection.disconnect("after send reply", DisconnectType.graceful);
+		retireAction(session);
+		assert(exits.length == 0);
+		server.confirmedExit(42);
+		assert(exits.length == 0);
+		drainNextTicksAndDueTimers();
+		assert(exits == [42]);
+		assert(order == ["accepted", "exit"]);
+		assert(connection.sentMessages.length == 0);
+	}
+}
+
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks;
+
+	auto connection = new TestCopilotConnection;
+	auto agent = new CopilotAgent;
+	auto sdk = agent.sharedSdkServer_ = makeTestSdkProcess(connection, true);
+	auto ping = connection.takeRequest("ping");
+	ProcessLaunch launch;
+	launch.executablePath = "/dev/null";
+	auto oneShot = agent.completeOneShot("probe", "default", launch);
+	int rejected, ready, failed;
+	string[] waiterErrors;
+	oneShot.promise.then((string) { assert(false); },
+		(Exception) { ++rejected; }).ignoreResult();
+	sdk.onReady({ throw new Exception("readiness action failed"); },
+		(Exception e) { waiterErrors ~= e.msg; });
+	sdk.onReady({ ++ready; }, (Exception) { ++failed; });
+	respondToTestSdkPing(connection, ping);
+	drainNextTicks();
+
+	assert(rejected == 1 && ready == 1 && failed == 0 && sdk.state == SdkProcess.State.ready,
+		"queued one-shot spawn failure must settle without failing the shared SDK");
+	assert(waiterErrors == ["readiness action failed"]);
+}
+
+version (unittest) private void respondToTestSdkPing(TestCopilotConnection connection, JsonRpcRequest ping)
+{
+	JsonRpcResponse response;
+	response.result = jsonParse!(typeof(response.result))(
+		`{"message":"health check","timestamp":0,"protocolVersion":2}`);
+	connection.respond(ping, response);
+}
+
+// Each private SDK is released when its one-shot settles.
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+
+	enum Ending { createEOF, sendEOF, pendingCreateEOF, pendingSendEOF, createError, sendError, idle }
+	foreach (ending; [Ending.createEOF, Ending.sendEOF, Ending.createError,
+		Ending.sendError, Ending.idle, Ending.pendingCreateEOF, Ending.pendingSendEOF])
+	{
+		auto connection = new TestCopilotConnection;
+		auto sdk = makeTestSdkProcess(connection, false, false);
+		auto reply = new Promise!string;
+		auto session = new OneShotCopilotSession(reply);
+		string[] values, errors;
+		reply.then((string value) { values ~= value; },
+			(Exception e) { errors ~= e.msg; }).ignoreResult();
+		startOneShotSession(sdk, session, "one-shot", "model", "/work", "hello");
+
+		JsonRpcResponse success, refused;
+		success.result = jsonParse!(typeof(success.result))("{}");
+		refused.error = JsonRpcError.fromCode(JsonRpcErrorCode.internalError, "request refused");
+		connection.acceptAuthentication();
+		auto create = connection.takeRequest("session.create");
+		if (ending != Ending.pendingCreateEOF)
+			connection.respond(create, ending == Ending.createError ? refused : success);
+		if (ending != Ending.createEOF && ending != Ending.pendingCreateEOF
+			&& ending != Ending.createError)
+		{
+			drainNextTicks();
+			auto send = connection.takeRequest("session.send");
+			if (ending != Ending.pendingSendEOF)
+				connection.respond(send, ending == Ending.sendError ? refused : success);
+		}
+
+		bool pendingEOF = ending == Ending.pendingCreateEOF || ending == Ending.pendingSendEOF;
+		bool eof = pendingEOF || ending == Ending.createEOF || ending == Ending.sendEOF;
+		if (eof)
+		{
+			connection.disconnect("one-shot EOF", DisconnectType.graceful);
+			drainNextTicks();
+			assert(sdk.dead && errors.length == 0 && values.length == 0);
+			assert(connection.sentMessages.length == 0);
+			assert("one-shot" in __traits(getMember, sdk, "sessions"));
+			sdk.confirmedExit(42);
+		}
+		else if (ending == Ending.idle)
+		{
+			connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"one-shot","event":{"id":"idle","timestamp":"now","type":"session.idle","data":{}}}}`);
+			drainNextTicks();
+			assert(values == [""] && errors.length == 0 && !sdk.dead);
+			connection.respond(connection.takeRequest("session.destroy"), success);
+		}
+		drainNextTicksAndDueTimers();
+
+		if (ending == Ending.createError || ending == Ending.sendError)
+			assert(values.length == 0 && errors == ["request refused"]);
+		if (eof)
+			assert(values.length == 0 && errors == [pendingEOF
+				? "JSON-RPC connection closed: one-shot EOF"
+				: "completeOneShot: process exited with status 42"]);
+		assert(sdk.dead && connection.sentMessages.length == 0);
+		assert("one-shot" !in __traits(getMember, sdk, "sessions"));
+	}
+}
+
+// An idle notification cannot replace the send receipt or hide its error.
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+
+	foreach (sendFails; [false, true])
+	foreach (idleFirst; [false, true])
+	{
+		auto connection = new TestCopilotConnection;
+		auto sdk = makeTestSdkProcess(connection, false, false);
+		auto reply = new Promise!string;
+		auto session = new OneShotCopilotSession(reply);
+		string[] values, errors;
+		reply.then((string value) { values ~= value; },
+			(Exception e) { errors ~= e.msg; }).ignoreResult();
+		startOneShotSession(sdk, session, "one-shot", "model", "/work", "hello");
+
+		void idle()
+		{
+			connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"one-shot","event":{"id":"idle","timestamp":"now","type":"session.idle","data":{}}}}`);
+		}
+
+		JsonRpcResponse success, refused;
+		success.result = jsonParse!(typeof(success.result))("{}");
+		refused.error = JsonRpcError.fromCode(JsonRpcErrorCode.internalError, "request refused");
+		connection.acceptAuthentication();
+		auto create = connection.takeRequest("session.create");
+		if (!sendFails)
+		{
+			idle();
+			drainNextTicks();
+			assert(values.length == 0 && errors.length == 0 && connection.sentMessages.length == 0);
+		}
+		connection.respond(create, success);
+		drainNextTicks();
+		auto send = connection.takeRequest("session.send");
+
+		if (idleFirst)
+		{
+			idle();
+			if (!sendFails)
+			{
+				drainNextTicks();
+				assert(values.length == 0 && errors.length == 0 && connection.sentMessages.length == 0);
+			}
+		}
+		connection.respond(send, sendFails ? refused : success);
+		if (!idleFirst)
+		{
+			if (!sendFails)
+			{
+				drainNextTicks();
+				assert(values.length == 0 && errors.length == 0 && connection.sentMessages.length == 0);
+			}
+			idle();
+		}
+		drainNextTicksAndDueTimers();
+
+		if (sendFails)
+			assert(values.length == 0 && errors == ["request refused"]);
+		else
+		{
+			assert(values == [""] && errors.length == 0 && !sdk.dead);
+			connection.respond(connection.takeRequest("session.destroy"), success);
+			drainNextTicksAndDueTimers();
+		}
+		assert(sdk.dead && connection.sentMessages.length == 0);
+		assert("one-shot" !in __traits(getMember, sdk, "sessions"));
+	}
 }

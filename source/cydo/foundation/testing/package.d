@@ -20,3 +20,15 @@ void drainNextTicks()
 			handler();
 	}
 }
+
+/// Drain promise callbacks and run timers already due without waiting for I/O
+/// or advancing the clock to a future deadline.
+void drainNextTicksAndDueTimers()
+{
+	import core.time : MonoTime;
+	import ae.sys.timing : mainTimer;
+
+	do
+		drainNextTicks();
+	while (mainTimer.prod(MonoTime.currTime()));
+}

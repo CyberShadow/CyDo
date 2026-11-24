@@ -1,9 +1,11 @@
 module cydo.agent.sdk;
 
-import ae.net.asockets : IConnection;
+import std.exception : enforce;
+
+import ae.net.asockets : DisconnectType, socketManager;
+version (unittest) import ae.net.asockets : IConnection;
 import ae.net.jsonrpc.binding : JsonRpcDispatcher, jsonRpcDispatcher,
 	RPCFlatten, RPCName, RPCNamedParams;
-import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse;
 import ae.utils.jsonrpc : JsonRpcException, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.serialization.store : SerializedObject;
@@ -11,7 +13,7 @@ import ae.utils.serialization.store : SerializedObject;
 private alias SO = SerializedObject!(immutable char);
 import ae.utils.promise : Promise, reject, resolve;
 
-import cydo.agent.process : AgentProcess, FramingMode;
+import cydo.agent.process : AgentProcess, AgentRpcCodec, FramingMode, ReadinessQueue, RpcRetirement, scheduleOwnerExit;
 
 // ---------------------------------------------------------------------------
 // Param/result structs for SDK server-initiated methods.
@@ -187,26 +189,34 @@ private class SdkServerRouter : ISdkServer
 // One instance per CopilotAgent (shared across sessions).
 // ---------------------------------------------------------------------------
 
+/// Startup opens readiness. Retirement stops new RPCs and fixes the exit
+/// cause. Only confirmed exit, deferred behind codec continuations, closes
+/// readiness and notifies the registered sessions.
 class SdkProcess
 {
 	private AgentProcess process;
-	private JsonRpcCodec codec;
+	private AgentRpcCodec codec;
 	private JsonRpcDispatcher!ISdkServer serverDispatcher;
 
-	enum State { starting, initializing, ready, failed, dead }
+	enum State { starting, initializing, ready, retiring, dead }
 	private State state_ = State.starting;
 
 	// Session routing: sessionId → handler
 	private SdkSessionHandler[string] sessions;
 
-	// Actions queued until server reaches ready state.
-	private void delegate()[] readyQueue;
+	private enum Retirement { transport, startupFailure, shutdown }
+	private Retirement retirement_;
+	private bool exitQueued_;
+	private ReadinessQueue readiness_;
+	private Exception startupError_;
+
+	version (unittest) private bool exitOnRetireForTest;
 
 	this(string[] args, string[string] env, string workDir, string logName)
 	{
 		process = new AgentProcess(args, env, workDir, false, FramingMode.contentLength, logName: logName);
 
-		codec = process.createJsonRpcCodec();
+		codec = process.attachJsonRpcCodec(&onTransportDisconnect);
 		auto router = new SdkServerRouter(this);
 		serverDispatcher = jsonRpcDispatcher!ISdkServer(router);
 		codec.handleRequest = &serverDispatcher.dispatch;
@@ -225,26 +235,34 @@ class SdkProcess
 			}
 		};
 
-		process.onExit = (int status) {
-			state_ = State.dead;
-			foreach (session; sessions)
-				session.handleExit(status);
-		};
+		process.onExit = &confirmedExit;
 
 		sendPing();
 	}
 
 	version (unittest) private this(IConnection connection,
-		bool sendInitializationPing)
+		bool sendInitializationPing, bool exitOnRetire)
 	{
-		initializeTestSdkProcess(this, connection, sendInitializationPing);
+		exitOnRetireForTest = exitOnRetire;
+		codec = new AgentRpcCodec(connection, &onTransportDisconnect);
+		auto router = new SdkServerRouter(this);
+		serverDispatcher = jsonRpcDispatcher!ISdkServer(router);
+		codec.handleRequest = &serverDispatcher.dispatch;
+		if (sendInitializationPing)
+			sendPing();
+		else
+		{
+			state_ = State.ready;
+			readiness_.open();
+		}
 	}
 
 	@property State state() { return state_; }
-	@property bool dead() { return state_ == State.failed || state_ == State.dead || process.dead; }
+	@property bool dead() { return state_ >= State.retiring; }
 
 	void registerSession(string sessionId, SdkSessionHandler handler)
 	{
+		enforce(state_ != State.dead, "Cannot register a session on an exited Copilot SDK");
 		sessions[sessionId] = handler;
 	}
 
@@ -253,63 +271,54 @@ class SdkProcess
 		sessions.remove(sessionId);
 	}
 
-	/// Terminate the underlying SDK process and defer exit handlers until the
-	/// process has actually exited.  The copilot binary may spawn children that
-	/// hold the stdout pipe open, preventing AgentProcess.tryFireExit from ever
-	/// firing.  We use killAfterTimeout to force-close all pipes after 3 s via
-	/// daemon timers, which guarantees the event loop drains even if orphaned
-	/// children hold write-ends of the stdout/stderr pipes open.
-	///
-	/// NOTE: we deliberately do NOT call asyncWait here.  If the AgentProcess
-	/// asyncWait (installed in the constructor) fires first it reaps the pid
-	/// via waitpid(2), making any subsequent asyncWait for the same pid return
-	/// ECHILD indefinitely — leaving a non-daemon ThreadAnchor that never
-	/// closes and hangs the event loop forever.
-	void shutdown()
+	void shutdown() { retire(Retirement.shutdown); }
+
+	private void retire(Retirement cause)
 	{
 		if (dead)
 			return;
-		state_ = State.dead;
-
-		// Snapshot sessions — the map may be mutated by handleExit.
-		auto sessionsCopy = sessions.values;
-		bool fired = false;
-		void fireExit() {
-			if (fired) return;
-			fired = true;
-			foreach (session; sessionsCopy)
-				session.handleExit(1);
+		state_ = State.retiring;
+		retirement_ = cause;
+		if (process !is null)
+			process.retire(RpcRetirement.copilot);
+		else
+		{
+			version (unittest)
+				if (exitOnRetireForTest)
+					confirmedExit(1);
 		}
-
-		// Route the existing pipe-drain exit notification through fireExit.
-		// AgentProcess.tryFireExit calls onExit once stdout+stderr reach EOF
-		// and the process has exited — this is the correct place to fire.
-		process.onExit = (int) { fireExit(); };
-		process.closeStdin();
-		process.terminate();
-
-		// Daemon timers: SIGKILL at +3 s, forceClosePipes at +3.5 s.
-		// These are daemon so they do not prevent the event loop from exiting,
-		// but the non-daemon stdout/stderr FileConnections keep it alive until
-		// the pipes actually close (either naturally or via forceClosePipes).
-		import core.time : seconds;
-		process.killAfterTimeout(3.seconds);
 	}
 
-	/// Queue an action for when the server is ready. Runs immediately if ready.
-	void onReady(void delegate() dg)
+	void onReady(void delegate() ready, void delegate(Exception) failed)
 	{
-		if (state_ == State.ready)
-			dg();
-		else if (state_ != State.failed && state_ != State.dead)
-			readyQueue ~= dg;
+		readiness_.wait(ready, failed);
+	}
+
+	package(cydo.agent) void confirmedExit(int status)
+	{
+		retire(Retirement.transport);
+		if (exitQueued_)
+			return;
+		exitQueued_ = true;
+		scheduleOwnerExit({ fanout(status); });
+	}
+
+	private void fanout(int status)
+	{
+		state_ = State.dead;
+		readiness_.close(startupError_ is null ? new Exception("Copilot SDK exited") : startupError_);
+		foreach (session; sessions.values)
+			if (startupError_ !is null)
+				session.handleStartupFailure(startupError_);
+			else
+				session.handleExit(retirement_ == Retirement.shutdown ? 1 : status);
 	}
 
 	/// Send a JSON-RPC request, returning a promise for the response.
 	Promise!JsonRpcResponse sendRequest(string method, string params)
 	{
 		if (dead)
-			return reject!JsonRpcResponse(new Exception("Copilot SDK process is no longer running"));
+			return reject!JsonRpcResponse(new Exception("Copilot SDK is not running"));
 		JsonRpcRequest req;
 		req.method = method;
 		req.params = jsonParse!SO(params);
@@ -345,7 +354,7 @@ class SdkProcess
 		.then((JsonRpcResponse resp) {
 			if (resp.isError)
 			{
-				failStartup(new Exception(resp.error.get.message));
+				recordStartupReplyFailure(new Exception(resp.error.get.message));
 				return;
 			}
 			int protocolVersion = 0;
@@ -358,70 +367,91 @@ class SdkProcess
 
 			if (protocolVersion < 2)
 			{
-				failStartup(new Exception("Copilot SDK protocol version is unsupported"));
+				recordStartupReplyFailure(new Exception("Copilot SDK protocol version is unsupported"));
 				return;
 			}
+			if (state_ != State.initializing)
+				return;
 			state_ = State.ready;
-			auto queue = readyQueue;
-			readyQueue = null;
-			foreach (dg; queue)
-				dg();
+			readiness_.open();
 		})
 		.except((Exception e) {
 			failStartup(e);
-		});
+		}).ignoreResult();
+	}
+
+	private void onTransportDisconnect(string reason, DisconnectType)
+	{
+		if (!dead && !readiness_.isOpen)
+			startupError_ = new Exception("JSON-RPC connection closed: " ~ reason);
+		retire(Retirement.transport);
 	}
 
 	private void failStartup(Exception error)
 	{
-		if (state_ == State.failed || state_ == State.dead)
-			return;
-		state_ = State.failed;
-		readyQueue = null;
-		auto handlers = sessions.values;
-		foreach (handler; handlers)
-			handler.handleStartupFailure(error);
-	}
-}
-
-version (unittest) private final class TestSdkProcess : SdkProcess
-{
-	this(IConnection connection, bool sendInitializationPing)
-	{
-		super(connection, sendInitializationPing);
-	}
-
-	override @property bool dead()
-	{
-		return state_ == State.failed || state_ == State.dead;
-	}
-
-	override void shutdown()
-	{
 		if (dead)
 			return;
-		state_ = State.dead;
-		auto sessionsCopy = sessions.values;
-		foreach (session; sessionsCopy)
-			session.handleExit(1);
+		recordStartupReplyFailure(error);
 	}
-}
 
-version (unittest) private void initializeTestSdkProcess(SdkProcess server,
-	IConnection connection, bool sendInitializationPing)
-{
-	server.codec = new JsonRpcCodec(connection);
-	auto router = new SdkServerRouter(server);
-	server.serverDispatcher = jsonRpcDispatcher!ISdkServer(router);
-	server.codec.handleRequest = &server.serverDispatcher.dispatch;
-	if (sendInitializationPing)
-		server.sendPing();
-	else
-		server.state_ = SdkProcess.State.ready;
+	private void recordStartupReplyFailure(Exception error)
+	{
+		startupError_ = error;
+		retire(Retirement.startupFailure);
+	}
 }
 
 version (unittest) package(cydo.agent) SdkProcess makeTestSdkProcess(
-	IConnection connection, bool sendInitializationPing = false)
+	IConnection connection, bool sendInitializationPing = false, bool exitOnRetire = true)
 {
-	return new TestSdkProcess(connection, sendInitializationPing);
+	return new SdkProcess(connection, sendInitializationPing, exitOnRetire);
+}
+
+version (unittest) private final class TestSdkExitHandler : SdkSessionHandler
+{
+	string[] startupErrors;
+	int[] exits;
+
+	void handleEvent(SdkEvent) { assert(false); }
+	Promise!SdkPermissionResult handlePermissionRequest(SdkPermissionRequest) { assert(false); }
+	Promise!SdkToolCallResult handleToolCall(SdkToolCallRequest) { assert(false); }
+	void handleStderr(string line) { assert(false, line); }
+	void handleStartupFailure(Exception error) { startupErrors ~= error.msg; }
+	void handleExit(int status) { exits ~= status; }
+}
+
+unittest
+{
+	import cydo.agent.process : rpcChildSurvivalProbe;
+	import std.conv : to;
+	import std.file : exists, remove, tempDir;
+	import std.path : buildPath;
+	import std.process : thisProcessID;
+	import std.string : startsWith;
+
+	foreach (unsupportedVersion; [false, true])
+	{
+		auto marker = buildPath(tempDir, "cydo-sdk-startup-" ~ thisProcessID.to!string);
+		scope (exit) if (exists(marker)) remove(marker);
+		auto action = unsupportedVersion ? q"SH
+			payload='{"jsonrpc":"2.0","id":1,"result":{"message":"health check","timestamp":0,"protocolVersion":1}}'
+			printf 'Content-Length: %d\r\n\r\n%s' "${#payload}" "$payload"
+SH" : "exec 1>&-\n";
+		auto server = new SdkProcess(["sh", "-c", "trap 'exit 42' TERM\nread -r header\n"
+			~ action ~ rpcChildSurvivalProbe, "test", marker], null, null, "test-sdk");
+		auto route = new TestSdkExitHandler;
+		server.registerSession("starting", route);
+		string[] errors;
+		server.onReady({ assert(false, "startup reached readiness"); },
+			(Exception e) { errors ~= e.msg; });
+		socketManager.loop();
+
+		assert(route.exits.length == 0);
+		assert(errors.length == 1 && route.startupErrors == errors);
+		if (unsupportedVersion)
+			assert(errors[0] == "Copilot SDK protocol version is unsupported");
+		else
+			assert(errors[0].startsWith("JSON-RPC connection closed: "));
+		assert(!exists(marker), "the SDK child survived retirement");
+	}
 }

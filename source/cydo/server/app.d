@@ -4899,6 +4899,44 @@ version (unittest) private final class GatedSubmissionFixture
 	}
 }
 
+// A turn/start reply received just before EOF must commit and ACK while
+// the application can still use the session and its history generation.
+unittest
+{
+	import cydo.agent.drivers.codex : makeCodexSubmissionSessionForTest;
+	import cydo.foundation.testing : drainNextTicksAndDueTimers;
+
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	void delegate(int) replyThenExit;
+	auto session = makeCodexSubmissionSessionForTest(fixture.tid, replyThenExit);
+	fixture.app.taskSessionRunner = new GatedSubmissionRunner(session);
+	auto task = &fixture.app.tasks[fixture.tid];
+	auto generation = task.history.generation;
+	enum nonce = "last-turn-nonce";
+	int[] exits;
+	session.onExit = (int status) {
+		assert(nonce in task.recentNonces);
+		assert(task.history.generation == generation);
+		assert(fixture.publicationOrder == ["unconfirmed", "task_update", "agent_ack"]);
+		exits ~= status;
+		fixture.app.taskSessionRunner = new GatedSubmissionRunner(null);
+		task.history.reset(Watermark.none());
+	};
+
+	bool committed;
+	fixture.app.sendPreparedTaskMessage(fixture.tid, [ContentBlock("text", "last turn")],
+		null, null, false, nonce)
+		.then(() { committed = true; }, (Exception e) { assert(false, e.msg); }).ignoreResult();
+	assert(fixture.publicationOrder.length == 0);
+	replyThenExit(42);
+	drainNextTicksAndDueTimers();
+
+	assert(committed && exits == [42]);
+	assert(fixture.submissionMessages.length == 1
+		&& fixture.submissionMessages[0].canFind("last turn"));
+	assert(fixture.app.sessionForTask(fixture.tid) is null);
+}
+
 version (unittest) private WsMessage testBrowserSubmission(int tid, string text,
 	string nonce)
 {

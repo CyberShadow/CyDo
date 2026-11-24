@@ -122,7 +122,7 @@ public:
 
 	void closeStdin()
 	{
-		if (closed_ || closing_)
+		if (closed_ || closing_ || session_.server.dead)
 			return;
 		closing_ = true;
 		if (!routeReadySettled_)
@@ -132,8 +132,6 @@ public:
 				"Codex fork source owner closed before its route was ready"));
 		}
 		session_.closeStdin();
-		if (!session_.alive)
-			notifyClosed();
 	}
 
 	@property void onClosed(void delegate() handler)
@@ -403,32 +401,20 @@ class CodexAgent : DriverServedHistoryAgent
 		import std.file : readText;
 
 		auto result = new Promise!DriverHistory;
-		bool settled;
-		int reservation;
-		void settle(void delegate() how)
+		auto reservation = server.reserveOperationRouteTid();
+		void fail(Exception e)
 		{
-			if (settled)
-				return;
-			settled = true;
-			how();
 			server.cancelOperationRouteReservation(reservation);
+			result.reject(e);
 		}
-		reservation = server.reserveOperationRouteTid(() {
-			settle(() {
-				result.reject(new Exception("Codex app-server exited while reading history"));
-			});
-		});
 		server.onReady(() {
 			readThreadHistory((string method, string params) => server.sendRequest(method, params),
 				threadId, systemKeyword_, liveTurnIds, (string path) => readText(path))
 			.then((DriverHistory history) {
-				settle(() { result.fulfill(history); });
-			}, (Exception e) {
-				settle(() { result.reject(e); });
-			}).ignoreResult();
-		}, (Exception e) {
-			settle(() { result.reject(e); });
-		});
+				server.cancelOperationRouteReservation(reservation);
+				result.fulfill(history);
+			}, &fail).ignoreResult();
+		}, &fail);
 		return result;
 	}
 
@@ -487,7 +473,15 @@ class CodexAgent : DriverServedHistoryAgent
 							"thread/fork returned empty thread id"));
 						return;
 					}
-					// A fork never takes a route on the source app-server.
+					void failRelease(string detail)
+					{
+						outcome.fulfill(ThreadForkOutcome(false, "", resp.result.toJson(),
+							"Could not release fork child subscription " ~ result.thread.id ~ detail));
+					}
+					// A fork is publishable only after unsubscribe succeeds. A
+					// release primitive for publishing after owner loss is deferred.
+					if (server.dead)
+						return failRelease(" because the Codex app-server exited");
 					auto release = server.unsubscribeThread(result.thread.id);
 					try
 					{
@@ -495,7 +489,9 @@ class CodexAgent : DriverServedHistoryAgent
 					}
 					catch (Exception e)
 					{
-						release.ignoreResult();
+						release.then((JsonRpcResponse) {}, (Exception releaseError) {
+							warningf("thread/unsubscribe failed: %s", releaseError.msg);
+						}).ignoreResult();
 						outcome.fulfill(ThreadForkOutcome(false, "",
 							resp.result.toJson(), e.msg));
 						return;
@@ -503,16 +499,11 @@ class CodexAgent : DriverServedHistoryAgent
 					release
 						.then((JsonRpcResponse unsubscribed) {
 							if (unsubscribed.isError)
-							{
-								outcome.fulfill(ThreadForkOutcome(false, "",
-									resp.result.toJson(), unsubscribed.error.get.message));
-								return;
-							}
+								return failRelease(": " ~ unsubscribed.error.get.message);
 							outcome.fulfill(ThreadForkOutcome(true, result.thread.id,
 								resp.result.toJson(), ""));
 						}, (Exception e) {
-							outcome.fulfill(ThreadForkOutcome(false, "",
-								resp.result.toJson(), e.msg));
+							failRelease(": " ~ e.msg);
 						}).ignoreResult();
 				}, (Exception e) {
 					outcome.fulfill(ThreadForkOutcome(false, "", "", e.msg));
@@ -557,7 +548,6 @@ class CodexAgent : DriverServedHistoryAgent
 					serverPool.remove(poolKey);
 			cancelQueuedAppServerStartup(startupRequest);
 		};
-		server.onCancelStartup_ = { cancelQueuedAppServerStartup(startupRequest); };
 		startupRequest = queueAppServerStartup(codexHome, server);
 		// A synchronous failure has already settled and evicted the server.
 		if (auto error = server.startupError)
@@ -594,7 +584,11 @@ class CodexAgent : DriverServedHistoryAgent
 			(*gate).busy = true;
 			auto lease = new AppServerStartupLease(codexHome, request);
 			request.lease = lease;
-			lease.timeout = setTimeout({ releaseAppServerStartup(lease); }, 30.seconds);
+			lease.timeout = setTimeout({
+				// The retiring owner releases its lease at confirmed-exit fanout.
+				if (!request.server.dead)
+					releaseAppServerStartup(lease);
+			}, 30.seconds);
 			request.server.startProcess({ releaseAppServerStartup(lease); });
 			return;
 		}
@@ -1668,7 +1662,9 @@ unittest
 	agent.forkSession(owner, 77, "source-thread", "source-turn",
 		HistoryBoundaryKind.agent_turn, childLaunch, childConfig)
 		.then((ThreadForkOutcome failedFork) {
-			assert(!failedFork.ok && failedFork.error == "Codex fork parent exited");
+			assert(!failedFork.ok && failedFork.error
+				== "Could not release fork child subscription disconnected-child-thread"
+				~ " because the Codex app-server exited");
 			forkReplyBeforeDisconnectSettled = true;
 		}, (Exception e) { assert(false, e.msg); }).ignoreResult();
 	auto forkReplyBeforeDisconnect = connection.takeRequest("thread/fork");
@@ -2221,6 +2217,9 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 			try
 			{
 				auto result = response.getResult!ThreadStartResult();
+				// A retiring owner will settle this tid route at confirmed exit.
+				if (server.dead)
+					return;
 				enforce(result.thread.id.length > 0, method ~ " returned an empty thread id");
 				scope (exit)
 					if (threadId.length == 0)
@@ -2232,7 +2231,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 			}
 			catch (Exception e)
 				return failed(e);
-			if (closing_)
+			if (closing_ && !server.dead)
 				finishClose(0);
 		}, &failed).ignoreResult();
 	}
@@ -2298,13 +2297,14 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		if (!alive_)
 			return;
 		threadStartError_ = error;
+		// Queued submissions cannot reach the wire after setup fails.
 		rejectUnsettledMessages(error);
 		closeStdin();
 	}
 
 	private void drainPendingMessages()
 	{
-		if (!alive_)
+		if (!alive)
 			return;
 		while (pendingMessages_.length > 0)
 		{
@@ -2492,6 +2492,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		}
 		void rejectRequest(Exception error)
 		{
+			// Submissions queued behind this request have no wire outcome to preserve.
 			rejectUnsettledMessages(error);
 			request.reject(error);
 		}
@@ -2545,7 +2546,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 	/// developer message appended to the thread.
 	Promise!void correctAbortedToolCall(string correction)
 	{
-		enforce(alive_ && !closing_, "Codex session is no longer alive");
+		enforce(alive && !closing_, "Codex session is no longer alive");
 		enforce(pendingCorrection_ is null, "Codex session already has a correction to deliver");
 		auto delivered = new Promise!void;
 		pendingCorrection_ = () {
@@ -2700,7 +2701,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		closeThreadWork("Codex app-server exited");
 		abandonPendingCorrection();
 		if (!alive_)
-			return; // Already stopped; avoid double-invocation of exitHandler_.
+			return;
 		auto wasAvailable = canRevertThread;
 		alive_ = false;
 		notifyRevertAvailability(wasAvailable);
@@ -2726,7 +2727,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 
 		auto submission = new PendingMessage(content, text, correlationId,
 			isContextBootstrap);
-		if (!alive_ || closing_)
+		if (!alive || closing_)
 		{
 			submission.promise.reject(new Exception(
 				"Codex session is no longer alive"));
@@ -2743,6 +2744,8 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 
 	void invalidatePendingSubmittedMessages()
 	{
+		if (!alive)
+			return;
 		rejectUnsettledMessages(new SubmissionHistoryCancelled(
 			"Codex message submission was invalidated"));
 	}
@@ -2767,16 +2770,19 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		// inFlightMessages_ for exactly as long as startInFlight_ is set, so the
 		// check below already covers it. turnInProgress does not — handleTurnCompleted
 		// clears it without consulting either.
-		return alive_ && threadId.length > 0 && !turnInProgress
+		return acceptsWork && threadId.length > 0 && !turnInProgress
 			&& inFlightMessages_.length == 0 && threadRequest_ is null;
 	}
 
 	void interrupt()
 	{
-		if (!alive_ || threadId.length == 0 || !turnInProgress || activeTurnId_.length == 0)
+		if (!alive || threadId.length == 0 || !turnInProgress || activeTurnId_.length == 0)
 			return;
 		server.sendRequest("turn/interrupt",
-			toJson(TurnInterruptParams(threadId, activeTurnId_))).ignoreResult();
+			toJson(TurnInterruptParams(threadId, activeTurnId_)))
+			.then((JsonRpcResponse) {}, (Exception e) {
+				warningf("turn/interrupt failed: %s", e.msg);
+			}).ignoreResult();
 	}
 
 	void sigint()
@@ -2786,7 +2792,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 
 	void stop()
 	{
-		if (!alive_)
+		if (!alive)
 			return;
 		rejectUnsettledMessages(new Exception(
 			"Codex session closed before accepting message submission"));
@@ -2798,10 +2804,10 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 
 	void closeStdin()
 	{
+		if (!alive_ || server.dead)
+			return;
 		closeThreadWork("Codex session closed");
 		abandonPendingCorrection();
-		if (!alive_)
-			return;
 		if (startupOutstanding_)
 		{
 			closing_ = true;
@@ -2861,7 +2867,8 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
 	@property void onToolCallsAbandoned(void delegate() dg) { toolCallsAbandonedHandler_ = dg; }
 	@property bool toolCallsSurviveStdinClose() { return false; }
-	@property bool alive() { return alive_ && !server.dead; }
+	private @property bool acceptsWork() const { return alive_ && (server is null || !server.dead); }
+	@property bool alive() { return acceptsWork; }
 
 	// ----- Notification handling (routed by CodexServerRouter) -----
 
@@ -3066,14 +3073,37 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 	}
 }
 
-version (unittest) package(cydo) CodexSession makeUnattachedCodexSessionForTest(
-	int tid, SessionConfig config)
+version (unittest) package(cydo) Session makeUnattachedCodexSessionForTest(Session = CodexSession)(
+	int tid, SessionConfig config, out void delegate(int) confirmedExit)
 {
 	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
 
 	auto server = makeTestAppServerProcess(new TestCodexConnection);
-	auto session = new CodexSession(server, tid, config, "SYSTEM");
-	server.registerSessionByTid(tid, session.asRouteTarget());
+	auto session = new Session(server, tid, config, "SYSTEM");
+	CodexSession route = session;
+	server.registerSessionByTid(tid, route.asRouteTarget());
+	confirmedExit = &server.confirmedExit;
+	return session;
+}
+
+version (unittest) package(cydo) CodexSession makeCodexSubmissionSessionForTest(
+	int tid, out void delegate(int) replyThenExit)
+{
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+
+	auto connection = new TestCodexConnection;
+	auto server = makeTestAppServerProcess(connection);
+	auto session = new CodexAgent().makeSession(server, tid, SessionConfig.init, RouteOwnerKind.task);
+	ThreadStartResult started;
+	started.thread.id = "submission-thread";
+	session.onThreadStarted(started, null, "model", "/work", "");
+	replyThenExit = (int status) {
+		JsonRpcResponse response;
+		response.result = jsonParse!SO(`{"turn":{"id":"started"}}`);
+		connection.respond(connection.takeRequest("turn/start"), response);
+		connection.disconnect("after turn/start reply", DisconnectType.graceful);
+		server.confirmedExit(status);
+	};
 	return session;
 }
 
@@ -3133,7 +3163,7 @@ version (unittest) private final class TestCodexConnection : IConnection
 	void disconnect(string reason = defaultDisconnectReason,
 		DisconnectType type = DisconnectType.requested)
 	{
-		assert(false, reason);
+		disconnectHandler(reason, type);
 	}
 
 	void peerDisconnected(string reason)
@@ -4823,12 +4853,12 @@ unittest
 {
 	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
 	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
-	import cydo.foundation.testing : drainNextTicks;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
 
 	CodexSession attached(TestCodexConnection connection)
 	{
-		auto session = new CodexSession(makeTestAppServerProcess(connection), 1,
-			SessionConfig.init, "SYSTEM");
+		auto server = makeTestAppServerProcess(connection);
+		auto session = new CodexAgent().makeSession(server, 1, SessionConfig.init, RouteOwnerKind.task);
 		session.onOutput = (TranslatedEvent event) {};
 		ThreadStartResult started;
 		started.thread.id = "thread";
@@ -4934,6 +4964,77 @@ unittest
 	drainNextTicks();
 	assert(outcomes[2] == "Codex app-server exited during a thread request");
 
+	// A rejected transport promise reports the revert failure to its caller
+	// and rejects any message queued behind the revert.
+	outcomes = null;
+	connection = new TestCodexConnection;
+	session = attached(connection);
+	session.noteLiveTurn("turn-1");
+	observe(session.revertThread("turn-2"));
+	connection.takeRequest("thread/revert");
+	auto waiting = new TestSubmissionOutcome(session.sendMessage(
+		[ContentBlock("text", "queued during revert")], "revert-queued"));
+	connection.disconnect("revert EOF", DisconnectType.graceful);
+	drainNextTicks();
+	enum disconnectError = "JSON-RPC connection closed: revert EOF";
+	assert(outcomes == [disconnectError]);
+	assert(waiting.rejectedCount == 1 && waiting.acceptedCount == 0
+		&& waiting.rejectionMessage == disconnectError);
+	assert(session.liveTurnIds.length == 1 && connection.sentMessages.length == 0);
+
+	// Receipts already read win over the owner exit. RPCs still in flight
+	// keep the codec's more specific failure.
+	foreach (method; ["turn/start", "turn/steer", "thread/inject_items"])
+		foreach (answered; [false, true])
+		{
+			connection = new TestCodexConnection;
+			session = attached(connection);
+			if (method == "turn/steer")
+			{
+				session.sendMessage([ContentBlock("text", "start")], "start").ignoreResult();
+				connection.respond(connection.takeRequest("turn/start"),
+					result(`{"turn":{"id":"active"}}`));
+				drainNextTicks();
+			}
+			outcomes = null;
+			TestSubmissionOutcome submission;
+			if (method == "thread/inject_items")
+				observe(session.correctAbortedToolCall("accepted correction"));
+			else
+				submission = new TestSubmissionOutcome(
+					session.sendMessage([ContentBlock("text", "message")], "nonce"));
+			auto request = connection.takeRequest(method);
+			if (answered)
+				connection.respond(request, result(method == "turn/start"
+					? `{"turn":{"id":"started"}}` : "{}"));
+			connection.disconnect("receipt EOF", DisconnectType.graceful);
+			session.server.confirmedExit(1);
+			drainNextTicksAndDueTimers();
+
+			enum error = "JSON-RPC connection closed: receipt EOF";
+			if (method == "thread/inject_items")
+				assert(outcomes == [answered ? "done" : error]);
+			else if (answered)
+				assert(submission.acceptedCount == 1 && submission.rejectedCount == 0);
+			else
+				assert(submission.acceptedCount == 0 && submission.rejectedCount == 1
+					&& submission.rejectionMessage == error);
+		}
+
+	// The owner delivers a reply already read before notifying its routes of exit.
+	outcomes = null;
+	connection = new TestCodexConnection;
+	session = attached(connection);
+	session.noteLiveTurn("turn-1");
+	observe(session.revertThread("turn-2"));
+	connection.respond(connection.takeRequest("thread/revert"),
+		result(`{"thread":{"id":"thread"}}`));
+	connection.disconnect("after successful revert reply", DisconnectType.graceful);
+	session.server.confirmedExit(0);
+	drainNextTicksAndDueTimers();
+	assert(outcomes == ["done"] && session.liveTurnIds.length == 0,
+		"successful revert reply discarded: " ~ toJson(outcomes));
+
 	// Closing the last route must settle the revert even without a server exit.
 	outcomes = null;
 	connection = new TestCodexConnection;
@@ -4961,13 +5062,147 @@ unittest
 	assert(connection.sentMessages.length == 0);
 }
 
+// Retirement leaves already-read submission replies and exit status with the owner.
+unittest
+{
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicksAndDueTimers;
+
+	foreach (retireAction; [
+		(CodexSession session) { session.stop(); },
+		(CodexSession session) { session.closeStdin(); },
+		(CodexSession session) { session.invalidatePendingSubmittedMessages(); },
+	])
+	{
+		auto connection = new TestCodexConnection;
+		auto server = makeTestAppServerProcess(connection);
+		auto session = (new CodexAgent).makeSession(server, 1, SessionConfig.init,
+			RouteOwnerKind.task);
+		ThreadStartResult started;
+		started.thread.id = "thread";
+		session.onThreadStarted(started, null, "model", "/work", "");
+		int[] exits;
+		session.onExit = (int status) { exits ~= status; };
+		auto submitted = new TestSubmissionOutcome(
+			session.sendMessage([ContentBlock("text", "submitted")], "submitted"));
+		JsonRpcResponse response;
+		response.result = jsonParse!SO(`{"turn":{"id":"started"}}`);
+		connection.respond(connection.takeRequest("turn/start"), response);
+
+		connection.disconnect("after send reply", DisconnectType.graceful);
+		retireAction(session);
+		assert(exits.length == 0);
+		server.confirmedExit(42);
+		assert(exits.length == 0);
+		drainNextTicksAndDueTimers();
+		assert(exits == [42]);
+		assert(submitted.acceptedCount == 1 && submitted.rejectedCount == 0);
+		assert(connection.sentMessages.length == 0);
+	}
+}
+
+// EOF settles pending forks without invalidating replies already received.
+unittest
+{
+	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+
+	auto connection = new TestCodexConnection;
+	auto server = makeTestAppServerProcess(connection);
+	auto agent = new CodexAgent;
+	auto owner = agent.makeSession(server, 1, SessionConfig.init, RouteOwnerKind.task);
+	owner.onOutput = (TranslatedEvent event) {};
+	ThreadStartResult started;
+	started.thread.id = "source";
+	owner.onThreadStarted(started, "source", "model", "/work",
+		`{"thread":{"id":"source"}}`);
+
+	ProcessLaunch launch;
+	launch.nativeHistoryProfile = NativeHistoryProfile(AgentDriver.codex, "/profile");
+	ThreadForkOutcome[int] outcomes;
+	void observe(int tid)
+	{
+		agent.forkSession(owner, tid, "source", null, HistoryBoundaryKind.agent_turn,
+			launch, SessionConfig.init)
+			.then((ThreadForkOutcome outcome) {
+				assert(tid !in outcomes, "fork must report its outcome once");
+				outcomes[tid] = outcome;
+			},
+				(Exception e) { assert(false, e.msg); }).ignoreResult();
+	}
+
+	observe(2);
+	JsonRpcResponse forked;
+	forked.result = jsonParse!SO(`{"thread":{"id":"child"}}`);
+	connection.respond(connection.takeRequest("thread/fork"), forked);
+	drainNextTicks();
+	connection.takeRequest("thread/unsubscribe");
+
+	observe(3);
+	connection.takeRequest("thread/fork");
+
+	observe(4);
+	forked.result = jsonParse!SO(`{"thread":{"id":"released-child"}}`);
+	connection.respond(connection.takeRequest("thread/fork"), forked);
+	drainNextTicks();
+	auto successfulRelease = connection.takeRequest("thread/unsubscribe");
+
+	observe(5);
+	forked.result = jsonParse!SO(`{"thread":{"id":"refused-child"}}`);
+	connection.respond(connection.takeRequest("thread/fork"), forked);
+	drainNextTicks();
+	auto refusedRelease = connection.takeRequest("thread/unsubscribe");
+
+	observe(6);
+	forked.result = jsonParse!SO(`{"thread":{"id":"unreleased-child"}}`);
+	connection.respond(connection.takeRequest("thread/fork"), forked);
+	JsonRpcResponse released;
+	released.result = SO.from(["status": "unsubscribed"]);
+	connection.respond(successfulRelease, released);
+	JsonRpcResponse refused;
+	refused.error = JsonRpcError.fromCode(JsonRpcErrorCode.invalidRequest,
+		"unsubscribe refused by peer");
+	connection.respond(refusedRelease, refused);
+	// EOF can arrive before either reply continuation runs.
+	connection.disconnect("test EOF", DisconnectType.graceful);
+	// Check the retiring server before fanout clears its routes.
+	onNextTick(socketManager, {
+		assert(!server.hasThreadRouteForTest("unreleased-child"));
+	});
+	server.confirmedExit(1);
+	drainNextTicksAndDueTimers();
+
+	assert(outcomes.length == 5, "all forks must settle after EOF");
+	foreach (tid, childId; [2: "child", 6: "unreleased-child"])
+	{
+		auto outcome = outcomes[tid];
+		assert(!outcome.ok && outcome.threadId.length == 0);
+		auto detail = tid == 2 ? ": JSON-RPC connection closed: test EOF"
+			: " because the Codex app-server exited";
+		assert(outcome.error == "Could not release fork child subscription " ~ childId
+			~ detail, outcome.error);
+		assert(jsonParse!ThreadStartResult(outcome.rawResultJson).thread.id == childId);
+	}
+	assert(!outcomes[3].ok && outcomes[3].threadId.length == 0
+		&& outcomes[3].rawResultJson.length == 0
+		&& outcomes[3].error == "JSON-RPC connection closed: test EOF");
+	assert(outcomes[4].ok && outcomes[4].threadId == "released-child");
+	assert(!outcomes[5].ok && outcomes[5].threadId.length == 0);
+	assert(outcomes[5].error ==
+		"Could not release fork child subscription refused-child: unsubscribe refused by peer",
+		outcomes[5].error);
+	assert(jsonParse!ThreadStartResult(outcomes[5].rawResultJson).thread.id == "refused-child");
+	assert(connection.sentMessages.length == 0, "retiring fork must not send unsubscribe");
+}
+
 // A history is read on the app-server of the task's live session, else on
 // the task's own pooled one. The read holds the process until it settles.
 unittest
 {
 	import cydo.agent.drivers.codex.history : CodexHistoryMode;
 	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
-	import cydo.foundation.testing : drainNextTicks;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
 
 	enum silentThread = `{"thread":{"id":"thread","historyMode":"paginated","cwd":"/work",`
 		~ `"cliVersion":"0.171.0","modelProvider":"openai","preview":""}}`;
@@ -5025,10 +5260,51 @@ unittest
 		() => DriverHistoryLaunch(launch, config)));
 	read = connection.takeRequest("thread/read");
 
-	// The app-server ending is the read's failure.
-	server.terminate();
+	// The codec settles the read when the app-server exits.
+	connection.disconnect("history server exit", DisconnectType.graceful);
+	server.confirmedExit(1);
+	drainNextTicksAndDueTimers();
+	assert(outcomes == ["JSON-RPC connection closed: history server exit"]);
+
+	// EOF during pagination rejects the history read and releases its server.
+	outcomes = null;
+	connection = new TestCodexConnection;
+	server = makeTestAppServerProcess(connection);
+	owner = agent.makeSession(server, 1, SessionConfig.init, RouteOwnerKind.task);
+	observe(agent.loadHistory("thread", profile, () => owner, &noLaunch));
+	connection.respond(connection.takeRequest("thread/read"), result(silentThread));
 	drainNextTicks();
-	assert(outcomes == ["Codex app-server exited while reading history"]);
+	connection.takeRequest("thread/turns/list");
+	owner.closeStdin();
+	assert(!server.dead && outcomes.length == 0);
+	assert(__traits(getMember, server, "operationRouteReservations_").length == 1);
+	connection.disconnect("history EOF", DisconnectType.graceful);
+	server.confirmedExit(1);
+	drainNextTicksAndDueTimers();
+	assert(outcomes == ["JSON-RPC connection closed: history EOF"] && server.dead);
+	assert(__traits(getMember, server, "operationRouteReservations_").length == 0);
+
+	// A final page received just before exit still completes the history read.
+	outcomes = null;
+	connection = new TestCodexConnection;
+	server = makeTestAppServerProcess(connection);
+	owner = agent.makeSession(server, 1, SessionConfig.init, RouteOwnerKind.task);
+	owner.onExit = (int status) { outcomes ~= "exit"; };
+	agent.loadHistory("thread", profile, () => owner, &noLaunch)
+		.then((DriverHistory history) {
+			assert(history.mode == CodexHistoryMode.paginated);
+			outcomes ~= "read";
+			onNextTick(socketManager, { outcomes ~= "publish"; });
+		}, (Exception e) { assert(false, e.msg); }).ignoreResult();
+	connection.respond(connection.takeRequest("thread/read"), result(silentThread));
+	drainNextTicks();
+	connection.respond(connection.takeRequest("thread/turns/list"), result(emptyPage));
+	drainNextTicks();
+	connection.respond(connection.takeRequest("thread/items/list"), result(emptyPage));
+	connection.disconnect("after final history page", DisconnectType.graceful);
+	server.confirmedExit(0);
+	drainNextTicksAndDueTimers();
+	assert(outcomes == ["read", "publish", "exit"]);
 
 	// A cold read cannot use a launch from a different profile.
 	outcomes = null;
@@ -5099,18 +5375,18 @@ version (unittest) private class TestCodexHistoryFailure
 // A synchronous spawn failure must leave the same pool key available for retry.
 unittest
 {
-	import cydo.foundation.testing : drainNextTicks;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
 
 	auto startup = TestCodexStartup.create();
 	AppServerProcess.spawnForTest = &startup.spawn;
 	scope (exit) AppServerProcess.spawnForTest = null;
 
 	auto first = new TestCodexHistoryFailure(startup.read("retry", startup.failingExecutable));
-	drainNextTicks();
+	drainNextTicksAndDueTimers();
 	assert(first.errors == [startup.spawnError]);
 	assert(startup.agent.serverPool.length == 0 && startup.agent.appServerStartupGates.length == 0);
 	auto second = new TestCodexHistoryFailure(startup.read("retry", startup.failingExecutable));
-	drainNextTicks();
+	drainNextTicksAndDueTimers();
 	assert(second.errors == [startup.spawnError], "same-key retry did not receive the spawn error");
 
 	// Keep the pool key unchanged and let the third attempt supply a connection.
@@ -5126,14 +5402,17 @@ unittest
 	initialized.result = jsonParse!SO("{}");
 	startup.connection.respond(initialize, initialized);
 	drainNextTicks();
+	auto server = startup.agent.serverPool.values[0];
 	startup.agent.shutdownAllServers();
-	drainNextTicks();
+	startup.connection.disconnect("cleanup", DisconnectType.graceful);
+	server.confirmedExit(0);
+	drainNextTicksAndDueTimers();
 }
 
 // A failure after a reader has joined the startup queue must reject that reader.
 unittest
 {
-	import cydo.foundation.testing : drainNextTicks;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
 	import std.exception : collectException;
 
 	auto startup = TestCodexStartup.create();
@@ -5149,7 +5428,7 @@ unittest
 
 	gate.busy = false;
 	auto escaped = collectException(startup.agent.startNextAppServerStartup(startup.profile.root));
-	drainNextTicks();
+	drainNextTicksAndDueTimers();
 	assert(reader.errors == [startup.spawnError], "queued reader did not receive the spawn error");
 	assert(escaped is null, "queued spawn failure escaped startup");
 	assert(startup.agent.serverPool.length == 0 && startup.agent.appServerStartupGates.length == 0);
@@ -5158,7 +5437,7 @@ unittest
 // A queued spawn failure released by initialize must leave the first server's login intact.
 unittest
 {
-	import cydo.foundation.testing : drainNextTicks;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
 	import std.process : environment;
 
 	auto startup = TestCodexStartup.create();
@@ -5192,8 +5471,66 @@ unittest
 	startup.connection.respond(login, loggedIn);
 	drainNextTicks();
 	startup.connection.takeRequest("thread/read");
+	auto server = startup.agent.serverPool.values[0];
 	startup.agent.shutdownAllServers();
-	drainNextTicks();
+	startup.connection.disconnect("cleanup", DisconnectType.graceful);
+	server.confirmedExit(0);
+	drainNextTicksAndDueTimers();
+}
+
+unittest
+{
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+	import std.process : environment;
+
+	auto previousKey = environment.get("CODEX_API_KEY", null);
+	environment["CODEX_API_KEY"] = "test-startup-key";
+	scope (exit)
+	{
+		if (previousKey is null)
+			environment.remove("CODEX_API_KEY");
+		else
+			environment["CODEX_API_KEY"] = previousKey;
+	}
+
+	foreach (phase; ["initialize", "login notification", "confirmed exit"])
+	{
+		auto connection = new TestCodexConnection;
+		auto server = makeTestAppServerProcess(connection, true);
+		auto agent = new CodexAgent;
+		auto pending = new TestCodexHistoryFailure(agent.readHistoryOn(server, "thread",
+			delegate const(bool[string])() { return null; }));
+		int shutdowns;
+		server.onShutdown_ = { ++shutdowns; };
+		JsonRpcResponse initialized;
+		initialized.result = jsonParse!SO("{}");
+		connection.respond(connection.takeRequest("initialize"), initialized);
+		if (phase == "login notification")
+		{
+			drainNextTicks();
+			JsonRpcResponse acknowledged;
+			acknowledged.result = jsonParse!SO("{}");
+			connection.respond(connection.takeRequest("account/login/start"), acknowledged);
+			drainNextTicks();
+			assert(server.state == AppServerProcess.State.authenticating);
+		}
+		connection.disconnect(phase, DisconnectType.graceful);
+		assert(server.dead && shutdowns == 1);
+		if (phase != "confirmed exit")
+		{
+			drainNextTicks();
+			assert(pending.errors.length == 0);
+		}
+		server.confirmedExit(1);
+		drainNextTicksAndDueTimers();
+		assert(server.state == AppServerProcess.State.dead && shutdowns == 1);
+		assert(pending.errors == ["JSON-RPC connection closed: " ~ phase]);
+		string[] lateErrors;
+		server.onReady({ assert(false); }, (Exception e) { lateErrors ~= e.msg; });
+		assert(lateErrors == pending.errors);
+		assert(connection.sentMessages.length == 0, "disconnected server attempted another request");
+	}
 }
 
 // A late initialize failure must preserve the replacement at the same pool key.
@@ -5201,7 +5538,7 @@ unittest
 {
 	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
 	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
-	import cydo.foundation.testing : drainNextTicks;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
 
 	auto startup = TestCodexStartup.create();
 	AppServerProcess.spawnForTest = &startup.spawn;
@@ -5228,6 +5565,9 @@ unittest
 	assert(pooled !is null && *pooled is replacement,
 		"failed startup evicted its same-key replacement");
 	assert(startup.agent.getOrCreateServer(key, launch) is replacement);
+	original.confirmedExit(0);
+	drainNextTicksAndDueTimers();
+	assert(startup.agent.appServerStartupGates.length == 0);
 }
 
 // An initialize error settles every startup waiter with the server diagnostic.
@@ -5235,7 +5575,7 @@ unittest
 {
 	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
 	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
-	import cydo.foundation.testing : drainNextTicks;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
 
 	auto connection = new TestCodexConnection;
 	auto server = makeTestAppServerProcess(connection, true);
@@ -5251,6 +5591,8 @@ unittest
 	auto session = cast(CodexSession) agent.createSession(1, null, launch, config);
 	auto queued = new TestSubmissionOutcome(session.sendMessage(
 		[ContentBlock("text", "queued during initialize")], "startup-queued"));
+	int[] exits;
+	session.onExit = (int status) { exits ~= status; };
 	auto operation = agent.openForkSourceOwner(2, "thread", launch, config);
 	string routeFailure;
 	operation.routeReady.then((CodexSession) { assert(false, "failed startup acquired a route"); },
@@ -5266,10 +5608,14 @@ unittest
 	refused.error = JsonRpcError.fromCode(JsonRpcErrorCode.invalidRequest, diagnostic);
 	connection.respond(initialize, refused);
 	drainNextTicks();
+	assert(server.dead && exits.length == 0 && historyFailure is null && routeFailure is null);
+	assert(queued.rejectedCount == 0 && queued.acceptedCount == 0);
+	server.confirmedExit(0);
+	drainNextTicksAndDueTimers();
 	assert(historyFailure == diagnostic, "history must receive the initialize error");
 	assert(routeFailure == diagnostic);
 	assert(queued.rejectedCount == 1 && queued.rejectionMessage == diagnostic);
-	assert(server.dead && !session.alive);
+	assert(server.dead && exits == [1]);
 	assert(__traits(getMember, server, "operationRouteReservations_").length == 0);
 	assert(connection.sentMessages.length == 0, "a rejected initialize must not start login or a thread");
 }
@@ -5281,7 +5627,7 @@ unittest
 	import std.algorithm : canFind;
 	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
 	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
-	import cydo.foundation.testing : drainNextTicks;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
 
 	enum End { attachReply, startupFailure, serverExit }
 	string[] prematureExits;
@@ -5330,9 +5676,12 @@ unittest
 			resp.error = JsonRpcError.fromCode(JsonRpcErrorCode.internalError, "startup interrupted");
 
 		if (end == End.serverExit)
+		{
 			server.terminate();
+			server.confirmedExit(0);
+		}
 		connection.respond(request, resp);
-		drainNextTicks();
+		drainNextTicksAndDueTimers();
 		// On the baseline the orphan route is observable even after the early exit.
 		if (server.hasThreadRouteForTest(threadId))
 			prematureExits ~= label ~ ": orphan route";
@@ -5400,4 +5749,321 @@ unittest
 		found[session.sessionId] = session.exactHistoryPath;
 	}
 	assert(found == [thread: newest, other: single]);
+}
+
+// A start reply that still needs a live owner leaves settlement to confirmed exit.
+unittest
+{
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+
+	foreach (exitInSameTick; [false, true])
+	{
+		auto connection = new TestCodexConnection;
+		auto server = makeTestAppServerProcess(connection);
+		auto agent = new CodexAgent;
+		ProcessLaunch launch;
+		launch.nativeHistoryProfile = NativeHistoryProfile(AgentDriver.codex, "/profile");
+		launch.executablePath = "/unused/codex";
+		SessionConfig config;
+		config.workspace = "start-reply-eof";
+		agent.serverPool[agent.serverPoolKey(config.workspace, launch)] = server;
+		auto session = cast(CodexSession) agent.createSession(1, null, launch, config);
+		int[] exits;
+		session.onExit = (int status) { exits ~= status; };
+		auto submission = new TestSubmissionOutcome(
+			session.sendMessage([ContentBlock("text", "queued")], "queued"));
+
+		JsonRpcResponse reply;
+		reply.result = jsonParse!SO(`{"thread":{"id":"thread"}}`);
+		connection.respond(connection.takeRequest("thread/start"), reply);
+		connection.disconnect("after thread/start reply", DisconnectType.graceful);
+		if (!exitInSameTick)
+		{
+			drainNextTicks();
+			assert(server.dead && exits.length == 0);
+			assert(submission.acceptedCount == 0 && submission.rejectedCount == 0);
+			assert(connection.sentMessages.length == 0);
+		}
+		server.confirmedExit(7);
+		drainNextTicksAndDueTimers();
+
+		assert(exits == [7]);
+		assert(submission.acceptedCount == 0 && submission.rejectedCount == 1);
+		assert(connection.sentMessages.length == 0);
+	}
+}
+
+unittest
+{
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+
+	auto connection = new TestCodexConnection;
+	auto server = makeTestAppServerProcess(connection);
+	auto agent = new CodexAgent;
+	ProcessLaunch launch;
+	launch.nativeHistoryProfile = NativeHistoryProfile(AgentDriver.codex, "/profile");
+	launch.executablePath = "/unused/codex";
+	SessionConfig config;
+	config.workspace = "resume-reply-eof";
+	agent.serverPool[agent.serverPoolKey(config.workspace, launch)] = server;
+	auto owner = agent.openForkSourceOwner(2, "thread", launch, config);
+	int closed;
+	string[] errors;
+	owner.onClosed = { ++closed; };
+	owner.routeReady.then((CodexSession) { assert(false, "acquired a route after EOF"); },
+		(Exception e) { errors ~= e.msg; }).ignoreResult();
+
+	JsonRpcResponse reply;
+	reply.result = jsonParse!SO(`{"thread":{"id":"thread"}}`);
+	connection.respond(connection.takeRequest("thread/resume"), reply);
+	connection.disconnect("after thread/resume reply", DisconnectType.graceful);
+	drainNextTicks();
+	assert(closed == 0 && errors.length == 0 && connection.sentMessages.length == 0);
+	server.confirmedExit(7);
+	drainNextTicksAndDueTimers();
+
+	assert(closed == 1 && errors.length == 1 && connection.sentMessages.length == 0);
+}
+
+// Retirement fixes the route's status and stops new requests in the EOF tick.
+unittest
+{
+	import cydo.agent.drivers.codex.app_server : CodexSessionRouteTarget;
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicksAndDueTimers;
+	import std.exception : assertThrown;
+
+	enum Cause { readyEOF, terminate, shutdown, initializeEOF }
+	foreach (cause; [Cause.readyEOF, Cause.terminate, Cause.shutdown, Cause.initializeEOF])
+	{
+		auto connection = new TestCodexConnection;
+		auto server = makeTestAppServerProcess(connection, cause == Cause.initializeEOF);
+		if (cause == Cause.initializeEOF)
+			connection.takeRequest("initialize");
+		int[] exits;
+		CodexSessionRouteTarget route;
+		route.onServerExit = (int status) { exits ~= status; };
+		server.registerSessionByTid(1, route);
+		auto reservation = server.reserveOperationRouteTid();
+		int expected;
+		final switch (cause)
+		{
+		case Cause.readyEOF: expected = 7; break;
+		case Cause.terminate: server.terminate(); expected = 143; break;
+		case Cause.shutdown: server.shutdown(); expected = 1; break;
+		case Cause.initializeEOF: expected = 1; break;
+		}
+		connection.disconnect("test EOF", DisconnectType.graceful);
+		string[] rejected;
+		server.sendRequest("test/new", "{}")
+			.then((JsonRpcResponse) { assert(false, "retired server answered a request"); },
+				(Exception e) { rejected ~= e.msg; }).ignoreResult();
+		assert(server.dead && connection.sentMessages.length == 0);
+		server.shutdown();
+		server.confirmedExit(cause == Cause.readyEOF || cause == Cause.initializeEOF ? 7 : 0);
+		server.confirmedExit(99);
+		assert(exits.length == 0);
+		drainNextTicksAndDueTimers();
+
+		assert(rejected == ["Codex app-server is not running"] && exits == [expected]);
+		assertThrown!Exception(server.registerSessionByTid(2, route));
+		server.cancelOperationRouteReservation(reservation);
+	}
+}
+
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+
+	auto startup = TestCodexStartup.create();
+	auto replacementConnection = new TestCodexConnection;
+	AppServerProcess.spawnForTest = (string[] args) {
+		return ++startup.spawnAttempts == 1 ? startup.connection : replacementConnection;
+	};
+	scope (exit) AppServerProcess.spawnForTest = null;
+	ProcessLaunch launch;
+	launch.nativeHistoryProfile = startup.profile;
+	launch.executablePath = startup.workingExecutable;
+	auto key = startup.agent.serverPoolKey("same-key", launch);
+	auto first = startup.agent.getOrCreateServer(key, launch);
+	startup.connection.takeRequest("initialize");
+
+	startup.connection.disconnect("gate holder EOF", DisconnectType.graceful);
+	assert(key !in startup.agent.serverPool);
+	auto replacement = startup.agent.getOrCreateServer(key, launch);
+	drainNextTicks();
+	assert(startup.spawnAttempts == 1 && startup.agent.appServerStartupGates[startup.profile.root].busy);
+	assert(replacementConnection.sentMessages.length == 0);
+
+	first.confirmedExit(1);
+	drainNextTicksAndDueTimers();
+	assert(startup.spawnAttempts == 2 && startup.agent.serverPool[key] is replacement);
+	replacementConnection.takeRequest("initialize");
+	replacementConnection.disconnect("cleanup", DisconnectType.graceful);
+	replacement.confirmedExit(1);
+	drainNextTicksAndDueTimers();
+	assert(startup.agent.appServerStartupGates.length == 0);
+}
+
+// A startup deadline releases a live initializer's lease. After EOF, the
+// lease must stay held until confirmed exit.
+unittest
+{
+	import core.time : MonoTime;
+	import cydo.foundation.testing : drainNextTicksAndDueTimers;
+
+	foreach (retiring; [false, true])
+	{
+		auto startup = TestCodexStartup.create();
+		auto replacementConnection = new TestCodexConnection;
+		AppServerProcess.spawnForTest = (string[] args) {
+			return ++startup.spawnAttempts == 1 ? startup.connection : replacementConnection;
+		};
+		scope (exit) AppServerProcess.spawnForTest = null;
+		auto first = new AppServerProcess([startup.workingExecutable]);
+		auto replacement = new AppServerProcess([startup.workingExecutable]);
+		auto request = startup.agent.queueAppServerStartup(startup.profile.root, first);
+		startup.connection.takeRequest("initialize");
+		if (retiring)
+			startup.connection.disconnect("gate holder EOF", DisconnectType.graceful);
+		startup.agent.queueAppServerStartup(startup.profile.root, replacement);
+		assert(startup.spawnAttempts == 1);
+
+		request.lease.timeout.restart(MonoTime.currTime());
+		drainNextTicksAndDueTimers();
+		if (retiring)
+		{
+			assert(startup.spawnAttempts == 1 && replacementConnection.sentMessages.length == 0,
+				"startup deadline started a replacement before confirmed exit");
+		}
+		else
+		{
+			assert(first.state == AppServerProcess.State.initializing);
+			assert(startup.spawnAttempts == 2, "live initializer held its lease past the deadline");
+			startup.connection.disconnect("cleanup", DisconnectType.graceful);
+		}
+
+		first.confirmedExit(7);
+		drainNextTicksAndDueTimers();
+		assert(startup.spawnAttempts == 2);
+		replacementConnection.takeRequest("initialize");
+		replacementConnection.disconnect("cleanup", DisconnectType.graceful);
+		replacement.confirmedExit(1);
+		drainNextTicksAndDueTimers();
+		assert(startup.agent.appServerStartupGates.length == 0);
+	}
+}
+
+// Read the handshake failure before EOF, without running its continuation
+// until the server has begun retiring.
+unittest
+{
+	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
+	import cydo.agent.drivers.codex.app_server : CodexSessionRouteTarget;
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+	import std.process : environment;
+
+	auto previousKey = environment.get("CODEX_API_KEY", null);
+	environment["CODEX_API_KEY"] = "test-startup-key";
+	scope (exit)
+	{
+		if (previousKey is null)
+			environment.remove("CODEX_API_KEY");
+		else
+			environment["CODEX_API_KEY"] = previousKey;
+	}
+
+	foreach (method; ["initialize", "account/login/start"])
+	{
+		auto connection = new TestCodexConnection;
+		auto server = makeTestAppServerProcess(connection, true);
+		auto request = connection.takeRequest("initialize");
+		if (method == "account/login/start")
+		{
+			JsonRpcResponse initialized;
+			initialized.result = jsonParse!SO("{}");
+			connection.respond(request, initialized);
+			drainNextTicks();
+			request = connection.takeRequest(method);
+		}
+
+		string[] errors;
+		int[] exits;
+		server.onReady({ assert(false, "failed startup reached readiness"); },
+			(Exception e) { errors ~= e.msg; });
+		CodexSessionRouteTarget route;
+		route.onServerExit = (int status) { exits ~= status; };
+		server.registerSessionByTid(1, route);
+
+		auto diagnostic = method ~ " refused by peer";
+		JsonRpcResponse refused;
+		refused.error = JsonRpcError.fromCode(JsonRpcErrorCode.internalError, diagnostic);
+		connection.respond(request, refused);
+		connection.disconnect("handshake EOF", DisconnectType.graceful);
+		drainNextTicks();
+		assert(server.state == AppServerProcess.State.retiring);
+		assert(errors.length == 0 && exits.length == 0 && connection.sentMessages.length == 0);
+
+		server.confirmedExit(42);
+		drainNextTicksAndDueTimers();
+		assert(server.state == AppServerProcess.State.dead && connection.sentMessages.length == 0);
+		assert(errors == [diagnostic], toJson(errors));
+		assert(exits == [1]);
+	}
+}
+
+// An unanswered setup RPC rejects queued work before the owner reports child exit.
+unittest
+{
+	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
+
+	foreach (resumeId; [null, "thread"])
+	foreach (terminate; [false, true])
+	foreach (queueSubmission; [false, true])
+	{
+		auto connection = new TestCodexConnection;
+		auto server = makeTestAppServerProcess(connection);
+		auto agent = new CodexAgent;
+		ProcessLaunch launch;
+		launch.nativeHistoryProfile = NativeHistoryProfile(AgentDriver.codex, "/profile");
+		launch.executablePath = "/unused/codex";
+		SessionConfig config;
+		config.workspace = "pending-setup-eof";
+		agent.serverPool[agent.serverPoolKey(config.workspace, launch)] = server;
+		auto session = agent.createSession(1, resumeId, launch, config);
+		int[] exits;
+		enum error = "JSON-RPC connection closed: while setup is pending";
+		session.onExit = (int status) {
+			assert(session.startupFailure == error, session.startupFailure);
+			exits ~= status;
+		};
+		TestSubmissionOutcome submission;
+		if (queueSubmission)
+			submission = new TestSubmissionOutcome(
+				session.sendMessage([ContentBlock("text", "queued")], "queued"));
+		connection.takeRequest(resumeId is null ? "thread/start" : "thread/resume");
+
+		if (terminate)
+			server.terminate();
+		connection.disconnect("while setup is pending", DisconnectType.graceful);
+		drainNextTicks();
+		assert(exits.length == 0);
+		assert(session.startupFailure == error, session.startupFailure);
+		if (queueSubmission)
+			assert(submission.acceptedCount == 0 && submission.rejectedCount == 1
+				&& submission.rejectionMessage == error);
+
+		server.confirmedExit(73);
+		drainNextTicksAndDueTimers();
+		server.confirmedExit(74);
+		drainNextTicksAndDueTimers();
+		assert(exits == [terminate ? 143 : 73] && !session.alive);
+		if (queueSubmission)
+			assert(submission.acceptedCount == 0 && submission.rejectedCount == 1);
+		assert(connection.sentMessages.length == 0);
+	}
 }

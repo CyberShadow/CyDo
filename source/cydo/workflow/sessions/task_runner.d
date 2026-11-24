@@ -4363,6 +4363,8 @@ unittest
 
 version (unittest) private final class BusyUndoTestCodexAgent : CodexAgent
 {
+	void delegate(int) confirmedExit;
+
 	override string executableName(string[string] env) { return "/bin/true"; }
 
 	override AgentSession createSession(int tid, string resumeSessionId,
@@ -4370,7 +4372,7 @@ version (unittest) private final class BusyUndoTestCodexAgent : CodexAgent
 	{
 		import cydo.agent.drivers.codex : makeUnattachedCodexSessionForTest;
 
-		return makeUnattachedCodexSessionForTest(tid, config);
+		return makeUnattachedCodexSessionForTest(tid, config, confirmedExit);
 	}
 }
 
@@ -4382,7 +4384,7 @@ unittest
 
 	import ae.utils.statequeue : StateQueue;
 	import cydo.domain.tasks.model : Watermark;
-	import cydo.foundation.testing : drainNextTicks;
+	import cydo.foundation.testing : drainNextTicks, drainNextTicksAndDueTimers;
 
 	auto root = buildPath(tempDir(), "cydo-undo-stop-exit-" ~ thisProcessID.to!string);
 	auto workspace = buildPath(root, "workspace");
@@ -4457,8 +4459,13 @@ unittest
 			claude.exit(0);
 		}
 		else
+		{
 			runner.stopTask(1);
-		drainNextTicks();
+			drainNextTicks();
+			assert(!stopped, "the stop must wait for confirmed exit");
+			(cast(BusyUndoTestCodexAgent) agent).confirmedExit(0);
+		}
+		drainNextTicksAndDueTimers();
 
 		assert(stopped && runner.sessionForTask(1) is null,
 			"The runner must handle the session exit and settle the stop");

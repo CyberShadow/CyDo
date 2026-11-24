@@ -4,16 +4,20 @@ import core.sys.posix.signal : SIGINT, SIGKILL, SIGTERM;
 import core.sys.posix.unistd : dup;
 import core.time : Duration, seconds;
 
+import std.exception : enforce;
 import std.logger : tracef, warningf;
 import std.process : Pid, Pipe, Redirect, Config, spawnProcess, pipe, kill;
 import std.stdio : File;
 
 import ae.net.asockets : ConnectionAdapter, ConnectionState, DisconnectType,
-    disconnectable, Duplex, FileConnection, IConnection, LineBufferedAdapter;
+    disconnectable, Duplex, FileConnection, IConnection, LineBufferedAdapter,
+	onNextTick, socketManager;
 import ae.sys.data : Data;
 import ae.sys.process : asyncWait;
 import ae.sys.timing : setTimeout, TimerTask;
 import ae.utils.array : asBytes;
+import ae.utils.jsonrpc : JsonRpcRequest, JsonRpcResponse;
+import ae.utils.promise : Promise;
 
 import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.net.jsonrpc.contentlength : ContentLengthAdapter;
@@ -69,6 +73,105 @@ unittest
 		(string source, Exception e) { throw new Exception("bad report"); });
 }
 
+/// RPC operations on a transport whose disconnect handler is fixed at construction.
+package(cydo.agent) final class AgentRpcCodec
+{
+	private JsonRpcCodec codec;
+
+	this(IConnection connection, IConnection.DisconnectHandler onDisconnect = null)
+	{
+		codec = new JsonRpcCodec(connection);
+		codec.handleDisconnect = onDisconnect;
+	}
+
+	@property void handleRequest(Promise!JsonRpcResponse delegate(JsonRpcRequest) handler)
+	{
+		codec.handleRequest = handler;
+	}
+
+	Promise!JsonRpcResponse sendRequest(JsonRpcRequest request)
+	{
+		return codec.sendRequest(request);
+	}
+
+	void sendNotification(JsonRpcRequest request)
+	{
+		codec.sendNotification(request);
+	}
+}
+
+/// Notify routes after all promise continuations synchronously reachable from
+/// work already queued have drained, including submission commit and ACK,
+/// inject forwarding, and final history publication. Chains awaiting further
+/// I/O are outside this boundary. Entry points before fanout still follow the
+/// retiring-state rules.
+package(cydo.agent) void scheduleOwnerExit(void delegate() fanout)
+{
+	// Arm the timer from a tick so epoll cannot run it in the I/O batch
+	// that reported exit, before the promise queue drains.
+	onNextTick(socketManager, { setTimeout(fanout, Duration.zero); });
+}
+
+/// Readiness remains open until the owner reports its terminal event.
+package(cydo.agent) struct ReadinessQueue
+{
+	private enum State { pending, open, closed }
+	private State state;
+	private Exception error;
+
+	private struct Waiter
+	{
+		void delegate() ready;
+		void delegate(Exception) failed;
+	}
+	private Waiter[] waiting;
+
+	@property bool isOpen() const { return state == State.open; }
+
+	void wait(void delegate() ready, void delegate(Exception) failed)
+	{
+		final switch (state)
+		{
+		case State.pending:
+			waiting ~= Waiter(ready, failed);
+			break;
+		case State.open:
+			try
+				ready();
+			catch (Exception e)
+				failed(e);
+			break;
+		case State.closed:
+			failed(error);
+			break;
+		}
+	}
+
+	void open()
+	{
+		enforce(state == State.pending, "Readiness must be pending to open");
+		state = State.open;
+		auto batch = waiting;
+		waiting = null;
+		foreach (waiter; batch)
+			wait(waiter.ready, waiter.failed);
+	}
+
+	void close(Exception failure)
+	{
+		enforce(state != State.closed, "Readiness already closed");
+		state = State.closed;
+		error = failure;
+		auto batch = waiting;
+		waiting = null;
+		foreach (waiter; batch)
+			waiter.failed(error);
+	}
+}
+
+/// Grace before starting escalation for an RPC child.
+package(cydo.agent) enum RpcRetirement { codex, copilot }
+
 /// Manages a child process with event-loop-integrated I/O.
 /// Uses FileConnection to wrap pipe fds, Duplex to combine stdin/stdout,
 /// and a framing adapter (LineBufferedAdapter or ContentLengthAdapter) for message splitting.
@@ -84,7 +187,8 @@ class AgentProcess
 	private bool stdoutEOF;
 	private bool stderrEOF;
 
-	private bool disconnected;
+	private bool codecAttached;
+	private bool retiring;
 	private bool exitFired;
 	private TimerTask stderrDrainTimer;
 	private TimerTask killTimer;
@@ -296,22 +400,32 @@ class AgentProcess
 		stdoutLines.send(Data(line.asBytes));
 	}
 
-	/// Whether the process pipes have been disconnected.
-	@property bool dead() { return disconnected || exited; }
-
-	/// Install JSON-RPC framing handlers while preserving process exit tracking.
-	JsonRpcCodec createJsonRpcCodec()
+	private void onStdoutDisconnect(string, DisconnectType)
 	{
-		auto codec = new JsonRpcCodec(stdoutLines);
-		codec.handleDisconnect = &onStdoutDisconnect;
-		return codec;
-	}
-
-	private void onStdoutDisconnect(string reason, DisconnectType type)
-	{
-		disconnected = true;
 		stdoutEOF = true;
 		tryFireExit();
+	}
+
+	private @property bool stdoutDisconnected() { return stdoutEOF; }
+	/// Pipe liveness for line-based drivers. RPC owners use their own lifecycle.
+	@property bool dead() { return stdoutDisconnected || exited; }
+
+	/// Transfer the framed transport to a codec, forwarding disconnect after
+	/// the codec settles its pending requests.
+	package(cydo.agent) AgentRpcCodec attachJsonRpcCodec(
+		IConnection.DisconnectHandler onDisconnect = null)
+	{
+		enforce(!codecAttached && !stdoutDisconnected,
+			"JSON-RPC codec requires an open process transport without a codec");
+		codecAttached = true;
+		return new AgentRpcCodec(stdoutLines, (string reason, DisconnectType type) {
+			if (stdoutEOF)
+				return;
+			stdoutEOF = true;
+			scope (exit) tryFireExit();
+			if (onDisconnect !is null)
+				onDisconnect(reason, type);
+		});
 	}
 
 	/// The underlying process PID, for use with asyncWait.
@@ -370,6 +484,24 @@ class AgentProcess
 	void terminate()
 	{
 		sendSignal(SIGTERM);
+	}
+
+	package(cydo.agent) void retire(RpcRetirement policy)
+	{
+		if (retiring)
+			return;
+		retiring = true;
+		closeStdin();
+		terminate();
+		final switch (policy)
+		{
+		case RpcRetirement.codex:
+			killAfterTimeout(0.seconds);
+			break;
+		case RpcRetirement.copilot:
+			killAfterTimeout(3.seconds);
+			break;
+		}
 	}
 
 	/// If the process has not exited within `timeout`, send SIGTERM.
@@ -432,4 +564,81 @@ class LoggingAdapter : ConnectionAdapter
 			});
 		super.send(data, priority);
 	}
+}
+
+// The codec owns the stdout transport, but EOF must still complete process exit.
+unittest
+{
+	import std.exception : assertThrown;
+	import ae.net.asockets : socketManager;
+
+	auto child = new AgentProcess(["sh", "-c", "exit 23"]);
+	auto codec = child.attachJsonRpcCodec();
+	static assert(!__traits(hasMember, typeof(codec), "handleDisconnect"));
+	assertThrown!Exception(child.attachJsonRpcCodec());
+
+	int[] statuses;
+	child.onExit = (int status) { statuses ~= status; };
+	socketManager.loop();
+
+	assert(child.stdoutDisconnected, "stdout EOF must reach AgentProcess");
+	assert(statuses == [23], "EOF and child exit must produce one onExit callback");
+}
+
+// A socket callback can queue more work after scheduling owner exit.
+unittest
+{
+	import ae.sys.timing : mainTimer;
+
+	string[] order;
+	auto child = new AgentProcess(["sh", "-c", "exit 0"]);
+	auto codec = child.attachJsonRpcCodec((string, DisconnectType) {
+		order ~= "socket EOF";
+		auto nextTimer = mainTimer.getNextEvent();
+		scheduleOwnerExit({ order ~= "owner exit"; });
+		assert(mainTimer.getNextEvent() == nextTimer,
+			"The socket callback must leave the existing timer schedule intact");
+		onNextTick(socketManager, {
+			order ~= "tick";
+			onNextTick(socketManager, { order ~= "nested tick"; });
+		});
+	});
+	socketManager.loop();
+
+	assert(order == ["socket EOF", "tick", "nested tick", "owner exit"]);
+}
+
+// Give a child that survives retirement time to leave a marker, then exit so
+// a regression cannot hang the suite. Keep the sleeper off the agent pipes.
+version (unittest) package(cydo.agent) enum rpcChildSurvivalProbe =
+	q"SH
+	sleep 3 </dev/null >/dev/null 2>&1 &
+	wait $!
+	touch "$1"
+SH";
+
+unittest
+{
+	import ae.net.asockets : socketManager;
+	import std.conv : to;
+	import std.file : exists, remove, tempDir;
+	import std.path : buildPath;
+	import std.process : thisProcessID;
+
+	auto marker = buildPath(tempDir, "cydo-rpc-eof-" ~ thisProcessID.to!string);
+	scope (exit) if (exists(marker)) remove(marker);
+	auto child = new AgentProcess(["sh", "-c",
+		`trap 'exit 42' TERM; exec 1>&-;` ~ rpcChildSurvivalProbe, "test", marker]);
+	int disconnects;
+	int[] statuses;
+	auto codec = child.attachJsonRpcCodec((string, DisconnectType) {
+		++disconnects;
+		child.retire(RpcRetirement.codex);
+	});
+	child.onExit = (int status) { statuses ~= status; };
+	socketManager.loop();
+
+	assert(disconnects == 1);
+	assert(statuses == [42]);
+	assert(!exists(marker));
 }
