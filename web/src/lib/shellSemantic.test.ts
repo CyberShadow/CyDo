@@ -6,17 +6,64 @@ import {
   loadParsedShellDocument,
   type ParsedShellDocument,
 } from "./shellParser";
-import { derivePlan } from "./commandStep";
+import { shellOutputView } from "./shellOutput";
+import type {
+  NumberingLayer,
+  OutputSegment,
+  ReadRange,
+  RowsSegment,
+} from "./shellOutput";
 import { buildShellSourceTree } from "./shellSourceTree";
 import type {
-  ShellReadSemantic,
   ShellHeredocWriteSemantic,
-  ShellDiffSemantic,
   ShellScriptExecSemantic,
+  ShellSemantic,
 } from "./shellSemantic";
 
-const plan = (v: { steps?: Parameters<typeof derivePlan>[0] }) =>
-  v.steps ? derivePlan(v.steps) : undefined;
+const all = { type: "all" } as const;
+const nl = { kind: "nl", width: 6, separator: "	" } as const;
+const grep = { kind: "grep", context: false } as const;
+
+function fileRows(
+  filePath: string,
+  range: ReadRange = all,
+  numbering: NumberingLayer | null = null,
+): RowsSegment {
+  return {
+    kind: "rows",
+    source: { kind: "file", origin: { kind: "worktree", filePath }, range },
+    numbering,
+  };
+}
+
+function gitRows(
+  filePath: string,
+  range: ReadRange = all,
+  numbering: NumberingLayer | null = null,
+): RowsSegment {
+  return {
+    ...fileRows(filePath, range, numbering),
+    source: { kind: "file", origin: { kind: "git-object", filePath }, range },
+  };
+}
+
+const literal = (text: string): OutputSegment => ({ kind: "literal", text });
+const summaryLine = (): OutputSegment => ({ kind: "summary-line" });
+const diff = (): OutputSegment => ({ kind: "diff" });
+
+const segmentsOf = (value: ShellSemantic) =>
+  "output" in value ? value.output : undefined;
+
+function plan(value: ShellSemantic) {
+  const segments = segmentsOf(value);
+  if (!segments) return;
+  const view = shellOutputView(segments);
+  if (view.ok && view.value.kind === "plan") return view.value.plan;
+}
+
+function withoutCommand({ command: _command, ...semantic }: ShellSemantic) {
+  return semantic;
+}
 
 type FsPromisesLike = {
   readFile(path: URL): Promise<Uint8Array>;
@@ -60,14 +107,6 @@ async function buildLoadedShellSourceTree(source: string) {
   return buildShellSourceTree(parsed.document);
 }
 
-function normalizeSemanticForComparison(value: unknown): unknown {
-  const normalized: unknown = JSON.parse(JSON.stringify(value));
-  if (normalized && typeof normalized === "object") {
-    delete (normalized as { command?: string }).command;
-  }
-  return normalized;
-}
-
 it("returns an unsupported command result for a 4,000-command && chain", async () => {
   const source = Array(4_000).fill("true").join(" && ");
   await expect(parseShellSemantic(source)).resolves.toMatchObject({
@@ -90,7 +129,10 @@ it("classifies a 4,000-stage read pipeline", async () => {
   );
   await expect(parseShellSemantic(source)).resolves.toMatchObject({
     ok: true,
-    value: { kind: "read", range: { type: "head", count: 1 } },
+    value: {
+      kind: "output",
+      output: [fileRows("file", { type: "head", count: 1 })],
+    },
   });
 }, 30_000);
 
@@ -100,7 +142,7 @@ it("classifies a diff source in a 4,000-stage formatting pipeline", async () => 
   );
   await expect(parseShellSemantic(source)).resolves.toMatchObject({
     ok: true,
-    value: { kind: "diff", command: source },
+    value: { kind: "output", command: source, output: [diff()] },
   });
 }, 30_000);
 
@@ -133,7 +175,7 @@ describe("cat reads", () => {
     async (path) => {
       await expect(parseShellSemantic(`cat ${path}`)).resolves.toMatchObject({
         ok: true,
-        value: { kind: "read", filePath: path },
+        value: { kind: "output", output: [fileRows(path)] },
       });
     },
   );
@@ -141,20 +183,17 @@ describe("cat reads", () => {
   it("cat README.md → read with filePath", async () => {
     const r = await parseShellSemantic("cat README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("README.md");
-    expect(v.range).toEqual({ type: "all" });
-    expect(v.presentation.lineNumbers).toBe(false);
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("README.md", { type: "all" }),
+    ]);
   });
 
   it("cat -- README.md → read", async () => {
     const r = await parseShellSemantic("cat -- README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("README.md")]);
   });
 
   it("keeps a terminal semicolon structurally visible and conservative", async () => {
@@ -167,18 +206,13 @@ describe("cat reads", () => {
 });
 
 describe("nl reads", () => {
-  it("nl -ba -w 4 -s ': ' source/app.d → read with lineNumbers presentation", async () => {
+  it("nl -ba -w 4 -s ': ' source/app.d → rows with custom nl formatting", async () => {
     const r = await parseShellSemantic("nl -ba -w 4 -s ': ' source/app.d");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("source/app.d");
-    expect(v.presentation.lineNumbers).toMatchObject({
-      style: "nl",
-      width: 4,
-      separator: ": ",
-    });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("source/app.d", all, { ...nl, width: 4, separator: ": " }),
+    ]);
   });
 });
 
@@ -238,7 +272,12 @@ describe("strict shell argv", () => {
   ])("uses the literal file operand in %s", async (command, filePath) => {
     await expect(parseShellSemantic(command)).resolves.toMatchObject({
       ok: true,
-      value: { kind: "read", filePath },
+      value: {
+        kind: "output",
+        output: [
+          { kind: "rows", source: { origin: { kind: "worktree", filePath } } },
+        ],
+      },
     });
   });
 
@@ -248,8 +287,8 @@ describe("strict shell argv", () => {
     ).resolves.toMatchObject({
       ok: true,
       value: {
-        kind: "read",
-        presentation: { lineNumbers: { width: 2147483647 } },
+        kind: "output",
+        output: [fileRows("f", all, { ...nl, width: 2147483647 })],
       },
     });
   });
@@ -270,11 +309,10 @@ describe("sed reads", () => {
   it("sed -n '10,20p' web/src/main.tsx → read with lines range", async () => {
     const r = await parseShellSemantic("sed -n '10,20p' web/src/main.tsx");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("web/src/main.tsx");
-    expect(v.range).toEqual({ type: "lines", start: 10, end: 20 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("web/src/main.tsx", { type: "lines", start: 10, end: 20 }),
+    ]);
   });
 });
 
@@ -282,38 +320,37 @@ describe("head reads", () => {
   it("head -n 25 README.md → read with head range", async () => {
     const r = await parseShellSemantic("head -n 25 README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("README.md");
-    expect(v.range).toEqual({ type: "head", count: 25 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("README.md", { type: "head", count: 25 }),
+    ]);
   });
 
   it("head README.md → read with the first 10 lines", async () => {
     const r = await parseShellSemantic("head README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("README.md");
-    expect(v.range).toEqual({ type: "head", count: 10 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("README.md", { type: "head", count: 10 }),
+    ]);
   });
 
   it("head -n50 Cargo.toml → read with no space (Codex parity)", async () => {
     const r = await parseShellSemantic("head -n50 Cargo.toml");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("Cargo.toml");
-    expect(v.range).toEqual({ type: "head", count: 50 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("Cargo.toml", { type: "head", count: 50 }),
+    ]);
   });
 
   it("head -20 README.md → read with compact count", async () => {
     const r = await parseShellSemantic("head -20 README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("README.md");
-    expect(v.range).toEqual({ type: "head", count: 20 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("README.md", { type: "head", count: 20 }),
+    ]);
   });
 });
 
@@ -321,47 +358,46 @@ describe("tail reads", () => {
   it("tail -n +40 README.md → read with tail range", async () => {
     const r = await parseShellSemantic("tail -n +40 README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("README.md");
-    expect(v.range).toEqual({ type: "tail", startLine: 40 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("README.md", { type: "tail", startLine: 40 }),
+    ]);
   });
 
   it("tail -n+10 README.md → read with no space (Codex parity)", async () => {
     const r = await parseShellSemantic("tail -n+10 README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("README.md");
-    expect(v.range).toEqual({ type: "tail", startLine: 10 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("README.md", { type: "tail", startLine: 10 }),
+    ]);
   });
 
   it("tail -n 30 README.md → read with tail-count range (v2 parity)", async () => {
     const r = await parseShellSemantic("tail -n 30 README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("README.md");
-    expect(v.range).toEqual({ type: "tail-count", count: 30 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("README.md", { type: "tail-count", count: 30 }),
+    ]);
   });
 
   it("tail README.md → read with the last 10 lines", async () => {
     const r = await parseShellSemantic("tail README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("README.md");
-    expect(v.range).toEqual({ type: "tail-count", count: 10 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("README.md", { type: "tail-count", count: 10 }),
+    ]);
   });
 
   it("tail -20 README.md → read with compact count", async () => {
     const r = await parseShellSemantic("tail -20 README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("README.md");
-    expect(v.range).toEqual({ type: "tail-count", count: 20 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("README.md", { type: "tail-count", count: 20 }),
+    ]);
   });
 });
 
@@ -373,18 +409,19 @@ describe("pipe reads (should succeed as Read)", () => {
   it("cat file.txt | head -5 → read with filePath file.txt", async () => {
     const r = await parseShellSemantic("cat file.txt | head -5");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.kind).toBe("read");
-    expect(v.filePath).toBe("file.txt");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("file.txt", { type: "head", count: 5 }),
+    ]);
   });
 
   it("cat tui/Cargo.toml | sed -n '1,200p' → read with filePath tui/Cargo.toml", async () => {
     const r = await parseShellSemantic("cat tui/Cargo.toml | sed -n '1,200p'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("tui/Cargo.toml");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("tui/Cargo.toml", { type: "lines", start: 1, end: 200 }),
+    ]);
   });
 
   it.each([
@@ -441,13 +478,10 @@ describe("pipe reads (should succeed as Read)", () => {
       "nl -ba src/main.rs | sed -n '1200,1720p'",
     );
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("src/main.rs");
-    expect(v.range).toEqual({ type: "lines", start: 1200, end: 1720 });
-    expect(v.presentation).toEqual({ lineNumbers: { style: "nl" } });
-    expect(v.commandName).toBe("nl");
-    expect(plan(r.value)?.blocks[0]?.source?.producerName).toBe("nl");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("src/main.rs", { type: "lines", start: 1200, end: 1720 }, nl),
+    ]);
     expect(plan(r.value)?.blocks[0]?.format).toEqual({
       kind: "nl-line-number-prefixed",
       width: 6,
@@ -508,16 +542,16 @@ describe("stream composition", () => {
   it.each([
     ["tail -n +1 f.d | sed -n 1,5p", { type: "lines", start: 1, end: 5 }],
     ["sed -n 2,6p f.d | tail -n +1", { type: "lines", start: 2, end: 6 }],
-  ])("preserves the sed range and producer for %s", async (command, range) => {
+  ] as const)("preserves the sed range for %s", async (command, range) => {
     const result = await parseShellSemantic(command);
     expect(result).toMatchObject({
       ok: true,
-      value: { kind: "read", commandName: "sed", range },
+      value: { kind: "output", output: [fileRows("f.d", range)] },
     });
     assert(result.ok);
     expect(plan(result.value)?.blocks[0]).toMatchObject({
       id: "0",
-      source: { producerName: "sed" },
+      document: { filePath: "f.d", preview: true },
     });
   });
 
@@ -527,9 +561,8 @@ describe("stream composition", () => {
     ).resolves.toMatchObject({
       ok: true,
       value: {
-        kind: "read",
-        commandName: "head",
-        range: { type: "head", count: 3 },
+        kind: "output",
+        output: [fileRows("file.txt", { type: "head", count: 3 })],
       },
     });
   });
@@ -541,10 +574,9 @@ describe("stream composition", () => {
     );
     expect(direct.ok).toBe(true);
     expect(sliced.ok).toBe(true);
-    if (!direct.ok || !sliced.ok) return;
-    expect(normalizeSemanticForComparison(sliced.value)).toEqual(
-      normalizeSemanticForComparison(direct.value),
-    );
+    assert(direct.ok && sliced.ok);
+    expect(segmentsOf(direct.value)).toBeDefined();
+    expect(segmentsOf(sliced.value)).toEqual(segmentsOf(direct.value));
   });
 
   it("searches a sliced file with rg", async () => {
@@ -552,109 +584,54 @@ describe("stream composition", () => {
       parseShellSemantic("sed -n '10,20p' file.txt | rg -n needle"),
     ).resolves.toMatchObject({
       ok: true,
-      value: { kind: "search", filePath: "file.txt", pattern: "needle" },
+      value: {
+        kind: "output",
+        output: [
+          fileRows("file.txt", { type: "lines", start: 10, end: 20 }, grep),
+        ],
+      },
     });
   });
 
   it.each([
-    ["cat f.d | cat", "cat", { type: "all" }],
-    ["cat f.d | head", "head", { type: "head", count: 10 }],
-    [
-      "cat f.d | head | sed -n 5,20p",
-      "sed",
-      { type: "lines", start: 5, end: 10 },
-    ],
-    ["head -n 5 f.d | tail", "head", { type: "head", count: 5 }],
-    ["sed -n 2,6p f.d | head", "sed", { type: "lines", start: 2, end: 6 }],
-    [
-      "sed -n 10,20p f.d | head -5",
-      "head",
-      { type: "lines", start: 10, end: 14 },
-    ],
-    [
-      "head -n 20 f.d | sed -n 5,8p",
-      "sed",
-      { type: "lines", start: 5, end: 8 },
-    ],
-    [
-      "tail -n +10 f.d | head -n 3",
-      "head",
-      { type: "lines", start: 10, end: 12 },
-    ],
-    ["tail -n +10 f.d | tail -n +3", "tail", { type: "tail", startLine: 12 }],
-    ["head -n 5 f.d | head -n 9", "head", { type: "head", count: 5 }],
-    ["sed -n 2,6p f.d | head -n 9", "sed", { type: "lines", start: 2, end: 6 }],
-    ["tail -n 3 f.d | head -n 5", "tail", { type: "tail-count", count: 3 }],
-    ["tail -n 9 f.d | tail -n 3", "tail", { type: "tail-count", count: 3 }],
-  ] as const)(
-    "%s composes the read range and producer",
-    async (command, commandName, range) => {
-      await expect(parseShellSemantic(command)).resolves.toEqual({
-        ok: true,
-        value: {
-          kind: "read",
-          command,
-          commandName,
-          filePath: "f.d",
-          range,
-          presentation: { lineNumbers: false },
-          steps: [
-            {
-              kind: "read-file",
-              order: 0,
-              commandName,
-              filePath: "f.d",
-              range,
-              outputShape: {
-                kind: "content",
-                format: { kind: "content", language: "d" },
-                validator: "non-empty",
-              },
-            },
-          ],
-        },
-      });
-    },
-  );
+    ["cat f.d | cat", { type: "all" }],
+    ["cat f.d | head", { type: "head", count: 10 }],
+    ["cat f.d | head | sed -n 5,20p", { type: "lines", start: 5, end: 10 }],
+    ["head -n 5 f.d | tail", { type: "head", count: 5 }],
+    ["sed -n 2,6p f.d | head", { type: "lines", start: 2, end: 6 }],
+    ["sed -n 10,20p f.d | head -5", { type: "lines", start: 10, end: 14 }],
+    ["head -n 20 f.d | sed -n 5,8p", { type: "lines", start: 5, end: 8 }],
+    ["tail -n +10 f.d | head -n 3", { type: "lines", start: 10, end: 12 }],
+    ["tail -n +10 f.d | tail -n +3", { type: "tail", startLine: 12 }],
+    ["head -n 5 f.d | head -n 9", { type: "head", count: 5 }],
+    ["sed -n 2,6p f.d | head -n 9", { type: "lines", start: 2, end: 6 }],
+    ["tail -n 3 f.d | head -n 5", { type: "tail-count", count: 3 }],
+    ["tail -n 9 f.d | tail -n 3", { type: "tail-count", count: 3 }],
+  ] as const)("%s composes the read range", async (command, range) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: true,
+      value: {
+        kind: "output",
+        command,
+        output: [fileRows("f.d", range)],
+      },
+    });
+  });
 
   it.each([
     ["nl f.d | head -5", { type: "head", count: 5 }],
     ["head -5 f.d | nl", { type: "head", count: 5 }],
     ["nl f.d | cat", { type: "all" }],
-  ] as const)(
-    "%s preserves nl as the numbered read producer",
-    async (command, range) => {
-      await expect(parseShellSemantic(command)).resolves.toEqual({
-        ok: true,
-        value: {
-          kind: "read",
-          command,
-          commandName: "nl",
-          filePath: "f.d",
-          range,
-          presentation: { lineNumbers: { style: "nl" } },
-          steps: [
-            {
-              kind: "read-file",
-              order: 0,
-              commandName: "nl",
-              filePath: "f.d",
-              range,
-              outputShape: {
-                kind: "content",
-                format: {
-                  kind: "nl-line-number-prefixed",
-                  width: 6,
-                  separator: "\t",
-                  format: { kind: "content", language: "d" },
-                },
-              },
-            },
-          ],
-        },
-      });
-    },
-  );
+  ] as const)("%s preserves nl numbering", async (command, range) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: true,
+      value: {
+        kind: "output",
+        command,
+        output: [fileRows("f.d", range, nl)],
+      },
+    });
+  });
 
   it.each([
     [
@@ -711,36 +688,39 @@ describe("stream composition", () => {
     const filtered = await parseShellSemantic(`grep -n p f.d | ${filters}`);
     expect(direct.ok).toBe(true);
     expect(filtered.ok).toBe(true);
-    if (!direct.ok || !filtered.ok) return;
-    expect(normalizeSemanticForComparison(filtered.value)).toEqual(
-      normalizeSemanticForComparison(direct.value),
-    );
+    assert(direct.ok && filtered.ok);
+    expect(segmentsOf(direct.value)).toBeDefined();
+    expect(segmentsOf(filtered.value)).toEqual(segmentsOf(direct.value));
   });
 
   it.each([
-    "sed -n 10,20p f.d | grep -n x",
-    "tail -n 30 f.d | grep -n x",
-    "git show HEAD:f.d | grep -n x | head -3",
-  ])("%s preserves the search pattern and D output plan", async (command) => {
-    const direct = await parseShellSemantic("grep -n x f.d");
-    const composed = await parseShellSemantic(command);
-    expect(composed).toMatchObject({
-      ok: true,
-      value: { kind: "search", pattern: "x", filePath: "f.d" },
-    });
-    expect(composed.ok).toBe(true);
-    if (!direct.ok || !composed.ok) return;
-    expect(normalizeSemanticForComparison(composed.value)).toEqual(
-      normalizeSemanticForComparison(direct.value),
-    );
-    expect(plan(composed.value)?.blocks[0]?.format).toEqual({
-      kind: "individual-lines",
-      format: {
-        kind: "line-number-prefixed",
-        format: { kind: "content", language: "d" },
-      },
-    });
-  });
+    [
+      "sed -n 10,20p f.d | grep -n x",
+      fileRows("f.d", { type: "lines", start: 10, end: 20 }, grep),
+    ],
+    [
+      "tail -n 30 f.d | grep -n x",
+      fileRows("f.d", { type: "tail-count", count: 30 }, grep),
+    ],
+    ["git show HEAD:f.d | grep -n x | head -3", gitRows("f.d", all, grep)],
+  ] as const)(
+    "%s preserves the search source and D output plan",
+    async (command, rows) => {
+      const composed = await parseShellSemantic(command);
+      expect(composed).toMatchObject({
+        ok: true,
+        value: { kind: "output", output: [rows] },
+      });
+      assert(composed.ok);
+      expect(plan(composed.value)?.blocks[0]?.format).toEqual({
+        kind: "individual-lines",
+        format: {
+          kind: "line-number-prefixed",
+          format: { kind: "content", language: "d" },
+        },
+      });
+    },
+  );
 
   it.each([
     "git diff | nl | sed -n 1,5p",
@@ -749,7 +729,7 @@ describe("stream composition", () => {
   ])("%s preserves the diff semantic", async (command) => {
     await expect(parseShellSemantic(command)).resolves.toEqual({
       ok: true,
-      value: { kind: "diff", commandName: "git", command, subcommand: "diff" },
+      value: { kind: "output", command, output: [diff()] },
     });
   });
 
@@ -758,12 +738,9 @@ describe("stream composition", () => {
     await expect(parseShellSemantic(command)).resolves.toEqual({
       ok: true,
       value: {
-        kind: "read",
+        kind: "output",
         command,
-        commandName: "git",
-        filePath: "f.d",
-        range: { type: "lines", start: 2, end: 3 },
-        presentation: { lineNumbers: false },
+        output: [gitRows("f.d", { type: "lines", start: 2, end: 3 })],
       },
     });
   });
@@ -788,10 +765,9 @@ describe("argv vs pipeline equivalence", () => {
     const viaPipe = await parseShellSemantic("cat f.d | nl");
     expect(direct.ok).toBe(true);
     expect(viaPipe.ok).toBe(true);
-    if (!direct.ok || !viaPipe.ok) return;
-    expect(normalizeSemanticForComparison(viaPipe.value)).toEqual(
-      normalizeSemanticForComparison(direct.value),
-    );
+    assert(direct.ok && viaPipe.ok);
+    expect(segmentsOf(direct.value)).toBeDefined();
+    expect(segmentsOf(viaPipe.value)).toEqual(segmentsOf(direct.value));
   });
 
   it("head/read forms normalize to the same semantic", async () => {
@@ -801,19 +777,10 @@ describe("argv vs pipeline equivalence", () => {
     expect(direct.ok).toBe(true);
     expect(viaPipe.ok).toBe(true);
     expect(viaCompact.ok).toBe(true);
-    if (!direct.ok || !viaPipe.ok || !viaCompact.ok) return;
-    expect(direct.value.kind).toBe("read");
-    expect(viaPipe.value.kind).toBe("read");
-    expect(viaCompact.value.kind).toBe("read");
-    const d = direct.value as ShellReadSemantic;
-    const p = viaPipe.value as ShellReadSemantic;
-    const c = viaCompact.value as ShellReadSemantic;
-    expect(p.filePath).toBe(d.filePath);
-    expect(c.filePath).toBe(d.filePath);
-    expect(p.range).toEqual(d.range);
-    expect(c.range).toEqual(d.range);
-    expect(p.presentation).toEqual(d.presentation);
-    expect(c.presentation).toEqual(d.presentation);
+    assert(direct.ok && viaPipe.ok && viaCompact.ok);
+    expect(segmentsOf(direct.value)).toBeDefined();
+    expect(segmentsOf(viaPipe.value)).toEqual(segmentsOf(direct.value));
+    expect(segmentsOf(viaCompact.value)).toEqual(segmentsOf(direct.value));
   });
 
   it("sed/read forms normalize to the same semantic", async () => {
@@ -821,14 +788,9 @@ describe("argv vs pipeline equivalence", () => {
     const viaPipe = await parseShellSemantic("cat README.md | sed -n '1,20p'");
     expect(direct.ok).toBe(true);
     expect(viaPipe.ok).toBe(true);
-    if (!direct.ok || !viaPipe.ok) return;
-    expect(direct.value.kind).toBe("read");
-    expect(viaPipe.value.kind).toBe("read");
-    const d = direct.value as ShellReadSemantic;
-    const p = viaPipe.value as ShellReadSemantic;
-    expect(p.filePath).toBe(d.filePath);
-    expect(p.range).toEqual(d.range);
-    expect(p.presentation).toEqual(d.presentation);
+    assert(direct.ok && viaPipe.ok);
+    expect(segmentsOf(direct.value)).toBeDefined();
+    expect(segmentsOf(viaPipe.value)).toEqual(segmentsOf(direct.value));
   });
 
   it("rg/search forms normalize to the same semantic", async () => {
@@ -836,10 +798,9 @@ describe("argv vs pipeline equivalence", () => {
     const viaPipe = await parseShellSemantic("cat README.md | rg -n needle");
     expect(direct.ok).toBe(true);
     expect(viaPipe.ok).toBe(true);
-    if (!direct.ok || !viaPipe.ok) return;
-    expect(normalizeSemanticForComparison(viaPipe.value)).toEqual(
-      normalizeSemanticForComparison(direct.value),
-    );
+    assert(direct.ok && viaPipe.ok);
+    expect(segmentsOf(direct.value)).toBeDefined();
+    expect(segmentsOf(viaPipe.value)).toEqual(segmentsOf(direct.value));
   });
 
   it("grep/search forms normalize to the same semantic", async () => {
@@ -847,10 +808,9 @@ describe("argv vs pipeline equivalence", () => {
     const viaPipe = await parseShellSemantic("cat README.md | grep -n needle");
     expect(direct.ok).toBe(true);
     expect(viaPipe.ok).toBe(true);
-    if (!direct.ok || !viaPipe.ok) return;
-    expect(normalizeSemanticForComparison(viaPipe.value)).toEqual(
-      normalizeSemanticForComparison(direct.value),
-    );
+    assert(direct.ok && viaPipe.ok);
+    expect(segmentsOf(direct.value)).toBeDefined();
+    expect(segmentsOf(viaPipe.value)).toEqual(segmentsOf(direct.value));
   });
 });
 
@@ -891,9 +851,9 @@ describe("later-stage redirections", () => {
     const plain = await parseShellSemantic(plainCommand);
     expect(redirected.ok).toBe(true);
     expect(plain.ok).toBe(true);
-    if (!redirected.ok || !plain.ok) return;
-    expect(normalizeSemanticForComparison(redirected.value)).toEqual(
-      normalizeSemanticForComparison(plain.value),
+    assert(redirected.ok && plain.ok);
+    expect(withoutCommand(redirected.value)).toEqual(
+      withoutCommand(plain.value),
     );
   });
 });
@@ -1004,9 +964,9 @@ describe("redirect effects", () => {
     const plain = await parseShellSemantic(plainCommand);
     expect(redirected.ok).toBe(true);
     expect(plain.ok).toBe(true);
-    if (!redirected.ok || !plain.ok) return;
-    expect(normalizeSemanticForComparison(redirected.value)).toEqual(
-      normalizeSemanticForComparison(plain.value),
+    assert(redirected.ok && plain.ok);
+    expect(withoutCommand(redirected.value)).toEqual(
+      withoutCommand(plain.value),
     );
   });
 });
@@ -1019,27 +979,24 @@ describe("cd && read (should succeed)", () => {
   it("cd foo && cat file.txt → read with path foo/file.txt", async () => {
     const r = await parseShellSemantic("cd foo && cat file.txt");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("foo/file.txt");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("foo/file.txt")]);
   });
 
   it("cd dir1 && cd dir2 && cat file.txt → read with path dir1/dir2/file.txt", async () => {
     const r = await parseShellSemantic("cd dir1 && cd dir2 && cat file.txt");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("dir1/dir2/file.txt");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("dir1/dir2/file.txt")]);
   });
 
   it("cd foo && cat f.d | sed -n 1,150p → read with a D output plan", async () => {
     const r = await parseShellSemantic("cd foo && cat f.d | sed -n 1,150p");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
+    assert(r.ok);
     expect(r.value).toMatchObject({
-      kind: "read",
-      filePath: "foo/f.d",
-      range: { type: "lines", start: 1, end: 150 },
+      kind: "output",
+      output: [fileRows("foo/f.d", { type: "lines", start: 1, end: 150 })],
     });
     expect(plan(r.value)?.blocks[0]?.format).toEqual({
       kind: "content",
@@ -1050,9 +1007,11 @@ describe("cd && read (should succeed)", () => {
   it("cd foo && grep -n pat f.d → search with a cd-resolved output plan", async () => {
     const r = await parseShellSemantic("cd foo && grep -n pat f.d");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value).toMatchObject({ kind: "search", filePath: "foo/f.d" });
-    expect(plan(r.value)?.blocks[0]?.source?.filePath).toBe("foo/f.d");
+    assert(r.ok);
+    expect(r.value).toMatchObject({
+      kind: "output",
+      output: [fileRows("foo/f.d", all, grep)],
+    });
   });
 
   it.each(["./f.d", "../f.d"])(
@@ -1069,43 +1028,39 @@ describe("cd && read (should succeed)", () => {
   );
 
   it.each([
-    ["cd d && git show HEAD:f.d | grep -n x", "f.d"],
-    ["cd X && git show HEAD:p/f.d | grep -n x", "p/f.d"],
-    ["cd X && git show HEAD:p/f.d | sed -n 1,5p | grep -n x", "p/f.d"],
-  ])("keeps the repo-relative search path in %s", async (command, filePath) => {
-    const result = await parseShellSemantic(command);
-    expect(result).toMatchObject({
-      ok: true,
-      value: {
-        kind: "search",
-        filePath,
-      },
-    });
-    if (!result.ok) return;
-    expect(plan(result.value)?.blocks[0]?.source?.filePath).toBe(filePath);
-  });
+    ["cd d && git show HEAD:f.d | grep -n x", gitRows("f.d", all, grep)],
+    ["cd X && git show HEAD:p/f.d | grep -n x", gitRows("p/f.d", all, grep)],
+    [
+      "cd X && git show HEAD:p/f.d | sed -n 1,5p | grep -n x",
+      gitRows("p/f.d", { type: "lines", start: 1, end: 5 }, grep),
+    ],
+  ] as const)(
+    "keeps the repo-relative search path in %s",
+    async (command, rows) => {
+      await expect(parseShellSemantic(command)).resolves.toMatchObject({
+        ok: true,
+        value: { kind: "output", output: [rows] },
+      });
+    },
+  );
 
   it("resolves the worktree search path against cd", async () => {
-    const result = await parseShellSemantic("cd X && grep -n x f.d");
-    expect(result).toMatchObject({
+    await expect(
+      parseShellSemantic("cd X && grep -n x f.d"),
+    ).resolves.toMatchObject({
       ok: true,
-      value: { kind: "search", filePath: "X/f.d" },
+      value: { kind: "output", output: [fileRows("X/f.d", all, grep)] },
     });
-    if (!result.ok) return;
-    expect(plan(result.value)?.blocks[0]?.source?.filePath).toBe("X/f.d");
   });
 
-  it("resolves both the wc operand and the read operand against cd", async () => {
+  it("keeps a wc summary before rows from the cd-resolved file", async () => {
     await expect(
       parseShellSemantic("cd X && wc -l g.d && cat f.d"),
     ).resolves.toMatchObject({
       ok: true,
       value: {
-        kind: "structured-output",
-        steps: [
-          { commandName: "wc", filePath: "X/g.d" },
-          { kind: "read-file", filePath: "X/f.d" },
-        ],
+        kind: "output",
+        output: [summaryLine(), fileRows("X/f.d")],
       },
     });
   });
@@ -1114,10 +1069,13 @@ describe("cd && read (should succeed)", () => {
     const result = await parseShellSemantic("cd x && cat f | head -5 && cd y");
     expect(result).toMatchObject({
       ok: true,
-      value: { kind: "read", filePath: "x/f" },
+      value: {
+        kind: "output",
+        output: [fileRows("x/f", { type: "head", count: 5 })],
+      },
     });
-    if (!result.ok) return;
-    expect(plan(result.value)?.blocks[0]?.source?.filePath).toBe("x/f");
+    assert(result.ok);
+    expect(plan(result.value)?.blocks[0]?.document?.filePath).toBe("x/f");
   });
 
   it.each([
@@ -1140,18 +1098,10 @@ describe("cd && read (should succeed)", () => {
     ).resolves.toMatchObject({
       ok: true,
       value: {
-        kind: "structured-output",
-        steps: [
-          {
-            kind: "read-file",
-            filePath: "foo/f",
-            range: { type: "lines", start: 1, end: 5 },
-          },
-          {
-            kind: "plain-output",
-            commandName: "echo",
-            outputShape: { kind: "literal", text: "done\n" },
-          },
+        kind: "output",
+        output: [
+          fileRows("foo/f", { type: "lines", start: 1, end: 5 }),
+          literal("done\n"),
         ],
       },
     });
@@ -1164,7 +1114,7 @@ describe("cd && read (should succeed)", () => {
   ])("%s → read with absolute path %s", async (command, filePath) => {
     await expect(parseShellSemantic(command)).resolves.toMatchObject({
       ok: true,
-      value: { kind: "read", filePath },
+      value: { kind: "output", output: [fileRows(filePath)] },
     });
   });
 });
@@ -1243,8 +1193,8 @@ describe("cd && read (should reject)", () => {
   it("cd foo && cat file.txt && echo done → structured-output (echo is recognized)", async () => {
     const r = await parseShellSemantic("cd foo && cat file.txt && echo done");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("structured-output");
+    assert(r.ok);
+    expect(r.value.kind).toBe("output");
   });
 });
 
@@ -1256,18 +1206,15 @@ describe("cd newline-separated read (should succeed)", () => {
   it("cd dir\\ncat file.md → same as cd dir && cat file.md", async () => {
     const r = await parseShellSemantic("cd dir\ncat file.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.kind).toBe("read");
-    expect(v.filePath).toBe("dir/file.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("dir/file.md")]);
   });
 
   it("cd a\\ncd b\\ncat x.md → resolves to a/b/x.md", async () => {
     const r = await parseShellSemantic("cd a\ncd b\ncat x.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("a/b/x.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("a/b/x.md")]);
   });
 });
 
@@ -1306,8 +1253,8 @@ describe("echo in lists (R6: unified classifier)", () => {
   it("echo x && cat file.md → structured-output with literal + content blocks", async () => {
     const r = await parseShellSemantic('echo "hello" && cat file.md');
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("structured-output");
+    assert(r.ok);
+    expect(r.value.kind).toBe("output");
     const p = plan(r.value);
     expect(p?.blocks).toHaveLength(2);
     expect(p?.blocks[0]?.location.kind).toBe("unique-literal");
@@ -1317,8 +1264,8 @@ describe("echo in lists (R6: unified classifier)", () => {
   it("echo x\\ncat file.md → structured-output (newline-separated)", async () => {
     const r = await parseShellSemantic("echo x\ncat file.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("structured-output");
+    assert(r.ok);
+    expect(r.value.kind).toBe("output");
     const p = plan(r.value);
     expect(p?.blocks).toHaveLength(2);
     expect(p?.blocks[0]?.location.kind).toBe("unique-literal");
@@ -1327,16 +1274,12 @@ describe("echo in lists (R6: unified classifier)", () => {
   it("echo a b c\\ncat file.md → args joined with spaces in literal text", async () => {
     const r = await parseShellSemantic("echo a b c\ncat file.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("structured-output");
-    const echoStep = r.value.steps?.find(
-      (s) => s.kind !== "write-file" && s.commandName === "echo",
-    );
-    expect(
-      echoStep?.outputShape.kind === "literal"
-        ? echoStep.outputShape.text
-        : null,
-    ).toBe("a b c\n");
+    assert(r.ok);
+    expect(r.value.kind).toBe("output");
+    expect(segmentsOf(r.value)).toEqual([
+      literal("a b c\n"),
+      fileRows("file.md"),
+    ]);
   });
 
   it("echo -n x\\ncat file.md → reject (flag echo)", async () => {
@@ -1352,28 +1295,24 @@ describe("echo in lists (R6: unified classifier)", () => {
   it("cd dir && echo x && cat file.md → cd-resolved structured-output", async () => {
     const r = await parseShellSemantic("cd dir && echo x && cat file.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("structured-output");
-    const catStep = r.value.steps?.find(
-      (s) => s.kind !== "write-file" && s.commandName === "cat",
-    );
-    expect(catStep?.kind === "read-file" ? catStep.filePath : null).toBe(
-      "dir/file.md",
-    );
-    expect(r.value.steps).toHaveLength(2);
+    assert(r.ok);
+    expect(r.value.kind).toBe("output");
+    expect(segmentsOf(r.value)).toEqual([
+      literal("x\n"),
+      fileRows("dir/file.md"),
+    ]);
+    expect(segmentsOf(r.value)).toHaveLength(2);
   });
 
   it("cd dir\\necho x\\ncat file.md → same via newline path", async () => {
     const r = await parseShellSemantic("cd dir\necho x\ncat file.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("structured-output");
-    const catStep = r.value.steps?.find(
-      (s) => s.kind !== "write-file" && s.commandName === "cat",
-    );
-    expect(catStep?.kind === "read-file" ? catStep.filePath : null).toBe(
-      "dir/file.md",
-    );
+    assert(r.ok);
+    expect(r.value.kind).toBe("output");
+    expect(segmentsOf(r.value)).toEqual([
+      literal("x\n"),
+      fileRows("dir/file.md"),
+    ]);
   });
 
   it("cd dir && echo x → reject (no read-file step)", async () => {
@@ -1464,25 +1403,24 @@ describe("shell -c/-lc wrapper unwrapping", () => {
   it("sh -c 'cat README.md' → read", async () => {
     const r = await parseShellSemantic("sh -c 'cat README.md'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("README.md")]);
   });
 
   it("sh -c 'head -n 10 src/main.ts' → read with head range", async () => {
     const r = await parseShellSemantic("sh -c 'head -n 10 src/main.ts'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("src/main.ts");
-    expect(v.range).toEqual({ type: "head", count: 10 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("src/main.ts", { type: "head", count: 10 }),
+    ]);
   });
 
   it("bash -c 'cat README.md' → read", async () => {
     const r = await parseShellSemantic("bash -c 'cat README.md'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("README.md")]);
   });
 
   it("keeps a terminal Bash-wrapper semicolon as unsupported wrapper structure", async () => {
@@ -1498,22 +1436,22 @@ describe("shell -c/-lc wrapper unwrapping", () => {
   it("zsh -c 'cat README.md' → read", async () => {
     const r = await parseShellSemantic("zsh -c 'cat README.md'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("README.md")]);
   });
 
   it("zsh -lc 'cat README.md' → read (login shell flag)", async () => {
     const r = await parseShellSemantic("zsh -lc 'cat README.md'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("README.md")]);
   });
 
   it("/bin/bash -c 'cat README.md' → read (absolute path)", async () => {
     const r = await parseShellSemantic("/bin/bash -c 'cat README.md'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("README.md")]);
   });
 
   it("/bin/zsh -lc 'sed -n '1,10p' Cargo.toml' → read", async () => {
@@ -1521,10 +1459,10 @@ describe("shell -c/-lc wrapper unwrapping", () => {
       `/bin/zsh -lc "sed -n '1,10p' Cargo.toml"`,
     );
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("Cargo.toml");
-    expect(v.range).toEqual({ type: "lines", start: 1, end: 10 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("Cargo.toml", { type: "lines", start: 1, end: 10 }),
+    ]);
   });
 
   it("/run/current-system/sw/bin/zsh -c 'cat README.md' → read (NixOS path)", async () => {
@@ -1532,8 +1470,8 @@ describe("shell -c/-lc wrapper unwrapping", () => {
       "/run/current-system/sw/bin/zsh -c 'cat README.md'",
     );
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("README.md")]);
   });
 
   it("/nix/store/abc-bash-5.2/bin/bash -lc 'head -n 5 file.ts' → read (Nix store path)", async () => {
@@ -1541,10 +1479,10 @@ describe("shell -c/-lc wrapper unwrapping", () => {
       "/nix/store/abc-bash-5.2/bin/bash -lc 'head -n 5 file.ts'",
     );
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("file.ts");
-    expect(v.range).toEqual({ type: "head", count: 5 });
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("file.ts", { type: "head", count: 5 }),
+    ]);
   });
 });
 
@@ -1577,9 +1515,9 @@ describe("wrapped inline script execution", () => {
     async (command, commandName, language, flag, content) => {
       const result = await parseShellSemantic(command);
       expect(result.ok, command).toBe(true);
-      if (!result.ok) return;
+      assert(result.ok);
       expect(result.value.kind, command).toBe("script-exec");
-      if (result.value.kind !== "script-exec") return;
+      assert(result.value.kind === "script-exec");
 
       expect(result.value).toMatchObject({
         command,
@@ -1682,85 +1620,76 @@ describe("rejected forms", () => {
 // ---------------------------------------------------------------------------
 
 describe("git diff commands (should succeed as diff)", () => {
-  it("git diff → diff, subcommand: diff", async () => {
+  it("git diff → diff", async () => {
     const r = await parseShellSemantic("git diff");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
-    const v = r.value as ShellDiffSemantic;
-    expect(v.commandName).toBe("git");
-    expect(v.subcommand).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
   it("git diff HEAD~1 → diff", async () => {
     const r = await parseShellSemantic("git diff HEAD~1");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
   it("git diff --cached → diff", async () => {
     const r = await parseShellSemantic("git diff --cached");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
   it("git diff --staged → diff", async () => {
     const r = await parseShellSemantic("git diff --staged");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
   it("git diff branch1..branch2 → diff", async () => {
     const r = await parseShellSemantic("git diff branch1..branch2");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
-  it("git show abc123 → diff, subcommand: show", async () => {
+  it("git show abc123 → diff", async () => {
     const r = await parseShellSemantic("git show abc123");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
-    const v = r.value as ShellDiffSemantic;
-    expect(v.subcommand).toBe("show");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
-  it("git log -p -1 → diff, subcommand: log", async () => {
+  it("git log -p -1 → diff", async () => {
     const r = await parseShellSemantic("git log -p -1");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
-    const v = r.value as ShellDiffSemantic;
-    expect(v.subcommand).toBe("log");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
   it("git log --patch -1 → diff", async () => {
     const r = await parseShellSemantic("git log --patch -1");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 });
 
 describe("diff binary (should succeed as diff)", () => {
-  it("diff -u old.txt new.txt → diff, commandName: diff", async () => {
+  it("diff -u old.txt new.txt → diff", async () => {
     const r = await parseShellSemantic("diff -u old.txt new.txt");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
-    const v = r.value as ShellDiffSemantic;
-    expect(v.commandName).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
   it("diff file1 file2 → diff", async () => {
     const r = await parseShellSemantic("diff file1 file2");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 });
 
@@ -1768,19 +1697,15 @@ describe("git show HEAD:file (should succeed as read)", () => {
   it("git show HEAD:src/main.ts → read, filePath: src/main.ts", async () => {
     const r = await parseShellSemantic("git show HEAD:src/main.ts");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("src/main.ts");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([gitRows("src/main.ts")]);
   });
 
   it("git show abc123:README.md → read, filePath: README.md", async () => {
     const r = await parseShellSemantic("git show abc123:README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("README.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([gitRows("README.md")]);
   });
 });
 
@@ -1788,29 +1713,29 @@ describe("git diff pipelines (should succeed as diff)", () => {
   it("git diff | head -100 → diff (pipeline with formatting)", async () => {
     const r = await parseShellSemantic("git diff | head -100");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
   it("git diff | sed -n '1,260p' → diff (pipeline with formatting)", async () => {
     const r = await parseShellSemantic("git diff | sed -n '1,260p'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
   it("git diff | sort | uniq → diff (opaque transforms over diff at any depth)", async () => {
     const r = await parseShellSemantic("git diff | sort | uniq");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
   it("git diff | head -n 5 | sort → diff (mixed transforms over diff)", async () => {
     const r = await parseShellSemantic("git diff | head -n 5 | sort");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 });
 
@@ -1835,17 +1760,15 @@ describe("shell wrapper with git/diff commands", () => {
   it("sh -c 'git diff' → diff", async () => {
     const r = await parseShellSemantic("sh -c 'git diff'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("diff");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([diff()]);
   });
 
   it("bash -lc 'git show HEAD:file.ts' → read", async () => {
     const r = await parseShellSemantic("bash -lc 'git show HEAD:file.ts'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("file.ts");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([gitRows("file.ts")]);
   });
 });
 
@@ -2060,7 +1983,7 @@ describe("source tree parsing and invariants", () => {
       const result = await parseShellSemantic(source);
       expect(result, source).not.toMatchObject({
         ok: true,
-        value: { kind: "read" },
+        value: { kind: "output", output: [{ kind: "rows" }] },
       });
     }
     for (const source of [
@@ -2069,7 +1992,7 @@ describe("source tree parsing and invariants", () => {
     ]) {
       expect(await parseShellSemantic(source), source).not.toMatchObject({
         ok: true,
-        value: { kind: "read" },
+        value: { kind: "output", output: [{ kind: "rows" }] },
       });
     }
   });
@@ -2306,8 +2229,10 @@ describe("source tree parsing and invariants", () => {
     expect(parsed.ok).toBe(true);
     const semantic = await parseShellSemantic(cmd);
     expect(semantic.ok).toBe(true);
-    if (!semantic.ok) return;
-    expect(semantic.value.kind).toBe("search");
+    assert(semantic.ok);
+    expect(segmentsOf(semantic.value)).toEqual([
+      fileRows("web/src/lib/sourceTree.ts", all, grep),
+    ]);
   });
 });
 
@@ -2319,9 +2244,8 @@ describe("whole-command shell wrapper semantic unwrapping", () => {
   ])("unwraps %s", async (command) => {
     const result = await parseShellSemantic(command);
     expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.kind).toBe("read");
-    expect((result.value as ShellReadSemantic).filePath).toBe("README.md");
+    assert(result.ok);
+    expect(segmentsOf(result.value)).toEqual([fileRows("README.md")]);
   });
 
   it.each([
@@ -2357,25 +2281,22 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
   it("zsh -cl wrapper is supported", async () => {
     const r = await parseShellSemantic("zsh -cl 'cat README.md'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("README.md")]);
   });
 
   it("single-quoted wrapper payload supports close/escape/reopen syntax", async () => {
     const r = await parseShellSemantic("zsh -lc 'cat '\\''README.md'\\'''");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("README.md")]);
   });
 
   it("adjacent wrapper payload fragments are parsed as one argv word", async () => {
     const r = await parseShellSemantic("zsh -lc 'cat README.md''x'");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    expect((r.value as ShellReadSemantic).filePath).toBe("README.mdx");
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([fileRows("README.mdx")]);
   });
 
   it("wrapper payload split by whitespace is rejected as extra argv", async () => {
@@ -2495,12 +2416,13 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     const cmd = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\n:;";
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
-    if (!r.ok || r.value.kind !== "write") return;
+    assert(r.ok);
+    assert(r.value.kind === "write");
     expect(r.value).toMatchObject({
       filePath: "/tmp/a/output.md",
       heredoc: { content: "# Title" },
     });
-    expect(r.value.steps).toBeUndefined();
+    expect(segmentsOf(r.value)).toBeUndefined();
   });
 
   it("trailing here-string <<< after heredoc is not treated as second heredoc", async () => {
@@ -2534,10 +2456,8 @@ describe("batch 1 rg/sed/structured output plans", () => {
     expect(result).toMatchObject({
       ok: true,
       value: {
-        kind: "search",
-        commandName: "rg",
-        pattern: "backfillHistoryBoundary",
-        filePath,
+        kind: "output",
+        output: [fileRows(filePath, all, { kind: "grep", context: true })],
       },
     });
     assert(result.ok);
@@ -2546,7 +2466,6 @@ describe("batch 1 rg/sed/structured output plans", () => {
       blocks: [
         {
           id: "0",
-          source: { stepIndex: 0, producerName: "rg", filePath },
           format: {
             kind: "individual-lines",
             format: {
@@ -2575,8 +2494,14 @@ describe("batch 1 rg/sed/structured output plans", () => {
     ["grep -n p -A2 f.d | head -5 | tail -2", "d"],
   ])("plans numbered context rows for %s", async (command, language) => {
     const result = await parseShellSemantic(command);
-    expect(result).toMatchObject({ ok: true, value: { kind: "search" } });
-    if (!result.ok) return;
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        kind: "output",
+        output: [{ kind: "rows", numbering: { kind: "grep" } }],
+      },
+    });
+    assert(result.ok);
     const block = plan(result.value)?.blocks[0];
     expect(block?.location).toMatchObject({
       validator: "line-number-prefixed-with-context",
@@ -2618,7 +2543,9 @@ describe("batch 1 rg/sed/structured output plans", () => {
     );
     expect(r.ok).toBe(true);
     assert(r.ok);
-    expect(r.value.kind).toBe("search");
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("web/src/components/ToolCall.tsx", all, grep),
+    ]);
     const v = r.value;
     expect(plan(v)?.blocks[0]?.id).toBe("0");
     expect(plan(v)?.blocks[0]?.location).toEqual({
@@ -2634,7 +2561,9 @@ describe("batch 1 rg/sed/structured output plans", () => {
     );
     expect(r.ok).toBe(true);
     assert(r.ok);
-    expect(r.value.kind).toBe("search");
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("web/src/components/ToolCall.tsx", all, grep),
+    ]);
     const v = r.value;
     expect(plan(v)?.blocks[0]?.id).toBe("0");
     expect(plan(v)?.blocks[0]?.location).toEqual({
@@ -2686,8 +2615,14 @@ describe("batch 1 rg/sed/structured output plans", () => {
     const r = await parseShellSemantic(
       'grep -n "cbDllUnload\\|ll_removeThread" /nix/store/ab1n7scnjf98w13jwz12r5lm43d30cj9-dmd-2.112.0/include/dmd/core/thread/osthread.d | head -15',
     );
-    expect(r).toMatchObject({ ok: true, value: { kind: "search" } });
-    if (!r.ok) return;
+    expect(r).toMatchObject({
+      ok: true,
+      value: {
+        kind: "output",
+        output: [{ kind: "rows", numbering: { kind: "grep" } }],
+      },
+    });
+    assert(r.ok);
     expect(plan(r.value)?.blocks[0]?.format).toEqual({
       kind: "individual-lines",
       format: {
@@ -2701,7 +2636,13 @@ describe("batch 1 rg/sed/structured output plans", () => {
     const r = await parseShellSemantic(
       'rg -n "sessionBroadcast" source/cydo/app.d | head -15',
     );
-    expect(r).toMatchObject({ ok: true, value: { kind: "search" } });
+    expect(r).toMatchObject({
+      ok: true,
+      value: {
+        kind: "output",
+        output: [{ kind: "rows", numbering: { kind: "grep" } }],
+      },
+    });
   });
 
   it("unsupported search pipeline stage rejects", async () => {
@@ -2715,7 +2656,9 @@ describe("batch 1 rg/sed/structured output plans", () => {
     const r = await parseShellSemantic("sed -n '1,20p' README.md");
     expect(r.ok).toBe(true);
     assert(r.ok);
-    expect(r.value.kind).toBe("read");
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("README.md", { type: "lines", start: 1, end: 20 }),
+    ]);
     expect(plan(r.value)?.blocks[0]?.id).toBe("0");
   });
 
@@ -2724,9 +2667,15 @@ describe("batch 1 rg/sed/structured output plans", () => {
       "sed -n '1,20p' /tmp/cydo-heredoc-render.svg",
     );
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("read");
-    expect(plan(r.value)?.blocks[0]?.source?.filePath).toBe(
+    assert(r.ok);
+    expect(segmentsOf(r.value)).toEqual([
+      fileRows("/tmp/cydo-heredoc-render.svg", {
+        type: "lines",
+        start: 1,
+        end: 20,
+      }),
+    ]);
+    expect(plan(r.value)?.blocks[0]?.document?.filePath).toBe(
       "/tmp/cydo-heredoc-render.svg",
     );
   });
@@ -2737,7 +2686,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
     );
     expect(r.ok).toBe(true);
     assert(r.ok);
-    expect(r.value.kind).toBe("structured-output");
+    expect(r.value.kind).toBe("output");
     const v = r.value;
     expect(plan(v)?.blocks.map((b: { id: string }) => b.id)).toEqual([
       "0",
@@ -2748,7 +2697,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
       end: { kind: "end-of-output", requiresComplete: true },
       validator: "non-empty",
     });
-    expect(plan(v)?.blocks[1]?.source?.filePath).toBe("README.md");
+    expect(plan(v)?.blocks[1]?.document?.filePath).toBe("README.md");
   });
 
   it.each([
@@ -2759,7 +2708,8 @@ describe("batch 1 rg/sed/structured output plans", () => {
     async (command) => {
       const r = await parseShellSemantic(command);
       expect(r.ok, command).toBe(false);
-      if (!r.ok) expect(r.code, command).toBe("unsupported_command");
+      assert(!r.ok);
+      expect(r.code, command).toBe("unsupported_command");
     },
   );
 
@@ -2772,7 +2722,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
     assert(r.ok);
-    expect(r.value.kind).toBe("structured-output");
+    expect(r.value.kind).toBe("output");
     const sedBlock = plan(r.value)?.blocks.find((b) => b.id === "0");
     expect(sedBlock?.location).toEqual({
       kind: "from-cursor",
@@ -2793,7 +2743,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
     assert(r.ok);
-    expect(r.value.kind).toBe("structured-output");
+    expect(r.value.kind).toBe("output");
     expect(plan(r.value)?.blocks.map((b: { id: string }) => b.id)).toEqual([
       "0",
       "1",
@@ -2803,7 +2753,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
       kind: "content",
       language: "markdown",
     });
-    expect(plan(r.value)?.blocks[0]?.source?.filePath).toBe(
+    expect(plan(r.value)?.blocks[0]?.document?.filePath).toBe(
       "/tmp/cydo-heredoc-render.md",
     );
     expect(plan(r.value)?.blocks[1]?.location).toEqual({
@@ -2815,7 +2765,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
       kind: "content",
       language: "xml",
     });
-    expect(plan(r.value)?.blocks[2]?.source?.filePath).toBe(
+    expect(plan(r.value)?.blocks[2]?.document?.filePath).toBe(
       "/tmp/cydo-heredoc-render.svg",
     );
     expect(plan(r.value)?.blocks[2]?.location).toEqual({
@@ -2839,7 +2789,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
     const r = await parseShellSemantic("wc -l file.md && head -100 file.md");
     expect(r.ok).toBe(true);
     assert(r.ok);
-    expect(r.value.kind).toBe("structured-output");
+    expect(r.value.kind).toBe("output");
     expect(plan(r.value)?.blocks).toHaveLength(2);
     expect(plan(r.value)?.blocks.map((b: { id: string }) => b.id)).toEqual([
       "0",
@@ -2854,7 +2804,6 @@ describe("batch 1 rg/sed/structured output plans", () => {
       end: { kind: "line-count", count: 1 },
       validator: "non-empty",
     });
-    expect(plan(r.value)?.blocks[0]?.source?.filePath).toBe("file.md");
     expect(plan(r.value)?.blocks[1]?.format).toEqual({
       kind: "content",
       language: "markdown",
@@ -2864,7 +2813,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
       end: { kind: "end-of-output", requiresComplete: true },
       validator: "non-empty",
     });
-    expect(plan(r.value)?.blocks[1]?.source?.filePath).toBe("file.md");
+    expect(plan(r.value)?.blocks[1]?.document?.filePath).toBe("file.md");
   });
 });
 
@@ -2876,10 +2825,10 @@ describe("Unit 2 public shell semantic contracts", () => {
 
     const result = await parseShellSemantic(command);
     expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    assert(result.ok);
 
     const value = result.value;
-    if (value.kind !== "script-exec") return;
+    assert(value.kind === "script-exec");
     expect(value.command).toBe(command);
     expect(value.commandName).toBe("python3");
     expect(value.language).toBe("python");
@@ -2891,7 +2840,7 @@ describe("Unit 2 public shell semantic contracts", () => {
       commandLine: "cd /tmp && python3 - <<'EOF'",
       terminator: "EOF",
     });
-    expect(value.steps).toBeUndefined();
+    expect(segmentsOf(value)).toBeUndefined();
     expect(plan(value)).toBeUndefined();
   });
 
@@ -2922,9 +2871,9 @@ describe("Unit 2 public shell semantic contracts", () => {
     async (command) => {
       const result = await parseShellSemantic(command);
       expect(result.ok, command).toBe(true);
-      if (!result.ok) return;
+      assert(result.ok);
       expect(result.value.kind, command).toBe("script-exec");
-      if (result.value.kind !== "script-exec") return;
+      assert(result.value.kind === "script-exec");
       expect(result.value).toMatchObject({
         command,
         commandName: "python3",
@@ -2938,7 +2887,7 @@ describe("Unit 2 public shell semantic contracts", () => {
           terminator: "PY",
         },
       });
-      expect(result.value.steps).toBeUndefined();
+      expect(segmentsOf(result.value)).toBeUndefined();
     },
   );
 
@@ -2968,8 +2917,9 @@ describe("Unit 2 public shell semantic contracts", () => {
       "cat >output.md <<EOF\nbody\nEOF\nls -l output.md | sed -n '1,2p' output.md";
     const result = await parseShellSemantic(command);
     expect(result.ok).toBe(true);
-    if (!result.ok || result.value.kind !== "write") return;
-    expect(result.value.steps).toBeUndefined();
+    assert(result.ok);
+    assert(result.value.kind === "write");
+    expect(segmentsOf(result.value)).toBeUndefined();
   });
 
   it("classifies the exact trailing ls readback after a cat heredoc", async () => {
@@ -2979,31 +2929,9 @@ describe("Unit 2 public shell semantic contracts", () => {
     expect(result.ok).toBe(true);
     assert(result.ok);
     assert(result.value.kind === "write");
-    expect(result.value.steps).toEqual([
-      {
-        kind: "plain-output",
-        order: 0,
-        commandName: "ls",
-        filePath: "output.md",
-        outputShape: {
-          kind: "fixed-lines",
-          count: 1,
-          format: { kind: "content", language: "shell-output" },
-          validator: "non-empty",
-        },
-      },
-      {
-        kind: "read-file",
-        order: 1,
-        commandName: "sed",
-        filePath: "output.md",
-        range: { type: "lines", start: 1, end: 2 },
-        outputShape: {
-          kind: "content",
-          format: { kind: "content", language: "markdown" },
-          validator: "non-empty",
-        },
-      },
+    expect(segmentsOf(result.value)).toEqual([
+      summaryLine(),
+      fileRows("output.md", { type: "lines", start: 1, end: 2 }),
     ]);
     expect(plan(result.value)?.blocks.map((block) => block.id)).toEqual([
       "0",
@@ -3017,7 +2945,7 @@ describe("Unit 2 public shell semantic contracts", () => {
     expect(result.ok).toBe(true);
     assert(result.ok);
     assert(result.value.kind === "write");
-    expect(result.value.steps).toBeUndefined();
+    expect(segmentsOf(result.value)).toBeUndefined();
   });
 
   it.each(["ls -1 src", "zsh -lc 'ls -1 src'", "bash -c 'ls -1 src' >out"])(
@@ -3064,11 +2992,8 @@ describe("Unit 2 public shell semantic contracts", () => {
     async (command, filePath) => {
       const result = await parseShellSemantic(command);
       expect(result.ok, command).toBe(true);
-      if (!result.ok) return;
-      expect(result.value.kind, command).toBe("read");
-      expect((result.value as ShellReadSemantic).filePath, command).toBe(
-        filePath,
-      );
+      assert(result.ok);
+      expect(segmentsOf(result.value), command).toEqual([fileRows(filePath)]);
     },
   );
 
@@ -3087,9 +3012,9 @@ describe("Unit 2 public shell semantic contracts", () => {
     async (command) => {
       const result = await parseShellSemantic(command);
       expect(result.ok, command).toBe(true);
-      if (!result.ok) return;
-      expect(result.value.kind, command).toBe("structured-output");
-      expect(result.value.steps, command).toHaveLength(2);
+      assert(result.ok);
+      expect(result.value.kind, command).toBe("output");
+      expect(segmentsOf(result.value), command).toHaveLength(2);
     },
   );
 
@@ -3097,7 +3022,10 @@ describe("Unit 2 public shell semantic contracts", () => {
     const pipe = await parseShellSemantic("cat a | head -1");
     expect(pipe).toMatchObject({
       ok: true,
-      value: { kind: "read", filePath: "a", range: { type: "head", count: 1 } },
+      value: {
+        kind: "output",
+        output: [fileRows("a", { type: "head", count: 1 })],
+      },
     });
 
     for (const command of [
@@ -3165,9 +3093,9 @@ describe("Unit 2 public shell semantic contracts", () => {
     async (command, commandName, language, flag, content) => {
       const result = await parseShellSemantic(command);
       expect(result.ok, command).toBe(true);
-      if (!result.ok) return;
+      assert(result.ok);
       const value = result.value;
-      if (value.kind !== "script-exec") return;
+      assert(value.kind === "script-exec");
       expect(value).toMatchObject({
         kind: "script-exec",
         command,
@@ -3232,9 +3160,9 @@ describe("Unit 2 public shell semantic contracts", () => {
       const interpreterCommand = `python3 - <<'PY'${lineEnding}${body}${lineEnding}PY`;
       const interpreter = await parseShellSemantic(interpreterCommand);
       expect(interpreter.ok, interpreterCommand).toBe(true);
-      if (!interpreter.ok) return;
+      assert(interpreter.ok);
       const script = interpreter.value;
-      if (script.kind !== "script-exec") return;
+      assert(script.kind === "script-exec");
       expect(script.scriptSource).toMatchObject({
         type: "heredoc",
         content: body,
@@ -3248,9 +3176,9 @@ describe("Unit 2 public shell semantic contracts", () => {
       const catCommand = `cat >output.py <<'EOF'${lineEnding}${body}${lineEnding}EOF`;
       const cat = await parseShellSemantic(catCommand);
       expect(cat.ok, catCommand).toBe(true);
-      if (!cat.ok) return;
+      assert(cat.ok);
       const write = cat.value;
-      if (write.kind !== "write") return;
+      assert(write.kind === "write");
       expect(write.heredoc.content).toBe(body);
       expect(
         write.segments.map((segment) => segment.text).join(""),
@@ -3356,8 +3284,9 @@ describe("Unit 2 public shell semantic contracts", () => {
     const command = 'cat >output.py <<EOF\nbody\nEOF\nprintf "$OUT"';
     const result = await parseShellSemantic(command);
     expect(result.ok).toBe(true);
-    if (!result.ok || result.value.kind !== "write") return;
-    expect(result.value.steps).toBeUndefined();
+    assert(result.ok);
+    assert(result.value.kind === "write");
+    expect(segmentsOf(result.value)).toBeUndefined();
   });
 
   it("fails fast on a corrupted direct Python invocation command ID", async () => {

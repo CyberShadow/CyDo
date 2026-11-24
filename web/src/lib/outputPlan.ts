@@ -1,15 +1,17 @@
 export type ContentFormat = { kind: "content"; language: string };
 
+export type NlFormat = {
+  kind: "nl-line-number-prefixed";
+  width: number;
+  separator: string;
+  format: ContentFormat;
+};
+
 export type OutputFormat =
   | ContentFormat
   | { kind: "line-number-prefixed"; format: OutputFormat }
   | { kind: "individual-lines"; format: OutputFormat }
-  | {
-      kind: "nl-line-number-prefixed";
-      width: number;
-      separator: string;
-      format: ContentFormat;
-    };
+  | NlFormat;
 
 export type OutputPlan = {
   version: 1;
@@ -18,11 +20,7 @@ export type OutputPlan = {
 
 export type OutputBlockPlan = {
   id: string;
-  source?: {
-    stepIndex?: number;
-    producerName?: string;
-    filePath?: string;
-  };
+  document?: { filePath: string; preview: boolean };
   format: OutputFormat;
   location: BlockLocationSpec;
 };
@@ -146,7 +144,6 @@ export type SegmentedOutputPiece =
       start: number;
       end: number;
       format: OutputFormat;
-      source?: OutputBlockPlan["source"];
     }
   | {
       kind: "raw";
@@ -358,9 +355,6 @@ export function segmentOutput(
         end: resolved.end,
         format: block.format,
       };
-      if (block.source) {
-        structuredPiece.source = block.source;
-      }
       pieces.push(structuredPiece);
       acceptedStarts.set(block.id, resolved.start);
       cursor = resolved.end;

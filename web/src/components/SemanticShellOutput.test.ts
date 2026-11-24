@@ -5,7 +5,7 @@ import {
   hasSemanticShellOutput,
   SemanticShellOutput,
 } from "./SemanticShellOutput";
-import { derivePlan } from "../lib/commandStep";
+import { shellOutputView } from "../lib/shellOutput";
 import type { OutputPlan } from "../lib/outputPlan";
 import { configureShellParserAssets } from "../lib/shellParser";
 import { parseShellSemantic } from "../lib/shellSemantic";
@@ -41,11 +41,16 @@ beforeAll(async () => {
   });
 });
 
-function renderSemantic(stdout: string, outputPlan: OutputPlan): string {
+function renderSemantic(
+  stdout: string,
+  outputPlan: OutputPlan,
+  search = false,
+): string {
   return renderToString(
     h(SemanticShellOutput, {
       stdout,
       outputPlan,
+      search,
     }),
   );
 }
@@ -58,11 +63,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "sed",
-            filePath: "/tmp/cydo-heredoc-render.svg",
-          },
+          document: { filePath: "/tmp/cydo-heredoc-render.svg", preview: true },
           format: { kind: "content", language: "xml" },
           location: {
             kind: "from-cursor",
@@ -89,11 +90,6 @@ describe("SemanticShellOutput renderable readback rendering", () => {
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "ls",
-            filePath: "/tmp/cydo-heredoc-render.svg",
-          },
           format: { kind: "content", language: "shell-output" },
           location: {
             kind: "from-cursor",
@@ -103,11 +99,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
         },
         {
           id: "1",
-          source: {
-            stepIndex: 1,
-            producerName: "sed",
-            filePath: "/tmp/cydo-heredoc-render.svg",
-          },
+          document: { filePath: "/tmp/cydo-heredoc-render.svg", preview: true },
           format: { kind: "content", language: "xml" },
           location: {
             kind: "from-cursor",
@@ -136,11 +128,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "sed",
-            filePath: "/tmp/cydo-heredoc-render.md",
-          },
+          document: { filePath: "/tmp/cydo-heredoc-render.md", preview: false },
           format: { kind: "content", language: "markdown" },
           location: {
             kind: "from-cursor",
@@ -150,7 +138,6 @@ describe("SemanticShellOutput renderable readback rendering", () => {
         },
         {
           id: "1",
-          source: { stepIndex: 1, producerName: "printf" },
           format: { kind: "content", language: "shell-output" },
           location: {
             kind: "unique-literal",
@@ -160,11 +147,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
         },
         {
           id: "2",
-          source: {
-            stepIndex: 2,
-            producerName: "sed",
-            filePath: "/tmp/cydo-heredoc-render.svg",
-          },
+          document: { filePath: "/tmp/cydo-heredoc-render.svg", preview: true },
           format: { kind: "content", language: "xml" },
           location: {
             kind: "from-cursor",
@@ -192,11 +175,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "sed",
-            filePath: "/tmp/cydo-heredoc-render.md",
-          },
+          document: { filePath: "/tmp/cydo-heredoc-render.md", preview: true },
           format: { kind: "content", language: "markdown" },
           location: {
             kind: "from-cursor",
@@ -221,10 +200,9 @@ describe("SemanticShellOutput renderable readback rendering", () => {
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "sed",
+          document: {
             filePath: "/tmp/cydo-heredoc-render.svg",
+            preview: false,
           },
           format: { kind: "content", language: "xml" },
           location: {
@@ -246,7 +224,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
 const SVG_CONTENT =
   '<svg xmlns="http://www.w3.org/2000/svg"><circle r="10"/></svg>\n';
 
-describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers", () => {
+describe("SemanticShellOutput document and numbered rendering", () => {
   // Discriminating signals used in this describe block:
   //   markdown file → "write-content-markdown" class (FileContentPreview path)
   //                   vs "text-content" class (StructuredContent fallback path).
@@ -260,11 +238,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "cat",
-            filePath: "/repo/README.md",
-          },
+          document: { filePath: "/repo/README.md", preview: true },
           format: { kind: "content", language: "markdown" },
           location: {
             kind: "from-cursor",
@@ -289,11 +263,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "head",
-            filePath: "/repo/banner.svg",
-          },
+          document: { filePath: "/repo/banner.svg", preview: true },
           format: { kind: "content", language: "xml" },
           location: {
             kind: "from-cursor",
@@ -317,11 +287,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "tail",
-            filePath: "/repo/banner.svg",
-          },
+          document: { filePath: "/repo/banner.svg", preview: true },
           format: { kind: "content", language: "xml" },
           location: {
             kind: "from-cursor",
@@ -344,11 +310,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "sed",
-            filePath: "/tmp/cydo-heredoc-render.md",
-          },
+          document: { filePath: "/tmp/cydo-heredoc-render.md", preview: true },
           format: { kind: "content", language: "markdown" },
           location: {
             kind: "from-cursor",
@@ -371,11 +333,6 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "nl",
-            filePath: "/repo/banner.svg",
-          },
           format: {
             kind: "nl-line-number-prefixed",
             width: 6,
@@ -398,9 +355,10 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
 
   it("renders numbered SVG output as source after slicing it with sed", async () => {
     const result = await parseShellSemantic("nl -ba /tmp/x.svg | sed -n 1,20p");
-    assert(result.ok && result.value.steps);
-    const outputPlan = derivePlan(result.value.steps);
-    assert(outputPlan);
+    assert(result.ok && result.value.kind === "output");
+    const view = shellOutputView(result.value.output);
+    assert(view.ok && view.value.kind === "plan");
+    const outputPlan = view.value.plan;
 
     const html = renderSemantic(`     1\t${SVG_CONTENT}`, outputPlan);
     expect(html).not.toContain('alt="SVG preview"');
@@ -416,10 +374,10 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       const result = await parseShellSemantic(
         `git show HEAD:x.svg | nl -ba | ${slice}`,
       );
-      assert(result.ok && result.value.steps);
-      expect(result.value.commandName).toBe("git");
-      const outputPlan = derivePlan(result.value.steps);
-      assert(outputPlan);
+      assert(result.ok && result.value.kind === "output");
+      const view = shellOutputView(result.value.output);
+      assert(view.ok && view.value.kind === "plan");
+      const outputPlan = view.value.plan;
 
       const html = renderSemantic(`     1	${SVG_CONTENT}`, outputPlan);
       expect(html).toContain('data-testid="semantic-shell-block-0"');
@@ -435,9 +393,10 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     "uses gutter rendering for whitespace-only GNU nl output from %s",
     async (command, stdout, prefix, count) => {
       const result = await parseShellSemantic(command);
-      assert(result.ok && result.value.steps);
-      const outputPlan = derivePlan(result.value.steps);
-      assert(outputPlan);
+      assert(result.ok && result.value.kind === "output");
+      const view = shellOutputView(result.value.output);
+      assert(view.ok && view.value.kind === "plan");
+      const outputPlan = view.value.plan;
       const html = renderSemantic(stdout, outputPlan);
       expect(html).toContain('data-testid="semantic-shell-block-0"');
       const prefixes = html.match(
@@ -453,17 +412,19 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
 
   it("leaves a lone CR outside the numbered output renderer", async () => {
     const result = await parseShellSemantic("nl x.d");
-    assert(result.ok && result.value.steps);
-    const outputPlan = derivePlan(result.value.steps);
-    assert(outputPlan);
+    assert(result.ok && result.value.kind === "output");
+    const view = shellOutputView(result.value.output);
+    assert(view.ok && view.value.kind === "plan");
+    const outputPlan = view.value.plan;
     expect(renderSemantic("\r", outputPlan)).toBe("");
   });
 
   it("renders a derived numbered markdown plan as literal text", async () => {
     const result = await parseShellSemantic("nl -ba /repo/README.md");
-    assert(result.ok && result.value.steps);
-    const outputPlan = derivePlan(result.value.steps);
-    assert(outputPlan);
+    assert(result.ok && result.value.kind === "output");
+    const view = shellOutputView(result.value.output);
+    assert(view.ok && view.value.kind === "plan");
+    const outputPlan = view.value.plan;
     const html = renderSemantic("     1\t# Title\n     2\tbody\n", outputPlan);
     expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).toContain(
@@ -476,18 +437,12 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     expect(html).not.toContain("text-content");
   });
 
-  // Same SVG probe for an unfamiliar producer.
-  it("unknown producer does not get file content preview — SVG is not rendered as image", () => {
+  it("renders SVG content without a document as source", () => {
     const outputPlan: OutputPlan = {
       version: 1,
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "zcat",
-            filePath: "/repo/banner.svg",
-          },
           format: { kind: "content", language: "xml" },
           location: {
             kind: "from-cursor",
@@ -505,18 +460,18 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
 });
 
 describe("SemanticShellOutput numbered search context", () => {
-  async function reportedSearchPlan(): Promise<OutputPlan> {
+  async function reportedSearchView() {
     const result = await parseShellSemantic(
       'cd /mnt/local/moved/home/vladimir/work/.cydo/tasks/39201/worktree && grep -n "backfillHistoryBoundary" -B3 -A60 source/cydo/workflow/history/pipeline.d | sed -n 1,150p',
     );
-    assert(result.ok && result.value.steps);
-    const outputPlan = derivePlan(result.value.steps);
-    assert(outputPlan);
-    return outputPlan;
+    assert(result.ok && result.value.kind === "output");
+    const view = shellOutputView(result.value.output);
+    assert(view.ok && view.value.kind === "plan");
+    return view.value;
   }
 
   it("renders search output starting inside a context group", async () => {
-    const outputPlan = await reportedSearchPlan();
+    const { plan: outputPlan, search } = await reportedSearchView();
     const stdout = [
       "58-    }",
       "59-",
@@ -529,7 +484,7 @@ describe("SemanticShellOutput numbered search context", () => {
       "",
     ].join("\n");
 
-    const html = renderSemantic(stdout, outputPlan);
+    const html = renderSemantic(stdout, outputPlan, search);
     expect(html).toContain('data-testid="semantic-shell-output-search"');
     expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).not.toContain("semantic-shell-raw");
@@ -544,11 +499,11 @@ describe("SemanticShellOutput numbered search context", () => {
   });
 
   it("falls back to raw output when a row has no valid search prefix", async () => {
-    const outputPlan = await reportedSearchPlan();
+    const { plan: outputPlan, search } = await reportedSearchView();
     const stdout =
       "58-    }\ninvalid row\n140:    backfillHistoryBoundary(ledger);\n";
 
     expect(hasSemanticShellOutput(stdout, outputPlan)).toBe(false);
-    expect(renderSemantic(stdout, outputPlan)).toBe("");
+    expect(renderSemantic(stdout, outputPlan, search)).toBe("");
   });
 });

@@ -1,33 +1,6 @@
 import { h } from "preact";
-import type {
-  OutputPlan,
-  OutputBlockPlan,
-  SegmentedOutputPiece,
-} from "../lib/outputPlan";
+import type { OutputPlan } from "../lib/outputPlan";
 import { OutputPlanView, hasStructuredOutput } from "./OutputPlanView";
-
-// Numbered reads carry their gutter in the format, which bypasses file preview.
-const FILE_PREVIEW_PRODUCERS = new Set(["sed", "cat", "head", "tail", "nl"]);
-
-function canRenderStructuredFilePreview(
-  piece: Extract<SegmentedOutputPiece, { kind: "structured" }>,
-  block: OutputBlockPlan | undefined,
-  stdoutLength: number,
-): boolean {
-  if (!piece.source?.filePath) return false;
-  if (!block) return false;
-
-  if (
-    piece.source.producerName !== undefined &&
-    FILE_PREVIEW_PRODUCERS.has(piece.source.producerName) &&
-    block.location.kind === "from-cursor" &&
-    block.location.end.kind === "end-of-output"
-  ) {
-    return piece.end === stdoutLength;
-  }
-
-  return false;
-}
 
 export function hasSemanticShellOutput(
   stdout: string,
@@ -39,31 +12,23 @@ export function hasSemanticShellOutput(
 export function SemanticShellOutput({
   stdout,
   outputPlan,
+  search,
 }: {
   stdout: string;
   outputPlan: OutputPlan;
+  search: boolean;
 }): h.JSX.Element | null {
-  const hasSearchBlock = outputPlan.blocks.some(
-    (block) => block.source?.producerName === "rg",
-  );
   return (
     <OutputPlanView
       stdout={stdout}
       outputPlan={outputPlan}
       className="semantic-shell-output"
-      testId={
-        hasSearchBlock
-          ? "semantic-shell-output-search"
-          : "semantic-shell-output"
-      }
+      testId={search ? "semantic-shell-output-search" : "semantic-shell-output"}
       blockTestIdPrefix="semantic-shell-block-"
       toolbarClassName="semantic-shell-output-toolbar"
       rawClassName="tool-result semantic-shell-raw"
       structuredPieceClassName="semantic-shell-structured-piece"
       linePrefixTestId="semantic-shell-line-prefix"
-      canRenderFilePreview={({ piece, block, stdoutLength }) =>
-        canRenderStructuredFilePreview(piece, block, stdoutLength)
-      }
     />
   );
 }

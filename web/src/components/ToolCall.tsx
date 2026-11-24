@@ -55,7 +55,7 @@ import {
   parseApplyPatchSections,
   type PatchHunk,
 } from "../lib/patches";
-import { derivePlan } from "../lib/commandStep";
+import { shellOutputView } from "../lib/shellOutput";
 import {
   useShellSemantic,
   type ShellHeredocWriteSemantic,
@@ -3276,30 +3276,24 @@ export const ToolCall = memo(
       ? extractSemanticShellCommand(input, shellActionCommand)
       : null;
     const shellSemantic = useShellSemantic(semanticCommand);
-    const semanticShellRead =
-      shellSemantic?.ok === true && shellSemantic.value.kind === "read"
-        ? shellSemantic.value
-        : null;
+    const semantic = shellSemantic?.ok === true ? shellSemantic.value : null;
+    const output =
+      semantic && semantic.kind !== "script-exec" ? semantic.output : undefined;
+    const viewResult = output ? shellOutputView(output) : undefined;
+    if (viewResult && !viewResult.ok) throw new Error(viewResult.reason);
+    const view = viewResult?.value;
+    const semanticShellRead = view?.kind === "git-object" ? view : null;
     const useSemanticShellRead =
-      semanticShellRead != null &&
-      semanticShellRead.steps == null &&
-      result != null &&
-      !result.isError;
+      semanticShellRead != null && result != null && !result.isError;
+    const useSemanticShellDiff =
+      view?.kind === "diff" && result != null && !result.isError;
     const semanticShellStdout = useSemanticShellRead
       ? extractShellOutput(name, toolServer, driver, result)
       : null;
-    const useSemanticShellDiff =
-      shellSemantic?.ok === true &&
-      shellSemantic.value.kind === "diff" &&
-      result != null &&
-      !result.isError;
     const semanticShellDiffStdout = useSemanticShellDiff
       ? extractShellOutput(name, toolServer, driver, result)
       : null;
-    const semanticOutputPlan =
-      shellSemantic?.ok === true && shellSemantic.value.steps
-        ? derivePlan(shellSemantic.value.steps)
-        : undefined;
+    const semanticOutputPlan = view?.kind === "plan" ? view.plan : undefined;
     const semanticOutputStdout =
       semanticOutputPlan && result != null && !result.isError
         ? extractShellOutput(name, toolServer, driver, result)
@@ -3311,6 +3305,7 @@ export const ToolCall = memo(
         <SemanticShellOutput
           stdout={semanticOutputStdout}
           outputPlan={semanticOutputPlan}
+          search={view?.kind === "plan" && view.search}
         />
       ) : null;
     const shouldRenderSemanticOutput = semanticOutputElement != null;
@@ -3320,40 +3315,24 @@ export const ToolCall = memo(
       !shouldRenderSemanticOutput
         ? (extractShellOutput(name, toolServer, driver, result) ?? resultText)
         : null;
-    const semanticKind =
-      shellSemantic?.ok === true ? shellSemantic.value.kind : null;
-    const hasSemanticOutputPlan =
-      shellSemantic?.ok === true && semanticOutputPlan != null;
-    // Semantic shell: adjust input/result expand defaults after classification.
-    // Reads/diffs → keep input expanded (command secondary), collapse result (local source).
-    // Writes → keep input expanded, collapse result (confirmation only).
-    // Errors bypass collapse — always leave result visible.
+    const semanticResultDefault =
+      view?.kind === "plan"
+        ? true
+        : view?.kind === "git-object" ||
+            view?.kind === "diff" ||
+            semantic?.kind === "write"
+          ? false
+          : null;
     useEffect(() => {
-      if (semanticKind == null) return;
-      if (hasSemanticOutputPlan) {
-        if (!userToggledResult.current && resultOpenOverride === null)
-          setResultOpenOverride(true);
-      }
-      const kind = semanticKind;
-      if (kind === "read" || kind === "diff") {
-        if (
-          !hasSemanticOutputPlan &&
-          !userToggledResult.current &&
-          resultOpenOverride === null &&
-          !result?.isError
-        )
-          setResultOpenOverride(false);
-      } else if (kind === "write") {
-        if (
-          !hasSemanticOutputPlan &&
-          !userToggledResult.current &&
-          resultOpenOverride === null &&
-          !result?.isError
-        )
-          setResultOpenOverride(false);
-      }
-      // script-exec: no override, use defaults (both expanded)
-    }, [semanticKind, hasSemanticOutputPlan, result?.isError]);
+      if (
+        semanticResultDefault === null ||
+        userToggledResult.current ||
+        resultOpenOverride !== null
+      )
+        return;
+      if (semanticResultDefault || !result?.isError)
+        setResultOpenOverride(semanticResultDefault);
+    }, [semanticResultDefault, result?.isError]);
     const taskOutputElement = useTaskOutputResult
       ? formatTaskOutputResult(result.toolResult as Record<string, unknown>)
       : null;

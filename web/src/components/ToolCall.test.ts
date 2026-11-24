@@ -185,14 +185,20 @@ vi.mock("../lib/shellSemantic", async () => {
         };
         return scriptResult;
       }
+      if (command === "cat unplanned.txt") {
+        const unplanned: ShellSemanticResult = {
+          ok: true,
+          value: { kind: "output", command, output: [] },
+        };
+        return unplanned;
+      }
       if (command.startsWith("git log -p")) {
         const diffResult: ShellSemanticResult = {
           ok: true,
           value: {
-            kind: "diff",
-            commandName: "git",
+            kind: "output",
             command,
-            subcommand: "log",
+            output: [{ kind: "diff" }],
           },
         };
         return diffResult;
@@ -855,7 +861,20 @@ describe("ToolCall shell source tree rendering", () => {
   });
 });
 
-describe("ToolCall numbered shell output", () => {
+it("throws when an accepted shell result has no output view", () => {
+  expect(() =>
+    renderToString(
+      h(ToolCall, {
+        name: "Bash",
+        driver: "claude",
+        input: { command: "cat unplanned.txt" },
+        result: makeResult({ toolResult: { stdout: "hello\n" } }),
+      }),
+    ),
+  ).toThrow("shell output steps do not define an unambiguous output plan");
+});
+
+describe("ToolCall semantic shell output", () => {
   const roots = ownedRoots();
   beforeEach(() => {
     useRealShellSemantic = true;
@@ -866,7 +885,7 @@ describe("ToolCall numbered shell output", () => {
   const svg = '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n';
   const numberedSvg = `     1\t${svg}`;
 
-  async function mountResult(
+  async function mountDefaultResult(
     command: string,
     result: ToolResult,
     driver: "claude" | "codex" = "claude",
@@ -887,6 +906,15 @@ describe("ToolCall numbered shell output", () => {
     await act(async () => {
       await parseShellSemantic(command);
     });
+    return root;
+  }
+
+  async function mountResult(
+    command: string,
+    result: ToolResult,
+    driver: "claude" | "codex" = "claude",
+  ): Promise<HTMLDivElement> {
+    const root = await mountDefaultResult(command, result, driver);
     if (!root.querySelector(".tool-result-container")) {
       await act(() => {
         root.querySelector<HTMLElement>(".tool-result-header")!.click();
@@ -894,6 +922,56 @@ describe("ToolCall numbered shell output", () => {
     }
     return root;
   }
+
+  it("renders a Git object in the shell read view", async () => {
+    const root = await mountResult(
+      "git show HEAD:a.md",
+      makeResult({ toolResult: { stdout: "# Title\n" } }),
+    );
+    expect(
+      root.querySelector('[data-testid="semantic-shell-read"]')?.textContent,
+    ).toContain("Title");
+  });
+
+  it("keeps a Git diff collapsed until the result is opened", async () => {
+    const stdout = [
+      "diff --git a/a.d b/a.d",
+      "--- a/a.d",
+      "+++ b/a.d",
+      "@@ -1 +1 @@",
+      "-int oldValue;",
+      "+int newValue;",
+      "",
+    ].join("\n");
+    const root = await mountDefaultResult(
+      "git diff",
+      makeResult({ toolResult: { stdout } }),
+    );
+    expect(root.querySelector(".tool-result-container")).toBeNull();
+    await act(() => {
+      root.querySelector<HTMLElement>(".tool-result-header")!.click();
+    });
+    expect(
+      root.querySelector('[data-testid="semantic-shell-diff"] .diff-view'),
+    ).not.toBeNull();
+  });
+
+  it("opens a file output plan by default", async () => {
+    const root = await mountDefaultResult(
+      "cat a.d",
+      makeResult({
+        toolResult: {
+          aggregatedOutput: "int value;\n",
+          commandActions: [{ type: "read", path: "a.d" }],
+        },
+      }),
+      "codex",
+    );
+    expect(
+      root.querySelector('[data-testid="semantic-shell-block-0"] pre')
+        ?.textContent,
+    ).toBe("int value;\n");
+  });
 
   function expectNoPreview(root: HTMLElement): void {
     expect(

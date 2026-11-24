@@ -19,7 +19,6 @@ import {
   type OutputFormat,
   type OutputPlan,
   type OutputBlockPlan,
-  type SegmentedOutputPiece,
 } from "../lib/outputPlan";
 
 function outputCodeLanguage(language: string): string | null {
@@ -175,14 +174,12 @@ function InlineFormatted({
 function StructuredContent({
   text,
   format,
-  sourceFilePath,
-  allowFilePreview,
+  document,
   linePrefixTestId,
 }: {
   text: string;
   format: OutputFormat;
-  sourceFilePath?: string;
-  allowFilePreview: boolean;
+  document?: OutputBlockPlan["document"];
   linePrefixTestId?: string;
 }): h.JSX.Element {
   const codeLanguage =
@@ -194,14 +191,13 @@ function StructuredContent({
 
   if (format.kind === "content") {
     if (
-      allowFilePreview &&
-      sourceFilePath &&
-      detectRenderableFormat(sourceFilePath, text) != null
+      document?.preview &&
+      detectRenderableFormat(document.filePath, text) != null
     ) {
-      return <FileContentPreview filePath={sourceFilePath} content={text} />;
+      return <FileContentPreview filePath={document.filePath} content={text} />;
     }
 
-    if (format.language === "markdown") {
+    if (document && format.language === "markdown") {
       return (
         <SourceRenderedToggle
           defaultSource={false}
@@ -266,7 +262,6 @@ export function OutputPlanView({
   rawClassName,
   structuredPieceClassName,
   linePrefixTestId,
-  canRenderFilePreview,
 }: {
   stdout: string;
   outputPlan: OutputPlan;
@@ -277,11 +272,6 @@ export function OutputPlanView({
   rawClassName?: string;
   structuredPieceClassName?: string;
   linePrefixTestId?: string;
-  canRenderFilePreview?: (args: {
-    piece: Extract<SegmentedOutputPiece, { kind: "structured" }>;
-    block?: OutputBlockPlan;
-    stdoutLength: number;
-  }) => boolean;
 }): h.JSX.Element | null {
   const segmented = useMemo(
     () => segmentOutput(stdout, outputPlan, { kind: "complete" }),
@@ -316,12 +306,7 @@ export function OutputPlanView({
           );
         }
         const block = blockById.get(piece.blockId);
-        const allowFilePreview =
-          canRenderFilePreview?.({
-            piece,
-            block,
-            stdoutLength: stdout.length,
-          }) ?? false;
+        if (!block) throw new Error(`Missing output block ${piece.blockId}`);
         return (
           <div
             key={`${piece.blockId}:${i}`}
@@ -335,8 +320,7 @@ export function OutputPlanView({
             <StructuredContent
               text={text}
               format={piece.format}
-              sourceFilePath={piece.source?.filePath}
-              allowFilePreview={allowFilePreview}
+              document={block.document}
               linePrefixTestId={linePrefixTestId}
             />
           </div>

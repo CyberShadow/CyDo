@@ -229,7 +229,6 @@ describe("outputPlan", () => {
       blocks: [
         {
           id: "0",
-          source: { stepIndex: 0, producerName: "ls", filePath: "README.md" },
           format: { kind: "content", language: "shell-output" },
           location: {
             kind: "from-cursor",
@@ -300,18 +299,14 @@ describe("outputPlan", () => {
     assertCoverage(stdout, segmented.pieces);
   });
 
-  it("preserves source metadata on structured pieces", () => {
+  it("segments a document block with its format and extent", () => {
     const stdout = "<svg></svg>\n";
     const plan: OutputPlan = {
       version: 1,
       blocks: [
         {
           id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "sed",
-            filePath: "/tmp/cydo-heredoc-render.svg",
-          },
+          document: { filePath: "page.svg", preview: true },
           format: { kind: "content", language: "xml" },
           location: {
             kind: "from-cursor",
@@ -330,11 +325,6 @@ describe("outputPlan", () => {
         start: 0,
         end: stdout.length,
         format: { kind: "content", language: "xml" },
-        source: {
-          stepIndex: 0,
-          producerName: "sed",
-          filePath: "/tmp/cydo-heredoc-render.svg",
-        },
       },
     ]);
   });

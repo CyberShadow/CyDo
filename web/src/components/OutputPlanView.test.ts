@@ -25,29 +25,43 @@ describe("OutputPlanView", () => {
     expect(html).toBe("");
   });
 
-  it("renders markdown content in rendered mode", () => {
-    const stdout = "# Header\n\nBody\n";
-    const outputPlan: OutputPlan = {
-      version: 1,
-      blocks: [
-        {
-          id: "0",
-          format: { kind: "content", language: "markdown" },
-          location: {
-            kind: "from-cursor",
-            end: { kind: "end-of-output", requiresComplete: true },
-            validator: "non-empty",
+  it.each([true, false])(
+    "renders Markdown controls when a document is present: %s",
+    (hasDocument) => {
+      const stdout = "# Header\n\nBody\n";
+      const outputPlan: OutputPlan = {
+        version: 1,
+        blocks: [
+          {
+            id: "0",
+            ...(hasDocument
+              ? { document: { filePath: "a.md", preview: false } }
+              : {}),
+            format: { kind: "content", language: "markdown" },
+            location: {
+              kind: "from-cursor",
+              end: { kind: "end-of-output", requiresComplete: true },
+              validator: "non-empty",
+            },
           },
-        },
-      ],
-    };
+        ],
+      };
 
-    const html = renderOutputPlanView(stdout, outputPlan);
-    expect(html).toContain('data-testid="test-output-plan"');
-    expect(html).toContain('data-testid="test-block-0"');
-    expect(html).toContain("<h1");
-    expect(html).toContain("Header");
-  });
+      const html = renderOutputPlanView(stdout, outputPlan);
+      expect(html).toContain('data-testid="test-output-plan"');
+      expect(html).toContain('data-testid="test-block-0"');
+      expect(html).toContain("Header");
+      if (hasDocument) {
+        expect(html).toContain("<h1");
+        expect(html).toContain("text-content");
+        expect(html).toContain('title="Show source"');
+      } else {
+        expect(html).not.toContain("text-content");
+        expect(html).not.toContain('title="Show source"');
+        expect(html).not.toContain('title="Show rendered"');
+      }
+    },
+  );
 
   it("renders colon-prefixed lines with line prefix marker", () => {
     const stdout = "12:const x = 1;\n34:const y = 2;\n";
@@ -83,13 +97,12 @@ describe("OutputPlanView", () => {
     ["/repo/x.svg", "xml", "     1\t<svg></svg>\n"],
   ])(
     "keeps numbered %s on the code rendering path",
-    (filePath, language, stdout) => {
+    (_filePath, language, stdout) => {
       const outputPlan: OutputPlan = {
         version: 1,
         blocks: [
           {
             id: "0",
-            source: { filePath, producerName: "nl" },
             format: {
               kind: "nl-line-number-prefixed",
               width: 6,
@@ -107,7 +120,6 @@ describe("OutputPlanView", () => {
         h(OutputPlanView, {
           stdout,
           outputPlan,
-          canRenderFilePreview: () => true,
         }),
       );
       expect(html).toContain(
@@ -164,36 +176,30 @@ describe("OutputPlanView", () => {
     ).toHaveLength(1);
   });
 
-  it("uses preview callback when provided", () => {
-    const stdout = '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n';
-    const outputPlan: OutputPlan = {
-      version: 1,
-      blocks: [
-        {
-          id: "0",
-          source: {
-            stepIndex: 0,
-            producerName: "test",
-            filePath: "/tmp/cydo-render.svg",
+  it.each([true, false])(
+    "uses SVG preview when the document enables it: %s",
+    (preview) => {
+      const stdout = '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n';
+      const outputPlan: OutputPlan = {
+        version: 1,
+        blocks: [
+          {
+            id: "0",
+            document: { filePath: "/tmp/cydo-render.svg", preview },
+            format: { kind: "content", language: "xml" },
+            location: {
+              kind: "from-cursor",
+              end: { kind: "end-of-output", requiresComplete: true },
+              validator: "non-empty",
+            },
           },
-          format: { kind: "content", language: "xml" },
-          location: {
-            kind: "from-cursor",
-            end: { kind: "end-of-output", requiresComplete: true },
-            validator: "non-empty",
-          },
-        },
-      ],
-    };
+        ],
+      };
 
-    const html = renderToString(
-      h(OutputPlanView, {
-        stdout,
-        outputPlan,
-        canRenderFilePreview: () => true,
-      }),
-    );
-
-    expect(html).toContain('alt="SVG preview"');
-  });
+      const html = renderOutputPlanView(stdout, outputPlan);
+      expect(html).toContain('data-testid="test-block-0"');
+      if (preview) expect(html).toContain('alt="SVG preview"');
+      else expect(html).not.toContain('alt="SVG preview"');
+    },
+  );
 });

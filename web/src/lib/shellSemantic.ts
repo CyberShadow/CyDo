@@ -1,7 +1,11 @@
 import { useState, useEffect } from "preact/hooks";
-import { langFromPath } from "../highlight";
-import type { OutputFormat } from "./outputPlan";
-import { derivePlan, type CommandStep, type ReadRange } from "./commandStep";
+import {
+  shellOutputView,
+  type FileOrigin,
+  type OutputSegment,
+  type ReadRange,
+  type RowsSegment,
+} from "./shellOutput";
 import {
   assertValidParsedShellDocument,
   foldParsedShellUnit,
@@ -16,10 +20,8 @@ import { ownsWholeCommand } from "./shellInvocationOwnership";
 import type { ShellRedirectStateResult } from "./shellRedirectState";
 import { reduceShellRedirectState } from "./shellRedirectState";
 
-// Public types (API contract — do not change)
+// Public types
 // ---------------------------------------------------------------------------
-
-type ReadCommandName = "cat" | "nl" | "sed" | "head" | "tail" | "git";
 
 export type RejectCode =
   | "empty"
@@ -34,30 +36,15 @@ export type RejectCode =
   | "invalid_range"
   | "invalid_heredoc";
 
-export interface ShellReadSemantic {
-  kind: "read";
-  commandName: ReadCommandName;
-  command: string;
-  filePath: string;
-  range: ReadRange;
-  presentation: {
-    lineNumbers: false | { style: "nl"; width?: number; separator?: string };
-  };
-}
-
 export interface ShellSourceSpan {
   start: number;
   end: number;
   rawText: string;
 }
 
-export type ShellSemanticBase = {
-  command: string;
-  steps?: CommandStep[];
-};
-
 export interface ShellHeredocWriteSemantic {
   kind: "write";
+  output?: OutputSegment[];
   commandName: "cat";
   command: string;
   filePath: string;
@@ -73,13 +60,6 @@ export interface ShellHeredocWriteSemantic {
     | { kind: "write-content"; text: string; filePath: string }
     | { kind: "command-footer"; text: string }
   >;
-}
-
-export interface ShellDiffSemantic {
-  kind: "diff";
-  commandName: "git" | "diff";
-  command: string;
-  subcommand?: string; // "diff", "show", "log" (for git commands)
 }
 
 export interface ShellScriptExecSemantic {
@@ -108,27 +88,16 @@ export interface ShellScriptExecSemantic {
   >;
 }
 
-export interface ShellSearchSemantic {
-  kind: "search";
-  commandName: "rg";
+export interface ShellOutputSemantic {
+  kind: "output";
   command: string;
-  pattern: string;
-  filePath: string;
-}
-
-export interface ShellStructuredOutputSemantic {
-  kind: "structured-output";
-  commandName: string;
-  command: string;
+  output: OutputSegment[];
 }
 
 export type ShellSemantic =
-  | (ShellReadSemantic & ShellSemanticBase)
-  | (ShellHeredocWriteSemantic & ShellSemanticBase)
-  | (ShellDiffSemantic & ShellSemanticBase)
-  | (ShellScriptExecSemantic & ShellSemanticBase)
-  | (ShellSearchSemantic & ShellSemanticBase)
-  | (ShellStructuredOutputSemantic & ShellSemanticBase);
+  | ShellOutputSemantic
+  | ShellHeredocWriteSemantic
+  | ShellScriptExecSemantic;
 
 export type ShellSemanticResult =
   | { ok: true; value: ShellSemantic }
@@ -192,46 +161,24 @@ const OPAQUE_TRANSFORM_COMMANDS = new Set<string>([
   "xargs",
 ]);
 
-type NlOptions = { width?: number; separator?: string };
-
-type FileOrigin =
-  | { kind: "worktree"; filePath: string }
-  | { kind: "git-object"; filePath: string };
-type ReadStageName = Exclude<ReadCommandName, "git">;
+type NlOptions = {
+  width?: number;
+  separator?: string;
+};
 type SliceRange = Exclude<ReadRange, { type: "all" }>;
-
-type ShellStream =
-  | {
-      kind: "file-lines";
-      origin: FileOrigin;
-      range: ReadRange;
-      numbering: NlOptions | null;
-      producer: ReadStageName;
-    }
-  | {
-      kind: "numbered-rows";
-      origin: FileOrigin;
-      pattern: string;
-      context: boolean;
-    }
-  | {
-      kind: "diff";
-      commandName: "git" | "diff";
-      subcommand: string | undefined;
-    };
+type ShellStream = RowsSegment | { kind: "diff" };
 
 type StageOp =
   | { kind: "identity" }
-  | { kind: "slice"; range: SliceRange; commandName: "head" | "tail" | "sed" }
+  | { kind: "slice"; range: SliceRange }
   | { kind: "number-lines"; options: NlOptions }
-  | { kind: "search"; pattern: string; context: boolean }
+  | { kind: "search"; context: boolean }
   | { kind: "opaque"; commandName: string };
 
 type ParsedStage =
   | { kind: "source"; stream: ShellStream }
   | {
       kind: "filter";
-      commandName: string;
       operand: string | undefined;
       op: StageOp;
     };
@@ -541,7 +488,7 @@ function parseNlArgs(
 function parseRgArgs(
   cmd: SimpleCommand,
   requireFile: boolean,
-): ParseResult<{ pattern: string; filePath?: string; context: boolean }> {
+): ParseResult<{ filePath?: string; context: boolean }> {
   const toolName = cmd.name === "grep" ? "grep" : "rg";
   let hasLineNumbers = false;
   let context = false;
@@ -617,16 +564,14 @@ function parseRgArgs(
     }
   }
 
-  return { ok: true, value: { pattern, filePath, context } };
+  return { ok: true, value: { filePath, context } };
 }
 
-function openFile(origin: FileOrigin, producer: ReadStageName): ShellStream {
+function openFile(origin: FileOrigin): RowsSegment {
   return {
-    kind: "file-lines",
-    origin,
-    range: { type: "all" },
+    kind: "rows",
+    source: { kind: "file", origin, range: { type: "all" } },
     numbering: null,
-    producer,
   };
 }
 
@@ -700,33 +645,28 @@ function parseStage(
   const redirectRejection = rejectRedirectEffect(cmd);
   if (redirectRejection) return redirectRejection;
 
-  function filter(
-    op: StageOp,
-    commandName: ReadStageName,
-    operand?: string,
-  ): ParseResult<ParsedStage> {
+  function filter(op: StageOp, operand?: string): ParseResult<ParsedStage> {
     if (first && operand === undefined) {
       return reject("missing_path", "expected one file path");
     }
     if (!first && operand !== undefined) {
       return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
     }
-    return { ok: true, value: { kind: "filter", commandName, operand, op } };
+    return { ok: true, value: { kind: "filter", operand, op } };
   }
 
   switch (name) {
     case "cat": {
       const parsed = parseCatArgs(cmd, first);
       if (!parsed.ok) return parsed;
-      return filter({ kind: "identity" }, name, parsed.value);
+      return filter({ kind: "identity" }, parsed.value);
     }
     case "head": {
       const parsed = parseHeadArgs(cmd, first);
       if (!parsed.ok) return parsed;
       const { count = 10, filePath } = parsed.value;
       return filter(
-        { kind: "slice", commandName: name, range: { type: "head", count } },
-        name,
+        { kind: "slice", range: { type: "head", count } },
         filePath,
       );
     }
@@ -736,11 +676,7 @@ function parseStage(
       const { range, filePath } = parsed.value;
       const sliceRange: SliceRange =
         range.type === "all" ? { type: "tail-count", count: 10 } : range;
-      return filter(
-        { kind: "slice", commandName: name, range: sliceRange },
-        name,
-        filePath,
-      );
+      return filter({ kind: "slice", range: sliceRange }, filePath);
     }
     case "sed": {
       const parsed = parseSedArgs(cmd, first);
@@ -749,10 +685,8 @@ function parseStage(
       return filter(
         {
           kind: "slice",
-          commandName: name,
           range: { type: "lines", start, end },
         },
-        name,
         filePath,
       );
     }
@@ -761,7 +695,6 @@ function parseStage(
       if (!parsed.ok) return parsed;
       return filter(
         { kind: "number-lines", options: parsed.value.options },
-        name,
         parsed.value.filePath,
       );
     }
@@ -772,10 +705,8 @@ function parseStage(
       return filter(
         {
           kind: "search",
-          pattern: parsed.value.pattern,
           context: parsed.value.context,
         },
-        "cat",
         parsed.value.filePath,
       );
     }
@@ -786,33 +717,13 @@ function parseStage(
           "unsafe_shell_syntax",
           "pipeline has multiple diff stages",
         );
-      if (name === "diff") {
-        return {
-          ok: true,
-          value: {
-            kind: "source",
-            stream: { kind: "diff", commandName: name, subcommand: undefined },
-          },
-        };
-      }
-      const git = classifyGitCommand(cmd, "", cdPath);
-      if (!git.ok) return git;
-      if (git.value.kind === "read") {
-        const stream = openFile(
-          { kind: "git-object", filePath: git.value.filePath },
-          "cat",
-        );
-        return { ok: true, value: { kind: "source", stream } };
-      }
-      if (git.value.kind === "diff") {
-        const stream: ShellStream = {
-          kind: "diff",
-          commandName: name,
-          subcommand: git.value.subcommand,
-        };
-        return { ok: true, value: { kind: "source", stream } };
-      }
-      return reject("unsupported_command", "unsupported git stage in pipeline");
+      const source =
+        name === "diff"
+          ? ({ ok: true, value: { kind: "diff" } } as const)
+          : classifyGitCommand(cmd, cdPath);
+      return source.ok
+        ? { ok: true, value: { kind: "source", stream: source.value } }
+        : source;
     }
   }
 
@@ -831,7 +742,6 @@ function parseStage(
       ok: true,
       value: {
         kind: "filter",
-        commandName: name,
         operand: undefined,
         op: { kind: "opaque", commandName: name },
       },
@@ -951,98 +861,91 @@ function rangeStartsAtLine1(range: ReadRange): boolean {
 function applyStage(
   stream: ShellStream,
   op: StageOp,
-  commandName: string,
 ): ParseResult<ShellStream> {
   const unchanged = { ok: true, value: stream } as const;
   switch (op.kind) {
     case "identity":
       return unchanged;
-    case "slice":
-      switch (stream.kind) {
-        case "diff":
-        case "numbered-rows":
-          return unchanged;
-        default: {
-          const range = applySlice(stream.range, op.range);
-          if (!range.ok) return range;
-          if (range.value === "unchanged") return unchanged;
-          return {
-            ok: true,
-            value: {
-              ...stream,
-              range: range.value,
-              producer: stream.numbering ? "nl" : op.commandName,
-            },
-          };
-        }
+    case "slice": {
+      if (stream.kind === "diff" || stream.numbering?.kind === "grep")
+        return unchanged;
+      const range = applySlice(stream.source.range, op.range);
+      if (!range.ok) return range;
+      if (range.value === "unchanged") return unchanged;
+      return {
+        ok: true,
+        value: { ...stream, source: { ...stream.source, range: range.value } },
+      };
+    }
+    case "number-lines": {
+      if (stream.kind === "diff") return unchanged;
+      if (stream.numbering?.kind === "grep") {
+        return reject(
+          "unsafe_shell_syntax",
+          "nl numbering of search output is not supported",
+        );
       }
-    case "number-lines":
-      switch (stream.kind) {
-        case "diff":
-          return unchanged;
-        case "numbered-rows":
-          return reject(
-            "unsafe_shell_syntax",
-            "nl numbering of search output is not supported",
-          );
-        default:
-          if (stream.numbering) {
-            return reject(
-              "unsafe_shell_syntax",
-              "nested nl numbering is not supported",
-            );
-          }
-          if (!rangeStartsAtLine1(stream.range)) {
-            return reject(
-              "unsafe_shell_syntax",
-              "nl numbering of a sliced range would not match file line numbers",
-            );
-          }
-          return {
-            ok: true,
-            value: { ...stream, numbering: op.options, producer: "nl" },
-          };
+      if (stream.numbering) {
+        return reject(
+          "unsafe_shell_syntax",
+          "nested nl numbering is not supported",
+        );
       }
+      const startsAtLine1 = rangeStartsAtLine1(stream.source.range);
+      if (!startsAtLine1) {
+        return reject(
+          "unsafe_shell_syntax",
+          "nl numbering of a sliced range would not match file line numbers",
+        );
+      }
+      return {
+        ok: true,
+        value: {
+          ...stream,
+          numbering: {
+            kind: "nl",
+            width: op.options.width ?? 6,
+            separator: op.options.separator ?? "\t",
+          },
+        },
+      };
+    }
     case "search":
-      switch (stream.kind) {
-        case "diff":
-          return reject(
-            "unsafe_shell_syntax",
-            "search over diff output is not supported",
-          );
-        case "numbered-rows":
-          return reject(
-            "unsafe_shell_syntax",
-            "search over search output is not supported",
-          );
-        default:
-          if (stream.numbering) {
-            return reject(
-              "unsafe_shell_syntax",
-              "search over nl-numbered output is not supported",
-            );
-          }
-          return {
-            ok: true,
-            value: {
-              kind: "numbered-rows",
-              origin: stream.origin,
-              pattern: op.pattern,
-              context: op.context,
-            },
-          };
+      if (stream.kind === "diff") {
+        return reject(
+          "unsafe_shell_syntax",
+          "search over diff output is not supported",
+        );
       }
+      if (stream.numbering?.kind === "grep") {
+        return reject(
+          "unsafe_shell_syntax",
+          "search over search output is not supported",
+        );
+      }
+      if (stream.numbering) {
+        return reject(
+          "unsafe_shell_syntax",
+          "search over nl-numbered output is not supported",
+        );
+      }
+      return {
+        ok: true,
+        value: {
+          ...stream,
+          numbering: {
+            kind: "grep",
+            context: op.context,
+          },
+        },
+      };
     case "opaque":
-      switch (stream.kind) {
-        case "diff":
-          return unchanged;
-        case "numbered-rows":
-        case "file-lines":
-          return reject(
+      return stream.kind === "diff"
+        ? unchanged
+        : reject(
             "unsafe_shell_syntax",
-            `${commandName} output is not planned`,
+            `${op.commandName} output is not planned`,
           );
-      }
   }
 }
 
@@ -1058,15 +961,11 @@ function buildPipelineStream(
     source.kind === "source"
       ? ({ ok: true, value: source.stream } as const)
       : applyStage(
-          openFile(
-            {
-              kind: "worktree",
-              filePath: resolveAgainstCd(cdPath, source.operand!),
-            },
-            source.commandName as ReadStageName,
-          ),
+          openFile({
+            kind: "worktree",
+            filePath: resolveAgainstCd(cdPath, source.operand!),
+          }),
           source.op,
-          source.commandName,
         );
   if (!opened.ok) return opened;
   let stream = opened.value;
@@ -1075,132 +974,34 @@ function buildPipelineStream(
     if (!parsed.ok) return parsed;
     if (parsed.value.kind !== "filter")
       throw new Error("Expected a pipeline filter");
-    const next = applyStage(stream, parsed.value.op, parsed.value.commandName);
+    const next = applyStage(stream, parsed.value.op);
     if (!next.ok) return next;
     stream = next.value;
   }
   return { ok: true, value: stream };
 }
 
-const NL_DEFAULT_WIDTH = 6;
-const NL_DEFAULT_SEPARATOR = "\t";
-
-function nlNumberedFormat(options: NlOptions, language: string): OutputFormat {
-  return {
-    kind: "nl-line-number-prefixed",
-    width: options.width ?? NL_DEFAULT_WIDTH,
-    separator: options.separator ?? NL_DEFAULT_SEPARATOR,
-    format: { kind: "content", language },
-  };
-}
-
-function lowerStream(
-  stream: ShellStream,
-  command: string,
-): ShellSemanticResult {
-  if (stream.kind === "diff") {
-    const { commandName, subcommand } = stream;
-    return {
-      ok: true,
-      value: { kind: "diff", commandName, command, subcommand },
-    };
-  }
-  if (stream.kind === "numbered-rows") {
-    const language = langFromPath(stream.origin.filePath) || "text";
-    const steps: CommandStep[] = [
-      {
-        kind: "search",
-        order: 0,
-        commandName: "rg",
-        pattern: stream.pattern,
-        filePath: stream.origin.filePath,
-        outputShape: {
-          kind: "content",
-          format: {
-            kind: "individual-lines",
-            format: {
-              kind: "line-number-prefixed",
-              format: { kind: "content", language },
-            },
-          },
-          validator: stream.context
-            ? "line-number-prefixed-with-context"
-            : "colon-line-number-prefixed",
-        },
-      },
-    ];
-    return {
-      ok: true,
-      value: {
-        kind: "search",
-        commandName: "rg",
-        command,
-        pattern: stream.pattern,
-        filePath: stream.origin.filePath,
-        steps,
-      },
-    };
-  }
-  const { filePath } = stream.origin;
-  const { range, numbering, producer } = stream;
-  const presentation: ShellReadSemantic["presentation"] = {
-    lineNumbers: numbering ? { style: "nl", ...numbering } : false,
-  };
-  if (stream.origin.kind === "git-object" && !numbering) {
-    return {
-      ok: true,
-      value: {
-        kind: "read",
-        command,
-        commandName: "git",
-        filePath,
-        range,
-        presentation,
-      },
-    };
-  }
-  const language = langFromPath(filePath) || "text";
-  const steps: CommandStep[] = [
-    {
-      kind: "read-file",
-      order: 0,
-      commandName: producer,
-      filePath,
-      range,
-      outputShape: {
-        kind: "content",
-        format: numbering
-          ? nlNumberedFormat(numbering, language)
-          : { kind: "content", language },
-        validator: numbering ? undefined : "non-empty",
-      },
-    },
-  ];
-  return {
-    ok: true,
-    value: {
-      kind: "read",
-      command,
-      commandName: stream.origin.kind === "git-object" ? "git" : producer,
-      filePath,
-      range,
-      presentation,
-      steps,
-    },
-  };
-}
-
 function classifyPipeline(
   stages: SimpleCommand[],
-  originalCommand: string,
+  command: string,
   cdPath: string,
-): ShellSemanticResult {
+): ParseResult<ShellOutputSemantic> {
   const stream = buildPipelineStream(stages, cdPath);
-  return stream.ok ? lowerStream(stream.value, originalCommand) : stream;
+  return stream.ok
+    ? { ok: true, value: { kind: "output", command, output: [stream.value] } }
+    : stream;
 }
 
 function resolveAgainstCd(cdPath: string, path: string): string {
   return path.startsWith("/") || !cdPath ? path : cdPath + "/" + path;
+}
+
+function isGitObjectRead(segment: OutputSegment): boolean {
+  return (
+    segment.kind === "rows" &&
+    segment.source.origin.kind === "git-object" &&
+    segment.numbering?.kind !== "grep"
+  );
 }
 
 function classifyGenericList(
@@ -1227,7 +1028,7 @@ function classifyGenericList(
   const singleMember = members.filter((member) => !isCd(member)).length === 1;
   let cdPath = "";
   let singleResult: ShellSemanticResult | undefined;
-  const steps: CommandStep[] = [];
+  const output: OutputSegment[] = [];
 
   for (const member of members) {
     const cmd = member[0]!;
@@ -1242,7 +1043,7 @@ function classifyGenericList(
       const result = classifyPipeline(member, originalCommand, cdPath);
       if (!result.ok) return result;
       const value = result.value;
-      if (value.kind === "read" && value.commandName === "git") {
+      if (isGitObjectRead(value.output[0]!)) {
         return reject(
           "unsafe_shell_syntax",
           "git object paths are not relative to cd",
@@ -1252,7 +1053,7 @@ function classifyGenericList(
       continue;
     }
 
-    let memberSteps: CommandStep[];
+    let memberOutput: OutputSegment[];
     if (member.length === 1 && cmd.name !== "git" && cmd.name !== "diff") {
       if (cmd.name === "echo" || cmd.name === "printf" || cmd.name === "wc") {
         const redirectRejection = rejectRedirectEffect(cmd);
@@ -1269,36 +1070,31 @@ function classifyGenericList(
           `unsupported command in list: ${cmd.name ?? "(unnamed)"}`,
         );
       }
-      memberSteps = result.steps;
+      memberOutput = result;
     } else {
       const result = classifyPipeline(member, originalCommand, cdPath);
       if (!result.ok) return result;
-      if (result.value.kind === "read" && result.value.commandName === "git") {
+      if (isGitObjectRead(result.value.output[0]!)) {
         return reject(
           "unsupported_command",
           "git object reads cannot be combined with other list output",
         );
       }
-      if (!result.value.steps) {
+      if (result.value.output[0]!.kind === "diff") {
         return reject(
           "unsupported_command",
           "diff output cannot be combined with other list output",
         );
       }
-      memberSteps = result.value.steps;
+      memberOutput = result.value.output;
     }
 
-    for (const step of memberSteps) {
-      steps.push({
-        ...step,
-        order: steps.length,
-      });
-    }
+    output.push(...memberOutput);
   }
 
   if (singleResult) return singleResult;
 
-  if (!steps.some((s) => s.kind === "read-file")) {
+  if (!output.some((s) => s.kind === "rows" && s.numbering?.kind !== "grep")) {
     return reject(
       "unsupported_command",
       "list must contain at least one read command",
@@ -1308,10 +1104,9 @@ function classifyGenericList(
   return {
     ok: true,
     value: {
-      kind: "structured-output",
-      commandName: "shell",
+      kind: "output",
       command: originalCommand,
-      steps,
+      output,
     },
   };
 }
@@ -1321,9 +1116,8 @@ function classifyGenericList(
  */
 function classifyGitCommand(
   cmd: SimpleCommand,
-  originalCommand: string,
   cdPath: string,
-): ShellSemanticResult {
+): ParseResult<ShellStream> {
   const valueArgs = cmd.args.filter((a) => a.kind === "value");
   const subcommand = valueArgs[0]?.text;
 
@@ -1333,12 +1127,7 @@ function classifyGitCommand(
   if (subcommand === "diff") {
     return {
       ok: true,
-      value: {
-        kind: "diff",
-        commandName: "git",
-        command: originalCommand,
-        subcommand: "diff",
-      },
+      value: { kind: "diff" },
     };
   }
 
@@ -1357,24 +1146,12 @@ function classifyGitCommand(
       }
       return {
         ok: true,
-        value: {
-          kind: "read",
-          commandName: "git",
-          command: originalCommand,
-          filePath,
-          range: { type: "all" },
-          presentation: { lineNumbers: false },
-        },
+        value: openFile({ kind: "git-object", filePath }),
       };
     }
     return {
       ok: true,
-      value: {
-        kind: "diff",
-        commandName: "git",
-        command: originalCommand,
-        subcommand: "show",
-      },
+      value: { kind: "diff" },
     };
   }
 
@@ -1383,12 +1160,7 @@ function classifyGitCommand(
     if (flags.includes("-p") || flags.includes("--patch")) {
       return {
         ok: true,
-        value: {
-          kind: "diff",
-          commandName: "git",
-          command: originalCommand,
-          subcommand: "log",
-        },
+        value: { kind: "diff" },
       };
     }
     return reject(
@@ -1820,10 +1592,10 @@ function directUnitCommand(
   return null;
 }
 
-function trailingCatHeredocSteps(
+function trailingCatHeredocOutput(
   document: ParsedShellDocument,
   units: readonly ParsedShellUnit[],
-): CommandStep[] {
+): OutputSegment[] {
   if (units.length !== 1) return [];
   const unit = units[0]!;
   if (unit.kind === "list") {
@@ -1838,7 +1610,7 @@ function trailingCatHeredocSteps(
     );
     if (commands.some((command) => command === null)) return [];
     const readback = parseLsReadbackCommands(commands as SimpleCommand[]);
-    return readback?.ok ? structuredReadbackSteps(readback.value) : [];
+    return readback?.ok ? structuredReadbackOutput(readback.value) : [];
   }
   return [];
 }
@@ -1881,40 +1653,25 @@ function parseLsReadbackCommands(
   };
 }
 
-function structuredReadbackSteps(readback: {
+function structuredReadbackOutput(readback: {
   filePath: string;
   sedStart: number;
   sedEnd: number;
-}): CommandStep[] {
-  const language = langFromPath(readback.filePath) || "text";
+}): OutputSegment[] {
   return [
+    { kind: "summary-line" },
     {
-      kind: "plain-output",
-      order: 0,
-      commandName: "ls",
-      filePath: readback.filePath,
-      outputShape: {
-        kind: "fixed-lines",
-        count: 1,
-        format: { kind: "content", language: "shell-output" },
-        validator: "non-empty",
+      kind: "rows",
+      source: {
+        kind: "file",
+        origin: { kind: "worktree", filePath: readback.filePath },
+        range: {
+          type: "lines",
+          start: readback.sedStart,
+          end: readback.sedEnd,
+        },
       },
-    },
-    {
-      kind: "read-file",
-      order: 1,
-      commandName: "sed",
-      filePath: readback.filePath,
-      range: {
-        type: "lines",
-        start: readback.sedStart,
-        end: readback.sedEnd,
-      },
-      outputShape: {
-        kind: "content",
-        format: { kind: "content", language },
-        validator: "non-empty",
-      },
+      numbering: null,
     },
   ];
 }
@@ -1938,10 +1695,9 @@ function classifyLsReadbackAST(
   return {
     ok: true,
     value: {
-      kind: "structured-output",
-      commandName: "ls",
+      kind: "output",
       command: originalCommand,
-      steps: structuredReadbackSteps(readback.value),
+      output: structuredReadbackOutput(readback.value),
     },
   };
 }
@@ -1992,9 +1748,7 @@ function classifyCatHeredoc(
         "only leading mkdir -p setup is supported before heredoc",
       );
   }
-  const steps = trailingCatHeredocSteps(document, context.trailing).map(
-    (step, order) => ({ ...step, order }),
-  );
+  const output = trailingCatHeredocOutput(document, context.trailing);
   return {
     ok: true,
     value: {
@@ -2021,7 +1775,7 @@ function classifyCatHeredoc(
         content,
         state.literalStdoutPath,
       ),
-      steps: steps.length > 0 ? steps : undefined,
+      output: output.length > 0 ? output : undefined,
     },
   };
 }
@@ -2246,86 +2000,37 @@ function decodePrintfEscapes(raw: string): string | null {
   return decoded;
 }
 
-function classifyPrintfListMember(
-  cmd: SimpleCommand,
-): { steps: CommandStep[] } | null {
+function classifyPrintfListMember(cmd: SimpleCommand): OutputSegment[] | null {
   const valueArgs = cmd.args.filter((a) => a.kind === "value");
   if (valueArgs.length !== 1) return null;
   const raw = valueArgs[0]!.text;
   const decoded = decodePrintfEscapes(raw);
   if (decoded === null) return null;
-  return {
-    steps: [
-      {
-        kind: "plain-output",
-        order: 0,
-        commandName: "printf",
-        outputShape: {
-          kind: "literal",
-          text: decoded,
-          format: { kind: "content", language: "shell-output" },
-        },
-      },
-    ],
-  };
+  return [{ kind: "literal", text: decoded }];
 }
 
-function classifyWcSummary(
-  cmd: SimpleCommand,
-  cdPath: string,
-): { steps: CommandStep[] } | null {
+function classifyWcSummary(cmd: SimpleCommand): OutputSegment[] | null {
   const flags = cmd.args.filter((a) => a.kind === "flag");
   const values = cmd.args.filter((a) => a.kind === "value");
   if (flags.length !== 1 || flags[0]!.text !== "-l") return null;
   if (values.length !== 1) return null;
-  const filePath = resolveAgainstCd(cdPath, values[0]!.text);
-  return {
-    steps: [
-      {
-        kind: "plain-output",
-        order: 0,
-        commandName: "wc",
-        filePath,
-        outputShape: {
-          kind: "fixed-lines",
-          count: 1,
-          format: { kind: "content", language: "shell-output" },
-          validator: "non-empty",
-        },
-      },
-    ],
-  };
+  return [{ kind: "summary-line" }];
 }
 
-function classifyEchoListMember(
-  cmd: SimpleCommand,
-): { steps: CommandStep[] } | null {
+function classifyEchoListMember(cmd: SimpleCommand): OutputSegment[] | null {
   // Reject flags: -n (no trailing newline) and -e (interpret escapes) change output.
   if (cmd.args.some((a) => a.kind === "flag")) return null;
   const valueArgs = cmd.args.filter((a) => a.kind === "value");
   // POSIX: echo joins args with single spaces and appends a newline.
   const text = valueArgs.map((v) => v.text).join(" ") + "\n";
-  return {
-    steps: [
-      {
-        kind: "plain-output",
-        order: 0,
-        commandName: "echo",
-        outputShape: {
-          kind: "literal",
-          text,
-          format: { kind: "content", language: "shell-output" },
-        },
-      },
-    ],
-  };
+  return [{ kind: "literal", text }];
 }
 
 function classifySimpleCommandAsListMember(
   cmd: SimpleCommand,
   originalCommand: string,
   cdPath: string,
-): { steps: CommandStep[] } | null {
+): OutputSegment[] | null {
   switch (cmd.name) {
     case "sed":
     case "cat":
@@ -2333,12 +2038,12 @@ function classifySimpleCommandAsListMember(
     case "tail":
     case "nl": {
       const r = classifyPipeline([cmd], originalCommand, cdPath);
-      return r.ok ? { steps: r.value.steps ?? [] } : null;
+      return r.ok ? r.value.output : null;
     }
     case "printf":
       return classifyPrintfListMember(cmd);
     case "wc":
-      return classifyWcSummary(cmd, cdPath);
+      return classifyWcSummary(cmd);
     case "echo":
       return classifyEchoListMember(cmd);
     default:
@@ -2365,11 +2070,9 @@ export async function parseShellSemantic(
     return reject("unsafe_shell_syntax", "shell parser initialization failed");
   }
   const result = classifyNormalizedDocument(parsed.document, command, true);
-  if (result.ok && result.value.steps && !derivePlan(result.value.steps)) {
-    return reject(
-      "unsupported_command",
-      "shell output steps do not define an unambiguous output plan",
-    );
+  if (result.ok && result.value.kind !== "script-exec" && result.value.output) {
+    const view = shellOutputView(result.value.output);
+    if (!view.ok) return reject("unsupported_command", view.reason);
   }
   return result;
 }
