@@ -174,6 +174,16 @@ final class KernelINotify
 		errnoEnforce(result == 0 || errno == EINVAL, "inotify_rm_watch");
 	}
 
+	/// Return queued, unread bytes for tests that synchronize on delivery.
+	version (unittest) size_t pendingBytes()
+	{
+		import core.sys.posix.sys.ioctl : FIONREAD, ioctl;
+
+		int count;
+		errnoEnforce(ioctl(fd, FIONREAD, &count) == 0, "inotify FIONREAD");
+		return count;
+	}
+
 	void close()
 	{
 		conn.disconnect();
@@ -182,7 +192,7 @@ final class KernelINotify
 
 unittest
 {
-	import std.file : mkdirRecurse, rmdir, rmdirRecurse, symlink, tempDir;
+	import std.file : mkdir, mkdirRecurse, rmdir, rmdirRecurse, symlink, tempDir;
 	import std.path : buildPath;
 
 	auto root = buildPath(tempDir, "cydo-test-kernel-inotify");
@@ -197,6 +207,11 @@ unittest
 	enum mask = INotify.Mask.create | INotify.Mask.onlyDir;
 	auto wd = kernel.add(dir, mask);
 	assert(kernel.add(link, mask) == wd);
+	assert(kernel.pendingBytes() == 0);
+	auto child = buildPath(dir, "child");
+	mkdir(child);
+	assert(kernel.pendingBytes() > 0);
+	rmdir(child);
 	rmdir(dir);
 	kernel.remove(wd);
 }

@@ -248,15 +248,15 @@ private:
 
 unittest
 {
-	import core.time : seconds;
+	import core.time : MonoTime, msecs, seconds;
 	import std.algorithm : sort;
 	import std.conv : octal;
 	import std.file : mkdir, mkdirRecurse, remove, rename, rmdir, rmdirRecurse,
 		setAttributes, symlink, tempDir, write;
+	import std.format : format;
 	import std.process : environment;
 
-	import ae.net.asockets : onNextTick, socketManager;
-	import ae.sys.timing : setTimeout, TimerTask;
+	import ae.net.asockets : socketManager;
 
 	import cydo.domain.task_types.catalog : TaskTypeCatalog;
 	import cydo.domain.task_types.definition : byName;
@@ -454,31 +454,18 @@ unittest
 
 	size_t nextStep;
 	bool waiting;
-	bool timedOut;
 	bool stopped;
 	bool[string] notifiedScopes;
-	TimerTask timeout;
 	void stop()
 	{
 		watcher.stop();
 		stopped = true;
 	}
 
-	void applyStep()
-	{
-		if (nextStep == steps.length)
-		{
-			timeout.cancel();
-			stop();
-			return;
-		}
-		waiting = true;
-		steps[nextStep].change();
-	}
-
 	void finishStep()
 	{
 		auto step = steps[nextStep];
+		assert(notifiedScopes.length > 0, "Missing notification for " ~ step.name);
 		assert(sort(notifiedScopes.keys).release == sort(step.expected.dup).release,
 			step.name ~ ": unexpected notification scopes");
 		if ("user" in notifiedScopes)
@@ -502,16 +489,57 @@ unittest
 		waiting = false;
 		notifiedScopes = null;
 		++nextStep;
-		applyStep();
 	}
 
 	void notified(string label)
 	{
 		assert(waiting, "Notification outside a watcher test step");
 		assert(label !in notifiedScopes, "Duplicate notification during " ~ steps[nextStep].name);
-		if (notifiedScopes.length == 0)
-			socketManager.onNextTick(&finishStep);
 		notifiedScopes[label] = true;
+	}
+
+	size_t previousBytes;
+	TimerTask previousFlush;
+	MonoTime lastProgress;
+
+	void applyStep()
+	{
+		waiting = true;
+		steps[nextStep].change();
+		previousBytes = watcher.kernel_.pendingBytes();
+		previousFlush = watcher.flush_;
+		lastProgress = MonoTime.currTime();
+	}
+
+	void settle()
+	{
+		// The mutation queues inotify events synchronously. Let the loop read them
+		// and run the deferred flush before checking the callbacks.
+		auto pendingBytes = watcher.kernel_.pendingBytes();
+		auto flush = watcher.flush_;
+		if (pendingBytes == 0 && flush is null)
+		{
+			finishStep();
+			if (nextStep == steps.length)
+			{
+				stop();
+				return;
+			}
+			applyStep();
+		}
+		else
+		{
+			// Check liveness after observing I/O and flush progress on this turn.
+			auto now = MonoTime.currTime();
+			if (pendingBytes < previousBytes || flush !is previousFlush)
+				lastProgress = now;
+			assert(now - lastProgress < 60.seconds,
+				format("watcher did not settle after %s (pendingBytes=%s, flush pending=%s)",
+					steps[nextStep].name, pendingBytes, flush !is null));
+			previousBytes = pendingBytes;
+			previousFlush = flush;
+		}
+		setTimeout(&settle, 0.msecs);
 	}
 
 	watcher = new ConfigWatcher(ConfigWatcherHost(
@@ -524,13 +552,8 @@ unittest
 	watcher.ensureProjectWatch(project);
 	watcher.ensureProjectWatch(otherProject);
 
-	timeout = setTimeout({
-		timedOut = true;
-		stop();
-	}, 5.seconds);
-	scope (exit) if (timeout.isWaiting()) timeout.cancel();
 	applyStep();
+	setTimeout(&settle, 0.msecs);
 	socketManager.loop();
-	assert(!timedOut, "Missing notification for " ~ steps[nextStep].name);
 	assert(nextStep == steps.length);
 }
