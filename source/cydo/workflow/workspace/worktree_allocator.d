@@ -7,6 +7,7 @@ import std.process : execute;
 
 import cydo.domain.task_types.definition : WorktreeMode;
 import cydo.domain.tasks.model : TaskData, worktreePathForTaskDir;
+import cydo.workflow.workspace.worktree_dedup : dedupWorktreeInBackground;
 
 package(cydo):
 
@@ -97,6 +98,7 @@ private:
 				throw new Exception(format!"Failed to create required worktree for root task %d: %s"(
 					rootTid, gitResult.output));
 			infof("Created shared worktree at root task %d: %s", rootTid, wtPath);
+			dedupWorktreeInBackground(workDir, wtPath);
 		}
 		return rootTid;
 	}
@@ -124,6 +126,7 @@ private:
 			throw new Exception(format!"Failed to create fork worktree for task %d: %s"(
 				childTid, gitResult.output));
 		infof("Created fork worktree for task %d: %s", childTid, wtPath);
+		dedupWorktreeInBackground(workDir, wtPath);
 		return childTid;
 	}
 }

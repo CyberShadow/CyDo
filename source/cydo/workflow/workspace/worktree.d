@@ -8,6 +8,7 @@ import std.logger : infof, errorf;
 import std.path : buildPath, dirName;
 import std.process : execute, pipeProcess, Redirect, wait;
 import std.string : strip;
+import cydo.workflow.workspace.worktree_dedup : dedupWorktree;
 
 /// Link files of a repository's main checkout into one of its worktrees:
 /// the untracked ones (personal instruction files, local settings) that a
@@ -396,6 +397,7 @@ void unarchiveWorktree(string projectPath, int tid, string worktreePath)
     if (deleteRefResult.status != 0)
         throwGitFailure("unarchiveWorktree: update-ref -d", tid, deleteRefCmd, deleteRefResult.output);
 
+    dedupWorktree(projectPath, worktreePath);
     infof("unarchiveWorktree: restored tid=%d at %s", tid, worktreePath);
 }
 
