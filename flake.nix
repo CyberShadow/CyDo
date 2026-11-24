@@ -619,6 +619,7 @@ EOF
           pkgs = pkgsFor system;
           cydo = self.packages.${system}.default;
           cydoDebug = self.packages.${system}.cydoTest;
+          backendDebug = self.packages.${system}.backendDebug;
           codex = self.packages.${system}.codex-cli;
           copilot = self.packages.${system}.copilot-cli;
           exportCdnFixtures = self.packages.${system}.exportCdnFixtures;
@@ -999,6 +1000,8 @@ EOF
             buildInputs = [ pkgs.sqlite pkgs.openssl pkgs.zlib ];
 
             CI = "1";
+            # Build the real executable used by the CLI tests as a separate derivation.
+            CYDO_TEST_CYDO_BIN = "${backendDebug}/bin/cydo";
 
             # The Codex driver's exact-shape grammar transcribes the model
             # catalog compiled into this binary; a unit test reads the catalog

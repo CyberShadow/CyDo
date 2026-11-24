@@ -6,27 +6,16 @@ import cydo.runtime.config.paths : configPath, userTaskTypesPath;
 import std.algorithm : canFind, sort;
 import std.conv : to;
 import std.file : SpanMode, chdir, dirEntries, exists, getcwd, mkdirRecurse,
-	read, rmdirRecurse, tempDir, thisExePath;
-import std.path : buildPath, dirName, relativePath;
+	read, rmdirRecurse, tempDir;
+import std.path : buildPath, isAbsolute, relativePath;
 import std.process : environment, execute;
-
-private string projectRoot()
-{
-	return dirName(dirName(thisExePath()));
-}
 
 private string cydoCli()
 {
-	static string executable;
-	if (executable.length == 0)
-	{
-		auto originalCwd = getcwd();
-		scope (exit) chdir(originalCwd);
-		chdir(projectRoot());
-		auto result = execute(["dub", "build", "--skip-registry=all"]);
-		assert(result.status == 0, result.output);
-		executable = buildPath(projectRoot(), "build", "cydo");
-	}
+	auto executable = environment.get("CYDO_TEST_CYDO_BIN", "");
+	assert(isAbsolute(executable) && exists(executable),
+		"CYDO_TEST_CYDO_BIN must name an existing absolute path. "
+		~ "Run nix develop -ic dub build and set CYDO_TEST_CYDO_BIN=$PWD/build/cydo.");
 	return executable;
 }
 
@@ -39,8 +28,6 @@ private typeof(execute(["true"])) runCydo(string[] arguments)
 
 private void withInitCliFixture(string name, void delegate(string root) body)
 {
-	// Build before HOME points at the fixture, so the build leaves nothing in it.
-	cydoCli();
 	auto root = buildPath(tempDir(), name);
 	if (exists(root))
 		rmdirRecurse(root);

@@ -32,8 +32,11 @@ nix build         # Build the full application
 nix flake check   # Run all tests — the single "all tests pass" command
 nix eval .#checks.x86_64-linux --apply builtins.attrNames   # List individual checks
 nix build -L .#checks.x86_64-linux.{unittests,typecheck}    # Run selected checks
+nix develop -ic dub build && nix develop -ic env CYDO_TEST_CYDO_BIN=$PWD/build/cydo dub test
 nix develop -ic env -C tests playwright ...        # Invoke Playwright directly
 ```
+
+The CLI tests run the binary at `CYDO_TEST_CYDO_BIN` and fail fast if it is unset.
 
 Besides the e2e tests, the checks are `unittests`, `frontend-unit-tests`,
 `typecheck`, `lint`, `lint-css`, `format`, `protocol-types-fresh`,
