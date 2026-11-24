@@ -161,8 +161,7 @@ class CopilotAgent : Agent
 		if (config.mcpSocketPath.length > 0)
 		{
 			mcpConfigPath = generateCopilotMcpConfig(tid, launch.nativeHistoryProfile,
-				config.creatableTaskTypes,
-				config.switchModes, config.handoffs, config.singletons, config.includeTools,
+				config.toolPlaceholders, config.includeTools,
 				config.mcpSocketPath);
 			lastMcpConfigPath_ = mcpConfigPath;
 		}
@@ -3305,9 +3304,9 @@ string buildToolDefinitions(SessionConfig config)
 		answerToolDescription,
 		JSONFragment(`{"type":"object","properties":{"qid":{"type":"integer"},"message":{"type":"string"}},"required":["qid","message"]}`),
 		true);
-	if (config.singletons.length > 0)
+	if (config.includeTools.canFind("Request"))
 		tools ~= ToolDefinition("cydo-Request",
-			requestToolDescription ~ config.singletons,
+			requestToolDescription ~ config.toolPlaceholders["singletons"],
 			JSONFragment(`{"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"}},"required":["to","message"]}`),
 			true);
 	if (config.includeTools.canFind("UnsandboxedCommand"))
@@ -3328,9 +3327,8 @@ unittest
 	assert(!defaultTools.canFind!(tool => tool.name == "cydo-Request"));
 	assert(!defaultTools.canFind!(tool => tool.name == "cydo-UnsandboxedCommand"));
 
-	config.includeTools = ["UnsandboxedCommand"];
-
-	config.singletons = "- integrate: Integrate changes.";
+	config.includeTools = ["UnsandboxedCommand", "Request"];
+	config.toolPlaceholders = ["singletons": "- integrate: Integrate changes."];
 	auto tools = jsonParse!(ToolDefinition[])(buildToolDefinitions(config));
 
 	string[] expectedNames = [
@@ -3414,10 +3412,7 @@ private struct CopilotMcpConfigEnv
 {
 	string CYDO_TID;
 	string CYDO_SOCKET;
-	string CYDO_CREATABLE_TYPES;
-	string CYDO_SWITCHMODES;
-	string CYDO_HANDOFFS;
-	string CYDO_SINGLETONS;
+	string CYDO_TOOL_PLACEHOLDERS;
 	string CYDO_INCLUDE_TOOLS;
 }
 
@@ -3457,9 +3452,9 @@ unittest
 
 /// Generate a temporary MCP config file for Copilot's --additional-mcp-config flag.
 string generateCopilotMcpConfig(int tid, const ref NativeHistoryProfile profile,
-	string creatableTaskTypes,
-	string switchModes, string handoffs, string singletons,
-	string[] includeTools, string mcpSocketPath)
+	string[string] placeholders = null,
+	string[] includeTools = null,
+	string mcpSocketPath = "")
 {
 	import std.array : join;
 	import std.exception : enforce;
@@ -3485,10 +3480,7 @@ string generateCopilotMcpConfig(int tid, const ref NativeHistoryProfile profile,
 		CopilotMcpConfigEnv(
 			to!string(tid),
 			mcpSocketPath.nonNull,
-			creatableTaskTypes.nonNull,
-			switchModes.nonNull,
-			handoffs.nonNull,
-			singletons.nonNull,
+			toJson(placeholders),
 			includeTools is null ? "" : includeTools.join(","),
 		),
 	)));
@@ -3499,7 +3491,7 @@ string generateCopilotMcpConfig(int tid, const ref NativeHistoryProfile profile,
 unittest
 {
 	import std.exception : assertThrown;
-	import std.file : exists, rmdirRecurse;
+	import std.file : exists, readText, rmdirRecurse;
 	import std.path : buildPath;
 
 	auto root = buildPath("/tmp", "cydo-copilot-mcp-native-profile");
@@ -3510,13 +3502,19 @@ unittest
 			rmdirRecurse(root);
 	auto profile = NativeHistoryProfile(AgentDriver.copilot,
 		buildPath(root, "supplied-profile"));
-	auto configPath = generateCopilotMcpConfig(43, profile, "", "", "", "", null, "");
+	auto placeholders = ["singletons": "- integrate: Integrate changes."];
+	auto configPath = generateCopilotMcpConfig(43, profile, placeholders);
 	assert(configPath == buildPath(profile.root, "mcp-configs", "cydo-43.json"));
 	assert(exists(configPath));
+	@JSONPartial struct ConfigServer { string[string] env; }
+	@JSONPartial struct Config { ConfigServer[string] mcpServers; }
+	auto configEnv = jsonParse!Config(readText(configPath)).mcpServers["cydo"].env;
+	assert(jsonParse!(string[string])(configEnv["CYDO_TOOL_PLACEHOLDERS"]) == placeholders);
+	foreach (key; ["CYDO_CREATABLE_TYPES", "CYDO_SWITCHMODES", "CYDO_HANDOFFS", "CYDO_SINGLETONS"])
+		assert(key !in configEnv);
 	auto wrongDriverProfile = NativeHistoryProfile(AgentDriver.codex,
 		buildPath(root, "wrong-driver"));
-	assertThrown!Exception(generateCopilotMcpConfig(43, wrongDriverProfile,
-		"", "", "", "", null, ""));
+	assertThrown!Exception(generateCopilotMcpConfig(43, wrongDriverProfile));
 }
 
 /// Extract plain text from a tool result JSONFragment.

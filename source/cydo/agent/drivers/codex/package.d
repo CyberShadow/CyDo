@@ -3173,10 +3173,7 @@ string buildConfigOverride(int tid, SessionConfig config)
 		string[string] env;
 		env["CYDO_TID"] = to!string(tid);
 		env["CYDO_SOCKET"] = config.mcpSocketPath;
-		env["CYDO_CREATABLE_TYPES"] = config.creatableTaskTypes;
-		env["CYDO_SWITCHMODES"] = config.switchModes;
-		env["CYDO_HANDOFFS"] = config.handoffs;
-		env["CYDO_SINGLETONS"] = config.singletons;
+		env["CYDO_TOOL_PLACEHOLDERS"] = toJson(config.toolPlaceholders);
 		env["CYDO_INCLUDE_TOOLS"] = config.includeTools is null ? "" : config.includeTools.join(",");
 
 		auto toolTimeout = environment.get("CYDO_TEST_CODEX_MCP_TOOL_TIMEOUT_SEC", "");
@@ -3196,10 +3193,15 @@ string buildConfigOverride(int tid, SessionConfig config)
 
 unittest
 {
-	@JSONPartial struct RequiredMcpConfig { bool required; }
-	auto overrides = jsonParse!(JSONFragment[string])(
-		buildConfigOverride(31, SessionConfig.init));
-	assert(jsonParse!RequiredMcpConfig(overrides["mcp_servers.cydo"].json).required);
+	SessionConfig config;
+	config.toolPlaceholders = ["singletons": "- integrate: Integrate changes."];
+	auto overrides = jsonParse!(JSONFragment[string])(buildConfigOverride(31, config));
+	auto server = jsonParse!McpServerConfig(overrides["mcp_servers.cydo"].json);
+	assert(server.required);
+	assert(jsonParse!(string[string])(server.env["CYDO_TOOL_PLACEHOLDERS"])
+		== config.toolPlaceholders);
+	foreach (key; ["CYDO_CREATABLE_TYPES", "CYDO_SWITCHMODES", "CYDO_HANDOFFS", "CYDO_SINGLETONS"])
+		assert(key !in server.env);
 }
 
 unittest

@@ -18,7 +18,8 @@ import cydo.agent.resolver : resolveUnsandboxedCommandExecution;
 import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork,
 	MessageSource;
 import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
-	ToolDescriptionViolation, checkRenderedCydoToolDescriptionViolations;
+	ToolDescriptionViolation, buildCydoSessionTools, buildRenderedCydoToolsList,
+	checkToolDescriptionViolations;
 import cydo.protocol : ContentBlock, ItemDeltaEvent, ItemStartedEvent, ProcessExitEvent,
 	ProcessStderrEvent, TranslatedEvent;
 import cydo.runtime.config : AgentDriver, CydoConfig, PathMode, SandboxConfig, UnsandboxedCommandExecution;
@@ -47,8 +48,7 @@ import cydo.domain.tasks.yield_gate : YieldGate;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.workspace.worktree : linkCheckoutFiles;
 import cydo.domain.task_types.definition : TaskTypeDef, formatCompactSingletonToolSummary, singletonsOfferedTo,
-	formatCompactCreatableTaskTypeToolSummary, formatCompactHandoffToolSummary,
-	isInteractive, formatCompactSwitchModeToolSummary, loadTaskTypeSystemPrompt, byName;
+	isInteractive, loadTaskTypeSystemPrompt, byName;
 import cydo.workflow.history.jsonl_store : repairInterruptedToolCallFile;
 
 version (unittest) import std.exception : assertThrown;
@@ -779,11 +779,7 @@ public:
 		}
 		auto singletons = singletonsOfferedTo(taskTypes, entryPoints,
 			host_.taskTypeCatalog.singletonsForProject(td.projectPath), td.taskType);
-		sessionConfig.singletons = formatCompactSingletonToolSummary(singletons);
-		sessionConfig.creatableTaskTypes = formatCompactCreatableTaskTypeToolSummary(taskTypes,
-			td.taskType);
-		sessionConfig.switchModes = formatCompactSwitchModeToolSummary(taskTypes, td.taskType);
-		sessionConfig.handoffs = formatCompactHandoffToolSummary(taskTypes, td.taskType);
+		auto singletonsSummary = formatCompactSingletonToolSummary(singletons);
 		if (typeDef !is null)
 		{
 			import cydo.domain.task_types.definition : resolveModelClass;
@@ -934,34 +930,21 @@ public:
 		sessionConfig.workspace = context.workspaceName;
 		sessionConfig.workDir = chdir !is null ? chdir : "";
 		sessionConfig.taskDir = tdDir;
-		if (taskAgent.needsBash())
-			sessionConfig.includeTools ~= "Bash";
-		if (verdict != UnsandboxedCommandExecution.no)
-			sessionConfig.includeTools ~= "UnsandboxedCommand";
-		if (sessionConfig.creatableTaskTypes.length > 0)
-			sessionConfig.includeTools ~= "Task";
-		if (sessionConfig.switchModes.length > 0)
-			sessionConfig.includeTools ~= "SwitchMode";
-		if (sessionConfig.handoffs.length > 0)
-			sessionConfig.includeTools ~= "Handoff";
-		if (interactive)
-			sessionConfig.includeTools ~= "AskUserQuestion";
-		sessionConfig.includeTools ~= "Ask";
-		sessionConfig.includeTools ~= "Answer";
-		if (sessionConfig.singletons.length > 0)
-			sessionConfig.includeTools ~= "Request";
+		RenderedCydoToolsOptions renderedToolOptions;
+		renderedToolOptions.includeBash = taskAgent.needsBash();
+		renderedToolOptions.includeUnsandboxedCommand = verdict != UnsandboxedCommandExecution.no;
+		auto sessionTools = buildCydoSessionTools(taskTypes, entryPoints,
+			td.taskType, singletonsSummary, renderedToolOptions);
+		sessionConfig.toolPlaceholders = sessionTools.placeholders;
+		sessionConfig.includeTools = sessionTools.includeTools;
 		if (typeDef !is null && typeDef.allow_native_subagents)
 			sessionConfig.allowNativeSubagents = true;
 		sessionConfig.allowScheduledWakeups = interactive;
 
 		sessionConfig.permissions = host_.permissionSettings(td.agentName, td.workspace);
 
-		RenderedCydoToolsOptions renderedToolOptions;
-		renderedToolOptions.includeBash = taskAgent.needsBash();
-		renderedToolOptions.includeUnsandboxedCommand = verdict != UnsandboxedCommandExecution.no;
 		host_.reportMcpToolDescriptionLimit(td.projectPath, td.taskType,
-			checkRenderedCydoToolDescriptionViolations(taskTypes, entryPoints,
-				td.taskType, sessionConfig.singletons, options: renderedToolOptions));
+			checkToolDescriptionViolations(td.taskType, buildRenderedCydoToolsList(sessionTools)));
 		sessionConfig.agentName = td.agentName;
 
 		return TaskSessionLaunch(processLaunch, sessionConfig);

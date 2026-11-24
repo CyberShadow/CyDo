@@ -87,12 +87,8 @@ string buildToolsListJson()
 	auto includeStr = environment.get("CYDO_INCLUDE_TOOLS", "");
 	string[] includeTools = includeStr.length > 0 ? includeStr.split(",") : null;
 
-	return buildToolsListJson!CydoTools([
-		"creatable_task_types": environment.get("CYDO_CREATABLE_TYPES", ""),
-		"switchmodes": environment.get("CYDO_SWITCHMODES", ""),
-		"handoffs": environment.get("CYDO_HANDOFFS", ""),
-		"singletons": environment.get("CYDO_SINGLETONS", ""),
-	], includeTools);
+	auto placeholders = jsonParse!(string[string])(environment["CYDO_TOOL_PLACEHOLDERS"]);
+	return buildToolsListJson!CydoTools(placeholders, includeTools);
 }
 
 interface McpProtocol

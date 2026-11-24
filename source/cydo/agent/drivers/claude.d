@@ -108,8 +108,7 @@ class ClaudeCodeAgent : Agent
 		SessionConfig config = SessionConfig.init)
 	{
 		lastMcpConfigPath_ = generateMcpConfig(tid, launch.nativeHistoryProfile,
-			config.creatableTaskTypes,
-			config.switchModes, config.handoffs, config.singletons, config.includeTools,
+			config.toolPlaceholders, config.includeTools,
 			config.mcpSocketPath);
 		auto claudeBin = launch.executablePath.length > 0
 			? launch.executablePath
@@ -3679,10 +3678,7 @@ private struct McpConfigEnv
 {
 	string CYDO_TID;
 	string CYDO_SOCKET;
-	string CYDO_CREATABLE_TYPES;
-	string CYDO_SWITCHMODES;
-	string CYDO_HANDOFFS;
-	string CYDO_SINGLETONS;
+	string CYDO_TOOL_PLACEHOLDERS;
 	string CYDO_INCLUDE_TOOLS;
 }
 
@@ -3703,13 +3699,9 @@ private struct McpConfigServers { McpConfigServer cydo; }
 private struct McpConfig { McpConfigServers mcpServers; }
 
 /// Generate a temporary MCP config file pointing to the cydo binary.
-/// creatableTaskTypes is pre-formatted text describing available task types.
-/// switchModes is pre-formatted text describing available SwitchMode continuations.
-/// handoffs is pre-formatted text describing available Handoff continuations.
 /// mcpSocketPath is the absolute path to the backend's UNIX socket for MCP calls.
 string generateMcpConfig(int tid, const ref NativeHistoryProfile profile,
-	string creatableTaskTypes = "",
-	string switchModes = "", string handoffs = "", string singletons = "",
+	string[string] placeholders = null,
 	string[] includeTools = null,
 	string mcpSocketPath = "")
 {
@@ -3738,10 +3730,7 @@ string generateMcpConfig(int tid, const ref NativeHistoryProfile profile,
 		McpConfigEnv(
 			to!string(tid),
 			mcpSocketPath.nonNull,
-			creatableTaskTypes.nonNull,
-			switchModes.nonNull,
-			handoffs.nonNull,
-			singletons.nonNull,
+			toJson(placeholders),
 			includeTools is null ? "" : includeTools.join(","),
 		),
 	)));
@@ -3752,7 +3741,7 @@ string generateMcpConfig(int tid, const ref NativeHistoryProfile profile,
 unittest
 {
 	import std.exception : assertThrown;
-	import std.file : exists, rmdirRecurse;
+	import std.file : exists, readText, rmdirRecurse;
 	import std.path : buildPath;
 
 	auto root = buildPath("/tmp", "cydo-claude-mcp-native-profile");
@@ -3763,9 +3752,16 @@ unittest
 			rmdirRecurse(root);
 	auto profile = NativeHistoryProfile(AgentDriver.claude,
 		buildPath(root, "supplied-profile"));
-	auto configPath = generateMcpConfig(42, profile);
+	auto placeholders = ["singletons": "- integrate: Integrate changes."];
+	auto configPath = generateMcpConfig(42, profile, placeholders);
 	assert(configPath == buildPath(profile.root, "mcp-configs", "cydo-42.json"));
 	assert(exists(configPath));
+	@JSONPartial struct ConfigServer { string[string] env; }
+	@JSONPartial struct Config { ConfigServer[string] mcpServers; }
+	auto configEnv = jsonParse!Config(readText(configPath)).mcpServers["cydo"].env;
+	assert(jsonParse!(string[string])(configEnv["CYDO_TOOL_PLACEHOLDERS"]) == placeholders);
+	foreach (key; ["CYDO_CREATABLE_TYPES", "CYDO_SWITCHMODES", "CYDO_HANDOFFS", "CYDO_SINGLETONS"])
+		assert(key !in configEnv);
 	auto wrongDriverProfile = NativeHistoryProfile(AgentDriver.codex,
 		buildPath(root, "wrong-driver"));
 	assertThrown!Exception(generateMcpConfig(42, wrongDriverProfile));

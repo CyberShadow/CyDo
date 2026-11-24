@@ -32,7 +32,13 @@ struct ToolDescriptionViolation
 	size_t maxChars;
 }
 
-ToolsList buildRenderedCydoToolsList(
+struct CydoSessionTools
+{
+	string[string] placeholders;
+	string[] includeTools;
+}
+
+CydoSessionTools buildCydoSessionTools(
 	TaskTypeDef[] types,
 	UserEntryPointDef[] entryPoints,
 	string typeName,
@@ -64,12 +70,28 @@ ToolsList buildRenderedCydoToolsList(
 	if (singletons.length > 0)
 		includeTools ~= "Request";
 
-	return jsonParse!ToolsList(buildToolsListJson!CydoTools([
+	return CydoSessionTools([
 		"creatable_task_types": creatableTaskTypes,
 		"switchmodes": switchModes,
 		"handoffs": handoffs,
 		"singletons": singletons,
-	], includeTools));
+	], includeTools);
+}
+
+ToolsList buildRenderedCydoToolsList(
+	TaskTypeDef[] types,
+	UserEntryPointDef[] entryPoints,
+	string typeName,
+	string singletons,
+	RenderedCydoToolsOptions options = RenderedCydoToolsOptions.init,
+)
+{
+	return buildRenderedCydoToolsList(buildCydoSessionTools(types, entryPoints, typeName, singletons, options));
+}
+
+ToolsList buildRenderedCydoToolsList(CydoSessionTools tools)
+{
+	return jsonParse!ToolsList(buildToolsListJson!CydoTools(tools.placeholders, tools.includeTools));
 }
 
 ToolDescriptionViolation[] checkToolDescriptionViolations(
@@ -150,7 +172,7 @@ private size_t countCodePoints(string text)
 
 unittest
 {
-	import std.algorithm : canFind, filter;
+	import std.algorithm : canFind, filter, map, sort;
 	import std.array : array;
 	import cydo.domain.task_types.definition : SingletonDef, SingletonAudience;
 
@@ -168,6 +190,15 @@ unittest
 			"Review changes.\nReport actionable findings."),
 	];
 	auto summary = formatCompactSingletonToolSummary(singletons);
+	foreach (includeBash; [false, true])
+	{
+		auto options = RenderedCydoToolsOptions(includeBash: includeBash);
+		auto sessionTools = buildCydoSessionTools(types, [], task.name, summary, options);
+		auto rendered = buildRenderedCydoToolsList(types, [], task.name, summary, options);
+		auto renderedNames = rendered.tools.map!(tool => tool.name).array;
+		assert(sessionTools.includeTools.canFind("Bash") == includeBash);
+		assert(sessionTools.includeTools.sort == renderedNames.sort);
+	}
 	auto tools = buildRenderedCydoToolsList(types, [], task.name, summary).tools;
 	auto requests = tools.filter!(tool => tool.name == "Request").array;
 	assert(requests.length == 1);

@@ -16,10 +16,7 @@ struct SessionConfig
 	string model;              /// CLI model alias (e.g., "haiku", "sonnet", "opus"); null = default
 	string effort;             /// Reasoning/thinking effort; empty = the driver's default
 	string appendSystemPrompt; /// Appended to the default system prompt; null = none
-	string creatableTaskTypes; /// Pre-formatted description of available task types for MCP tool
-	string switchModes;        /// Pre-formatted description of available SwitchMode continuations
-	string handoffs;           /// Pre-formatted description of available Handoff continuations
-	string singletons;         /// Pre-formatted description of available singletons
+	string[string] toolPlaceholders; /// Pre-formatted text for MCP tool descriptions
 	string[] includeTools;     /// MCP tool names visible to this session (only these appear in tools/list)
 	bool allowNativeSubagents; /// When true, don't disable Claude's built-in Task tool
 	bool allowScheduledWakeups; /// When true, the agent may schedule prompts that start a later turn
