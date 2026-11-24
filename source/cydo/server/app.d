@@ -67,7 +67,7 @@ import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.domain.tasks.yield_gate : YieldGate;
-import cydo.workflow.sessions.yield_gates : YieldGateFinding;
+import cydo.workflow.sessions.yield_gates : YieldGateFinding, evaluateWorktreeBranchGate;
 import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
 import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
@@ -797,6 +797,7 @@ class App
 			hasPendingChildQuestion: &workflowTools.hasPendingChildQuestion,
 			sendPendingChildAnswerReminder: &workflowTools.sendPendingChildAnswerReminder,
 			checkOutputGate: &checkOutputGate,
+			checkWorktreeBranchGate: &checkWorktreeBranchGate,
 			evaluateDiskUsage: (int tid) => measureDiskUsageAsync(diskScanInput(tid)),
 			finalizeCompletedSubTask: &workflowTools.finalizeCompletedSubTask,
 			recordChildTerminal: &workflowTools.recordChildTerminal,
@@ -3360,16 +3361,27 @@ class App
 	{
 		if (tid !in tasks)
 			return;
+		KnownSystemMessageKind kind;
+		string templatePath;
+		string failureDiagnostic;
 		final switch (finding.gate)
 		{
-		case YieldGate.outputs: break;
-		case YieldGate.diskCleanup: break;
+		case YieldGate.outputs:
+			kind = KnownSystemMessageKind.missingRequiredOutputs;
+			templatePath = "gates/missing_outputs.md";
+			failureDiagnostic = "Failed to request missing outputs";
+			break;
+		case YieldGate.diskCleanup:
+			kind = KnownSystemMessageKind.diskCleanupRequest;
+			templatePath = "gates/disk_cleanup.md";
+			failureDiagnostic = "Failed to request disk cleanup";
+			break;
+		case YieldGate.worktreeBranch:
+			kind = KnownSystemMessageKind.worktreeBranchRequest;
+			templatePath = "gates/worktree_branch.md";
+			failureDiagnostic = "Failed to request worktree branch switch";
+			break;
 		}
-		auto kind = finding.gate == YieldGate.outputs
-			? KnownSystemMessageKind.missingRequiredOutputs
-			: KnownSystemMessageKind.diskCleanupRequest;
-		auto templatePath = finding.gate == YieldGate.outputs
-			? "gates/missing_outputs.md" : "gates/disk_cleanup.md";
 		auto vars = finding.vars;
 		if (finding.gate == YieldGate.outputs)
 			vars["missing_outputs"] = finding.detail;
@@ -3393,10 +3405,7 @@ class App
 			persistence.setResultText(tid, failed.resultText);
 			transitionTask(tid, TaskStatus.active, TaskStatus.failed,
 				TaskNotificationChange.preserve);
-			auto translated = historyPipeline.appendTaskDiagnostic(tid,
-				finding.gate == YieldGate.outputs
-					? "Failed to request missing outputs" : "Failed to request disk cleanup",
-				e.msg);
+			auto translated = historyPipeline.appendTaskDiagnostic(tid, failureDiagnostic, e.msg);
 			broadcastAppendedTaskEvent(tid, translated);
 			workflowTools.recordChildTerminal(tid);
 			broadcastTaskUpdate(tid);
@@ -3518,6 +3527,20 @@ class App
 	private YieldGateFinding checkOutputGate(int tid)
 	{
 		return YieldGateFinding(YieldGate.outputs, checkDeclaredOutputs(tid));
+	}
+
+	private YieldGateFinding checkWorktreeBranchGate(int tid)
+	{
+		auto td = &tasks[tid];
+		if (!td.hasWorktree)
+			return YieldGateFinding(YieldGate.worktreeBranch);
+		auto typeDef = taskTypeCatalog.getTaskTypesForProject(td.projectPath).byName(td.taskType);
+		if (typeDef !is null && typeDef.read_only)
+			return YieldGateFinding(YieldGate.worktreeBranch);
+
+		auto wtPath = taskPathResolver.worktreePath(td);
+		return evaluateWorktreeBranchGate(worktreeHeadStatus(wtPath, td.worktreeTid),
+			wtPath, td.worktreeTid);
 	}
 
 	/// Check whether a completing task has produced all declared outputs.

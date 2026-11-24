@@ -1570,6 +1570,8 @@ unittest
 unittest
 {
     import std.file : rmdirRecurse;
+    import cydo.domain.tasks.yield_gate : YieldGate;
+    import cydo.workflow.sessions.yield_gates : evaluateWorktreeBranchGate;
 
     auto repoDir = setupTestRepo("cydo-wt-test-orphan-head-status");
     scope(exit) rmdirRecurse(repoDir);
@@ -1582,6 +1584,10 @@ unittest
     assert(status.currentBranch == "scratch");
     assert(status.headSha is null);
     assert(status.branchTip == tip);
+
+    auto finding = evaluateWorktreeBranchGate(status, wtDir, 130);
+    assert(finding.found && finding.gate == YieldGate.worktreeBranch);
+    assert(finding.vars["head"] == "branch `scratch`");
 }
 
 unittest

@@ -208,6 +208,7 @@ struct TaskSessionRunnerHost
 	void delegate(int tid) sendPendingChildAnswerReminder;
 	void delegate(int tid, const(BackgroundWork)[] running) sendBackgroundWorkReminder;
 	YieldGateFinding delegate(int tid) checkOutputGate;
+	YieldGateFinding delegate(int tid) checkWorktreeBranchGate;
 	Promise!DiskEvaluation delegate(int tid) evaluateDiskUsage;
 	bool delegate(int tid) finalizeCompletedSubTask;
 	bool delegate(int tid) recordChildTerminal;
@@ -1391,7 +1392,7 @@ public:
 			if (cleanExit && consumerWaiting && !current.lastTurnFailed)
 			{
 				auto finding = checkYieldGates(current.naggedYieldGates,
-					tid, host_.checkOutputGate);
+					tid, host_.checkOutputGate, host_.checkWorktreeBranchGate);
 				if (shouldRetryYieldGate(current.naggedYieldGates, finding))
 				{
 					host_.markYieldGateNagged(tid, finding.gate);
@@ -3326,18 +3327,23 @@ version (unittest) private void assertYieldGateRunnerCase(
 	bool bothNagged = false, bool diskFirstThenMissing = false,
 	bool laterHigh = false, bool laterMissing = false,
 	bool diskRetryFails = false, bool heldEventAtIdle = false,
-	bool unansweredFollowUp = false)
+	bool unansweredFollowUp = false, bool branchOff = false)
 {
 	import ae.net.asockets : onNextTick, socketManager;
 	import ae.utils.statequeue : StateQueue;
 	import std.algorithm.searching : canFind;
 	import std.conv : to;
+	import std.file : readText;
+	import std.process : environment;
 	import configy.attributes : SetInfo;
+	import cydo.domain.task_types.definition : substituteVars;
 	import cydo.domain.tasks.yield_gate : YieldGate;
 	import cydo.domain.storage.persistence : Persistence;
 	import cydo.foundation.system.known_messages : KnownSystemMessageKind;
 	import cydo.workflow.tools.backend : WorkflowToolsBackend, WorkflowToolsHost;
 	import cydo.runtime.config : AgentConfig, WorkspaceConfig;
+	import cydo.workflow.sessions.yield_gates : evaluateWorktreeBranchGate;
+	import cydo.workflow.workspace.worktree : WorktreeHeadStatus;
 
 	withGitMetadataLaunchFixture("cydo-yield-gate-" ~ caseName,
 		(GitMetadataLaunchFixture fixture) {
@@ -3387,6 +3393,7 @@ version (unittest) private void assertYieldGateRunnerCase(
 			auto pendingScan = deferredScan ? new Promise!DiskEvaluation : null;
 			DiskEvaluation diskEvaluation;
 			diskEvaluation.usage.totalBytes = highDisk ? 10_485_760 : 0;
+			YieldGate[] retryGates;
 			WorkflowToolsBackend backend;
 			auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
 				getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
@@ -3427,6 +3434,11 @@ version (unittest) private void assertYieldGateRunnerCase(
 					return YieldGateFinding(YieldGate.outputs,
 						outputsPresent ? null : "missing report");
 				},
+				checkWorktreeBranchGate: (int tid) {
+					assert(tid == 1);
+					auto status = WorktreeHeadStatus(branchOff ? "abc" : null, "", "abc");
+					return evaluateWorktreeBranchGate(status, fixture.linkedCheckout, 7);
+				},
 				evaluateDiskUsage: (int tid) {
 					scans++;
 					if (staleMode == "relaunch" && scans > 1)
@@ -3465,16 +3477,32 @@ version (unittest) private void assertYieldGateRunnerCase(
 				requestYieldGateRetry: (int tid, YieldGateFinding finding) {
 					if (heldEventAtIdle)
 						assert(deliveries == 0 && failedDeliveries == 0);
+					auto storedMask = Persistence(buildPath(fixture.root, "yield-gates.db"))
+						.loadTasks()[0].naggedYieldGates;
+					assert(storedMask.contains(finding.gate));
 					if (finding.gate == YieldGate.outputs)
 						assert(finding.detail == "missing report");
+					else if (finding.gate == YieldGate.worktreeBranch)
+					{
+						assert(finding.vars["worktree_path"] == fixture.linkedCheckout);
+						assert(finding.vars["branch"] == "cydo/7");
+						assert(finding.vars["head"] == "a detached HEAD at abc");
+						auto templatePath = buildPath(environment.get("CYDO_TEST_DEFS", "defs"),
+							"gates", "worktree_branch.md");
+						auto body = substituteVars(readText(templatePath), finding.vars);
+						assert(body.canFind("Your worktree " ~ fixture.linkedCheckout
+							~ " is assigned the branch `cydo/7`"));
+						assert(body.canFind("on a detached HEAD at abc."));
+						assert(body.canFind("`git switch -C cydo/7`"));
+						assert(storedMask.bits == (outputsPresent ? 4 : 5));
+					}
 					else
 					{
 						assert(finding.gate == YieldGate.diskCleanup);
 						assert(finding.vars["total_bytes"] == "10485760");
 						diskRetries++;
 					}
-					assert(Persistence(buildPath(fixture.root, "yield-gates.db"))
-						.loadTasks()[0].naggedYieldGates.contains(finding.gate));
+					retryGates ~= finding.gate;
 					retries++;
 					if (retryFails && finding.gate == YieldGate.outputs)
 						throw new Exception("simulated retry submission failure");
@@ -3650,6 +3678,27 @@ version (unittest) private void assertYieldGateRunnerCase(
 			}
 			else
 				agent.session.exit(exitCode);
+			if (branchOff)
+			{
+				auto expectedRetries = outputsPresent
+					? [YieldGate.worktreeBranch] : [YieldGate.outputs, YieldGate.worktreeBranch];
+				foreach (i; 0 .. expectedRetries.length)
+				{
+					assert(retryGates == expectedRetries[0 .. i + 1]);
+					assert(scans == 0 && deliveries == 0);
+					tasks[1].naggedYieldGates = Persistence(buildPath(fixture.root,
+						"yield-gates.db")).loadTasks()[0].naggedYieldGates;
+					tasks[1].processQueue.setGoal(ProcessState.Dead).ignoreResult();
+					runner.spawnTaskSession(1);
+					agent.session.result();
+					agent.session.exit(0);
+					socketManager.loop();
+				}
+				assert(retryGates == expectedRetries);
+				assert(scans == 1 && deliveries == 1 && failedDeliveries == 0);
+				assert(tasks[1].status == TaskStatus.completed);
+				return;
+			}
 			if (deferredScan && scans > 0)
 			{
 				assert(deliveries == 0 && diskRetries == 0);
@@ -3852,6 +3901,18 @@ version (unittest) private void assertYieldGateRunnerCase(
 			if (!consumerWaiting)
 				assert(checks == 0);
 		});
+}
+
+unittest
+{
+	assertYieldGateRunnerCase("branch-off", true, true, false, 0,
+		false, false, false, branchOff: true);
+}
+
+unittest
+{
+	assertYieldGateRunnerCase("outputs-then-branch", false, true, false, 0,
+		false, false, false, branchOff: true);
 }
 
 unittest
@@ -4309,6 +4370,7 @@ unittest
 		hasLiveBatchOwner = (int tid) => false;
 		hasBatchChild = (int tid) => true;
 		checkOutputGate = (int tid) => YieldGateFinding(YieldGate.outputs, null);
+		checkWorktreeBranchGate = (int tid) => YieldGateFinding(YieldGate.worktreeBranch);
 		hasPendingChildQuestion = (int tid) => false;
 		pump = (int tid) => false;
 		touchAndPersistLastActive = (int tid) {};

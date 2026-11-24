@@ -13,6 +13,7 @@ enum KnownSystemMessageKind
 	subTaskWaitingForAnswer,
 	missingRequiredOutputs,
 	diskCleanupRequest,
+	worktreeBranchRequest,
 	handoff,
 	subTaskResults,
 	restartNudge,
@@ -51,6 +52,8 @@ string systemMessageSubject(KnownSystemMessageKind kind)
 		return "Missing required outputs";
 	case KnownSystemMessageKind.diskCleanupRequest:
 		return "Disk cleanup request";
+	case KnownSystemMessageKind.worktreeBranchRequest:
+		return "Worktree branch request";
 	case KnownSystemMessageKind.handoff:
 		return "Handoff";
 	case KnownSystemMessageKind.subTaskResults:
@@ -290,6 +293,12 @@ bool tryKnownSystemMessageMatch(string subject, out KnownSystemMessageMatch matc
 		match.label = subject;
 		return true;
 	}
+	if (subject == systemMessageSubject(KnownSystemMessageKind.worktreeBranchRequest))
+	{
+		match.kind = KnownSystemMessageKind.worktreeBranchRequest;
+		match.label = subject;
+		return true;
+	}
 	enum answerPrefix = "Answer to your question ";
 	if (subject.startsWith(answerPrefix))
 	{
@@ -366,6 +375,20 @@ unittest
 
 unittest
 {
+	auto subject = systemMessageSubject(KnownSystemMessageKind.worktreeBranchRequest);
+	assert(subject == "Worktree branch request");
+	auto wrapped = wrapKnownSystemMessage("SYSTEM",
+		KnownSystemMessageKind.worktreeBranchRequest, "Return to the assigned branch");
+	assert(wrapped == "[SYSTEM: " ~ subject ~ "]\n\nReturn to the assigned branch\n\n[/SYSTEM]");
+	KnownSystemMessageMatch match;
+	assert(tryKnownSystemMessageMatch(subject, match));
+	assert(match.kind == KnownSystemMessageKind.worktreeBranchRequest);
+	assert(match.label == subject);
+	assert(!tryKnownSystemMessageMatch(subject ~ " extra", match));
+}
+
+unittest
+{
 	KnownSystemMessageMatch match;
 	auto subject = "Answer to your question 42";
 	assert(tryKnownSystemMessageMatch(subject, match));
@@ -399,6 +422,7 @@ unittest
 			return "Sub-task \"test\" (tid=1) is waiting for your answer (qid=2)";
 		case KnownSystemMessageKind.missingRequiredOutputs:
 		case KnownSystemMessageKind.diskCleanupRequest:
+		case KnownSystemMessageKind.worktreeBranchRequest:
 		case KnownSystemMessageKind.subTaskResults:
 		case KnownSystemMessageKind.restartNudge:
 		case KnownSystemMessageKind.postCompactionTaskModeReminder:

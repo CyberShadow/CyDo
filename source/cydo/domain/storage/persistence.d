@@ -708,12 +708,12 @@ unittest
 	assert(rows[0].projectPath == "project");
 	assert(rows[0].status == "completed");
 	assert(rows[0].naggedYieldGates.bits == 0);
-	foreach (uint mask; 0 .. 4)
+	foreach (uint mask; 0 .. 8)
 	{
 		persistence.setYieldGatesNagged(1, NaggedYieldGates(mask));
 		assert(Persistence(dbPath).loadTasks()[0].naggedYieldGates.bits == mask);
 	}
-	foreach (long invalid; [-1L, 4L, 8L])
+	foreach (long invalid; [-1L, 8L, 16L])
 	{
 		persistence.db.stmt!"UPDATE tasks SET yield_gates_nagged = ? WHERE tid = 1".exec(invalid);
 		bool rejected;

@@ -3,6 +3,7 @@ module cydo.workflow.sessions.yield_gates;
 import cydo.domain.tasks.yield_gate : NaggedYieldGates, YieldGate;
 import cydo.workflow.sessions.disk_usage : DiskEvaluation;
 import cydo.runtime.storage.nix_roots : nixClosureLabel;
+import cydo.workflow.workspace.worktree : WorktreeHeadStatus, worktreeBranchName;
 import std.conv : to;
 import std.array : join;
 
@@ -19,11 +20,32 @@ struct YieldGateFinding
 }
 
 YieldGateFinding checkYieldGates(NaggedYieldGates nagged, int tid,
-	YieldGateFinding delegate(int tid) checkOutputs)
+	YieldGateFinding delegate(int tid) checkOutputs,
+	YieldGateFinding delegate(int tid) checkWorktreeBranch)
 {
-	if (nagged.contains(YieldGate.outputs))
-		return YieldGateFinding(YieldGate.outputs);
-	return checkOutputs(tid);
+	if (!nagged.contains(YieldGate.outputs))
+	{
+		auto finding = checkOutputs(tid);
+		if (finding.found)
+			return finding;
+	}
+	if (nagged.contains(YieldGate.worktreeBranch))
+		return YieldGateFinding(YieldGate.worktreeBranch);
+	return checkWorktreeBranch(tid);
+}
+
+YieldGateFinding evaluateWorktreeBranchGate(WorktreeHeadStatus status,
+	string worktreePath, int worktreeTid)
+{
+	auto branch = worktreeBranchName(worktreeTid);
+	if (status.branchTip is null || status.currentBranch == branch)
+		return YieldGateFinding(YieldGate.worktreeBranch);
+	return YieldGateFinding(YieldGate.worktreeBranch, "worktree off its branch", [
+		"worktree_path": worktreePath,
+		"branch": branch,
+		"head": status.currentBranch.length == 0
+			? "a detached HEAD at " ~ status.headSha : "branch `" ~ status.currentBranch ~ "`",
+	]);
 }
 
 bool shouldEvaluateDiskCleanup(NaggedYieldGates nagged)
@@ -119,4 +141,54 @@ unittest
 	finding = checkDiskCleanupGate(evaluation, 100, "/task", "/tmp/task");
 	assert(finding.found);
 	assert(finding.vars["unmeasured_paths"] == "temporary nested/blocked");
+}
+
+unittest
+{
+	assert(!evaluateWorktreeBranchGate(WorktreeHeadStatus(null, "", "abc"),
+		"/worktree", 7).found);
+	assert(!evaluateWorktreeBranchGate(WorktreeHeadStatus("abc", "cydo/7", "abc"),
+		"/worktree", 7).found);
+}
+
+unittest
+{
+	auto finding = evaluateWorktreeBranchGate(WorktreeHeadStatus("abc", "", "abc"),
+		"/worktree", 7);
+	assert(finding.found && finding.gate == YieldGate.worktreeBranch);
+	assert(finding.vars["head"] == "a detached HEAD at abc");
+	assert(finding.vars["branch"] == "cydo/7");
+	assert(finding.vars["worktree_path"] == "/worktree");
+
+	auto nagged = NaggedYieldGates.init;
+	assert(shouldRetryYieldGate(nagged, finding));
+	nagged.mark(YieldGate.worktreeBranch);
+	assert(!shouldRetryYieldGate(nagged, finding));
+}
+
+unittest
+{
+	auto finding = evaluateWorktreeBranchGate(WorktreeHeadStatus("abc", "feature", "abc"),
+		"/worktree", 7);
+	assert(finding.found && finding.gate == YieldGate.worktreeBranch);
+	assert(finding.vars["head"] == "branch `feature`");
+}
+
+unittest
+{
+	auto outputs = YieldGateFinding(YieldGate.outputs, "missing report");
+	auto branch = YieldGateFinding(YieldGate.worktreeBranch, "worktree off its branch");
+	YieldGateFinding unexpected(int tid)
+	{
+		assert(false, "yield gate delegate should have been skipped");
+	}
+
+	auto nagged = NaggedYieldGates.init;
+	assert(checkYieldGates(nagged, 7, (int tid) => outputs, &unexpected) == outputs);
+	assert(checkYieldGates(nagged, 7, (int tid) => YieldGateFinding(YieldGate.outputs),
+		(int tid) => branch) == branch);
+	nagged.mark(YieldGate.outputs);
+	assert(checkYieldGates(nagged, 7, &unexpected, (int tid) => branch) == branch);
+	nagged.mark(YieldGate.worktreeBranch);
+	assert(!checkYieldGates(nagged, 7, &unexpected, &unexpected).found);
 }

@@ -4,9 +4,11 @@ enum YieldGate : uint
 {
 	outputs = 1,
 	diskCleanup = 2,
+	worktreeBranch = 4,
 }
 
-enum uint supportedYieldGateMask = cast(uint) YieldGate.outputs | cast(uint) YieldGate.diskCleanup;
+enum uint supportedYieldGateMask = cast(uint) YieldGate.outputs | cast(uint) YieldGate.diskCleanup
+	| cast(uint) YieldGate.worktreeBranch;
 
 struct NaggedYieldGates
 {

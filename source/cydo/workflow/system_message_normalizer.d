@@ -137,6 +137,7 @@ private:
 			return false;
 		case KnownSystemMessageKind.missingRequiredOutputs:
 		case KnownSystemMessageKind.diskCleanupRequest:
+		case KnownSystemMessageKind.worktreeBranchRequest:
 		case KnownSystemMessageKind.subTaskResults:
 		case KnownSystemMessageKind.restartNudge:
 		case KnownSystemMessageKind.postCompactionTaskModeReminder:
