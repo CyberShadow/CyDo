@@ -637,6 +637,7 @@ function openFile(origin: FileOrigin, producer: ReadStageName): ShellStream {
 function parseStage(
   cmd: SimpleCommand,
   position: "first" | "later",
+  cdPath: string,
 ): ParseResult<ParsedStage> {
   const name = cmd.name;
   if (!name) return reject("empty", "empty command");
@@ -744,7 +745,7 @@ function parseStage(
           },
         };
       }
-      const git = classifyGitCommand(cmd, "");
+      const git = classifyGitCommand(cmd, "", cdPath);
       if (!git.ok) return git;
       if (git.value.kind === "read") {
         const stream = openFile(
@@ -997,9 +998,10 @@ function applyStage(
 
 function buildPipelineStream(
   stages: SimpleCommand[],
+  cdPath: string,
 ): ParseResult<ShellStream> {
   if (stages.length === 0) return reject("empty", "empty pipeline");
-  const first = parseStage(stages[0]!, "first");
+  const first = parseStage(stages[0]!, "first", cdPath);
   if (!first.ok) return first;
   const source = first.value;
   const opened =
@@ -1007,7 +1009,10 @@ function buildPipelineStream(
       ? ({ ok: true, value: source.stream } as const)
       : applyStage(
           openFile(
-            { kind: "worktree", filePath: source.operand! },
+            {
+              kind: "worktree",
+              filePath: resolveAgainstCd(cdPath, source.operand!),
+            },
             source.commandName as ReadStageName,
           ),
           source.op,
@@ -1016,7 +1021,7 @@ function buildPipelineStream(
   if (!opened.ok) return opened;
   let stream = opened.value;
   for (let index = 1; index < stages.length; index++) {
-    const parsed = parseStage(stages[index]!, "later");
+    const parsed = parseStage(stages[index]!, "later", cdPath);
     if (!parsed.ok) return parsed;
     if (parsed.value.kind !== "filter")
       throw new Error("Expected a pipeline filter");
@@ -1140,25 +1145,14 @@ function lowerStream(
 function classifyPipeline(
   stages: SimpleCommand[],
   originalCommand: string,
+  cdPath: string,
 ): ShellSemanticResult {
-  const stream = buildPipelineStream(stages);
+  const stream = buildPipelineStream(stages, cdPath);
   return stream.ok ? lowerStream(stream.value, originalCommand) : stream;
 }
 
 function resolveAgainstCd(cdPath: string, path: string): string {
   return path.startsWith("/") || !cdPath ? path : cdPath + "/" + path;
-}
-
-function resolveStepAgainstCd(cdPath: string, step: CommandStep): CommandStep {
-  if (
-    (step.kind === "read-file" ||
-      step.kind === "search" ||
-      step.kind === "plain-output") &&
-    step.filePath !== undefined
-  ) {
-    return { ...step, filePath: resolveAgainstCd(cdPath, step.filePath) };
-  }
-  return step;
 }
 
 function classifyGenericList(
@@ -1197,33 +1191,26 @@ function classifyGenericList(
     }
 
     if (singleMember) {
-      const result = classifyPipeline(member, originalCommand);
+      const result = classifyPipeline(member, originalCommand, cdPath);
       if (!result.ok) return result;
       const value = result.value;
-      if (value.kind !== "read" && value.kind !== "search") {
-        singleResult = result;
-        continue;
-      }
       if (value.kind === "read" && value.commandName === "git") {
         return reject(
           "unsafe_shell_syntax",
           "git object paths are not relative to cd",
         );
       }
-      singleResult = {
-        ok: true,
-        value: {
-          ...value,
-          filePath: resolveAgainstCd(cdPath, value.filePath),
-          steps: value.steps?.map((step) => resolveStepAgainstCd(cdPath, step)),
-        },
-      };
+      singleResult = result;
       continue;
     }
 
     let memberSteps: CommandStep[];
     if (member.length === 1 && cmd.name !== "git" && cmd.name !== "diff") {
-      const result = classifySimpleCommandAsListMember(cmd, originalCommand);
+      const result = classifySimpleCommandAsListMember(
+        cmd,
+        originalCommand,
+        cdPath,
+      );
       if (!result) {
         return reject(
           "unsupported_command",
@@ -1232,7 +1219,7 @@ function classifyGenericList(
       }
       memberSteps = result.steps;
     } else {
-      const result = classifyPipeline(member, originalCommand);
+      const result = classifyPipeline(member, originalCommand, cdPath);
       if (!result.ok) return result;
       if (result.value.kind === "read" && result.value.commandName === "git") {
         return reject(
@@ -1251,7 +1238,7 @@ function classifyGenericList(
 
     for (const step of memberSteps) {
       steps.push({
-        ...resolveStepAgainstCd(cdPath, step),
+        ...step,
         order: steps.length,
         blockId: undefined,
       });
@@ -1284,6 +1271,7 @@ function classifyGenericList(
 function classifyGitCommand(
   cmd: SimpleCommand,
   originalCommand: string,
+  cdPath: string,
 ): ShellSemanticResult {
   const valueArgs = cmd.args.filter((a) => a.kind === "value");
   const subcommand = valueArgs[0]?.text;
@@ -1310,6 +1298,12 @@ function classifyGitCommand(
     if (colonArg) {
       const colonIdx = colonArg.text.indexOf(":");
       const filePath = colonArg.text.slice(colonIdx + 1);
+      if (cdPath && (filePath.startsWith("./") || filePath.startsWith("../"))) {
+        return reject(
+          "unsafe_shell_syntax",
+          "cwd-relative git object paths under cd are not supported",
+        );
+      }
       return {
         ok: true,
         value: {
@@ -2140,7 +2134,7 @@ function classifyNormalizedAST(
       name === "git" ||
       name === "diff"
     ) {
-      return classifyPipeline([ast.command], originalCommand);
+      return classifyPipeline([ast.command], originalCommand, "");
     }
     return reject(
       "unsupported_command",
@@ -2148,7 +2142,7 @@ function classifyNormalizedAST(
     );
   }
   if (ast.type === "pipeline")
-    return classifyPipeline(ast.stages, originalCommand);
+    return classifyPipeline(ast.stages, originalCommand, "");
   return (
     classifyLsReadbackAST(ast, originalCommand) ??
     classifyGenericList(ast, originalCommand)
@@ -2242,13 +2236,14 @@ function classifyPrintfListMember(
 
 function classifyWcSummary(
   cmd: SimpleCommand,
+  cdPath: string,
 ): { steps: CommandStep[] } | null {
   const flags = cmd.args.filter((a) => a.kind === "flag");
   const values = cmd.args.filter((a) => a.kind === "value");
   if (flags.length !== 1 || flags[0]!.text !== "-l") return null;
   if (values.length !== 1) return null;
   if (cmd.redirects.length > 0) return null;
-  const filePath = values[0]!.text;
+  const filePath = resolveAgainstCd(cdPath, values[0]!.text);
   return {
     steps: [
       {
@@ -2295,6 +2290,7 @@ function classifyEchoListMember(
 function classifySimpleCommandAsListMember(
   cmd: SimpleCommand,
   originalCommand: string,
+  cdPath: string,
 ): { steps: CommandStep[] } | null {
   switch (cmd.name) {
     case "sed":
@@ -2302,13 +2298,13 @@ function classifySimpleCommandAsListMember(
     case "head":
     case "tail":
     case "nl": {
-      const r = classifyPipeline([cmd], originalCommand);
+      const r = classifyPipeline([cmd], originalCommand, cdPath);
       return r.ok ? { steps: r.value.steps ?? [] } : null;
     }
     case "printf":
       return classifyPrintfListMember(cmd);
     case "wc":
-      return classifyWcSummary(cmd);
+      return classifyWcSummary(cmd, cdPath);
     case "echo":
       return classifyEchoListMember(cmd);
     default:

@@ -899,6 +899,61 @@ describe("cd && read (should succeed)", () => {
     expect(plan(r.value)?.blocks[0]?.source?.filePath).toBe("foo/f.d");
   });
 
+  it.each(["./f.d", "../f.d"])(
+    "rejects a cwd-relative git object path under cd: %s",
+    async (path) => {
+      await expect(
+        parseShellSemantic(`cd d && git show HEAD:${path} | grep -n x`),
+      ).resolves.toEqual({
+        ok: false,
+        code: "unsafe_shell_syntax",
+        reason: "cwd-relative git object paths under cd are not supported",
+      });
+    },
+  );
+
+  it.each([
+    ["cd d && git show HEAD:f.d | grep -n x", "f.d"],
+    ["cd X && git show HEAD:p/f.d | grep -n x", "p/f.d"],
+    ["cd X && git show HEAD:p/f.d | sed -n 1,5p | grep -n x", "p/f.d"],
+  ])("keeps the repo-relative search path in %s", async (command, filePath) => {
+    const result = await parseShellSemantic(command);
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        kind: "search",
+        filePath,
+      },
+    });
+    if (!result.ok) return;
+    expect(plan(result.value)?.blocks[0]?.source?.filePath).toBe(filePath);
+  });
+
+  it("resolves the worktree search path against cd", async () => {
+    const result = await parseShellSemantic("cd X && grep -n x f.d");
+    expect(result).toMatchObject({
+      ok: true,
+      value: { kind: "search", filePath: "X/f.d" },
+    });
+    if (!result.ok) return;
+    expect(plan(result.value)?.blocks[0]?.source?.filePath).toBe("X/f.d");
+  });
+
+  it("resolves both the wc operand and the read operand against cd", async () => {
+    await expect(
+      parseShellSemantic("cd X && wc -l g.d && cat f.d"),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        kind: "structured-output",
+        steps: [
+          { commandName: "wc", filePath: "X/g.d" },
+          { kind: "read-file", filePath: "X/f.d" },
+        ],
+      },
+    });
+  });
+
   it("resolves a pipeline against the cd directory at the pipeline", async () => {
     const result = await parseShellSemantic("cd x && cat f | head -5 && cd y");
     expect(result).toMatchObject({
@@ -948,6 +1003,7 @@ describe("cd && read (should succeed)", () => {
 
   it.each([
     ["cd /a && cd /b && cat f", "/b/f"],
+    ["cd /a && cat /abs/f", "/abs/f"],
     ["cd x && cat /abs/f", "/abs/f"],
   ])("%s → read with absolute path %s", async (command, filePath) => {
     await expect(parseShellSemantic(command)).resolves.toMatchObject({
@@ -987,6 +1043,16 @@ describe("cd && read (should reject)", () => {
     ).resolves.toMatchObject({
       ok: false,
       reason: "git object reads cannot be combined with other list output",
+    });
+  });
+
+  it("rejects a git-object read under cd", async () => {
+    await expect(
+      parseShellSemantic("cd X && git show HEAD:f"),
+    ).resolves.toEqual({
+      ok: false,
+      code: "unsafe_shell_syntax",
+      reason: "git object paths are not relative to cd",
     });
   });
 
