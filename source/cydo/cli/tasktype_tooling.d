@@ -3,12 +3,11 @@ module cydo.cli.tasktype_tooling;
 import std.algorithm : canFind, filter, map, sort;
 import std.array : array, join;
 import std.format : format;
-import std.path : dirName;
-import std.stdio : readln, stderr, stdin, stdout, write, writef, writefln, writeln;
+import std.stdio : readln, stdin, stdout, write, writef, writefln, writeln;
 import std.string : chomp, strip;
 
 import cydo.domain.task_types.definition : TaskTypeConfig, TaskTypeDef, UserEntryPointDef,
-	WorktreeMode, byName, loadTaskTypes, validateTaskTypes;
+	WorktreeMode, byName, validateTaskTypes;
 
 // ---------------------------------------------------------------------------
 // Printer
@@ -503,20 +502,11 @@ void generateDot(TaskTypeDef[] types, UserEntryPointDef[] entryPoints)
 // CLI entry point
 // ---------------------------------------------------------------------------
 
-/// Load and validate task types from a YAML file, returning null on error.
-private TaskTypeConfig* loadAndValidate(string path, bool delegate(string) isConfiguredAgentName)
+private void printValidationErrors(TaskTypeConfig config, string[] promptDirs,
+	bool delegate(string) isConfiguredAgentName)
 {
-	TaskTypeConfig config;
-	try
-		config = loadTaskTypes(path);
-	catch (Exception e)
-	{
-		stderr.writefln("Error loading %s: %s", path, e.msg);
-		return null;
-	}
-
 	auto errors = validateTaskTypes(config.types, config.entryPoints, config.singletons,
-		isConfiguredAgentName, [dirName(path)]);
+		isConfiguredAgentName, promptDirs);
 	if (errors.length > 0)
 	{
 		writeln("=== Validation Errors ===\n");
@@ -524,26 +514,20 @@ private TaskTypeConfig* loadAndValidate(string path, bool delegate(string) isCon
 			writefln("  ERROR: %s", e);
 		writeln();
 	}
-
-	return new TaskTypeConfig(config.types, config.entryPoints, config.singletons);
 }
 
-void runSimulator(string path, bool delegate(string) isConfiguredAgentName)
+void runSimulator(TaskTypeConfig config, string[] promptDirs, bool delegate(string) isConfiguredAgentName)
 {
-	auto config = loadAndValidate(path, isConfiguredAgentName);
-	if (config is null)
-		return;
+	printValidationErrors(config, promptDirs, isConfiguredAgentName);
 
 	printTypes(config.types, config.entryPoints);
 	writeln();
 	simulateWorkflow(config.types, config.entryPoints);
 }
 
-void runDot(string path, bool delegate(string) isConfiguredAgentName)
+void runDot(TaskTypeConfig config, string[] promptDirs, bool delegate(string) isConfiguredAgentName)
 {
-	auto config = loadAndValidate(path, isConfiguredAgentName);
-	if (config is null)
-		return;
+	printValidationErrors(config, promptDirs, isConfiguredAgentName);
 
 	generateDot(config.types, config.entryPoints);
 }

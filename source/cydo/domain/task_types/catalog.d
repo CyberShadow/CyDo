@@ -40,10 +40,36 @@ private string[] taskTypePackDirectories(string path)
 	}
 }
 
-private struct TaskTypeLayer
+struct TaskTypeLayers
 {
-	string yamlPath;
-	string promptDir;
+	string[] yamlPaths;
+	string[] promptDirs;
+}
+
+TaskTypeLayers discoverTaskTypeLayers(string taskTypesDir, string taskTypesPath, string projectPath)
+{
+	TaskTypeLayers layers;
+	void addLayer(string yamlPath, string promptDir)
+	{
+		layers.yamlPaths ~= yamlPath;
+		layers.promptDirs ~= promptDir;
+	}
+
+	void addConfigDirectory(string dir)
+	{
+		foreach (pack; taskTypePackDirectories(buildPath(dir, "packs")))
+			addLayer(buildPath(pack, "task-types.yaml"), pack);
+		addLayer(buildPath(dir, "task-types.yaml"), buildPath(dir, "defs"));
+	}
+
+	addLayer(taskTypesPath, taskTypesDir);
+	addConfigDirectory(configDir());
+	if (projectPath.length > 0)
+		addConfigDirectory(buildPath(projectPath, ".cydo"));
+
+	import std.algorithm : reverse;
+	reverse(layers.promptDirs);
+	return layers;
 }
 
 private struct ProjectTypeCache
@@ -77,31 +103,6 @@ class TaskTypeCatalog
 			(string name) => isConfiguredAgentName(name));
 	}
 
-	private TaskTypeLayer[] layersForProject(string projectPath)
-	{
-		TaskTypeLayer[] layers = [TaskTypeLayer(taskTypesPath, taskTypesDir)];
-
-		void addConfigDirectory(string dir)
-		{
-			foreach (pack; taskTypePackDirectories(buildPath(dir, "packs")))
-				layers ~= TaskTypeLayer(buildPath(pack, "task-types.yaml"), pack);
-			layers ~= TaskTypeLayer(buildPath(dir, "task-types.yaml"), buildPath(dir, "defs"));
-		}
-
-		addConfigDirectory(configDir());
-		if (projectPath.length > 0)
-			addConfigDirectory(buildPath(projectPath, ".cydo"));
-		return layers;
-	}
-
-	private static string[] promptDirsForLayers(TaskTypeLayer[] layers)
-	{
-		string[] dirs;
-		foreach_reverse (layer; layers)
-			dirs ~= layer.promptDir;
-		return dirs;
-	}
-
 	string[] promptSearchPath(string projectPath)
 	{
 		if (projectPath in taskTypesByProject)
@@ -109,7 +110,7 @@ class TaskTypeCatalog
 			getTaskTypesForProject(projectPath);
 			return taskTypesByProject[projectPath].promptDirs;
 		}
-		return promptDirsForLayers(layersForProject(projectPath));
+		return discoverTaskTypeLayers(taskTypesDir, taskTypesPath, projectPath).promptDirs;
 	}
 
 	TaskTypeDef[] getTaskTypesForProject(string projectPath)
@@ -121,10 +122,9 @@ class TaskTypeCatalog
 		string[] paths;
 		try
 		{
-			auto layers = layersForProject(projectPath);
-			foreach (layer; layers)
-				paths ~= layer.yamlPath;
-			auto promptDirs = promptDirsForLayers(layers);
+			auto layers = discoverTaskTypeLayers(taskTypesDir, taskTypesPath, projectPath);
+			paths = layers.yamlPaths;
+			auto promptDirs = layers.promptDirs;
 
 			string[] loadedPaths;
 			auto config = loadTaskTypeLayers(paths, loadedPaths);

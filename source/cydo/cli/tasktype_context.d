@@ -4,14 +4,13 @@ import std.algorithm : filter, map;
 import std.array : join;
 import std.conv : to;
 import std.format : format;
-import std.path : dirName;
 import std.stdio : stderr, write, writefln, writeln;
 import std.string : lineSplitter, strip;
 
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, TaskTypeConfig, TaskTypeDef,
 	UserEntryPointDef, SingletonDef, WorktreeMode, byName, computeReachesWorktree,
 	formatCompactSingletonToolSummary, singletonsOfferedTo,
-	computeTreeReadOnly, loadTaskTypes, renderPrompt, validateTaskTypes;
+	computeTreeReadOnly, promptTemplateSource, renderPrompt, validateTaskTypes;
 import cydo.mcp.tool_descriptions : buildRenderedCydoToolsList;
 
 private string renderDumpContextToolsSection(
@@ -32,21 +31,11 @@ private string renderDumpContextToolsSection(
 	return rendered;
 }
 
-void runDumpContext(string path, string typeName, bool delegate(string) isConfiguredAgentName)
+void runDumpContext(TaskTypeConfig config, string[] promptDirs, string typeName,
+	bool delegate(string) isConfiguredAgentName)
 {
-	auto typesDir = dirName(path);
-
-	TaskTypeConfig config;
-	try
-		config = loadTaskTypes(path);
-	catch (Exception e)
-	{
-		stderr.writefln("Error loading %s: %s", path, e.msg);
-		return;
-	}
-
 	auto errors = validateTaskTypes(config.types, config.entryPoints, config.singletons,
-		isConfiguredAgentName, [typesDir]);
+		isConfiguredAgentName, promptDirs);
 	if (errors.length > 0)
 	{
 		foreach (e; errors)
@@ -105,14 +94,11 @@ void runDumpContext(string path, string typeName, bool delegate(string) isConfig
 
 	writeln("─── Rendered Prompt (with placeholder \"<task description>\") ───");
 	writeln();
-	auto rendered = renderPrompt(def, "<task description>", [typesDir]);
+	auto rendered = renderPrompt(def, "<task description>", promptDirs);
 	writeln(rendered);
 	writeln();
 
 	{
-		import std.file : exists, readText;
-		import std.path : buildPath;
-
 		bool headerPrinted = false;
 		foreach (ref srcDef; types)
 		{
@@ -129,9 +115,9 @@ void runDumpContext(string path, string typeName, bool delegate(string) isConfig
 					headerPrinted = true;
 				}
 				writefln("From %s via '%s':", srcDef.name, cname);
-				auto tmplPath = buildPath(typesDir, cont.prompt_template);
-				if (exists(tmplPath))
-					writeln(readText(tmplPath));
+				auto source = promptTemplateSource(promptDirs, cont.prompt_template);
+				if (source !is null)
+					writeln(source);
 				else
 					writefln("  (template not found: %s)", cont.prompt_template);
 				writeln();

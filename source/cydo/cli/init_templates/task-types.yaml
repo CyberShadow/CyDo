@@ -8,8 +8,14 @@
 ## (~/.config/cydo/packs/*/task-types.yaml, by directory name), this file
 ## (~/.config/cydo/task-types.yaml), project packs
 ## (.cydo/packs/*/task-types.yaml), then the project's
-## .cydo/task-types.yaml. See docs/task-types.md for packs. The root keys are task_types, user_entry_points,
-## and singletons. There is no version key.
+## .cydo/task-types.yaml. See docs/task-types.md for packs.
+##
+## cydo dot, dump-context, simulate, and export-html read the same layers.
+## They use the current Git checkout root unless --project <path> selects
+## an existing directory. Outside Git, they skip project layers by default.
+##
+## The root keys are task_types, user_entry_points, and singletons.
+## There is no version key.
 
 ## How the layers merge
 ##

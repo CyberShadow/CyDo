@@ -35,6 +35,7 @@ import cydo.workflow.discovery.service : DiscoveryService, DiscoveryServiceHost,
 	DiscoveryTaskSnapshot, ImportableTaskSpec;
 import cydo.cli.open_matching : findOpenProjectName, pathIsUnderRoot;
 import cydo.cli.initialize : initializeUserConfiguration;
+import cydo.cli.tasktype_config : loadCliTaskTypes;
 import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
@@ -181,31 +182,42 @@ static:
 	}
 
 	@(`Simulate task type workflow.`)
-	void simulate()
+	void simulate(
+		Option!(string, "Project directory (defaults to the current Git checkout root).") project = null,
+	)
 	{
 		import cydo.cli.tasktype_tooling : runSimulator;
+		string[] promptDirs;
+		auto taskTypes = loadCliTaskTypes(resolveTaskTypesPath(), project, promptDirs);
 		auto config = loadRuntimeConfig();
-		runSimulator(resolveTaskTypesPath(),
+		runSimulator(taskTypes, promptDirs,
 			(string name) => isConfiguredAgentName(config, name));
 	}
 
 	@(`Generate Graphviz dot output for task types.`)
-	void dot()
+	void dot(
+		Option!(string, "Project directory (defaults to the current Git checkout root).") project = null,
+	)
 	{
 		import cydo.cli.tasktype_tooling : runDot;
+		string[] promptDirs;
+		auto taskTypes = loadCliTaskTypes(resolveTaskTypesPath(), project, promptDirs);
 		auto config = loadRuntimeConfig();
-		runDot(resolveTaskTypesPath(),
+		runDot(taskTypes, promptDirs,
 			(string name) => isConfiguredAgentName(config, name));
 	}
 
 	@(`Dump agent context for a task type.`)
 	void dumpContext(
 		Parameter!(string, "Task type name.") typeName,
+		Option!(string, "Project directory (defaults to the current Git checkout root).") project = null,
 	)
 	{
 		import cydo.cli.tasktype_context : runDumpContext;
+		string[] promptDirs;
+		auto taskTypes = loadCliTaskTypes(resolveTaskTypesPath(), project, promptDirs);
 		auto config = loadRuntimeConfig();
-		runDumpContext(resolveTaskTypesPath(), typeName,
+		runDumpContext(taskTypes, promptDirs, typeName,
 			(string name) => isConfiguredAgentName(config, name));
 	}
 
@@ -224,6 +236,7 @@ static:
 			exit(1);
 		}
 
+		// The tool-descriptions check measures shipped definitions independently of local configuration.
 		auto taskTypesPath = resolveTaskTypesPath();
 		TaskTypeConfig config;
 		try
@@ -464,6 +477,7 @@ static:
 	void exportHtml(
 		Parameter!(int[], "Task IDs to export.") tids,
 		Option!(string, "Output file path (default: export.html).") output = "export.html",
+		Option!(string, "Project directory (defaults to the current Git checkout root).") project = null,
 	)
 	{
 		import std.file : write;
@@ -481,6 +495,19 @@ static:
 			import core.stdc.stdlib : exit;
 			exit(1);
 		}
+
+		// Locate the export HTML template
+		auto baseDir = findProgramDirectory("defs/task-types.yaml");
+		if (baseDir is null)
+		{
+			stderr.writeln("Error: could not locate application directory");
+			import core.stdc.stdlib : exit;
+			exit(1);
+		}
+		auto templatePath = buildPath(baseDir, "web/dist-export/export.html");
+
+		string[] promptDirs;
+		auto taskTypeConfig = loadCliTaskTypes(buildPath(baseDir, "defs/task-types.yaml"), project, promptDirs);
 
 		// Open database
 		Persistence persistence;
@@ -510,21 +537,6 @@ static:
 			if (tid !in foundTids)
 				stderr.writeln("Warning: task ID ", tid, " not found in database");
 
-		// Locate the export HTML template
-		auto baseDir = findProgramDirectory("defs/task-types.yaml");
-		if (baseDir is null)
-		{
-			stderr.writeln("Error: could not locate application directory");
-			import core.stdc.stdlib : exit;
-			exit(1);
-		}
-		auto templatePath = buildPath(baseDir, "web/dist-export/export.html");
-
-		// Load task type definitions for icon info
-		import cydo.domain.tasks.model : TypeInfoEntry;
-		import cydo.domain.task_types.definition : loadTaskTypes;
-		auto taskTypesPath = buildPath(baseDir, "defs/task-types.yaml");
-		auto taskTypeConfig = loadTaskTypes(taskTypesPath);
 		TypeInfoEntry[] typeInfo;
 		foreach (ref def; taskTypeConfig.types)
 			typeInfo ~= TypeInfoEntry(def.name, def.icon);

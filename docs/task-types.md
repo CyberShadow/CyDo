@@ -44,6 +44,13 @@ search path on a successful load. If a layer prevents loading, CyDo logs
 a warning and keeps the last successfully loaded configuration for that
 project.
 
+`cydo dot`, `cydo dump-context`, `cydo simulate`, and `cydo export-html`
+read the same layers as the server and print the load order to stderr.
+They use the Git root of the current directory as the project by default.
+Pass `--project <path>` to select an existing directory explicitly. Outside
+a Git checkout, the commands load only shipped and user layers unless
+`--project` is supplied.
+
 ### Automatic reload
 
 CyDo watches the user `config.yaml`, `task-types.yaml`, and `packs/`.
