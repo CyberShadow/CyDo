@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { assert, describe, it, expect, beforeAll, vi } from "vitest";
 import { parseShellSemantic } from "./shellSemantic";
 import * as shellParser from "./shellParser";
 import {
@@ -514,9 +514,9 @@ describe("stream composition", () => {
       ok: true,
       value: { kind: "read", commandName: "sed", range },
     });
-    if (!result.ok) return;
+    assert(result.ok);
     expect(plan(result.value)?.blocks[0]).toMatchObject({
-      id: "sed-output",
+      id: "0",
       source: { producerName: "sed" },
     });
   });
@@ -610,7 +610,6 @@ describe("stream composition", () => {
                 format: { kind: "content", language: "d" },
                 validator: "non-empty",
               },
-              blockId: commandName === "sed" ? "sed-output" : undefined,
             },
           ],
         },
@@ -2412,11 +2411,11 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
       "/run/current-system/sw/bin/zsh -lc \"mkdir -p /tmp/a\ncat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\nls -l /tmp/a/output.md && sed -n '1,80p' /tmp/a/output.md\"";
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
+    assert(r.ok);
     expect(r.value.kind).toBe("write");
     expect(plan(r.value)?.blocks.map((b: { id: string }) => b.id)).toEqual([
-      "listing",
-      "sed-output",
+      "0",
+      "1",
     ]);
     expect(plan(r.value)?.blocks[1]?.location).toEqual({
       kind: "from-cursor",
@@ -2541,12 +2540,12 @@ describe("batch 1 rg/sed/structured output plans", () => {
         filePath,
       },
     });
-    if (!result.ok) return;
+    assert(result.ok);
     expect(plan(result.value)).toEqual({
       version: 1,
       blocks: [
         {
-          id: "rg-results",
+          id: "0",
           source: { stepIndex: 0, producerName: "rg", filePath },
           format: {
             kind: "individual-lines",
@@ -2618,10 +2617,10 @@ describe("batch 1 rg/sed/structured output plans", () => {
       'rg -n "formatGenericInput" web/src/components/ToolCall.tsx',
     );
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
+    assert(r.ok);
     expect(r.value.kind).toBe("search");
     const v = r.value;
-    expect(plan(v)?.blocks[0]?.id).toBe("rg-results");
+    expect(plan(v)?.blocks[0]?.id).toBe("0");
     expect(plan(v)?.blocks[0]?.location).toEqual({
       kind: "from-cursor",
       end: { kind: "end-of-output", requiresComplete: true },
@@ -2634,10 +2633,10 @@ describe("batch 1 rg/sed/structured output plans", () => {
       'grep -n "formatGenericInput" web/src/components/ToolCall.tsx',
     );
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
+    assert(r.ok);
     expect(r.value.kind).toBe("search");
     const v = r.value;
-    expect(plan(v)?.blocks[0]?.id).toBe("rg-results");
+    expect(plan(v)?.blocks[0]?.id).toBe("0");
     expect(plan(v)?.blocks[0]?.location).toEqual({
       kind: "from-cursor",
       end: { kind: "end-of-output", requiresComplete: true },
@@ -2715,9 +2714,9 @@ describe("batch 1 rg/sed/structured output plans", () => {
   it("single sed read includes whole-output plan", async () => {
     const r = await parseShellSemantic("sed -n '1,20p' README.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
+    assert(r.ok);
     expect(r.value.kind).toBe("read");
-    expect(plan(r.value)?.blocks[0]?.id).toBe("sed-output");
+    expect(plan(r.value)?.blocks[0]?.id).toBe("0");
   });
 
   it("single sed svg read carries source file identity in output plan", async () => {
@@ -2737,12 +2736,12 @@ describe("batch 1 rg/sed/structured output plans", () => {
       "ls -l README.md && sed -n '1,20p' README.md",
     );
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
+    assert(r.ok);
     expect(r.value.kind).toBe("structured-output");
     const v = r.value;
     expect(plan(v)?.blocks.map((b: { id: string }) => b.id)).toEqual([
-      "listing",
-      "sed-output",
+      "0",
+      "1",
     ]);
     expect(plan(v)?.blocks[1]?.location).toEqual({
       kind: "from-cursor",
@@ -2772,12 +2771,12 @@ describe("batch 1 rg/sed/structured output plans", () => {
     ].join("\n");
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
+    assert(r.ok);
     expect(r.value.kind).toBe("structured-output");
-    const sedBlock = plan(r.value)?.blocks.find((b) => b.id === "sed-0");
+    const sedBlock = plan(r.value)?.blocks.find((b) => b.id === "0");
     expect(sedBlock?.location).toEqual({
       kind: "from-cursor",
-      end: { kind: "before-block", blockId: "printf-1" },
+      end: { kind: "before-block", blockId: "1" },
       validator: "non-empty",
     });
     expect(
@@ -2793,12 +2792,12 @@ describe("batch 1 rg/sed/structured output plans", () => {
       "sed -n '1,40p' /tmp/cydo-heredoc-render.md && printf '\\n--- svg ---\\n' && sed -n '1,20p' /tmp/cydo-heredoc-render.svg";
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
+    assert(r.ok);
     expect(r.value.kind).toBe("structured-output");
     expect(plan(r.value)?.blocks.map((b: { id: string }) => b.id)).toEqual([
-      "sed-0",
-      "printf-1",
-      "sed-2",
+      "0",
+      "1",
+      "2",
     ]);
     expect(plan(r.value)?.blocks[0]?.format).toEqual({
       kind: "content",
@@ -2839,12 +2838,12 @@ describe("batch 1 rg/sed/structured output plans", () => {
   it("wc -l && head -100 of same file emits 2-block plan", async () => {
     const r = await parseShellSemantic("wc -l file.md && head -100 file.md");
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
+    assert(r.ok);
     expect(r.value.kind).toBe("structured-output");
     expect(plan(r.value)?.blocks).toHaveLength(2);
     expect(plan(r.value)?.blocks.map((b: { id: string }) => b.id)).toEqual([
-      "wc-0",
-      "head-1",
+      "0",
+      "1",
     ]);
     expect(plan(r.value)?.blocks[0]?.format).toEqual({
       kind: "content",
@@ -2978,18 +2977,12 @@ describe("Unit 2 public shell semantic contracts", () => {
       "cat >output.md <<EOF\nbody\nEOF\nls -l output.md && sed -n '1,2p' output.md";
     const result = await parseShellSemantic(command);
     expect(result.ok).toBe(true);
-    if (!result.ok || result.value.kind !== "write") return;
+    assert(result.ok);
+    assert(result.value.kind === "write");
     expect(result.value.steps).toEqual([
       {
-        kind: "write-file",
-        order: 0,
-        targetPath: "output.md",
-        contentNodeId: "heredoc-body",
-        outputShape: { kind: "none" },
-      },
-      {
         kind: "plain-output",
-        order: 1,
+        order: 0,
         commandName: "ls",
         filePath: "output.md",
         outputShape: {
@@ -2998,11 +2991,10 @@ describe("Unit 2 public shell semantic contracts", () => {
           format: { kind: "content", language: "shell-output" },
           validator: "non-empty",
         },
-        blockId: "listing",
       },
       {
         kind: "read-file",
-        order: 2,
+        order: 1,
         commandName: "sed",
         filePath: "output.md",
         range: { type: "lines", start: 1, end: 2 },
@@ -3011,8 +3003,11 @@ describe("Unit 2 public shell semantic contracts", () => {
           format: { kind: "content", language: "markdown" },
           validator: "non-empty",
         },
-        blockId: "sed-output",
       },
+    ]);
+    expect(plan(result.value)?.blocks.map((block) => block.id)).toEqual([
+      "0",
+      "1",
     ]);
   });
 

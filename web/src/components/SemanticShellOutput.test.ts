@@ -57,7 +57,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
       version: 1,
       blocks: [
         {
-          id: "sed-output",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "sed",
@@ -74,7 +74,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
     };
 
     const html = renderSemantic(stdout, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-sed-output"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).toContain('alt="SVG preview"');
     expect(html).toContain('title="Show source"');
   });
@@ -88,7 +88,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
       version: 1,
       blocks: [
         {
-          id: "listing",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "ls",
@@ -102,7 +102,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
           },
         },
         {
-          id: "sed-output",
+          id: "1",
           source: {
             stepIndex: 1,
             producerName: "sed",
@@ -119,8 +119,8 @@ describe("SemanticShellOutput renderable readback rendering", () => {
     };
 
     const html = renderSemantic(stdout, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-listing"');
-    expect(html).toContain('data-testid="semantic-shell-block-sed-output"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
+    expect(html).toContain('data-testid="semantic-shell-block-1"');
     expect(html).toContain('alt="SVG preview"');
   });
 
@@ -135,7 +135,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
       version: 1,
       blocks: [
         {
-          id: "sed-0",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "sed",
@@ -144,12 +144,12 @@ describe("SemanticShellOutput renderable readback rendering", () => {
           format: { kind: "content", language: "markdown" },
           location: {
             kind: "from-cursor",
-            end: { kind: "before-block", blockId: "printf-1" },
+            end: { kind: "before-block", blockId: "1" },
             validator: "non-empty",
           },
         },
         {
-          id: "printf-1",
+          id: "1",
           source: { stepIndex: 1, producerName: "printf" },
           format: { kind: "content", language: "shell-output" },
           location: {
@@ -159,7 +159,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
           },
         },
         {
-          id: "sed-2",
+          id: "2",
           source: {
             stepIndex: 2,
             producerName: "sed",
@@ -176,12 +176,12 @@ describe("SemanticShellOutput renderable readback rendering", () => {
     };
 
     const html = renderSemantic(stdout, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-sed-0"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).toContain("<h1");
     expect(html).toContain("Heredoc Markdown Fixture");
-    expect(html).toContain('data-testid="semantic-shell-block-printf-1"');
+    expect(html).toContain('data-testid="semantic-shell-block-1"');
     expect(html).toContain("--- svg ---");
-    expect(html).toContain('data-testid="semantic-shell-block-sed-2"');
+    expect(html).toContain('data-testid="semantic-shell-block-2"');
     expect(html).toContain('alt="SVG preview"');
   });
 
@@ -191,7 +191,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
       version: 1,
       blocks: [
         {
-          id: "sed-output",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "sed",
@@ -208,7 +208,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
     };
 
     const html = renderSemantic(stdout, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-sed-output"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).toContain("<h1");
     expect(html).toContain("Readback");
     expect(html).not.toContain("<pre");
@@ -220,7 +220,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
       version: 1,
       blocks: [
         {
-          id: "sed-output",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "sed",
@@ -237,7 +237,7 @@ describe("SemanticShellOutput renderable readback rendering", () => {
     };
 
     const html = renderSemantic(stdout, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-sed-output"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).not.toContain('alt="SVG preview"');
     expect(html).toContain("&lt;svg>");
   });
@@ -259,7 +259,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       version: 1,
       blocks: [
         {
-          id: "cat-0",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "cat",
@@ -276,7 +276,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     };
 
     const html = renderSemantic(stdout, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-cat-0"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     // "write-content-markdown" is the class used exclusively by FileContentPreview;
     // the StructuredContent fallback markdown path uses "text-content" instead.
     expect(html).toContain("write-content-markdown");
@@ -288,7 +288,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       version: 1,
       blocks: [
         {
-          id: "head-0",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "head",
@@ -305,7 +305,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     };
 
     const html = renderSemantic(SVG_CONTENT, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-head-0"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     // File-preview path renders SVG as an image; the fallback would render XML
     // as highlighted code with no img element.
     expect(html).toContain('alt="SVG preview"');
@@ -316,7 +316,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       version: 1,
       blocks: [
         {
-          id: "tail-0",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "tail",
@@ -333,7 +333,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     };
 
     const html = renderSemantic(SVG_CONTENT, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-tail-0"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).toContain('alt="SVG preview"');
   });
 
@@ -343,7 +343,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       version: 1,
       blocks: [
         {
-          id: "sed-output",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "sed",
@@ -360,7 +360,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     };
 
     const html = renderSemantic(stdout, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-sed-output"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).toContain("write-content-markdown");
     expect(html).not.toContain("text-content");
   });
@@ -370,7 +370,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       version: 1,
       blocks: [
         {
-          id: "nl-0",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "nl",
@@ -392,7 +392,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     };
 
     const html = renderSemantic(`     1\t${SVG_CONTENT}`, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-nl-0"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).not.toContain('alt="SVG preview"');
   });
 
@@ -422,7 +422,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       assert(outputPlan);
 
       const html = renderSemantic(`     1	${SVG_CONTENT}`, outputPlan);
-      expect(html).toContain('data-testid="semantic-shell-block-nl-0"');
+      expect(html).toContain('data-testid="semantic-shell-block-0"');
       expect(html).not.toContain('alt="SVG preview"');
     },
   );
@@ -439,7 +439,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       const outputPlan = derivePlan(result.value.steps);
       assert(outputPlan);
       const html = renderSemantic(stdout, outputPlan);
-      expect(html).toContain('data-testid="semantic-shell-block-nl-0"');
+      expect(html).toContain('data-testid="semantic-shell-block-0"');
       const prefixes = html.match(
         /data-testid="semantic-shell-line-prefix" class="line-number"> *<\/span>/g,
       );
@@ -465,7 +465,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     const outputPlan = derivePlan(result.value.steps);
     assert(outputPlan);
     const html = renderSemantic("     1\t# Title\n     2\tbody\n", outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-nl-0"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).toContain(
       'data-testid="semantic-shell-line-prefix" class="line-number">     1\t</span>',
     );
@@ -482,7 +482,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
       version: 1,
       blocks: [
         {
-          id: "unknown-0",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "zcat",
@@ -499,7 +499,7 @@ describe("SemanticShellOutput file-preview gate for cat/head/tail/nl producers",
     };
 
     const html = renderSemantic(SVG_CONTENT, outputPlan);
-    expect(html).toContain('data-testid="semantic-shell-block-unknown-0"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).not.toContain('alt="SVG preview"');
   });
 });
@@ -531,7 +531,7 @@ describe("SemanticShellOutput numbered search context", () => {
 
     const html = renderSemantic(stdout, outputPlan);
     expect(html).toContain('data-testid="semantic-shell-output-search"');
-    expect(html).toContain('data-testid="semantic-shell-block-rg-results"');
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
     expect(html).not.toContain("semantic-shell-raw");
     for (const prefix of ["58-", "61:", "140:"]) {
       expect(html).toContain(

@@ -36,7 +36,6 @@ export type CommandStep =
       targetPath: string;
       contentNodeId: string;
       outputShape: OutputShape;
-      blockId?: string;
     }
   | {
       kind: "execute-script";
@@ -45,7 +44,6 @@ export type CommandStep =
       language: string;
       contentNodeId: string;
       outputShape: OutputShape;
-      blockId?: string;
     }
   | {
       kind: "search";
@@ -54,7 +52,6 @@ export type CommandStep =
       pattern: string;
       filePath: string;
       outputShape: OutputShape;
-      blockId?: string;
     }
   | {
       kind: "read-file";
@@ -63,7 +60,6 @@ export type CommandStep =
       filePath: string;
       range?: ReadRange;
       outputShape: OutputShape;
-      blockId?: string;
     }
   | {
       kind: "plain-output";
@@ -71,7 +67,6 @@ export type CommandStep =
       commandName: string;
       filePath?: string;
       outputShape: OutputShape;
-      blockId?: string;
     };
 
 function stepCommandName(step: CommandStep): string | undefined {
@@ -82,11 +77,6 @@ function stepFilePath(step: CommandStep): string | undefined {
   if (step.kind === "search" || step.kind === "read-file") return step.filePath;
   if (step.kind === "plain-output") return step.filePath;
   return undefined;
-}
-
-function defaultBlockId(step: CommandStep): string {
-  const name = stepCommandName(step) ?? step.kind;
-  return `${name}-${step.order}`;
 }
 
 export function derivePlan(steps: CommandStep[]): OutputPlan | undefined {
@@ -109,7 +99,7 @@ export function derivePlan(steps: CommandStep[]): OutputPlan | undefined {
 
     if (shape.kind === "none") continue;
 
-    const blockId = step.blockId ?? defaultBlockId(step);
+    const blockId = String(step.order);
     const commandName = stepCommandName(step);
     const filePath = stepFilePath(step);
 
@@ -163,7 +153,7 @@ export function derivePlan(steps: CommandStep[]): OutputPlan | undefined {
             end: { kind: "end-of-output", requiresComplete: true },
           };
     } else if (subsequent.outputShape.kind === "literal") {
-      const nextId = subsequent.blockId ?? defaultBlockId(subsequent);
+      const nextId = String(subsequent.order);
       location = shape.validator
         ? {
             kind: "from-cursor",

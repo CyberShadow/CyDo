@@ -31,7 +31,7 @@ describe("OutputPlanView", () => {
       version: 1,
       blocks: [
         {
-          id: "md",
+          id: "0",
           format: { kind: "content", language: "markdown" },
           location: {
             kind: "from-cursor",
@@ -44,7 +44,7 @@ describe("OutputPlanView", () => {
 
     const html = renderOutputPlanView(stdout, outputPlan);
     expect(html).toContain('data-testid="test-output-plan"');
-    expect(html).toContain('data-testid="test-block-md"');
+    expect(html).toContain('data-testid="test-block-0"');
     expect(html).toContain("<h1");
     expect(html).toContain("Header");
   });
@@ -55,7 +55,7 @@ describe("OutputPlanView", () => {
       version: 1,
       blocks: [
         {
-          id: "rg-results",
+          id: "0",
           format: {
             kind: "individual-lines",
             format: {
@@ -88,7 +88,7 @@ describe("OutputPlanView", () => {
         version: 1,
         blocks: [
           {
-            id: "nl-0",
+            id: "0",
             source: { filePath, producerName: "nl" },
             format: {
               kind: "nl-line-number-prefixed",
@@ -132,7 +132,7 @@ describe("OutputPlanView", () => {
       version: 1,
       blocks: [
         {
-          id: "rg-results",
+          id: "0",
           format: {
             kind: "individual-lines",
             format: {
@@ -170,7 +170,7 @@ describe("OutputPlanView", () => {
       version: 1,
       blocks: [
         {
-          id: "svg",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "test",

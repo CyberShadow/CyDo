@@ -912,7 +912,7 @@ describe("ToolCall numbered shell output", () => {
       makeResult({ toolResult: { stdout: numberedSvg } }),
     );
     expect(
-      root.querySelector('[data-testid="semantic-shell-block-nl-0"]'),
+      root.querySelector('[data-testid="semantic-shell-block-0"]'),
     ).not.toBeNull();
     expect(
       root.querySelector('[data-testid="semantic-shell-line-prefix"]')
@@ -964,7 +964,7 @@ describe("ToolCall numbered shell output", () => {
         }),
       );
       const block = root.querySelector(
-        '[data-testid="semantic-shell-block-nl-0"]',
+        '[data-testid="semantic-shell-block-0"]',
       );
       expect(
         block?.querySelectorAll('[data-testid="semantic-shell-line-prefix"]'),
@@ -987,9 +987,7 @@ describe("ToolCall numbered shell output", () => {
       "nl -ba s.d",
       makeResult({ toolResult: { stdout } }),
     );
-    const block = root.querySelector(
-      '[data-testid="semantic-shell-block-nl-0"]',
-    );
+    const block = root.querySelector('[data-testid="semantic-shell-block-0"]');
     expect(block).not.toBeNull();
     await vi.waitFor(async () => {
       await act(async () => {});
@@ -1007,7 +1005,7 @@ describe("ToolCall numbered shell output", () => {
         makeResult({ toolResult: { stdout } }),
       );
       const block = root.querySelector(
-        '[data-testid="semantic-shell-block-rg-results"]',
+        '[data-testid="semantic-shell-block-0"]',
       );
       expect(block?.querySelector(".search-group-separator")).not.toBeNull();
       await vi.waitFor(async () => {
@@ -1025,7 +1023,7 @@ describe("ToolCall numbered shell output", () => {
       makeResult({ toolResult: { stdout } }),
     );
     expect(
-      root.querySelector('[data-testid="semantic-shell-block-rg-results"]'),
+      root.querySelector('[data-testid="semantic-shell-block-0"]'),
     ).toBeNull();
     expect(root.querySelector(".search-group-separator")).toBeNull();
     expect(root.querySelector("pre.tool-result")?.textContent).toBe(stdout);
@@ -1037,9 +1035,7 @@ describe("ToolCall numbered shell output", () => {
       "grep -n -B1 x cr.d",
       makeResult({ toolResult: { stdout } }),
     );
-    const block = root.querySelector(
-      '[data-testid="semantic-shell-block-rg-results"]',
-    );
+    const block = root.querySelector('[data-testid="semantic-shell-block-0"]');
     expect(block).not.toBeNull();
     await vi.waitFor(async () => {
       await act(async () => {});

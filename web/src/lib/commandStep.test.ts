@@ -40,7 +40,6 @@ function fixedLinesStep(order: number, count: number): CommandStep {
       format: FMT_SHELL,
       validator: "non-empty",
     },
-    blockId: "listing",
   };
 }
 
@@ -110,7 +109,7 @@ describe("derivePlan", () => {
     expect(plan!.blocks).toHaveLength(2);
     expect(plan!.blocks[0]!.location).toEqual({
       kind: "from-cursor",
-      end: { kind: "before-block", blockId: "printf-1" },
+      end: { kind: "before-block", blockId: "1" },
       validator: "non-empty",
     });
     expect(plan!.blocks[1]!.location).toEqual({
@@ -148,7 +147,7 @@ describe("derivePlan", () => {
     expect(plan!.blocks).toHaveLength(3);
     expect(plan!.blocks[0]!.location).toEqual({
       kind: "from-cursor",
-      end: { kind: "before-block", blockId: "printf-1" },
+      end: { kind: "before-block", blockId: "1" },
       validator: "non-empty",
     });
     expect(plan!.blocks[1]!.location.kind).toBe("unique-literal");
@@ -252,26 +251,17 @@ describe("derivePlan", () => {
     expect(plan!.blocks[0]!.source).not.toHaveProperty("filePath");
   });
 
-  it("explicit blockId is honored; absent uses commandName-order default", () => {
-    const withId: CommandStep = {
-      kind: "read-file",
-      order: 0,
-      commandName: "sed",
-      filePath: "/tmp/x.md",
-      outputShape: { kind: "content", format: FMT_MD },
-      blockId: "sed-output",
-    };
-    const withoutId: CommandStep = {
-      kind: "read-file",
-      order: 1,
-      commandName: "cat",
-      filePath: "/tmp/y.md",
-      outputShape: { kind: "content", format: FMT_MD },
-    };
-    const plan = derivePlan([withId, literalStep(1, "\n---\n"), withoutId]);
-    // withId uses explicit "sed-output"
-    expect(plan!.blocks[0]!.id).toBe("sed-output");
-    // withoutId uses default "cat-1"
-    expect(plan!.blocks[2]!.id).toBe("cat-1");
+  it("uses positional ids for a three-step list and its literal anchor", () => {
+    const plan = derivePlan([
+      contentStep(0),
+      literalStep(1, "\n---\n"),
+      contentStep(2),
+    ]);
+
+    expect(plan?.blocks.map((block) => block.id)).toEqual(["0", "1", "2"]);
+    expect(plan?.blocks[0]?.location).toMatchObject({
+      kind: "from-cursor",
+      end: { kind: "before-block", blockId: "1" },
+    });
   });
 });

@@ -96,7 +96,7 @@ describe("nl output rows", () => {
       version: 1,
       blocks: [
         {
-          id: "nl-0",
+          id: "0",
           format: {
             kind: "nl-line-number-prefixed",
             width: 6,
@@ -200,7 +200,7 @@ describe("numbered output span validation", () => {
       version: 1,
       blocks: [
         {
-          id: "rg-results",
+          id: "0",
           format: {
             kind: "individual-lines",
             format: {
@@ -228,7 +228,7 @@ describe("outputPlan", () => {
       version: 1,
       blocks: [
         {
-          id: "listing",
+          id: "0",
           source: { stepIndex: 0, producerName: "ls", filePath: "README.md" },
           format: { kind: "content", language: "shell-output" },
           location: {
@@ -248,7 +248,7 @@ describe("outputPlan", () => {
       version: 1,
       blocks: [
         {
-          id: "header",
+          id: "0",
           format: { kind: "content", language: "shell-output" },
           location: {
             kind: "from-cursor",
@@ -257,7 +257,7 @@ describe("outputPlan", () => {
           },
         },
         {
-          id: "body",
+          id: "1",
           format: { kind: "content", language: "text" },
           location: {
             kind: "from-cursor",
@@ -277,7 +277,7 @@ describe("outputPlan", () => {
       version: 1,
       blocks: [
         {
-          id: "all",
+          id: "0",
           format: { kind: "content", language: "text" },
           location: {
             kind: "from-cursor",
@@ -291,7 +291,7 @@ describe("outputPlan", () => {
     expect(segmented.pieces).toEqual([
       {
         kind: "structured",
-        blockId: "all",
+        blockId: "0",
         start: 0,
         end: stdout.length,
         format: { kind: "content", language: "text" },
@@ -306,7 +306,7 @@ describe("outputPlan", () => {
       version: 1,
       blocks: [
         {
-          id: "sed-output",
+          id: "0",
           source: {
             stepIndex: 0,
             producerName: "sed",
@@ -326,7 +326,7 @@ describe("outputPlan", () => {
     expect(segmented.pieces).toEqual([
       {
         kind: "structured",
-        blockId: "sed-output",
+        blockId: "0",
         start: 0,
         end: stdout.length,
         format: { kind: "content", language: "xml" },
@@ -345,7 +345,7 @@ describe("outputPlan", () => {
       version: 1,
       blocks: [
         {
-          id: "all",
+          id: "0",
           format: { kind: "content", language: "text" },
           location: {
             kind: "from-cursor",
@@ -374,7 +374,7 @@ describe("outputPlan", () => {
       version: 1,
       blocks: [
         {
-          id: "all",
+          id: "0",
           format: { kind: "content", language: "text" },
           location: {
             kind: "from-cursor",
@@ -398,7 +398,7 @@ describe("outputPlan", () => {
       version: 1,
       blocks: [
         {
-          id: "sep",
+          id: "0",
           format: { kind: "content", language: "shell-output" },
           location: { kind: "unique-literal", text: "---", include: "self" },
         },
@@ -428,21 +428,21 @@ describe("outputPlan", () => {
       version: 1,
       blocks: [
         {
-          id: "part-a",
+          id: "0",
           format: { kind: "content", language: "text" },
           location: {
             kind: "from-cursor",
-            end: { kind: "before-block", blockId: "sep" },
+            end: { kind: "before-block", blockId: "1" },
             validator: "non-empty",
           },
         },
         {
-          id: "sep",
+          id: "1",
           format: { kind: "content", language: "shell-output" },
           location: { kind: "unique-literal", text: "---\n", include: "self" },
         },
         {
-          id: "part-b",
+          id: "2",
           format: { kind: "content", language: "text" },
           location: {
             kind: "from-cursor",
@@ -489,7 +489,7 @@ describe("outputPlan", () => {
       version: 1,
       blocks: [
         {
-          id: "rg-head",
+          id: "0",
           format: {
             kind: "individual-lines",
             format: {
@@ -504,7 +504,7 @@ describe("outputPlan", () => {
           },
         },
         {
-          id: "rest",
+          id: "1",
           format: { kind: "content", language: "shell-output" },
           location: {
             kind: "from-cursor",
@@ -523,7 +523,7 @@ describe("outputPlan", () => {
     });
     expect(segmented.pieces[1]).toMatchObject({
       kind: "structured",
-      blockId: "rest",
+      blockId: "1",
       start: 5,
       end: stdout.length,
     });
@@ -536,7 +536,7 @@ describe("outputPlan", () => {
       version: 1,
       blocks: [
         {
-          id: "all",
+          id: "0",
           format: { kind: "content", language: "text" },
           location: {
             kind: "from-cursor",

@@ -1127,7 +1127,6 @@ function lowerStream(
             ? "line-number-prefixed-with-context"
             : "colon-line-number-prefixed",
         },
-        blockId: "rg-results",
       },
     ];
     return {
@@ -1175,7 +1174,6 @@ function lowerStream(
           : { kind: "content", language },
         validator: numbering ? undefined : "non-empty",
       },
-      blockId: producer === "sed" ? "sed-output" : undefined,
     },
   ];
   return {
@@ -1294,7 +1292,6 @@ function classifyGenericList(
       steps.push({
         ...step,
         order: steps.length,
-        blockId: undefined,
       });
     }
   }
@@ -1915,7 +1912,6 @@ function structuredReadbackSteps(readback: {
         format: { kind: "content", language: "shell-output" },
         validator: "non-empty",
       },
-      blockId: "listing",
     },
     {
       kind: "read-file",
@@ -1932,7 +1928,6 @@ function structuredReadbackSteps(readback: {
         format: { kind: "content", language },
         validator: "non-empty",
       },
-      blockId: "sed-output",
     },
   ];
 }
@@ -2026,20 +2021,9 @@ function classifyCatHeredoc(
         "only leading mkdir -p setup is supported before heredoc",
       );
   }
-  const trailingSteps = trailingCatHeredocSteps(document, context.trailing);
-  const steps: CommandStep[] = [
-    {
-      kind: "write-file",
-      order: 0,
-      targetPath: state.literalStdoutPath,
-      contentNodeId: "heredoc-body",
-      outputShape: { kind: "none" },
-    },
-    ...trailingSteps.map((step, index) => ({
-      ...step,
-      order: index + 1,
-    })),
-  ];
+  const steps = trailingCatHeredocSteps(document, context.trailing).map(
+    (step, order) => ({ ...step, order }),
+  );
   return {
     ok: true,
     value: {
@@ -2066,7 +2050,7 @@ function classifyCatHeredoc(
         content,
         state.literalStdoutPath,
       ),
-      steps: trailingSteps.length > 0 ? steps : undefined,
+      steps: steps.length > 0 ? steps : undefined,
     },
   };
 }
