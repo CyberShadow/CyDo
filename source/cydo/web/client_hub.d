@@ -2,14 +2,19 @@ module cydo.web.client_hub;
 
 import std.algorithm : remove;
 import std.string : representation;
+import std.typecons : Nullable;
 
 import ae.net.http.websocket : WebSocketAdapter;
 import ae.sys.data : Data;
+import ae.utils.json : toJson;
+
+import cydo.domain.tasks.model : HistoryOperationsMessage;
+import cydo.workflow.history.operations : HistoryOperations;
 
 class ClientHub
 {
 	private WebSocketAdapter[] clients;
-	/// Per-client subscription set: which tasks each client receives live events for.
+	/// Each subscription records the last history operations sent to that client.
 	/// INVARIANT: task history is authoritative; live delivery is only an
 	/// optimization for clients that have caught up. request_history synchronously
 	/// enqueues the replay through task_history_end, then marks the client
@@ -18,7 +23,7 @@ class ClientHub
 	/// events regardless of link or browser speed. Every task_reload is a hard
 	/// history-lineage boundary: clients are unsubscribed and must re-subscribe via
 	/// request_history.
-	private bool[int][WebSocketAdapter] clientSubscriptions;
+	private Nullable!HistoryOperations[int][WebSocketAdapter] clientSubscriptions;
 
 	void add(WebSocketAdapter ws)
 	{
@@ -36,9 +41,27 @@ class ClientHub
 		return clients.dup;
 	}
 
-	void subscribe(WebSocketAdapter ws, int tid)
+	void subscribe(WebSocketAdapter ws, int tid,
+		Nullable!HistoryOperations operations = Nullable!HistoryOperations.init)
 	{
-		clientSubscriptions.require(ws)[tid] = true;
+		clientSubscriptions.require(ws)[tid] = operations;
+	}
+
+	void sendHistoryOperations(int tid, HistoryOperations operations)
+	{
+		Data payload;
+		foreach (ws; clients)
+			if (auto subs = ws in clientSubscriptions)
+				if (auto last = tid in *subs)
+				{
+					if (!last.isNull && last.get == operations)
+						continue;
+					if (payload.length == 0)
+						payload = Data(toJson(HistoryOperationsMessage(
+							"history_operations", tid, operations)).representation);
+					*last = operations;
+					ws.send(payload);
+				}
 	}
 
 	void unsubscribeAll(int tid)

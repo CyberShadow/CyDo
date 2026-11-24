@@ -1023,10 +1023,7 @@ function handleResponses(req, res) {
       Connection: "keep-alive",
     });
 
-    if (
-      intentText?.startsWith("[SYSTEM: Session start:") &&
-      intentText.includes("hold turn for rejected steer")
-    ) {
+    if (intentText === "hold turn for rejected steer") {
       if (rejectedSteerCarrier)
         throw new Error("The mock already holds a steer carrier response");
       rejectedSteerCarrier = res;

@@ -2126,6 +2126,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 	package void delegate(string line) stderrHandler_;
 	private void delegate(int status) exitHandler_;
 	private void delegate() toolCallsAbandonedHandler_;
+	private void delegate() revertAvailabilityChangedHandler_;
 
 	this(AppServerProcess server, int tid, SessionConfig config)
 	{
@@ -2248,9 +2249,11 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		}
 
 		server.registerSession(loadedThreadId, asRouteTarget());
+		auto wasAvailable = canRevertThread;
 		threadId = sessionId = loadedThreadId;
 		notifyNativeSessionStarted(threadId);
 		notifyRouteReady();
+		notifyRevertAvailability(wasAvailable);
 
 		// Emit synthetic session/init with raw RPC response as _raw.
 		import cydo.protocol : SessionInitEvent, SessionMetadataEvent;
@@ -2313,8 +2316,10 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		foreach (i, candidate; inFlightMessages_)
 			if (candidate is submission)
 			{
+				auto wasAvailable = canRevertThread;
 				inFlightMessages_ = inFlightMessages_[0 .. i]
 					~ inFlightMessages_[i + 1 .. $];
+				notifyRevertAvailability(wasAvailable);
 				return;
 			}
 		assert(false, "Codex submission response has no in-flight record");
@@ -2381,8 +2386,10 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		foreach (submission; queued)
 			rejectSubmission(submission, error);
 
+		auto wasAvailable = canRevertThread;
 		auto inFlight = inFlightMessages_;
 		inFlightMessages_ = null;
+		notifyRevertAvailability(wasAvailable);
 		foreach (submission; inFlight)
 			rejectSubmission(submission, error);
 
@@ -2392,19 +2399,20 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 
 	private void resetRejectedStart()
 	{
+		auto wasAvailable = canRevertThread;
 		startInFlight_ = false;
 		turnInProgress = false;
 		activeTurnId_ = null;
 		activeItemId_ = null;
 		activeItemTypes_ = null;
 		hadItemsSinceLastStop_ = false;
+		notifyRevertAvailability(wasAvailable);
 	}
 
 	private void submitSteer(PendingMessage submission)
 	{
 		submission.operation = SubmissionOperation.steering;
-		inFlightMessages_ ~= submission;
-		expectedEchoMessages_ ~= submission;
+		trackSubmission(submission, canRevertThread);
 		try
 		{
 			TurnSteerParams steerParams;
@@ -2460,15 +2468,17 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 	private Promise!void sendThreadRequest(string method, string params,
 		void delegate(JsonRpcResponse) accept)
 	{
-		enforce(canRevertThread, "Codex " ~ method ~ " requires a live, idle session");
+		auto wasAvailable = canRevertThread;
+		enforce(wasAvailable, "Codex " ~ method ~ " requires a live, idle session");
 		threadRequest_ = new Promise!void;
 		auto request = threadRequest_;
+		notifyRevertAvailability(wasAvailable);
 		void settle(void delegate() how)
 		{
 			// The session has ended meanwhile, and settled it.
 			if (threadRequest_ !is request)
 				return;
-			threadRequest_ = null;
+			clearThreadRequest();
 			how();
 		}
 		void rejectRequest(Exception error)
@@ -2565,8 +2575,16 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		deliver();
 	}
 
+	private void trackSubmission(PendingMessage submission, bool wasAvailable)
+	{
+		inFlightMessages_ ~= submission;
+		expectedEchoMessages_ ~= submission;
+		notifyRevertAvailability(wasAvailable);
+	}
+
 	private void submitStart(PendingMessage submission)
 	{
+		auto wasAvailable = canRevertThread;
 		submission.operation = SubmissionOperation.starting;
 		turnInProgress = true;
 		startInFlight_ = true;
@@ -2574,8 +2592,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		activeItemId_ = null;
 		activeItemTypes_ = null;
 		hadItemsSinceLastStop_ = false;
-		inFlightMessages_ ~= submission;
-		expectedEchoMessages_ ~= submission;
+		trackSubmission(submission, wasAvailable);
 		try
 		{
 			TurnStartParams startParams;
@@ -2651,12 +2668,19 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 			drainPendingMessages();
 	}
 
+	private void clearThreadRequest()
+	{
+		auto wasAvailable = canRevertThread;
+		threadRequest_ = null;
+		notifyRevertAvailability(wasAvailable);
+	}
+
 	private void closeThreadWork(string reason)
 	{
 		rejectUnsettledMessages(new Exception(reason ~ " before accepting message submission"));
 		if (auto request = threadRequest_)
 		{
-			threadRequest_ = null;
+			clearThreadRequest();
 			request.reject(new Exception(reason ~ " during a thread request"));
 		}
 	}
@@ -2668,7 +2692,9 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		abandonPendingCorrection();
 		if (!alive_)
 			return; // Already stopped; avoid double-invocation of exitHandler_.
+		auto wasAvailable = canRevertThread;
 		alive_ = false;
+		notifyRevertAvailability(wasAvailable);
 		auto cb = exitHandler_;
 		exitHandler_ = null;
 		if (cb)
@@ -2713,6 +2739,18 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 	}
 
 	@property bool supportsImages() const { return false; }
+
+	private void notifyRevertAvailability(bool wasAvailable)
+	{
+		if (revertAvailabilityChangedHandler_ && canRevertThread != wasAvailable)
+			revertAvailabilityChangedHandler_();
+	}
+
+	/// Whether the live thread can accept an idle-only operation changed.
+	@property void onRevertAvailabilityChanged(void delegate() dg)
+	{
+		revertAvailabilityChangedHandler_ = dg;
+	}
 
 	@property bool canRevertThread() const
 	{
@@ -2769,7 +2807,9 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 			server.unregisterSession(threadId, &onServerExit);
 		server.unregisterSessionByTid(tid, &onServerExit);
 		activeTurnId_ = null;
+		auto wasAvailable = canRevertThread;
 		alive_ = false;
+		notifyRevertAvailability(wasAvailable);
 		auto cb = exitHandler_;
 		exitHandler_ = null;
 		if (cb)
@@ -2958,6 +2998,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 
 	package void handleTurnCompleted(TurnCompletedParams params, string rawNotification)
 	{
+		auto wasAvailable = canRevertThread;
 		turnInProgress = false;
 		activeTurnId_ = null;
 		turnHasUserOpener_ = false;
@@ -2988,6 +3029,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 			outputHandler_(result);
 		}
 		lastResultText_ = null;
+		notifyRevertAvailability(wasAvailable);
 		drainPendingMessages();
 	}
 

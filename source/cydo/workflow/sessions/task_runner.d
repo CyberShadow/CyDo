@@ -460,6 +460,15 @@ class TaskSessionRunner
 		return session !is null && session.alive;
 	}
 
+	private void removeSession(int tid)
+	{
+		auto session = sessionForTask(tid);
+		sessions_.remove(tid);
+		if (!host_.shuttingDown() && host_.getTask(tid) !is null
+			&& (cast(CodexSession) session !is null || cast(ClaudeCodeSession) session !is null))
+			host_.broadcastHistoryOperations(tid);
+	}
+
 	bool forkSourceOperationInProgress(int tid)
 	{
 		return (tid in forkSourceOperations_) !is null;
@@ -498,8 +507,12 @@ class TaskSessionRunner
 			operation.activate(() {
 				auto mapped = tid in forkSourceOperations_;
 				if (mapped !is null && *mapped is operation)
+				{
 					forkSourceOperations_.remove(tid);
+					host_.broadcastHistoryOperations(tid);
+				}
 			});
+			host_.broadcastHistoryOperations(tid);
 			auto owner = codex.openForkSourceOwner(tid, source.sessionId,
 				launch.processLaunch, launch.sessionConfig);
 			operation.attachOwner(owner);
@@ -1026,7 +1039,7 @@ public:
 				host_.stopJsonlWatch(tid);
 				liveHistoryBindings_.remove(tid);
 				endSessionToolCalls(tid, session);
-				sessions_.remove(tid);
+				removeSession(tid);
 				return;
 			}
 
@@ -1042,7 +1055,7 @@ public:
 				host_.stopJsonlWatch(tid);
 				liveHistoryBindings_.remove(tid);
 				endSessionToolCalls(tid, session);
-				sessions_.remove(tid);
+				removeSession(tid);
 				return;
 			}
 
@@ -1052,7 +1065,7 @@ public:
 
 			if (!host_.shuttingDown())
 				host_.startJsonlWatch(tid);
-			if (!host_.shuttingDown())
+			if (!host_.shuttingDown() && taskAgent.driver != AgentDriver.codex)
 				host_.broadcastHistoryOperations(tid);
 
 			current = host_.getTask(tid);
@@ -1061,7 +1074,7 @@ public:
 				host_.stopJsonlWatch(tid);
 				liveHistoryBindings_.remove(tid);
 				endSessionToolCalls(tid, session);
-				sessions_.remove(tid);
+				removeSession(tid);
 				return;
 			}
 
@@ -1142,6 +1155,19 @@ public:
 
 		string lastStderr;
 
+		void publishSessionHistoryOperations()
+		{
+			auto stored = tid in sessions_;
+			if (stored !is null && *stored is session && !host_.shuttingDown())
+				host_.broadcastHistoryOperations(tid);
+		}
+
+		if (auto codex = cast(CodexSession) session)
+		{
+			codex.onRevertAvailabilityChanged = &publishSessionHistoryOperations;
+			if (resumeSessionId.length > 0)
+				publishSessionHistoryOperations();
+		}
 		if (auto claude = cast(ClaudeCodeSession) session)
 		{
 			claude.onToolPermissionRequest = (PermissionPrompt prompt,
@@ -1151,11 +1177,7 @@ public:
 				host_.decidePreToolUse(tid, req.toolName, req.input);
 			claude.onToolPermissionRequestWithdrawn = (string toolUseId) =>
 				host_.withdrawToolPermissionPrompt(tid, toolUseId);
-			claude.onRewindAvailabilityChanged = () {
-				auto stored = tid in sessions_;
-				if (stored !is null && *stored is session)
-					host_.broadcastHistoryOperations(tid);
-			};
+			claude.onRewindAvailabilityChanged = &publishSessionHistoryOperations;
 		}
 
 		session.onStderr = (string line) {
@@ -1186,7 +1208,7 @@ public:
 			{
 				host_.stopJsonlWatch(tid);
 				liveHistoryBindings_.remove(tid);
-				sessions_.remove(tid);
+				removeSession(tid);
 				if (current !is null)
 				{
 					cleanupTaskLaunch(current);
@@ -1234,7 +1256,7 @@ public:
 			{
 				host_.stopJsonlWatch(tid);
 				liveHistoryBindings_.remove(tid);
-				sessions_.remove(tid);
+				removeSession(tid);
 				return;
 			}
 
@@ -1251,7 +1273,7 @@ public:
 			host_.stopJsonlWatch(tid);
 			repairInterruptedContinuationOnExit(tid, current, cleanExit);
 			liveHistoryBindings_.remove(tid);
-			sessions_.remove(tid);
+			removeSession(tid);
 			current = host_.getTask(tid);
 			if (current is null)
 				return;
@@ -2445,6 +2467,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 					finalReconcileJsonlIfPresent: (int tid, Nullable!TaskHistoryResolution) {},
 					startJsonlWatch: (int tid) {},
 					stopJsonlWatch: (int tid) {},
+					broadcastHistoryOperations: (int tid) {},
 				failPendingAskUserQuestionOnExit: (int tid) {},
 				failPendingPermissionPromptOnExit: (int tid) {
 					assert(tid == 1);
@@ -4396,6 +4419,7 @@ unittest
 			touchAndPersistLastActive = (int tid) {};
 			ensureHistoryLoadedForExit = (int tid) => Nullable!TaskHistoryResolution.init;
 			finalReconcileJsonlIfPresent = (int tid, Nullable!TaskHistoryResolution resolution) {};
+			broadcastHistoryOperations = (int tid) {};
 			stopJsonlWatch = (int tid) {};
 			failPendingAskUserQuestionOnExit = (int tid) {};
 			failPendingPermissionPromptOnExit = (int tid) {};

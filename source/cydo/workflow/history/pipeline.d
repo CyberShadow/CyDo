@@ -27,13 +27,13 @@ import cydo.protocol : ContentBlock, ItemStartedEvent, TaskEventEnvelope,
 import cydo.runtime.config : AgentDriver;
 import cydo.domain.storage.persistence : LoadedHistory;
 import cydo.domain.tasks.model : QueueOperationProbe, TaskData, TaskStatus, TaskHistoryEndMessage,
-	TaskHistoryStartMessage, Watermark, buildSyntheticUserEvent, extractEventFromEnvelope,
+	TaskHistoryStartMessage, HistoryOperationsMessage, Watermark, buildSyntheticUserEvent, extractEventFromEnvelope,
 	extractTsFromEnvelope, isQueueOperation, watermarkFromPath;
 import cydo.workflow.history.native_history : HistoryAccess,
 	TaskHistoryResolution, TaskHistoryResolutionKind, UnavailableHistory,
 	UnavailableHistoryKind;
 import cydo.workflow.history.jsonl_store : completeJsonlPrefix, loadTaskHistoryContent;
-import cydo.workflow.history.operations : HistoryBoundaryEvent;
+import cydo.workflow.history.operations : HistoryBoundaryEvent, HistoryOperations;
 
 package(cydo):
 
@@ -60,8 +60,8 @@ struct HistoryEventPipelineHost
 	string[] delegate() configuredAgentNames;
 	string delegate(string subject, string body) makeTaskDiagnosticEventJson;
 	void delegate(int tid, Data data) sendToSubscribed;
-	void delegate(WebSocketAdapter ws, int tid) subscribe;
-	void delegate(WebSocketAdapter ws, int tid) sendHistoryOperations;
+	void delegate(WebSocketAdapter ws, int tid, Nullable!HistoryOperations operations) subscribe;
+	HistoryOperations delegate(int tid, AgentDriver driver) historyOperations;
 	void delegate(int tid) broadcastHistoryOperations;
 	void delegate(int tid, size_t seq, string event, string raw, int sourceLine,
 		LocalUserProvenance localUserProvenance)
@@ -566,12 +566,18 @@ class HistoryEventPipeline
 			else
 				ws.send(msg);
 		}
-		if (host_.resolveTaskHistory(tid).kind == TaskHistoryResolutionKind.access)
-			host_.sendHistoryOperations(ws, tid);
+		Nullable!HistoryOperations operations;
+		auto resolution = host_.resolveTaskHistory(tid);
+		if (resolution.kind == TaskHistoryResolutionKind.access)
+		{
+			operations = host_.historyOperations(tid, resolution.requireAccess().agent.driver);
+			ws.send(Data(toJson(HistoryOperationsMessage(
+				"history_operations", tid, operations.get)).representation));
+		}
 
 		ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
 		host_.sendReplaySupplementalState(ws, tid);
-		host_.subscribe(ws, tid);
+		host_.subscribe(ws, tid, operations);
 		host_.onHistorySubscribed(tid);
 	}
 
@@ -1305,8 +1311,8 @@ unittest
 	host.normalizeKnownSystemMessageMeta = (string translated, int t) => translated;
 	host.makeTaskDiagnosticEventJson = (string subject, string body) => "";
 	host.sendToSubscribed = (int t, Data d) {};
-	host.subscribe = (WebSocketAdapter ws, int t) {};
-	host.sendHistoryOperations = (WebSocketAdapter ws, int t) {};
+	host.subscribe = (WebSocketAdapter ws, int t, Nullable!HistoryOperations) {};
+	host.historyOperations = (int t, AgentDriver driver) => HistoryOperations.init;
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};
@@ -1434,8 +1440,8 @@ unittest
 	host.normalizeKnownSystemMessageMeta = (string translated, int t) => translated;
 	host.makeTaskDiagnosticEventJson = (string subject, string body) => "";
 	host.sendToSubscribed = (int t, Data d) {};
-	host.subscribe = (WebSocketAdapter ws, int t) {};
-	host.sendHistoryOperations = (WebSocketAdapter ws, int t) {};
+	host.subscribe = (WebSocketAdapter ws, int t, Nullable!HistoryOperations) {};
+	host.historyOperations = (int t, AgentDriver driver) => HistoryOperations.init;
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};
@@ -1687,8 +1693,8 @@ unittest
 		return toJson(diagnostic);
 	};
 	host.sendToSubscribed = (int t, Data data) { sent ~= data; };
-	host.subscribe = (WebSocketAdapter ws, int t) {};
-	host.sendHistoryOperations = (WebSocketAdapter ws, int t) {};
+	host.subscribe = (WebSocketAdapter ws, int t, Nullable!HistoryOperations) {};
+	host.historyOperations = (int t, AgentDriver driver) => HistoryOperations.init;
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};
@@ -1905,8 +1911,8 @@ unittest
 	host.normalizeKnownSystemMessageMeta = (string translated, int t) => translated;
 	host.makeTaskDiagnosticEventJson = (string subject, string body) => "";
 	host.sendToSubscribed = (int t, Data d) {};
-	host.subscribe = (WebSocketAdapter ws, int t) {};
-	host.sendHistoryOperations = (WebSocketAdapter ws, int t) {};
+	host.subscribe = (WebSocketAdapter ws, int t, Nullable!HistoryOperations) {};
+	host.historyOperations = (int t, AgentDriver driver) => HistoryOperations.init;
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};

@@ -55,7 +55,7 @@ import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 	TaskHistoryResolution, TaskHistoryResolutionKind, UnavailableHistory,
 	UnavailableHistoryKind, resolveNativeHistoryContext;
 import cydo.workflow.history.abbrev : extractMessageText;
-import cydo.workflow.history.operations : NativeSessionState,
+import cydo.workflow.history.operations : HistoryOperations, NativeSessionState,
 	selectHistoryOperations;
 import cydo.runtime.logging : installRobustLogger;
 import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
@@ -319,6 +319,7 @@ class App
 
 	private TransportAdapter transport;
 	private ClientHub clientHub;
+	private bool[int] pendingHistoryOperations;
 	private TaskData[int] tasks;
 	private Persistence persistence;
 	private TaskLifecycle taskLifecycle;
@@ -714,20 +715,11 @@ class App
 			sendToSubscribed: (int tid, Data data) {
 				clientHub.sendToSubscribed(tid, data);
 			},
-			subscribe: (WebSocketAdapter ws, int tid) {
-				clientHub.subscribe(ws, tid);
+			subscribe: (WebSocketAdapter ws, int tid, Nullable!HistoryOperations operations) {
+				clientHub.subscribe(ws, tid, operations);
 			},
-			sendHistoryOperations: (WebSocketAdapter ws, int tid) {
-				import cydo.domain.tasks.model : HistoryOperationsMessage;
-				ws.send(Data(toJson(HistoryOperationsMessage("history_operations", tid,
-					historyOperationsForTask(tid))).representation));
-			},
-			broadcastHistoryOperations: (int tid) {
-				import cydo.domain.tasks.model : HistoryOperationsMessage;
-				auto message = HistoryOperationsMessage("history_operations", tid,
-					historyOperationsForTask(tid));
-				clientHub.sendToSubscribed(tid, Data(toJson(message).representation));
-			},
+			historyOperations: &historyOperationsForTask,
+			broadcastHistoryOperations: &scheduleHistoryOperations,
 			noteLiveBoundaryCandidate: (int tid, size_t seq, string event, string raw, int sourceLine,
 				LocalUserProvenance localUserProvenance) {
 				// Boundaries of a driver-served history arrive with its events.
@@ -838,6 +830,7 @@ class App
 			},
 			startJsonlWatch: (int tid) {
 				jsonlTracker.startJsonlWatch(tid);
+				scheduleHistoryOperations(tid);
 			},
 			ensureHistoryLoadedForExit: (int tid) => historyPipeline.ensureHistoryLoadedForExit(tid),
 			finalReconcileJsonlIfPresent: (int tid, Nullable!TaskHistoryResolution resolution) {
@@ -846,12 +839,7 @@ class App
 			stopJsonlWatch: (int tid) {
 				jsonlTracker.stopJsonlWatch(tid);
 			},
-			broadcastHistoryOperations: (int tid) {
-				import cydo.domain.tasks.model : HistoryOperationsMessage;
-				auto message = HistoryOperationsMessage("history_operations", tid,
-					historyOperationsForTask(tid));
-				clientHub.sendToSubscribed(tid, Data(toJson(message).representation));
-			},
+			broadcastHistoryOperations: &scheduleHistoryOperations,
 			sendSystemRestartNudge: &workflowTools.sendSystemRestartNudge,
 			snapshotTaskIds: &snapshotTaskIdsForResume,
 			isSingletonTask: &isSingletonTask,
@@ -910,6 +898,7 @@ class App
 				return taskSessionRunner.openCodexForkSourceOperation(tid, access);
 			},
 			nativeSessionState: &nativeSessionState,
+			historyOperationsChanged: &scheduleHistoryOperations,
 			resolveFreshPersistedBoundary: (int tid, const ref HistoryAccess access,
 				string requestedAnchor, out HistoryBoundary boundary, out bool opensConversation) {
 				return historyPipeline.resolveFreshPersistedBoundary(tid, access,
@@ -1595,6 +1584,7 @@ class App
 		if (!isConfiguredAgentName(config, json.agent_name)) return;
 		tasks[tid].agentName = json.agent_name;
 		persistence.setAgentName(tid, json.agent_name);
+		scheduleHistoryOperations(tid);
 		broadcastTaskUpdate(tid);
 	}
 
@@ -3329,6 +3319,7 @@ class App
 	{
 		if (tid !in tasks)
 			return false;
+		auto previousHistoryMode = servedHistoryMode(tid);
 		jsonlTracker.invalidateLineage(tid);
 		tasks[tid].clearSubmissionCorrelationState();
 		bool reloadEmitted;
@@ -3354,6 +3345,8 @@ class App
 		}
 		if (unsubscribeSubscribers)
 			clientHub.unsubscribeAll(tid);
+		else if (previousHistoryMode != servedHistoryMode(tid))
+			scheduleHistoryOperations(tid);
 		return reloadEmitted;
 	}
 
@@ -3871,6 +3864,8 @@ class App
 				rebuilt[name] = createConfiguredAppAgent(name);
 		}
 		agentsByName = rebuilt;
+		foreach (tid, ref task; tasks)
+			scheduleHistoryOperations(tid);
 		auto defaultName = defaultAgentName("");
 		agent = agentsByName[defaultName];
 
@@ -3966,25 +3961,44 @@ class App
 
 	private NativeSessionState nativeSessionState(int tid)
 	{
-		auto codex = cast(CodexSession) sessionForTask(tid);
-		if (codex !is null)
-			return codex.canRevertThread
-				? NativeSessionState.liveReady
-				: NativeSessionState.liveBusy;
-		auto claude = cast(ClaudeCodeSession) sessionForTask(tid);
+		auto session = sessionForTask(tid);
+		auto claude = cast(ClaudeCodeSession) session;
 		if (claude !is null)
 			return claude.canRewindConversation
 				? NativeSessionState.liveReady
 				: NativeSessionState.liveBusy;
-		if (taskSessionRunner.forkSourceOperationInProgress(tid))
+		if (tasks[tid].nativeUndoBlocksDelivery
+			|| taskSessionRunner.forkSourceOperationInProgress(tid))
 			return NativeSessionState.liveBusy;
+		if (auto codex = cast(CodexSession) session)
+			return codex.canRevertThread
+				? NativeSessionState.liveReady
+				: NativeSessionState.liveBusy;
 		return NativeSessionState.dead;
 	}
 
-	private auto historyOperationsForTask(int tid)
+	private HistoryOperations historyOperationsForTask(int tid, AgentDriver driver)
 	{
-		return selectHistoryOperations(agentForTask(tid).driver,
-			nativeSessionState(tid), servedHistoryMode(tid));
+		return selectHistoryOperations(driver, nativeSessionState(tid), servedHistoryMode(tid));
+	}
+
+	/// Drivers, the runner and history loads can all signal in one transition.
+	/// Read the matrix once those synchronous changes have finished.
+	private void scheduleHistoryOperations(int tid)
+	{
+		if (shuttingDown || !clientHub.hasSubscribers(tid) || tid in pendingHistoryOperations)
+			return;
+		pendingHistoryOperations[tid] = true;
+		onNextTick(socketManager, () {
+			pendingHistoryOperations.remove(tid);
+			if (shuttingDown || tid !in tasks || !clientHub.hasSubscribers(tid))
+				return;
+			auto resolution = resolveTaskHistory(tid);
+			auto operations = resolution.kind == TaskHistoryResolutionKind.access
+				? historyOperationsForTask(tid, resolution.requireAccess().agent.driver)
+				: HistoryOperations.init;
+			clientHub.sendHistoryOperations(tid, operations);
+		});
 	}
 
 	/// What the driver said of the history it served for the task: 0 when
@@ -6446,6 +6460,7 @@ unittest
 			assert(0, "Driver-served exit must skip file reconciliation");
 		},
 		stopJsonlWatch: (int tid) {},
+		broadcastHistoryOperations: (int tid) {},
 		shuttingDown: () => false,
 		taskTypeCatalog: fixture.app.taskTypeCatalog,
 	));
@@ -7968,6 +7983,53 @@ unittest
 	assert(fixture.base.publicationOrder.length == updates);
 }
 
+// A release followed by a new claim in the same transition must leave all
+// subscribers busy. Replay establishes the starting policy for each socket.
+unittest
+{
+	import cydo.domain.tasks.model : HistoryOperationsMessage;
+	import cydo.workflow.history.operations : HistoryOperationMechanism;
+
+	auto app = new App;
+	auto runner = new GatedSubmissionRunner(null);
+	auto agent = new TestCodexPromptAgent;
+	auto access = HistoryAccess.driverServed(agent,
+		NativeHistoryProfile(agent.driver, "/unused-profile"), "driver-session");
+	runner.resolveTaskHistoryOverride = (int tid) => TaskHistoryResolution.access(access);
+	app.taskSessionRunner = runner;
+	enum tid = 42;
+	app.tasks[tid] = TaskData(tid, "local", "/tmp");
+	auto task = &app.tasks[tid];
+	task.agentName = "codex";
+	auto ws = new SubmissionCaptureWebSocket;
+	scope (exit) ws.disconnect("test complete", DisconnectType.requested);
+	app.clientHub.add(ws);
+	app.clientHub.subscribe(ws, tid, Nullable!HistoryOperations(
+		app.historyOperationsForTask(tid, agent.driver)));
+
+	task.beginConfirmedNativeUndo();
+	app.scheduleHistoryOperations(tid);
+	drainSubmissionNextTicks();
+	assert(ws.sent.length == 1);
+	auto busy = jsonParse!HistoryOperationsMessage(ws.sent[0]);
+	assert(busy.history_operations.fork.agent_turn == HistoryOperationMechanism.none);
+
+	task.completeVerifiedNativeUndoCleanup();
+	app.scheduleHistoryOperations(tid);
+	task.beginConfirmedNativeUndo();
+	app.scheduleHistoryOperations(tid);
+	assert(ws.sent.length == 1, "A compound transition cannot publish synchronously");
+	drainSubmissionNextTicks();
+	assert(ws.sent.length == 1, "A release and reacquisition must not advertise Fork");
+
+	task.completeVerifiedNativeUndoCleanup();
+	app.scheduleHistoryOperations(tid);
+	drainSubmissionNextTicks();
+	assert(ws.sent.length == 2);
+	auto ready = jsonParse!HistoryOperationsMessage(ws.sent[1]);
+	assert(ready.history_operations.fork.agent_turn == HistoryOperationMechanism.codex_native);
+}
+
 // Editing rewrites a history file. A driver-served history has none: both
 // edits are refused, and nothing is loaded for them.
 unittest
@@ -8052,9 +8114,9 @@ version (unittest) private final class CodexOfferFixture
 			getTask: (int taskId) => taskId in app.tasks,
 			resolveTaskHistory: &app.resolveTaskHistory,
 			normalizeKnownSystemMessageMeta: (string event, int taskId) => event,
-			sendHistoryOperations: (WebSocketAdapter ws, int taskId) {},
+			historyOperations: (int taskId, AgentDriver driver) => HistoryOperations.init,
 			sendReplaySupplementalState: (WebSocketAdapter ws, int taskId) {},
-			subscribe: (WebSocketAdapter ws, int taskId) {},
+			subscribe: (WebSocketAdapter ws, int taskId, Nullable!HistoryOperations) {},
 			onHistorySubscribed: (int taskId) {},
 			injectAgentNameIntoSessionInit: (string event, string agentName) => event,
 			broadcastHistoryOperations: (int taskId) {},

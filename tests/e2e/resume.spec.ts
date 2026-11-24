@@ -1037,18 +1037,24 @@ rejectedSteerTest(
 
     await page.goto("/");
     await page.locator('button[title="New task"]').first().click();
+    const earlierReply = "FORK_BEFORE_DELAYED_STEER";
+    await sendMessage(page, `Reply exactly with "${earlierReply}"`);
+    const earlier = page.locator(".message-list:visible .message-wrapper", {
+      has: page.locator(".assistant-message", { hasText: earlierReply }),
+    }).last();
+    const fork = earlier.locator(".fork-btn");
+    await expect(earlier).toBeVisible();
+    await earlier.hover();
+    await expect(fork).toBeVisible();
+
     await sendMessage(page, carrier);
     await expect
       .poll(
-        () =>
-          captured().some(
-            ({ userText }) =>
-              userText?.startsWith("[SYSTEM: Session start:") &&
-              userText.includes(carrier),
-          ),
+        () => captured().some(({ userText }) => userText === carrier),
         { timeout: 15_000 },
       )
       .toBe(true);
+    await expect(fork).toHaveCount(0);
     await sendMessage(page, followUp);
 
     const composer = page.locator(".input-textarea:visible").first();
@@ -1063,6 +1069,11 @@ rejectedSteerTest(
     await expect(composer).toHaveValue(followUp);
     await expect(submitted).toHaveCount(0);
     expect(outbound).toHaveLength(1);
+
+    await expect(
+      transcript.getByText("original steer turn completed", { exact: true }),
+    ).toBeVisible();
+    await expect(fork).toHaveCount(1, { timeout: 5_000 });
 
     await page.reload();
     await expect(

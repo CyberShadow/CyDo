@@ -2212,6 +2212,8 @@ class ClaudeCodeSession : AgentSession
 		if (auto known = version_ in rewindSupportByVersion_)
 		{
 			rewindSupported_ = *known;
+			if (rewindAvailabilityChangedHandler_)
+				rewindAvailabilityChangedHandler_();
 			return;
 		}
 		static struct Request { string subtype; string target_message_uuid; }

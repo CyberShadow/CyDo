@@ -89,6 +89,7 @@ struct TaskMutationServiceHost
 	CodexForkSourceOperation delegate(int tid, const ref HistoryAccess access)
 		openCodexForkSourceOperation;
 	NativeSessionState delegate(int tid) nativeSessionState;
+	void delegate(int tid) historyOperationsChanged;
 	bool delegate(int tid, const ref HistoryAccess access,
 		string requestedAnchor, out HistoryBoundary boundary, out bool opensConversation)
 		resolveFreshPersistedBoundary;
@@ -924,12 +925,14 @@ private:
 			else
 			{
 				td.nativeUndoState = NativeUndoState.backingUp;
+				host_.historyOperationsChanged(tid);
 				void releaseBackupClaim()
 				{
 					if (auto current = host_.getTask(tid))
 					{
 						assert(current.nativeUndoState == NativeUndoState.backingUp);
 						current.nativeUndoState = NativeUndoState.idle;
+						host_.historyOperationsChanged(tid);
 					}
 				}
 				backUpCodexThread(ws, tid, access, session, () {
@@ -963,6 +966,7 @@ private:
 			kind_ = kind;
 			live_ = live;
 			host_.getTask(tid).beginConfirmedNativeUndo();
+			host_.historyOperationsChanged(tid);
 		}
 
 		void attach(CodexForkSourceOperation operation)
@@ -1018,6 +1022,7 @@ private:
 				task.clearNativeUndoRefusalBeforeDispatch();
 
 			task.history.reset(Watermark.driverServed());
+			host_.historyOperationsChanged(tid);
 			host_.unsubscribeTaskHistorySubscribers(tid);
 			host_.emitTaskReload(tid, "");
 			if (kind_ == CodexRevertKind.busy && failure is null)
@@ -1801,6 +1806,7 @@ unittest
 		ready();
 	};
 	host.servedHistoryMode = (int) => mode;
+	host.historyOperationsChanged = (int) {};
 	host.nativeSessionState = (int) => !alive ? NativeSessionState.dead
 		: session.idle ? NativeSessionState.liveReady : NativeSessionState.liveBusy;
 	host.unsubscribeTaskHistorySubscribers = (int) { effects ~= "unsubscribe"; };

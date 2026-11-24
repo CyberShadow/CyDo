@@ -6,6 +6,7 @@ import {
   killSession,
   responseTimeout,
   assistantText,
+  currentTaskTid,
 } from "./fixtures";
 import type { Page } from "@playwright/test";
 
@@ -239,5 +240,85 @@ test(
       timeout: responseTimeout(agentType),
     });
     expect(await activeHistory(page)).toEqual(offlineParentHistory);
+  },
+);
+
+test(
+  "earlier assistant reply follows fork capabilities during a stalled turn",
+  async ({ page, agentType }) => {
+    const earlierReply = "FORK_BEFORE_STALL";
+    await enterSession(page);
+    await sendMessage(page, `Reply exactly with ${earlierReply}`);
+    await expect(assistantText(page, earlierReply)).toBeVisible();
+
+    const earlierAssistant = message(page, ".assistant-message", earlierReply);
+    const forkButton = earlierAssistant.locator(".fork-btn");
+    const processing = page.locator(
+      "[style*='display: contents'] .banner-processing",
+    );
+    await expect(processing).toBeHidden();
+    await earlierAssistant.hover();
+    await expect(forkButton).toBeVisible();
+
+    await sendMessage(page, "stall session");
+    await expect(
+      page.locator(".user-message", { hasText: "stall session" }),
+    ).toBeVisible();
+    await expect(processing).toBeVisible();
+    await earlierAssistant.hover();
+
+    if (agentType === "codex") {
+      await expect(forkButton).toHaveCount(0);
+    } else {
+      const beforeFork = await snapshotTids(page);
+      await expect(forkButton).toBeVisible();
+      await forkButton.click();
+      const childTid = await waitForNewTid(page, beforeFork);
+      await expect(page).toHaveURL(new RegExp(`/task/${childTid}$`));
+      await expect(assistantText(page, earlierReply)).toBeVisible();
+      await expect(
+        page.locator("[style*='display: contents'] .user-message", {
+          hasText: "stall session",
+        }),
+      ).toHaveCount(0);
+    }
+  },
+);
+
+test(
+  "stopped Codex fork withdraws and restores the source fork capability",
+  { tag: "@codex-only" },
+  async ({ page, agentType }) => {
+    const reply = "FORK_FROM_STOPPED_SOURCE";
+    await enterSession(page);
+    await sendMessage(page, `Reply exactly with ${reply}`);
+    await expect(assistantText(page, reply)).toBeVisible();
+    await killSession(page, agentType);
+    await expect(page.locator(".btn-banner-resume:visible")).toBeVisible();
+    const sourceTid = currentTaskTid(page);
+
+    const forkPolicies: boolean[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framereceived", ({ payload }) => {
+        const frame = JSON.parse(payload.toString());
+        if (frame.type === "history_operations" && frame.tid === sourceTid) {
+          forkPolicies.push(!!frame.history_operations.fork.agent_turn);
+        }
+      });
+    });
+    await page.reload();
+    await expect(assistantText(page, reply)).toBeVisible();
+    await expect.poll(() => forkPolicies.at(-1)).toBe(true);
+    const before = await snapshotTids(page);
+
+    forkPolicies.length = 0;
+    await fork(page, ".assistant-message", reply);
+    const childTid = await waitForNewTid(page, before);
+    await expect(page).toHaveURL(new RegExp(`/task/${childTid}$`));
+    await expect(assistantText(page, reply)).toBeVisible();
+    await expect.poll(() => forkPolicies, { timeout: 10_000 }).toEqual([
+      false,
+      true,
+    ]);
   },
 );
