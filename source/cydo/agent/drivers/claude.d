@@ -1932,6 +1932,7 @@ class ClaudeCodeSession : AgentSession
 		preToolUseHandler_ = dg;
 	}
 
+	@property bool toolCallsSurviveStdinClose() { return true; }
 	@property bool alive()
 	{
 		return !process.dead;

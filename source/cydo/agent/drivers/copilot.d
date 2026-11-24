@@ -41,7 +41,7 @@ import cydo.runtime.launch.sandbox : cydoBinaryDir, cydoBinaryPath, effectiveEnv
 	executableMountPaths, resolveExecutablePath;
 import cydo.mcp : McpResult, ToolCallCancellation;
 import cydo.mcp.tools : answerToolDescription, askToolDescription, handoffToolDescription,
-	requestToolDescription, taskToolDescription;
+	requestToolDescription, taskToolDescription, unsandboxedCommandToolDescription;
 import cydo.foundation.text.title : truncateTitle;
 
 // Callback type for dispatching custom tool calls.
@@ -1470,6 +1470,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
 	@property void onToolCallsAbandoned(void delegate() dg) { toolCallsAbandonedHandler_ = dg; }
+	@property bool toolCallsSurviveStdinClose() { return false; }
 	@property bool alive() { return alive_ && (server is null || !server.dead); }
 
 	// ----- SdkSessionHandler interface -----
@@ -2731,10 +2732,19 @@ unittest
 		(CopilotSession session) {
 			session.invalidatePendingSubmittedMessages();
 		}, true);
+	int[] exitStatuses;
+	int abandonments;
 	exerciseLifecycleLoss("exit",
 		(CopilotSession session) {
+			if (exitStatuses.length == 0)
+			{
+				session.onExit = (int status) { exitStatuses ~= status; };
+				session.onToolCallsAbandoned = () { abandonments++; };
+			}
 			session.handleExit(17);
 		}, false);
+	assert(exitStatuses == [17]);
+	assert(abandonments == 0);
 
 	void exerciseCloseOwner(string label,
 		void delegate(CopilotSession) closeOwner, int expectedExitStatus)
@@ -3254,6 +3264,8 @@ private struct SessionResumeParams
 /// tool_server/tool_source fields are set for UI events.
 string buildToolDefinitions(SessionConfig config)
 {
+	import std.algorithm : canFind;
+
 	if (config.mcpSocketPath.length == 0)
 		return "[]";
 
@@ -3292,6 +3304,11 @@ string buildToolDefinitions(SessionConfig config)
 			requestToolDescription ~ config.singletons,
 			JSONFragment(`{"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"}},"required":["to","message"]}`),
 			true);
+	if (config.includeTools.canFind("UnsandboxedCommand"))
+		tools ~= ToolDefinition("cydo-UnsandboxedCommand",
+			unsandboxedCommandToolDescription,
+			JSONFragment(`{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"},"timeout":{"type":"integer"}},"required":["command","cwd","timeout"]}`),
+			true);
 	return toJson(tools);
 }
 
@@ -3303,6 +3320,9 @@ unittest
 	config.mcpSocketPath = "/tmp/cydo-mcp.sock";
 	auto defaultTools = jsonParse!(ToolDefinition[])(buildToolDefinitions(config));
 	assert(!defaultTools.canFind!(tool => tool.name == "cydo-Request"));
+	assert(!defaultTools.canFind!(tool => tool.name == "cydo-UnsandboxedCommand"));
+
+	config.includeTools = ["UnsandboxedCommand"];
 
 	config.singletons = "- integrate: Integrate changes.";
 	auto tools = jsonParse!(ToolDefinition[])(buildToolDefinitions(config));
@@ -3316,6 +3336,7 @@ unittest
 		"cydo-Ask",
 		"cydo-Answer",
 		"cydo-Request",
+		"cydo-UnsandboxedCommand",
 	];
 	string[] expectedSchemas = [
 		`{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"object"}}},"required":["tasks"]}`,
@@ -3326,6 +3347,7 @@ unittest
 		`{"type":"object","properties":{"message":{"type":"string"},"tid":{"type":"integer"}},"required":["message"]}`,
 		`{"type":"object","properties":{"qid":{"type":"integer"},"message":{"type":"string"}},"required":["qid","message"]}`,
 		`{"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"}},"required":["to","message"]}`,
+		`{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"},"timeout":{"type":"integer"}},"required":["command","cwd","timeout"]}`,
 	];
 
 	assert(tools.length == expectedNames.length);
@@ -3339,6 +3361,7 @@ unittest
 	assert(tools[3].description == handoffToolDescription);
 	assert(tools[5].description == askToolDescription);
 	assert(tools[6].description == answerToolDescription);
+	assert(tools[$ - 1].description == unsandboxedCommandToolDescription);
 }
 
 /// Build JSON params string for session.create.

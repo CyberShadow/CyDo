@@ -189,13 +189,36 @@ private Notice buildMcpToolDescriptionLimitNotice(
 	);
 }
 
+/// A mapped session opens its task for tool calls until teardown or global shutdown.
 private struct InFlightToolCalls
 {
 	private ToolCallCancellation[][int] byTask;
+	private bool[int] openTasks;
+	private bool allClosed;
 
 	void register(int tid, ToolCallCancellation cancellation)
 	{
 		byTask[tid] ~= cancellation;
+		if (allClosed || (tid in openTasks) is null)
+			cancellation.cancel();
+	}
+
+	void closeTask(int tid)
+	{
+		openTasks.remove(tid);
+		abandonToolCalls(tid);
+	}
+
+	void openTask(int tid)
+	{
+		openTasks[tid] = true;
+	}
+
+	void closeAll()
+	{
+		allClosed = true;
+		foreach (tid; byTask.keys)
+			abandonToolCalls(tid);
 	}
 
 	void deregister(int tid, ToolCallCancellation cancellation)
@@ -226,6 +249,8 @@ unittest
 	auto second = new ToolCallCancellation;
 	auto settled = new ToolCallCancellation;
 	auto unrelated = new ToolCallCancellation;
+	calls.openTask(1);
+	calls.openTask(2);
 	calls.register(1, first);
 	calls.register(1, second);
 	calls.register(1, settled);
@@ -239,6 +264,38 @@ unittest
 	assert(!unrelated.cancelled);
 }
 
+unittest
+{
+	InFlightToolCalls calls;
+	auto first = new ToolCallCancellation;
+	auto second = new ToolCallCancellation;
+	auto late = new ToolCallCancellation;
+	auto reopened = new ToolCallCancellation;
+	auto neverOpened = new ToolCallCancellation;
+	calls.register(3, neverOpened);
+	assert(neverOpened.cancelled);
+	calls.openTask(1);
+	calls.openTask(2);
+	calls.register(1, first);
+	calls.register(2, second);
+	calls.closeTask(1);
+	assert(first.cancelled && !second.cancelled);
+	calls.register(1, late);
+	assert(late.cancelled);
+	calls.openTask(1);
+	calls.register(1, reopened);
+	assert(!reopened.cancelled);
+	calls.closeAll();
+	assert(second.cancelled && reopened.cancelled);
+	auto afterShutdown = new ToolCallCancellation;
+	calls.register(3, afterShutdown);
+	assert(afterShutdown.cancelled);
+	calls.openTask(1);
+	auto afterReopen = new ToolCallCancellation;
+	calls.register(1, afterReopen);
+	assert(afterReopen.cancelled);
+}
+
 class App
 {
 	private InFlightToolCalls inFlightToolCalls;
@@ -246,6 +303,16 @@ class App
 	private void abandonToolCalls(int tid)
 	{
 		inFlightToolCalls.abandonToolCalls(tid);
+	}
+
+	private void closeToolCalls(int tid)
+	{
+		inFlightToolCalls.closeTask(tid);
+	}
+
+	private void openToolCalls(int tid)
+	{
+		inFlightToolCalls.openTask(tid);
 	}
 
 	import cydo.workflow.history.jsonl_tracker : JsonlTracker;
@@ -740,6 +807,8 @@ class App
 			failPendingAskUserQuestionOnExit: &workflowTools.failPendingAskUserQuestionOnExit,
 			failPendingPermissionPromptOnExit: &workflowTools.failPendingPermissionPromptOnExit,
 			abandonToolCalls: &abandonToolCalls,
+			closeToolCalls: &closeToolCalls,
+			openToolCalls: &openToolCalls,
 			decideToolPermission: &workflowTools.decideToolPermission,
 			decidePreToolUse: &workflowTools.decidePreToolUse,
 			withdrawToolPermissionPrompt: &workflowTools.withdrawToolPermissionPrompt,
@@ -796,7 +865,6 @@ class App
 			stopTask: (int tid) {
 				taskSessionRunner.stopTask(tid);
 			},
-			prepareTaskSessionLaunch: &prepareTaskSessionLaunch,
 			prepareOperationSessionLaunch: (int tid, Agent taskAgent,
 				TaskTypeDef* typeDef) {
 				return taskSessionRunner.prepareOperationSessionLaunch(tid,
@@ -1094,6 +1162,7 @@ class App
 	{
 		infof("shutdown() called, cleaning up resources");
 		shuttingDown = true;
+		inFlightToolCalls.closeAll();
 		taskSessionRunner.shutdownSessions();
 		derivedTextJobs.cancelAll();
 		workflowTools.killActiveTerminals();
@@ -2998,12 +3067,6 @@ class App
 		worktreeAllocator.setupForEdge(tid, td.parentTid, ep.worktree);
 	}
 
-	private TaskSessionLaunch prepareTaskSessionLaunch(int tid, Agent taskAgent,
-		TaskTypeDef* typeDef)
-	{
-		return taskSessionRunner.prepareTaskSessionLaunch(tid, taskAgent, typeDef);
-	}
-
 	private void spawnTaskSession(int tid)
 	{
 		taskSessionRunner.spawnTaskSession(tid);
@@ -4227,6 +4290,27 @@ package(cydo) void applyConfiguredLogLevel(string level)
 	}
 }
 
+unittest
+{
+	auto app = new App;
+	app.taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost.init);
+	app.derivedTextJobs = new DerivedTextJobs(DerivedTextJobsHost(
+		snapshotTaskIds: () => app.tasks.keys,
+	));
+	app.workflowTools = new WorkflowToolsBackend(WorkflowToolsHost.init);
+	auto pending = new ToolCallCancellation;
+	app.inFlightToolCalls.openTask(1);
+	app.inFlightToolCalls.register(1, pending);
+	assert(!pending.cancelled);
+	app.shutdown();
+	assert(pending.cancelled);
+
+	auto late = new ToolCallCancellation;
+	app.inFlightToolCalls.openTask(2);
+	app.inFlightToolCalls.register(2, late);
+	assert(late.cancelled);
+}
+
 version (unittest)
 {
 	import std.json : parseJSON;
@@ -4375,6 +4459,7 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 	@property void onStderr(void delegate(string line) dg) {}
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
 	@property void onToolCallsAbandoned(void delegate() dg) {}
+	@property bool toolCallsSurviveStdinClose() { return false; }
 	@property bool alive() { return alive_; }
 }
 
@@ -6129,6 +6214,8 @@ unittest
 		failPendingAskUserQuestionOnExit: (int tid) {},
 		failPendingPermissionPromptOnExit: (int tid) {},
 		abandonToolCalls: (int tid) {},
+		closeToolCalls: (int tid) {},
+		openToolCalls: (int tid) {},
 		decideToolPermission: delegate Promise!string(int tid, PermissionPrompt prompt,
 			PermissionEscalation escalation) { assert(0, "unexpected call"); },
 		decidePreToolUse: delegate ToolCallRuling(int tid, string toolName,
@@ -6830,6 +6917,122 @@ unittest
 	write(projectTemplate, "updated {{total_bytes}}");
 	assert(app.readPromptFile("gates/disk_cleanup.md", project, vars) == "updated 12");
 	assertThrown!Exception(app.readPromptFile("gates/missing-required-disk.md", project, vars));
+}
+
+version (unittest) private final class FailingLaunchAgent : CodexAgent
+{
+	enum failure = "Injected session creation failure";
+
+	override string executableName(string[string] env)
+	{
+		return "/bin/sh";
+	}
+
+	override AgentSession createSession(int tid, string resumeSessionId,
+		ProcessLaunch launch, SessionConfig config = SessionConfig.init)
+	{
+		assert(config.includeTools.canFind("UnsandboxedCommand"));
+		throw new Exception(failure);
+	}
+}
+
+unittest // Preparing an ask policy cannot authorize tools if session creation fails.
+{
+	import cydo.runtime.config : UnsandboxedCommandExecution;
+	import std.exception : collectException;
+	import std.file : tempDir;
+	import std.uuid : randomUUID;
+
+	enum tid = 41;
+	auto tmp = buildPath(tempDir(), "cydo-failed-launch-" ~ randomUUID().toString());
+	mkdirRecurse(tmp);
+	scope (exit) rmdirRecurse(tmp);
+	writePromptParityFixture(tmp);
+	auto projectPath = buildPath(tmp, "project");
+	mkdirRecurse(projectPath);
+
+	auto previousShell = environment.get("SHELL");
+	environment["SHELL"] = "/bin/sh";
+	scope (exit)
+	{
+		if (previousShell is null)
+			environment.remove("SHELL");
+		else
+			environment["SHELL"] = previousShell;
+	}
+
+	auto app = new App();
+	auto sandbox = SandboxConfig(
+		isolate_filesystem: SetInfo!bool(false),
+		isolate_processes: SetInfo!bool(false),
+		isolate_environment: SetInfo!bool(false),
+		unsandboxed_command_execution: SetInfo!string("ask"),
+	);
+	app.config.workspaces = [WorkspaceConfig(name: "local", root: tmp, sandbox: sandbox)];
+	AgentConfig codexConfig;
+	codexConfig.driver = SetInfo!AgentDriver(AgentDriver.codex, true);
+	codexConfig.sandbox.env["CODEX_HOME"] = buildPath(tmp, "codex-profile");
+	app.config.agents["codex"] = codexConfig;
+	app.taskTypeCatalog = new TaskTypeCatalog(buildPath(tmp, "defs"),
+		buildPath(tmp, "defs", "task-types.yaml"), &isKnownPromptParityAgent);
+
+	app.tasks[tid] = TaskData(tid, "local", projectPath);
+	app.tasks[tid].taskType = "parent";
+	app.tasks[tid].agentName = "codex";
+	auto agent = new FailingLaunchAgent;
+	TaskData* getTask(int id) { return id in app.tasks ? &app.tasks[id] : null; }
+
+	PermissionSettings permissionSettings(string agentName, string workspaceName)
+	{
+		return PermissionSettings.init;
+	}
+
+	app.taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost(
+		getTask: &getTask,
+		taskDir: (const TaskData* td) => buildPath(tmp, "task"),
+		outputPath: (const TaskData* td) => buildPath(tmp, "task", "output"),
+		effectiveCwd: (const TaskData* td) => projectPath,
+		worktreePath: (const TaskData* td) => "",
+		currentConfig: () => &app.config,
+		permissionSettings: &permissionSettings,
+		reportMcpToolDescriptionLimit: (string project, string taskType,
+			ToolDescriptionViolation[] violations) {},
+		resolveSharedTmpPath: (int id) => buildPath(tmp, "shared-tmp"),
+		mcpSocketPath: () => "",
+		agentForTask: (int id) => agent,
+		openToolCalls: &app.openToolCalls,
+		taskTypeCatalog: app.taskTypeCatalog,
+	));
+	app.workflowTools = new WorkflowToolsBackend(WorkflowToolsHost(
+		getTask: &getTask,
+		permissionSettings: &permissionSettings,
+		sendPermissionPrompt: (int id, const PendingPermission pending) {
+			assert(0, "A failed launch must not send a permission prompt");
+		},
+	));
+
+	auto failure = collectException(app.taskSessionRunner.spawnTaskSession(tid));
+	assert(failure && failure.msg == FailingLaunchAgent.failure,
+		failure is null ? "Session creation did not fail" : failure.msg);
+	assert(app.sessionForTask(tid) is null);
+	assert(app.tasks[tid].unsandboxedCommandExecution == UnsandboxedCommandExecution.ask);
+
+	static struct CommandArgs
+	{
+		string command;
+		string cwd;
+		int timeout;
+	}
+	auto args = JSONFragment(toJson(CommandArgs("printf ran > marker", projectPath, 5)));
+	bool completed;
+	app.dispatchTool("UnsandboxedCommand", "41", args, new ToolCallCancellation)
+		.then((McpResult result) {
+			assert(result.isError && result.text == "Cancelled by the agent", result.text);
+			completed = true;
+		});
+	socketManager.loop();
+	assert(completed, "Tool call must settle without waiting for permission");
+	assert(!exists(buildPath(projectPath, "marker")));
 }
 
 unittest

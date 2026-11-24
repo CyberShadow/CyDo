@@ -2787,6 +2787,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
 	@property void onToolCallsAbandoned(void delegate() dg) { toolCallsAbandonedHandler_ = dg; }
+	@property bool toolCallsSurviveStdinClose() { return false; }
 	@property bool alive() { return alive_ && !server.dead; }
 
 	// ----- Notification handling (routed by CodexServerRouter) -----
@@ -4371,10 +4372,19 @@ unittest
 		(CodexSession session) {
 			session.invalidatePendingSubmittedMessages();
 		}, true);
+	int[] exitStatuses;
+	int abandonments;
 	exerciseLifecycleLoss("close-stdin",
 		(CodexSession session) {
+			if (exitStatuses.length == 0)
+			{
+				session.onExit = (int status) { exitStatuses ~= status; };
+				session.onToolCallsAbandoned = () { abandonments++; };
+			}
 			session.closeStdin();
 		}, false);
+	assert(exitStatuses == [0]);
+	assert(abandonments == 0);
 	exerciseLifecycleLoss("server-exit",
 		(CodexSession session) {
 			session.onServerExit(17);

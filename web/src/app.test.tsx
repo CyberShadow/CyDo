@@ -309,6 +309,38 @@ describe("permission prompt responses", () => {
     return container;
   }
 
+  it.each([false, true])(
+    "keeps a submitted permission prompt only when its tool block exists (%s)",
+    (hasBlock) => {
+      const task = {
+        ...makeTaskState(tid, true, false, "Permission task", true),
+        status: "active" as const,
+        submittedPermission: {
+          toolUseId,
+          toolName: hasBlock ? "Bash" : "UnsandboxedCommand",
+          input: { command: "echo example" },
+        },
+      };
+      if (hasBlock) {
+        task.blocks.set(toolUseId, {
+          itemId: toolUseId,
+          type: "tool_use",
+          name: "Bash",
+          text: "",
+          completed: false,
+          creationOrder: 0,
+          permission: "answered",
+        });
+      }
+      state.tasks.set(task.uuid, task);
+      state.activeTaskId = String(tid);
+
+      const html = renderToString(h(App, {}));
+      expect(html.includes("permission-prompt-sending")).toBe(hasBlock);
+      expect(html.includes("permission-prompt-form")).toBe(hasBlock);
+    },
+  );
+
   it("allows the tool call identified by the shown prompt", async () => {
     const container = await renderPrompt();
     await act(() => {

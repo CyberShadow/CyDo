@@ -137,6 +137,7 @@ const isShellTool = (
     "codex/local_shell_call",
     "codex/exec_command",
     "cydo:Bash",
+    "cydo:UnsandboxedCommand",
   );
 
 /** Check if tool is a file write operation across agents. */
@@ -3031,6 +3032,7 @@ const defaultExpandedTools = new Set([
   "cydo:Request",
   "cydo:Handoff",
   "cydo:AskUserQuestion",
+  "cydo:UnsandboxedCommand",
   "cydo:Bash", // CyDo MCP Bash tool (used by Copilot/Codex)
   "claude/SendMessage",
   "claude/TaskCreate",
@@ -3041,6 +3043,7 @@ const defaultExpandedTools = new Set([
 const defaultExpandedResults = new Set([
   "claude/Bash",
   "copilot/bash",
+  "cydo:UnsandboxedCommand",
   "cydo:Bash", // Copilot calls CyDo's cydo-Bash MCP tool, which arrives as name="Bash", toolServer="cydo"
   "codex/commandExecution",
   "codex/local_shell_call",

@@ -9,9 +9,11 @@ import std.string : lineSplitter, strip;
 
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, TaskTypeConfig, TaskTypeDef,
 	UserEntryPointDef, SingletonDef, WorktreeMode, byName, computeReachesWorktree,
-	formatCompactSingletonToolSummary, singletonsOfferedTo,
+	formatCompactSingletonToolSummary, singletonsOfferedTo, isInteractive,
 	computeTreeReadOnly, promptTemplateSource, renderPrompt, validateTaskTypes;
-import cydo.mcp.tool_descriptions : buildRenderedCydoToolsList;
+import cydo.domain.policy.unsandboxed_command : evaluateUnsandboxedCommandExecution;
+import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions, buildRenderedCydoToolsList;
+import cydo.runtime.config : UnsandboxedCommandExecution;
 
 private string renderDumpContextToolsSection(
 	TaskTypeConfig config,
@@ -20,8 +22,14 @@ private string renderDumpContextToolsSection(
 {
 	string rendered = "─── MCP Tools ───\n\n";
 	auto singletons = singletonsOfferedTo(config.types, config.entryPoints, config.singletons, typeName);
+	auto def = config.types.byName(typeName);
+	auto verdict = evaluateUnsandboxedCommandExecution(def.unsandboxed_command_execution,
+		"task type '" ~ typeName ~ "'", typeName,
+		isInteractive(config.types, config.entryPoints, typeName));
+	auto options = RenderedCydoToolsOptions(
+		includeUnsandboxedCommand: verdict != UnsandboxedCommandExecution.no);
 	auto toolsList = buildRenderedCydoToolsList(config.types, config.entryPoints, typeName,
-		formatCompactSingletonToolSummary(singletons));
+		formatCompactSingletonToolSummary(singletons), options);
 	foreach (ref tool; toolsList.tools)
 	{
 		rendered ~= format("### %s\n\n", tool.name);

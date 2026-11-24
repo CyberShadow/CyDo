@@ -21,6 +21,7 @@ struct RenderedCydoToolsOptions
 	bool includeBash = true;
 	bool includeAsk = true;
 	bool includeAnswer = true;
+	bool includeUnsandboxedCommand;
 }
 
 struct ToolDescriptionViolation
@@ -46,6 +47,8 @@ ToolsList buildRenderedCydoToolsList(
 	string[] includeTools;
 	if (options.includeBash)
 		includeTools ~= "Bash";
+	if (options.includeUnsandboxedCommand)
+		includeTools ~= "UnsandboxedCommand";
 	if (creatableTaskTypes.length > 0)
 		includeTools ~= "Task";
 	if (switchModes.length > 0)
@@ -109,7 +112,7 @@ ToolDescriptionViolation[] checkConfiguredToolDescriptions(
 			config.singletons, typeDef.name);
 		violations ~= checkRenderedCydoToolDescriptionViolations(config.types,
 			config.entryPoints, typeDef.name, formatCompactSingletonToolSummary(singletons),
-			maxChars);
+			maxChars, RenderedCydoToolsOptions(includeUnsandboxedCommand: true));
 	}
 	return violations;
 }

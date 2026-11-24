@@ -2,6 +2,7 @@ module cydo.workflow.sessions.task_runner;
 
 import core.time : Duration, seconds;
 
+import std.conv : to;
 import std.file : exists, isFile, mkdirRecurse;
 import std.exception : enforce;
 import std.path : buildPath, dirName, isAbsolute;
@@ -13,13 +14,14 @@ import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJso
 import ae.utils.promise : Promise, reject, resolve;
 
 import cydo.agent.contract : Agent, DriverHistory, DriverHistoryLaunch, SessionConfig;
+import cydo.agent.resolver : resolveUnsandboxedCommandExecution;
 import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork,
 	MessageSource;
 import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
 	ToolDescriptionViolation, checkRenderedCydoToolDescriptionViolations;
 import cydo.protocol : ContentBlock, ItemDeltaEvent, ItemStartedEvent, ProcessExitEvent,
 	ProcessStderrEvent, TranslatedEvent;
-import cydo.runtime.config : AgentDriver, CydoConfig, PathMode, SandboxConfig;
+import cydo.runtime.config : AgentDriver, CydoConfig, PathMode, SandboxConfig, UnsandboxedCommandExecution;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
 import cydo.runtime.launch.sandbox_materialization : taskTmpHostPath;
@@ -37,6 +39,7 @@ import cydo.domain.tasks.model : NativeUndoState, PendingContinuation, ProcessSt
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
+import cydo.domain.policy.unsandboxed_command : evaluateUnsandboxedCommandExecution;
 import cydo.workflow.sessions.yield_gates : YieldGateFinding, checkYieldGates,
 	checkDiskCleanupGate, shouldEvaluateDiskCleanup, shouldRetryYieldGate;
 import cydo.workflow.sessions.disk_usage : DiskEvaluation;
@@ -211,6 +214,8 @@ struct TaskSessionRunnerHost
 	void delegate(int tid) failPendingAskUserQuestionOnExit;
 	void delegate(int tid) failPendingPermissionPromptOnExit;
 	void delegate(int tid) abandonToolCalls;
+	void delegate(int tid) closeToolCalls;
+	void delegate(int tid) openToolCalls;
 	/// Decide a Claude `can_use_tool` request (policy or user prompt);
 	/// resolves to the decision JSON sent back to the CLI.
 	Promise!string delegate(int tid, PermissionPrompt prompt,
@@ -694,7 +699,7 @@ public:
 	void closeTaskStdin(int tid)
 	{
 		if (auto session = sessionForTask(tid))
-			session.closeStdin();
+			closeSessionStdin(tid, session);
 	}
 
 	void stopTask(int tid)
@@ -707,7 +712,27 @@ public:
 		if (auto operation = tid in forkSourceOperations_)
 			(*operation).closeStdin();
 		if (auto session = sessionForTask(tid))
+		{
 			session.stop();
+			endSessionToolCalls(tid, session);
+		}
+	}
+
+	/// Settle prompts and close the call gate while this session still owns the task.
+	private void endSessionToolCalls(int tid, AgentSession session)
+	{
+		auto mapped = tid in sessions_;
+		if (mapped is null || *mapped !is session)
+			return;
+		host_.failPendingPermissionPromptOnExit(tid);
+		host_.closeToolCalls(tid);
+	}
+
+	private void closeSessionStdin(int tid, AgentSession session)
+	{
+		session.closeStdin();
+		if (!session.toolCallsSurviveStdinClose)
+			endSessionToolCalls(tid, session);
 	}
 
 	TaskSessionLaunch prepareTaskSessionLaunch(int tid, Agent taskAgent,
@@ -738,6 +763,20 @@ public:
 		SessionConfig sessionConfig;
 		auto taskTypes = host_.taskTypeCatalog.getTaskTypesForProject(td.projectPath);
 		auto entryPoints = host_.taskTypeCatalog.getEntryPointsForProject(td.projectPath);
+		bool interactive = taskTypes.isInteractive(entryPoints, td.taskType);
+		auto verdict = UnsandboxedCommandExecution.no;
+		if (ownership == LaunchOwnership.task)
+		{
+			const def = typeDef is null ? TaskTypeDef.init : *typeDef;
+			verdict = evaluateUnsandboxedCommandExecution(def.unsandboxed_command_execution,
+				"task type '" ~ td.taskType ~ "'", td.taskType, interactive);
+			string source;
+			auto setting = resolveUnsandboxedCommandExecution(*host_.currentConfig(),
+				td.agentName, td.workspace, source);
+			if (setting.set)
+				verdict = evaluateUnsandboxedCommandExecution(setting.value, source,
+					td.taskType, interactive, to!string(verdict));
+		}
 		auto singletons = singletonsOfferedTo(taskTypes, entryPoints,
 			host_.taskTypeCatalog.singletonsForProject(td.projectPath), td.taskType);
 		sessionConfig.singletons = formatCompactSingletonToolSummary(singletons);
@@ -887,20 +926,24 @@ public:
 			nativeHistoryContext.rule, nativeHistoryContext.profile, chdir,
 			taskAgent.executableName(sandbox.env));
 		if (ownership == LaunchOwnership.task)
+		{
 			td.launch = processLaunch;
+			td.unsandboxedCommandExecution = verdict;
+		}
 
 		sessionConfig.workspace = context.workspaceName;
 		sessionConfig.workDir = chdir !is null ? chdir : "";
 		sessionConfig.taskDir = tdDir;
 		if (taskAgent.needsBash())
 			sessionConfig.includeTools ~= "Bash";
+		if (verdict != UnsandboxedCommandExecution.no)
+			sessionConfig.includeTools ~= "UnsandboxedCommand";
 		if (sessionConfig.creatableTaskTypes.length > 0)
 			sessionConfig.includeTools ~= "Task";
 		if (sessionConfig.switchModes.length > 0)
 			sessionConfig.includeTools ~= "SwitchMode";
 		if (sessionConfig.handoffs.length > 0)
 			sessionConfig.includeTools ~= "Handoff";
-		bool interactive = taskTypes.isInteractive(entryPoints, td.taskType);
 		if (interactive)
 			sessionConfig.includeTools ~= "AskUserQuestion";
 		sessionConfig.includeTools ~= "Ask";
@@ -915,6 +958,7 @@ public:
 
 		RenderedCydoToolsOptions renderedToolOptions;
 		renderedToolOptions.includeBash = taskAgent.needsBash();
+		renderedToolOptions.includeUnsandboxedCommand = verdict != UnsandboxedCommandExecution.no;
 		host_.reportMcpToolDescriptionLimit(td.projectPath, td.taskType,
 			checkRenderedCydoToolDescriptionViolations(taskTypes, entryPoints,
 				td.taskType, sessionConfig.singletons, options: renderedToolOptions));
@@ -950,6 +994,7 @@ public:
 				liveHistoryBindings_.remove(tid);
 		}
 		sessions_[tid] = session;
+		host_.openToolCalls(tid);
 		host_.clearLastActive(tid);
 		session.onNativeSessionStarted = (string sessionId) {
 			enforce(sessionId.length > 0,
@@ -996,6 +1041,7 @@ public:
 			{
 				host_.stopJsonlWatch(tid);
 				liveHistoryBindings_.remove(tid);
+				endSessionToolCalls(tid, session);
 				sessions_.remove(tid);
 				return;
 			}
@@ -1011,6 +1057,7 @@ public:
 			{
 				host_.stopJsonlWatch(tid);
 				liveHistoryBindings_.remove(tid);
+				endSessionToolCalls(tid, session);
 				sessions_.remove(tid);
 				return;
 			}
@@ -1029,6 +1076,7 @@ public:
 			{
 				host_.stopJsonlWatch(tid);
 				liveHistoryBindings_.remove(tid);
+				endSessionToolCalls(tid, session);
 				sessions_.remove(tid);
 				return;
 			}
@@ -1083,14 +1131,14 @@ public:
 			else if (consumerWaiting)
 			{
 				current.processQueue.setGoal(ProcessState.Dead).ignoreResult();
-				session.closeStdin();
+				closeSessionStdin(tid, session);
 				session.killAfterTimeout(5.seconds);
 			}
 			else if (host_.shuttingDown()) return;
 			else if (completesOnIdle)
 			{
 				completeIdleSubtask(current);
-				session.closeStdin();
+				closeSessionStdin(tid, session);
 				session.killAfterTimeout(5.seconds);
 			}
 			else
@@ -1159,6 +1207,7 @@ public:
 				{
 					cleanupTaskLaunch(current);
 					current.launch = ProcessLaunch.init;
+					current.unsandboxedCommandExecution = UnsandboxedCommandExecution.no;
 				}
 				if (resumePending)
 				{
@@ -1175,6 +1224,7 @@ public:
 				&& current.killPromise is null
 				&& current.processQueue.goalState == ProcessState.Alive
 				&& !current.wasKilledByUser;
+			endSessionToolCalls(tid, session);
 			host_.touchAndPersistLastActive(tid);
 
 			tracef("onExit: tid=%d exitCode=%d status=%s",
@@ -1223,9 +1273,9 @@ public:
 				return;
 			cleanupTaskLaunch(current);
 			current.launch = ProcessLaunch.init;
+			current.unsandboxedCommandExecution = UnsandboxedCommandExecution.no;
 
 			host_.failPendingAskUserQuestionOnExit(tid);
-			host_.failPendingPermissionPromptOnExit(tid);
 			host_.cancelExitBackgroundWork(tid);
 
 			bool missingExecutableLaunchFailure = !failedStartup && exitCode != 0
@@ -2042,6 +2092,8 @@ version (unittest) private TaskSessionRunner gitMetadataTestRunner(
 		resolveSharedTmpPath: (int tid) => buildPath(fixture.root, "shared-tmp"),
 		mcpSocketPath: () => mcpSocketPath,
 		abandonToolCalls: (int tid) {},
+		closeToolCalls: (int tid) {},
+		openToolCalls: (int tid) {},
 		taskTypeCatalog: catalog,
 	));
 }
@@ -2273,12 +2325,16 @@ unittest
 }
 
 version (unittest) private void assertRunnerMcpConfigCleanup(
-	string fixtureName, string agentName, string executableEnvName, Agent agent)
+	string fixtureName, string agentName, string executableEnvName, Agent agent,
+	bool stop = false,
+	void delegate(TaskSessionRunner, TaskData[int]*, string[]*) checkSession = null,
+	void delegate(int tid) failPermissionPrompt = null)
 {
 	import ae.net.asockets : socketManager;
 	import ae.utils.statequeue : StateQueue;
 	import configy.attributes : SetInfo;
-	import std.algorithm : canFind;
+	import std.algorithm : canFind, count;
+	import std.conv : to;
 	import std.file : exists, write;
 	import cydo.runtime.config : AgentConfig, WorkspaceConfig;
 
@@ -2314,6 +2370,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 			tasks[1] = TaskData(1, "local", fixture.linkedCheckout);
 			tasks[1].taskType = "runner";
 			tasks[1].agentName = agentName;
+			string[] lifecycle;
 			auto taskDir = buildPath(fixture.root, "tasks", "task");
 			auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
 				getTask: (int tid) {
@@ -2342,14 +2399,21 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				hasLiveBatchOwner: (int tid) => false,
 				hasBatchChild: (int tid) => false,
 				hasPendingChildQuestion: (int tid) => false,
-				touchAndPersistLastActive: (int tid) {},
+				touchAndPersistLastActive: (int tid) { assert(tid == 1); lifecycle ~= "exit"; },
 					ensureHistoryLoadedForExit: (int tid) => Nullable!TaskHistoryResolution.init,
 					finalReconcileJsonlIfPresent: (int tid, Nullable!TaskHistoryResolution) {},
 					startJsonlWatch: (int tid) {},
 					stopJsonlWatch: (int tid) {},
 				failPendingAskUserQuestionOnExit: (int tid) {},
-				failPendingPermissionPromptOnExit: (int tid) {},
-				abandonToolCalls: (int tid) {},
+				failPendingPermissionPromptOnExit: (int tid) {
+					assert(tid == 1);
+					lifecycle ~= "fail";
+					if (failPermissionPrompt !is null)
+						failPermissionPrompt(tid);
+				},
+				abandonToolCalls: (int tid) { assert(tid == 1); lifecycle ~= "abandon"; },
+				closeToolCalls: (int tid) { assert(tid == 1); lifecycle ~= "close"; },
+				openToolCalls: (int tid) { assert(tid == 1); lifecycle ~= "open"; },
 				decideToolPermission: delegate Promise!string(int tid, PermissionPrompt prompt,
 					PermissionEscalation escalation) { assert(0, "unexpected call"); },
 				decidePreToolUse: delegate ToolCallRuling(int tid, string toolName,
@@ -2357,6 +2421,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				withdrawToolPermissionPrompt: (int tid, string toolUseId) {},
 				cancelExitBackgroundWork: (int tid) {},
 				resetHistoryWatermarkAfterExit: (int tid) => false,
+				recordChildTerminal: (int tid) => false,
 				persistResultText: (int tid, string resultText) {},
 				transitionTask: (int tid, TaskStatus expectedFrom, TaskStatus to,
 					TaskNotificationChange notification) {
@@ -2375,18 +2440,243 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				(ProcessState state) => resolve(state), ProcessState.Dead);
 
 			runner.spawnTaskSession(1);
+			assert(lifecycle == ["open"]);
+			if (checkSession !is null)
+			{
+				checkSession(runner, &tasks, &lifecycle);
+				return;
+			}
 			auto configPath = buildPath(profileRoot, "mcp-configs", "cydo-1.json");
 			assert(tasks[1].launch.nativeHistoryProfile.root == profileRoot);
 			assert(agent.lastMcpConfigPath == configPath);
 			assert(exists(configPath));
 			assert(tasks[1].launch.sandbox.tempFiles.canFind(configPath));
 
-			runner.closeTaskStdin(1);
+			if (stop)
+				runner.stopTask(1);
+			else
+				runner.closeTaskStdin(1);
+			auto beforeExit = lifecycle;
+			auto stillMapped = runner.sessionForTask(1) !is null;
 			socketManager.loop();
 
+			assert(stillMapped);
 			assert(runner.sessionForTask(1) is null);
 			assert(!exists(configPath));
 			assert(tasks[1].launch.sandbox.tempFiles.length == 0);
+
+			assert(lifecycle.count("open") == 1, lifecycle.to!string);
+			assert(lifecycle.length >= 3 && lifecycle[$-3 .. $] == ["fail", "close", "exit"],
+				lifecycle.to!string);
+			if (stop || agent.driver == AgentDriver.copilot)
+				assert(beforeExit == ["open", "fail", "close"], beforeExit.to!string);
+			else
+				assert(beforeExit == ["open"], beforeExit.to!string);
+		});
+}
+
+unittest
+{
+	assertRunnerMcpConfigCleanup("cydo-task-runner-copilot-mcp-cleanup", "copilot",
+		"CYDO_COPILOT_BIN", new CopilotAgent());
+}
+
+unittest
+{
+	assertRunnerMcpConfigCleanup("cydo-task-runner-claude-stop", "claude",
+		"CYDO_CLAUDE_BIN", new ClaudeCodeAgent(), true);
+}
+
+unittest
+{
+	assertRunnerMcpConfigCleanup("cydo-task-runner-copilot-stop", "copilot",
+		"CYDO_COPILOT_BIN", new CopilotAgent(), true);
+}
+
+unittest
+{
+	auto agent = new SynchronousCloseTestAgent;
+	assertRunnerMcpConfigCleanup("cydo-task-runner-sync-close", "claude",
+		"CYDO_CLAUDE_BIN", agent, false, (runner, tasks, lifecycle) {
+			runner.closeTaskStdin(1);
+			assert(*lifecycle == ["open", "fail", "close", "exit"]);
+			assert(runner.sessionForTask(1) is null);
+		});
+}
+
+unittest
+{
+	auto agent = new SynchronousCloseTestAgent;
+	assertRunnerMcpConfigCleanup("cydo-task-runner-missing-task", "claude",
+		"CYDO_CLAUDE_BIN", agent, false, (runner, tasks, lifecycle) {
+			assert((*tasks).remove(1));
+			agent.session.result();
+			assert(*lifecycle == ["open", "fail", "close"]);
+			assert(runner.sessionForTask(1) is null);
+
+			agent.session.closeStdin();
+			assert(*lifecycle == ["open", "fail", "close"]);
+		});
+}
+
+version (unittest) private enum PermissionTeardown
+{
+	stop, closeStdin, observedExit, missingTask,
+}
+
+version (unittest) private void assertPermissionPromptTeardown(PermissionTeardown path)
+{
+	import ae.net.asockets : socketManager;
+	import std.process : environment;
+	import cydo.domain.tasks.model : PendingPermission, PermissionPromptMessage, WsMessage;
+	import cydo.mcp : McpResult, ToolCallCancellation;
+	import cydo.workflow.tools.backend : WorkflowToolsBackend, WorkflowToolsHost;
+
+	auto agent = new SynchronousCloseTestAgent;
+	WorkflowToolsBackend backend;
+	assertRunnerMcpConfigCleanup("cydo-task-runner-permission-" ~ path.to!string, "claude",
+		"CYDO_CLAUDE_BIN", agent, false, (runner, tasks, lifecycle) {
+			auto previousShell = environment.get("SHELL");
+			environment["SHELL"] = "/bin/sh";
+			scope (exit)
+			{
+				if (previousShell is null)
+					environment.remove("SHELL");
+				else
+					environment["SHELL"] = previousShell;
+			}
+
+			string[] shown;
+			int clears;
+			bool[] attentionWrites;
+			backend = new WorkflowToolsBackend(WorkflowToolsHost(
+				getTask: (int tid) => tid in *tasks,
+				permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
+				sendPermissionPrompt: (int tid, const PendingPermission pending) {
+					assert(tid == 1);
+					assert(pending.prompt.toolName == "UnsandboxedCommand");
+					shown ~= pending.prompt.toolUseId;
+				},
+				clearPermissionPrompt: (int tid) { assert(tid == 1); clears++; },
+				persistNeedsAttention: (int tid, bool needsAttention) {
+					assert(tid == 1);
+					attentionWrites ~= needsAttention;
+				},
+				touchTask: (int tid) {},
+				persistLastActive: (int tid, long lastActive) {},
+				broadcastTaskUpdate: (int tid) {},
+			));
+
+			auto task = 1 in *tasks;
+			task.unsandboxedCommandExecution = UnsandboxedCommandExecution.ask;
+			auto cwd = task.projectPath;
+			string[] replay()
+			{
+				string[] ids;
+				backend.replayPendingClientPrompts(1, (string payload) {
+					ids ~= jsonParse!PermissionPromptMessage(payload).tool_use_id;
+				});
+				return ids;
+			}
+
+			McpResult[] visibleResults, queuedResults;
+			backend.handleUnsandboxedCommand("1", "printf ran > visible-marker", cwd,
+				5, new ToolCallCancellation).then((McpResult result) { visibleResults ~= result; });
+			backend.handleUnsandboxedCommand("1", "printf ran > queued-marker", cwd,
+				5, new ToolCallCancellation).then((McpResult result) { queuedResults ~= result; });
+			assert(shown.length == 1 && replay() == shown);
+			assert(task.needsAttention && task.hasPendingQuestion);
+			assert(attentionWrites == [true]);
+
+			final switch (path)
+			{
+				case PermissionTeardown.stop:
+					runner.stopTask(1);
+					break;
+				case PermissionTeardown.closeStdin:
+					agent.session.exitOnClose = false;
+					runner.closeTaskStdin(1);
+					break;
+				case PermissionTeardown.observedExit:
+					agent.session.exit(0);
+					break;
+				case PermissionTeardown.missingTask:
+					assert((*tasks).remove(1));
+					agent.session.result();
+					break;
+			}
+
+			assert(clears == 1);
+			assert(shown.length == 1);
+			socketManager.loop();
+			assert(visibleResults.length == 1 && visibleResults[0].isError);
+			assert(visibleResults[0].text == "Task exited");
+			assert(queuedResults.length == 1 && queuedResults[0].isError);
+			assert(queuedResults[0].text == "Task exited");
+
+			auto remaining = 1 in *tasks;
+			if (path == PermissionTeardown.missingTask)
+			{
+				assert(remaining is null);
+				assert(attentionWrites == [true]);
+			}
+			else
+			{
+				assert(remaining !is null);
+				assert(!remaining.needsAttention && !remaining.hasPendingQuestion);
+				assert(remaining.notificationBody == "");
+				assert(attentionWrites == [true, false]);
+				assert(replay().length == 0);
+			}
+
+			auto writesAfterTeardown = attentionWrites.length;
+			WsMessage response;
+			response.type = "permission_prompt_response";
+			response.tid = 1;
+			response.tool_use_id = shown[0];
+			response.content = JSONFragment(toJson(`{"behavior":"allow"}`));
+			backend.handlePermissionPromptResponse(response);
+			socketManager.loop();
+
+			assert(visibleResults.length == 1 && queuedResults.length == 1);
+			assert(clears == 1 && shown.length == 1);
+			assert(attentionWrites.length == writesAfterTeardown);
+			// Replay requires a live task. Restore the ID to check for stale prompts.
+			if (remaining is null)
+				(*tasks)[1] = TaskData(1, "local", cwd);
+			assert(replay().length == 0);
+			assert(!exists(buildPath(cwd, "visible-marker")));
+			assert(!exists(buildPath(cwd, "queued-marker")));
+		}, (int tid) { backend.failPendingPermissionPromptOnExit(tid); });
+}
+
+unittest
+{
+	assertPermissionPromptTeardown(PermissionTeardown.stop);
+}
+unittest
+{
+	assertPermissionPromptTeardown(PermissionTeardown.closeStdin);
+}
+unittest
+{
+	assertPermissionPromptTeardown(PermissionTeardown.observedExit);
+}
+unittest
+{
+	assertPermissionPromptTeardown(PermissionTeardown.missingTask);
+}
+
+unittest
+{
+	auto agent = new SynchronousCloseTestAgent;
+	assertRunnerMcpConfigCleanup("cydo-task-runner-turn-abandonment", "claude",
+		"CYDO_CLAUDE_BIN", agent, false, (runner, tasks, lifecycle) {
+			agent.session.abandonCallback();
+			assert(*lifecycle == ["open", "abandon"]);
+			assert(runner.sessionForTask(1) is agent.session);
+			assert(agent.session.alive);
+			runner.closeTaskStdin(1);
 		});
 }
 
@@ -2394,12 +2684,6 @@ unittest
 {
 	assertRunnerMcpConfigCleanup("cydo-task-runner-claude-mcp-cleanup", "claude",
 		"CYDO_CLAUDE_BIN", new ClaudeCodeAgent());
-}
-
-unittest
-{
-	assertRunnerMcpConfigCleanup("cydo-task-runner-copilot-mcp-cleanup", "copilot",
-		"CYDO_COPILOT_BIN", new CopilotAgent());
 }
 
 unittest
@@ -2880,7 +3164,7 @@ unittest
 		});
 }
 
-version (unittest) private final class YieldGateTestSession : AgentSession
+version (unittest) private class YieldGateTestSession : AgentSession
 {
 	void delegate(TranslatedEvent) outputCallback;
 	void delegate(int) exitCallback;
@@ -2907,6 +3191,7 @@ version (unittest) private final class YieldGateTestSession : AgentSession
 	@property void onStderr(void delegate(string) callback) {}
 	@property void onExit(void delegate(int) callback) { exitCallback = callback; }
 	@property void onToolCallsAbandoned(void delegate() dg) {}
+	@property bool toolCallsSurviveStdinClose() { return false; }
 	@property bool alive() { return true; }
 	@property const(BackgroundWork)[] backgroundWork() { return null; }
 
@@ -2920,6 +3205,40 @@ version (unittest) private final class YieldGateTestSession : AgentSession
 	void exit(int code)
 	{
 		exitCallback(code);
+	}
+}
+
+version (unittest) private final class SynchronousCloseTestSession : YieldGateTestSession
+{
+	void delegate() abandonCallback;
+	bool exitOnClose = true;
+	private bool alive_ = true;
+
+	override void closeStdin()
+	{
+		if (exitOnClose)
+		{
+			alive_ = false;
+			exit(0);
+		}
+	}
+
+	override @property bool alive() { return alive_; }
+	override @property void onToolCallsAbandoned(void delegate() callback)
+	{
+		abandonCallback = callback;
+	}
+}
+
+version (unittest) private final class SynchronousCloseTestAgent : ClaudeCodeAgent
+{
+	SynchronousCloseTestSession session;
+
+	override AgentSession createSession(int tid, string resumeSessionId,
+		ProcessLaunch launch, SessionConfig config = SessionConfig.init)
+	{
+		session = new SynchronousCloseTestSession;
+		return session;
 	}
 }
 
@@ -3062,6 +3381,8 @@ version (unittest) private void assertYieldGateRunnerCase(
 				failPendingAskUserQuestionOnExit: (int tid) {},
 				failPendingPermissionPromptOnExit: (int tid) {},
 				abandonToolCalls: (int tid) {},
+				closeToolCalls: (int tid) {},
+				openToolCalls: (int tid) {},
 				pump: (int tid) => backend !is null && backend.pump(tid),
 				cancelExitBackgroundWork: (int tid) {},
 				resetHistoryWatermarkAfterExit: (int tid) => false,
@@ -3576,6 +3897,8 @@ version (unittest) void finishFollowUpSession(TaskData* child, TaskSessionRunner
 			host.failPendingAskUserQuestionOnExit = (int tid) {};
 			host.failPendingPermissionPromptOnExit = (int tid) {};
 			host.abandonToolCalls = (int tid) {};
+			host.closeToolCalls = (int tid) {};
+			host.openToolCalls = (int tid) {};
 			host.cancelExitBackgroundWork = (int tid) {};
 			host.resetHistoryWatermarkAfterExit = (int tid) => false;
 			host.touchAndPersistLastActive = (int tid) {};
@@ -3691,6 +4014,7 @@ version (unittest) private final class DeferredExitTestSession : AgentSession
 	@property void onStderr(void delegate(string) callback) {}
 	@property void onExit(void delegate(int) callback) { exit = callback; }
 	@property void onToolCallsAbandoned(void delegate() callback) {}
+	@property bool toolCallsSurviveStdinClose() { return false; }
 	@property bool alive() { return running; }
 	@property const(BackgroundWork)[] backgroundWork() { return null; }
 }
@@ -4086,4 +4410,71 @@ unittest
 
 	exercise(new DeferredExitTestAgent);
 	exercise(new BusyUndoTestCodexAgent);
+}
+
+unittest
+{
+	import configy.attributes : SetInfo;
+	import std.algorithm : canFind;
+	import std.exception : collectException;
+
+	withGitMetadataLaunchFixture("cydo-task-runner-unsandboxed-verdict",
+		(GitMetadataLaunchFixture fixture) {
+			auto catalog = gitMetadataTaskCatalog(fixture,
+				"task_types:\n"
+				~ "  chat: {model_class: large}\n"
+				~ "  worker: {model_class: large}\n"
+				~ "user_entry_points:\n"
+				~ "  chat: {description: Chat, prompt_template: prompts/blank.md}\n");
+			auto types = catalog.getTaskTypesForProject(fixture.linkedCheckout);
+			auto agent = new LinkedWorktreeSandboxTestAgent();
+			TaskData[int] tasks;
+			tasks[1] = TaskData(1, "local", fixture.linkedCheckout);
+			tasks[1].agentName = "claude";
+			tasks[1].taskType = "worker";
+			auto workspace = unrestrictedLaunchTestSandbox();
+			workspace.unsandboxed_command_execution = SetInfo!string(`{{ "maybe" }}`);
+			auto invalid = gitMetadataTestRunner(&tasks, catalog, fixture,
+				workspace, "", fixture.linkedCheckout);
+			auto error = collectException(invalid.prepareTaskSessionLaunch(1, agent,
+				types.byName("worker")));
+			assert(error && error.msg.canFind("workspaces['local'].sandbox"));
+			assert(!exists(buildPath(fixture.root, "shared-tmp")));
+			assert(!exists(buildPath(fixture.root, "tasks", "task")));
+			assert(tasks[1].unsandboxedCommandExecution == UnsandboxedCommandExecution.no);
+
+			auto operation = invalid.prepareOperationSessionLaunch(1, agent, types.byName("worker"));
+			assert(operation.processLaunch.nativeHistoryProfile.root.length > 0);
+			assert(operation.processLaunch.workDir == fixture.linkedCheckout);
+			assert(!operation.sessionConfig.includeTools.canFind("UnsandboxedCommand"));
+			assert(tasks[1].launch.nativeHistoryProfile.root.length == 0);
+			assert(tasks[1].unsandboxedCommandExecution == UnsandboxedCommandExecution.no);
+			launchSandbox.cleanup(operation.processLaunch.sandbox);
+
+			auto defaultRunner = gitMetadataTestRunner(&tasks, catalog, fixture,
+				unrestrictedLaunchTestSandbox(), "", fixture.linkedCheckout);
+			auto worker = defaultRunner.prepareTaskSessionLaunch(1, agent, types.byName("worker"));
+			assert(!worker.sessionConfig.includeTools.canFind("UnsandboxedCommand"));
+			assert(tasks[1].unsandboxedCommandExecution == UnsandboxedCommandExecution.no);
+
+			tasks[1].taskType = "chat";
+			auto chat = defaultRunner.prepareTaskSessionLaunch(1, agent, types.byName("chat"));
+			assert(chat.sessionConfig.includeTools.canFind("UnsandboxedCommand"));
+			assert(tasks[1].unsandboxedCommandExecution == UnsandboxedCommandExecution.ask);
+
+			tasks[1].taskType = "worker";
+			workspace.unsandboxed_command_execution = SetInfo!string("ask");
+			auto overrideRunner = gitMetadataTestRunner(&tasks, catalog, fixture,
+				workspace, "", fixture.linkedCheckout);
+			auto optedIn = overrideRunner.prepareTaskSessionLaunch(1, agent, types.byName("worker"));
+			assert(optedIn.sessionConfig.includeTools.canFind("UnsandboxedCommand"));
+			assert(tasks[1].unsandboxedCommandExecution == UnsandboxedCommandExecution.ask);
+
+			workspace.unsandboxed_command_execution = SetInfo!string("yes");
+			auto trustedRunner = gitMetadataTestRunner(&tasks, catalog, fixture,
+				workspace, "", fixture.linkedCheckout);
+			auto trusted = trustedRunner.prepareTaskSessionLaunch(1, agent, types.byName("worker"));
+			assert(trusted.sessionConfig.includeTools.canFind("UnsandboxedCommand"));
+			assert(tasks[1].unsandboxedCommandExecution == UnsandboxedCommandExecution.yes);
+		});
 }

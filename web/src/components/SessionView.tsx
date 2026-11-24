@@ -89,9 +89,10 @@ function permissionAwaitingAgent(
     task.itemIdMap.get(submitted.toolUseId) ?? submitted.toolUseId,
   );
   if (
-    block?.result ||
-    block?.permission === "accepted" ||
-    block?.permission === "withdrawn"
+    !block ||
+    block.result ||
+    block.permission === "accepted" ||
+    block.permission === "withdrawn"
   )
     return undefined;
   return submitted;

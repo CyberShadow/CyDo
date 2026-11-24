@@ -444,16 +444,17 @@ workspaces: {}
 ## cydo-init: complete-example end
 
 ## ===========================================================================
-## Claude permissions
+## Permissions
 ## ===========================================================================
 
 ## permissions
-## Purpose: Sets how Claude tool calls are decided.
+## Purpose: Sets Claude permission policy and CyDo prompt timeouts.
 ## Type: Mapping of permission fields.
 ## Default: Uses the built-in values below.
 ## Notes: Only Claude uses CyDo’s permission policy. Codex uses approval
 ##   policy never. CyDo automatically approves Copilot permission requests.
-##   Only Claude agent entries may set fields in this mapping.
+##   Agent entries for any driver may set prompt_timeout. Only Claude agent
+##   entries may set policy or auto_mode.
 # permissions:
 #   policy: ask
 
@@ -486,6 +487,7 @@ workspaces: {}
 
 ## prompt_timeout
 ## Purpose: Denies a call if its permission prompt stays unanswered.
+##   This also applies to CyDo’s UnsandboxedCommand prompt on every driver.
 ## Type: Unsigned number of seconds.
 ## Default: 120, or the earlier layer’s value.
 ## Accepted values: 0 waits indefinitely.
@@ -578,7 +580,8 @@ workspaces: {}
 ## Purpose: Overrides permission settings for this agent.
 ## Type: Permissions mapping.
 ## Default: Inherits global settings.
-## Accepted values: Only Claude agent entries may set fields.
+## Accepted values: Any driver can set prompt_timeout. Only Claude can set
+##   policy and auto_mode.
 # agents:
 #   claude-auto:
 #     driver: claude

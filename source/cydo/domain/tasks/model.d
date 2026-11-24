@@ -20,6 +20,7 @@ import cydo.agent.session : AgentSubmissionReceipt;
 import cydo.domain.policy.permissions : PermissionPrompt;
 import cydo.protocol : ContentBlock, ItemStartedEvent;
 import cydo.runtime.launch.types : ProcessLaunch;
+import cydo.runtime.config : UnsandboxedCommandExecution;
 import cydo.domain.storage.persistence : LoadedHistory, noSourceLine;
 import cydo.domain.tasks.yield_gate : NaggedYieldGates;
 
@@ -633,6 +634,7 @@ struct TaskData
 	/// Browser nonce delivery leases held until the matching submission settles.
 	ulong[string] inFlightUiNonceGeneration;
 	ProcessLaunch launch;
+	UnsandboxedCommandExecution unsandboxedCommandExecution;
 	HistoryStore history;     // unified: JSONL file events + live stdout events
 	StateQueue!ProcessState* processQueue;
 	StateQueue!ArchiveState* archiveQueue;

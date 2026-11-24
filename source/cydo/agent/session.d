@@ -116,6 +116,9 @@ interface AgentSession
 	/// Whether the session is still alive (process running, pipes open).
 	@property bool alive();
 
+	/// Whether in-flight tool calls are still awaited after closeStdin returns.
+	@property bool toolCallsSurviveStdinClose();
+
 	/// The work the agent started that is still running outside its turns.
 	/// The agent starts a turn of its own when that work reports, so a
 	/// turn ending meanwhile need not mean the agent is done.

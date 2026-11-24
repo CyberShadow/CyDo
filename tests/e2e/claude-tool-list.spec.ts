@@ -34,6 +34,7 @@ const expectedTools = [
   "mcp__cydo__Request",
   "mcp__cydo__SwitchMode",
   "mcp__cydo__Task",
+  "mcp__cydo__UnsandboxedCommand",
 ];
 
 test(

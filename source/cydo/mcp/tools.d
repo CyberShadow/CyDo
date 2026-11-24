@@ -55,6 +55,12 @@ enum string handoffToolDescription =
 	~ "**This is a terminal action.** After calling mcp__cydo__Handoff, your session will end. "
 	~ "Do not call any other tools after Handoff.";
 
+enum string unsandboxedCommandToolDescription =
+	"Run a shell command on the host with the user's shell, outside the task sandbox, "
+	~ "with CyDo's environment. Use it only for work the sandbox prevents. "
+	~ "The user may have to approve each call. A denied, unanswered, or cancelled request "
+	~ "returns an error. A command that exceeds the timeout returns its output so far.";
+
 enum string requestToolDescription =
 	"Send a request to a singleton. Results follow the same delivery rules as Ask.\n\nAvailable singletons:\n\n";
 
@@ -100,6 +106,17 @@ interface CydoTools
 	McpResult bash(
 		@Description("The shell command to execute")
 		string command
+	);
+
+	@Description(unsandboxedCommandToolDescription)
+	@McpName("UnsandboxedCommand")
+	McpResult unsandboxedCommand(
+		@Description("The command to run with the user's shell")
+		string command,
+		@Description("Absolute host directory to run in")
+		string cwd,
+		@Description("Seconds before the command's process group is killed")
+		int timeout
 	);
 
 	/+
@@ -215,6 +232,8 @@ interface ToolsBackend
 	McpResult handleHandoff(string callerTid, string continuation, string prompt);
 	Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions);
 	Promise!McpResult handleBash(string callerTid, string command);
+	Promise!McpResult handleUnsandboxedCommand(string callerTid, string command,
+		string cwd, int timeout, ToolCallCancellation cancellation);
 	Promise!McpResult registerBatchAndAwait(string callerTid, LaunchedTask[] launchedTasks);
 	Promise!McpResult handleAsk(string callerTid, string message, int targetTid);
 	Promise!McpResult handleAnswer(string callerTid, int qid, string message);
@@ -240,6 +259,12 @@ class CydoToolsImpl : CydoTools
 	{
 		import ae.utils.promise.await : await;
 		return app.handleBash(callerTid, command).await();
+	}
+
+	McpResult unsandboxedCommand(string command, string cwd, int timeout)
+	{
+		import ae.utils.promise.await : await;
+		return app.handleUnsandboxedCommand(callerTid, command, cwd, timeout, cancellation).await();
 	}
 
 	/+
@@ -399,6 +424,12 @@ unittest
 		}
 
 		Promise!McpResult handleBash(string callerTid, string command)
+		{
+			assert(0, "unexpected call");
+		}
+
+		Promise!McpResult handleUnsandboxedCommand(string callerTid, string command,
+			string cwd, int timeout, ToolCallCancellation cancellation)
 		{
 			assert(0, "unexpected call");
 		}

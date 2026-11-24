@@ -31,11 +31,12 @@ import cydo.foundation.system.known_messages : KnownSystemMessageKind,
 	systemMessageSubject, taskPromptSubject, wrapKnownSystemMessage;
 import cydo.foundation.system.framing : prependTaskFraming;
 import cydo.foundation.text.title : truncateTitle;
-import cydo.mcp : McpResult;
+import cydo.mcp : McpResult, ToolCallCancellation;
 import cydo.mcp.payloads : TaskResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend,
 	ValidatedTask;
-import cydo.protocol : AnswerResult, BatchResultEnvelope, ContentBlock, QuestionResult;
+import cydo.protocol : AnswerResult, BatchResultEnvelope, ContentBlock, QuestionResult, decomposeToolName;
+import cydo.runtime.config : UnsandboxedCommandExecution;
 import cydo.workflow.batch.registry : BatchHandle, BatchRegistry;
 import cydo.workflow.mailbox : Mailbox, MailboxEvent;
 import cydo.workflow.questions.router : makeQuestionMessage;
@@ -304,6 +305,7 @@ private:
 	QuestionRecord[int] questions_;
 	SubtaskResultDelivery subtaskResultDelivery_;
 	TerminalProcess[] activeTerminals_;
+	private ulong nextUnsandboxedCommandPromptId_;
 
 public:
 	this(WorkflowToolsHost host)
@@ -770,6 +772,159 @@ public:
 		return promise;
 	}
 
+	private static string resolveCommandShell(string shell, scope string delegate() passwdShell)
+	{
+		import std.path : isAbsolute;
+		import cydo.runtime.launch.sandbox : resolveExecutablePath;
+
+		auto source = "SHELL";
+		if (shell.length == 0)
+		{
+			shell = passwdShell();
+			source = "the user's passwd login shell (SHELL is unset or empty)";
+		}
+		enforce(shell.length > 0, "No shell from " ~ source);
+		enforce(isAbsolute(shell) && resolveExecutablePath(shell, null).length > 0,
+			format("%s does not name an absolute executable file: %s", source, shell));
+		return shell;
+	}
+
+	private static string passwdLoginShell()
+	{
+		import core.sys.posix.pwd : getpwuid;
+		import core.sys.posix.unistd : getuid;
+		import std.string : fromStringz;
+
+		auto user = getpwuid(getuid());
+		return user is null ? null : user.pw_shell.fromStringz.idup;
+	}
+
+	Promise!McpResult handleUnsandboxedCommand(string callerTid, string command,
+		string cwd, int timeout, ToolCallCancellation cancellation)
+	{
+		return handleUnsandboxedCommand(callerTid, command, cwd, timeout, cancellation,
+			() => passwdLoginShell());
+	}
+
+	private Promise!McpResult handleUnsandboxedCommand(string callerTid, string command,
+		string cwd, int timeout, ToolCallCancellation cancellation,
+		scope string delegate() passwdShell)
+	{
+		import core.time : seconds;
+		import std.algorithm : canFind, remove;
+		import std.conv : to;
+		import std.file : exists, isDir;
+		import std.path : isAbsolute;
+		import std.process : environment;
+
+		enum cancelled = "Cancelled by the agent";
+		int tid;
+		TaskData* td;
+		string shell;
+		try
+		{
+			tid = to!int(callerTid);
+			td = host_.getTask(tid);
+			enforce(td !is null, "Task not found");
+			enforce(td.unsandboxedCommandExecution != UnsandboxedCommandExecution.no,
+				"UnsandboxedCommand is not available to this task");
+			enforce(command.strip.length > 0 && !command.canFind('\0'),
+				"command must be non-empty and contain no NUL bytes");
+			enforce(!cwd.canFind('\0') && isAbsolute(cwd) && exists(cwd) && isDir(cwd),
+				"cwd must be an absolute path to an existing directory");
+			enforce(timeout >= 1, "timeout must be at least one second");
+			shell = resolveCommandShell(environment.get("SHELL"), passwdShell);
+		}
+		catch (Exception e)
+			return resolve(McpResult("UnsandboxedCommand: " ~ e.msg, true));
+
+		if (cancellation.cancelled)
+			return resolve(McpResult(cancelled, true));
+
+		auto settings = host_.permissionSettings(td.agentName, td.workspace);
+		auto id = format("unsandboxed_command_%s_%s", tid, ++nextUnsandboxedCommandPromptId_);
+		static struct Input
+		{
+			string command;
+			string cwd;
+			int timeout;
+		}
+		auto prompt = PermissionPrompt(id, "UnsandboxedCommand",
+			JSONFragment(toJson(Input(command, cwd, timeout))),
+			format("Runs on the host with %s, outside the task's sandbox, with CyDo's environment", shell));
+
+		auto result = new Promise!McpResult;
+		TerminalProcess terminal;
+		TimerTask timer;
+		bool settled;
+		void finish(McpResult output)
+		{
+			settled = true;
+			result.fulfill(output);
+		}
+		void killGroup(string reason)
+		{
+			terminal.forceKill();
+			finish(McpResult(terminal.output() ~ format(
+				"\n[UnsandboxedCommand: %s; process group killed]", reason), true));
+		}
+
+		cancellation.onCancel({
+			if (settled)
+				return;
+			if (terminal is null)
+			{
+				withdraw(tid, id, cancelled);
+				return;
+			}
+			timer.cancel();
+			killGroup("cancelled by the agent");
+		});
+		void run()
+		{
+			try
+				terminal = new TerminalProcess([shell, "-c", command], null, cwd,
+					1024 * 1024, ownProcessGroup: true);
+			catch (Exception e)
+			{
+				finish(McpResult("UnsandboxedCommand: " ~ e.msg, true));
+				return;
+			}
+			activeTerminals_ ~= terminal;
+			terminal.onExit = () {
+				activeTerminals_ = activeTerminals_.remove!(t => t is terminal);
+				if (settled)
+					return;
+				timer.cancel();
+				finish(McpResult(terminal.output(),
+					terminal.exitCode() != 0 || terminal.exitSignal() !is null));
+			};
+			timer = setTimeout(() => killGroup(format("timed out after %s s", timeout)),
+				timeout.seconds);
+		}
+
+		final switch (td.unsandboxedCommandExecution)
+		{
+			case UnsandboxedCommandExecution.no:
+				assert(false, "rejected above");
+			case UnsandboxedCommandExecution.yes:
+				run();
+				break;
+			case UnsandboxedCommandExecution.ask:
+				promptUserForPermission(tid, prompt, settings.promptTimeout).then(
+					(PermissionDecision decision) {
+						if (cancellation.cancelled || !decision.allow)
+						{
+							finish(McpResult(cancellation.cancelled ? cancelled : decision.message, true));
+							return;
+						}
+						run();
+					});
+				break;
+		}
+		return result;
+	}
+
 	Promise!McpResult registerBatchAndAwait(string callerTidStr,
 		LaunchedTask[] launchedTasks)
 	{
@@ -961,6 +1116,15 @@ public:
 		final switch (escalation)
 		{
 			case PermissionEscalation.policyAsk:
+				// Under `ask`, the host command asks for approval with its own
+				// prompt; asking here too would ask twice. Under `yes` it does
+				// not, so the policy's prompt is the only one and stays.
+				string name, server, source;
+				decomposeToolName(prompt.toolName, name, server, source);
+				if (name == "UnsandboxedCommand" && server == "cydo" && source == "mcp"
+					&& td.unsandboxedCommandExecution == UnsandboxedCommandExecution.ask)
+					return resolve(makePermissionAllowJson(prompt.input.json));
+				return askUser();
 			case PermissionEscalation.classifier:
 				return askUser();
 			case PermissionEscalation.safetyCheck:
@@ -1199,17 +1363,27 @@ public:
 		else
 		{
 			permissionPromptQueues_.remove(tid);
-			auto td = requireTask(tid, "Settled permission prompt for a missing task");
-			td.needsAttention = false;
-			host_.persistNeedsAttention(tid, false);
-			td.hasPendingQuestion = false;
-			td.notificationBody = "";
-			td.isProcessing = true;
-			host_.clearPermissionPrompt(tid);
-			host_.broadcastTaskUpdate(tid);
+			clearSettledPermissionPrompt(tid,
+				requireTask(tid, "Settled permission prompt for a missing task"),
+				true);
 		}
 
 		promise.fulfill(decision);
+	}
+
+	private void clearSettledPermissionPrompt(int tid, TaskData* task, bool isProcessing)
+	{
+		if (task !is null)
+		{
+			task.needsAttention = false;
+			host_.persistNeedsAttention(tid, false);
+			task.hasPendingQuestion = false;
+			task.notificationBody = "";
+			task.isProcessing = isProcessing;
+		}
+		host_.clearPermissionPrompt(tid);
+		if (task !is null)
+			host_.broadcastTaskUpdate(tid);
 	}
 
 	void replayPendingClientPrompts(int tid,
@@ -1370,6 +1544,7 @@ public:
 			auto queue = *pending;
 			permissionPromptQueues_.remove(tid);
 			cancelPermissionPromptTimeout(tid);
+			clearSettledPermissionPrompt(tid, host_.getTask(tid), false);
 			foreach (entry; queue)
 				entry.promise.fulfill(PermissionDecision(false, "Task exited"));
 		}
@@ -5107,11 +5282,13 @@ private final class PermissionQueueTest
 	TaskData task;
 	WorkflowToolsBackend backend;
 	string[] shown;
+	const(PermissionPrompt)[] prompts;
+	string policy = "ask";
 	SysTime[] deadlines;
 	int clears;
 	string[string] decisions;
 
-	this(Duration timeout = Duration.zero)
+	this(Duration timeout = Duration.zero, bool enqueueExamples = true)
 	{
 		task = TaskData(tid, "local", "/tmp/project");
 		task.agentName = "claude";
@@ -5121,10 +5298,13 @@ private final class PermissionQueueTest
 			return &task;
 		};
 		host.permissionSettings = (string agentName, string workspaceName) =>
-			PermissionSettings("ask", false, timeout);
+			PermissionSettings(policy, false, timeout);
+		host.taskTypesForProject = (string projectPath) => TaskTypeDef[].init;
+		host.entryPointsForProject = (string projectPath) => UserEntryPointDef[].init;
 		host.sendPermissionPrompt = (int id, const PendingPermission pending) {
 			assert(id == tid);
 			shown ~= pending.prompt.toolUseId;
+			prompts ~= pending.prompt;
 			deadlines ~= pending.deadline;
 		};
 		host.clearPermissionPrompt = (int id) {
@@ -5137,8 +5317,9 @@ private final class PermissionQueueTest
 		host.broadcastTaskUpdate = (int id) {};
 		backend = new WorkflowToolsBackend(host);
 
-		foreach (id; ["first", "second"])
-			request(id);
+		if (enqueueExamples)
+			foreach (id; ["first", "second"])
+				request(id);
 	}
 
 	private void request(string id)
@@ -5285,4 +5466,542 @@ unittest // Exit denies every queued request without showing another prompt.
 	assert(t.replay().length == 0);
 	assert(t.decisions["first"] == makePermissionDenyJson("Task exited"));
 	assert(t.decisions["second"] == makePermissionDenyJson("Task exited"));
+}
+
+version (unittest)
+private final class UnsandboxedCommandTest
+{
+	import std.file : mkdir, rmdirRecurse, tempDir;
+	import std.path : buildPath;
+	import std.process : environment;
+	import std.uuid : randomUUID;
+
+	PermissionQueueTest queue;
+	string cwd;
+	string previousShell;
+	McpResult[string] results;
+
+	this(Duration promptTimeout = Duration.zero)
+	{
+		queue = new PermissionQueueTest(promptTimeout, false);
+		queue.task.unsandboxedCommandExecution = UnsandboxedCommandExecution.ask;
+		cwd = buildPath(tempDir(), "cydo-unsandboxed-" ~ randomUUID().toString());
+		mkdir(cwd);
+		previousShell = environment.get("SHELL");
+		environment["SHELL"] = "/bin/sh";
+	}
+
+	void cleanup()
+	{
+		if (previousShell is null)
+			environment.remove("SHELL");
+		else
+			environment["SHELL"] = previousShell;
+		rmdirRecurse(cwd);
+	}
+
+	void call(string id, string command = "printf ran > marker", int timeout = 5,
+		ToolCallCancellation cancellation = null)
+	{
+		queue.backend.handleUnsandboxedCommand("1", command, cwd, timeout,
+			cancellation is null ? new ToolCallCancellation : cancellation)
+			.then((McpResult result) { results[id] = result; });
+	}
+
+	void assertDidNotRun()
+	{
+		import std.file : exists;
+
+		assert(!exists(buildPath(cwd, "marker")));
+	}
+}
+
+unittest // A task without access cannot prompt or execute.
+{
+	import ae.net.asockets : socketManager;
+	import std.algorithm.searching : canFind;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	t.queue.task.unsandboxedCommandExecution = UnsandboxedCommandExecution.no;
+	t.call("disabled");
+	socketManager.loop();
+	assert(t.results["disabled"].isError);
+	assert(t.results["disabled"].text.canFind("not available"));
+	assert(t.queue.shown.length == 0);
+	t.assertDidNotRun();
+}
+
+unittest // `yes` runs the command without a prompt.
+{
+	import ae.net.asockets : socketManager;
+	import std.file : exists, readText;
+	import std.path : buildPath;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	t.queue.task.unsandboxedCommandExecution = UnsandboxedCommandExecution.yes;
+	t.call("trusted");
+	socketManager.loop();
+	assert(t.queue.shown.length == 0);
+	assert(!t.results["trusted"].isError, t.results["trusted"].text);
+	assert(readText(buildPath(t.cwd, "marker")) == "ran");
+
+	t.call("trusted-timeout", "printf partial; sleep 30", 1);
+	socketManager.loop();
+	assert(t.queue.shown.length == 0);
+	assert(t.results["trusted-timeout"].isError);
+}
+
+unittest // Approval runs the exact command with the host environment, cwd and shell.
+{
+	import ae.net.asockets : socketManager;
+	import std.file : chdir, getcwd;
+	import std.json : parseJSON;
+	import std.process : environment;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	enum variable = "CYDO_UT_UNSANDBOXED_MARKER";
+	auto previous = environment.get(variable);
+	scope (exit)
+	{
+		if (previous is null)
+			environment.remove(variable);
+		else
+			environment[variable] = previous;
+	}
+	environment[variable] = "host-marker";
+
+	enum command = `printf '%s:%s:' "$CYDO_UT_UNSANDBOXED_MARKER" "$0"; pwd -P`;
+	t.call("approved", command, 10);
+	socketManager.loop();
+	assert(t.results.length == 0);
+	assert(t.queue.prompts.length == 1);
+	auto prompt = t.queue.prompts[0];
+	assert(prompt.toolName == "UnsandboxedCommand");
+	assert(prompt.reason.length > 0);
+	assert(parseJSON(prompt.input.json) == parseJSON(format(
+		`{"command":%s,"cwd":%s,"timeout":10}`, toJson(command), toJson(t.cwd))));
+
+	t.queue.respond(prompt.toolUseId);
+	socketManager.loop();
+	assert(!t.results["approved"].isError, t.results["approved"].text);
+	auto originalCwd = getcwd();
+	chdir(t.cwd);
+	auto physicalCwd = getcwd();
+	chdir(originalCwd);
+	assert(t.results["approved"].text.strip == "host-marker:/bin/sh:" ~ physicalCwd);
+}
+
+unittest // An approved command can fail and still return its output.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	t.call("failed", "printf failure; exit 7");
+	t.queue.respond(t.queue.shown[0]);
+	socketManager.loop();
+	assert(t.results["failed"].isError);
+	assert(t.results["failed"].text == "failure");
+}
+
+unittest // Concurrent calls prompt in order and a denied call never runs.
+{
+	import ae.net.asockets : socketManager;
+	import std.file : exists;
+	import std.path : buildPath;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	t.call("first");
+	t.call("second", "printf ran > second-marker");
+	socketManager.loop();
+	assert(t.queue.shown.length == 1);
+	assert(t.results.length == 0);
+
+	auto first = t.queue.shown[0];
+	t.queue.respond(first, `{"behavior":"deny","message":"Keep this on the sandbox"}`);
+	socketManager.loop();
+	assert(t.results["first"].isError);
+	assert(t.results["first"].text == "Keep this on the sandbox");
+	t.assertDidNotRun();
+	assert(t.queue.shown.length == 2);
+	assert(t.queue.shown[1] != first);
+	assert(("second" in t.results) is null);
+	assert(!exists(buildPath(t.cwd, "second-marker")));
+
+	t.queue.respond(t.queue.shown[1]);
+	socketManager.loop();
+	assert(!t.results["second"].isError);
+	assert(exists(buildPath(t.cwd, "second-marker")));
+}
+
+unittest // An unanswered prompt times out without running the command.
+{
+	import ae.net.asockets : socketManager;
+	import core.time : msecs;
+	import std.algorithm.searching : canFind;
+
+	auto t = new UnsandboxedCommandTest(50.msecs);
+	scope (exit) t.cleanup();
+	t.call("expired");
+	socketManager.loop();
+	assert(t.queue.shown.length == 1);
+	assert(t.queue.clears == 1);
+	assert(t.results["expired"].isError);
+	assert(t.results["expired"].text.canFind("nobody answered the permission prompt"));
+	t.assertDidNotRun();
+}
+
+unittest // Invalid arguments and an invalid configured shell fail before prompting.
+{
+	import ae.net.asockets : socketManager;
+	import std.algorithm.searching : canFind;
+	import std.file : write;
+	import std.path : buildPath;
+	import std.process : environment;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	auto file = buildPath(t.cwd, "file");
+	write(file, "");
+	void check(string command, string cwd, int timeout, string error)
+	{
+		McpResult[] results;
+		t.queue.backend.handleUnsandboxedCommand("1", command, cwd, timeout,
+			new ToolCallCancellation).then((McpResult result) { results ~= result; });
+		socketManager.loop();
+		assert(results.length == 1);
+		assert(results[0].isError && results[0].text.canFind(error), results[0].text);
+		assert(t.queue.shown.length == 0);
+		t.assertDidNotRun();
+	}
+	foreach (cwd; ["relative", buildPath(t.cwd, "missing"), file, t.cwd ~ "\0ignored"])
+		check("printf ran > marker", cwd, 5, "cwd");
+	foreach (command; ["  ", "printf ran > marker\0ignored"])
+		check(command, t.cwd, 5, "command");
+	check("printf ran > marker", t.cwd, 0, "timeout");
+	environment["SHELL"] = file;
+	check("printf ran > marker", t.cwd, 5, "SHELL");
+}
+
+unittest // Shell resolution precedes prompting, and the approved call uses that shell.
+{
+	import ae.net.asockets : socketManager;
+	import std.algorithm.searching : canFind;
+	import std.process : environment;
+
+	foreach (configured; [true, false])
+	{
+		auto t = new UnsandboxedCommandTest;
+		scope (exit) t.cleanup();
+		if (!configured)
+			environment.remove("SHELL");
+		bool lookedUpPasswd;
+		McpResult[] results;
+		enum command = `printf '%s' "$0"; printf ran > marker`;
+		t.queue.backend.handleUnsandboxedCommand("1", command, t.cwd, 5,
+			new ToolCallCancellation, () {
+				lookedUpPasswd = true;
+				return configured ? null : "/bin/sh";
+			}).then((McpResult result) { results ~= result; });
+
+		assert(lookedUpPasswd == !configured);
+		assert(t.queue.shown.length == 1);
+		assert(t.queue.prompts[$ - 1].reason.canFind("/bin/sh"));
+		assert(results.length == 0);
+		t.assertDidNotRun();
+		t.queue.respond(t.queue.shown[$ - 1]);
+		socketManager.loop();
+
+		assert(results.length == 1);
+		assert(!results[0].isError, results[0].text);
+		assert(results[0].text == "/bin/sh");
+	}
+}
+
+unittest // An absent SHELL and passwd login shell fail before prompting.
+{
+	import ae.net.asockets : socketManager;
+	import std.algorithm.searching : canFind;
+	import std.process : environment;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	environment.remove("SHELL");
+
+	bool lookedUpPasswd;
+	McpResult[] results;
+	t.queue.backend.handleUnsandboxedCommand("1", "printf ran > marker", t.cwd, 5,
+		new ToolCallCancellation, () {
+			lookedUpPasswd = true;
+			return "";
+		}).then((McpResult result) { results ~= result; });
+	socketManager.loop();
+
+	assert(lookedUpPasswd);
+	assert(results.length == 1 && results[0].isError);
+	assert(results[0].text.canFind("No shell from the user's passwd login shell"));
+	assert(results[0].text.canFind("SHELL is unset or empty"));
+	assert(t.queue.shown.length == 0);
+	assert(t.queue.replay().length == 0);
+	t.assertDidNotRun();
+}
+
+unittest // Cancelling the visible call clears its prompt without executing.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	auto token = new ToolCallCancellation;
+	t.call("visible", "printf ran > marker", 5, token);
+	assert(t.queue.shown.length == 1);
+	token.cancel();
+	socketManager.loop();
+	assert(t.queue.clears == 1);
+	assert(t.queue.replay().length == 0);
+	assert(t.results["visible"].isError);
+	assert(t.results["visible"].text == "Cancelled by the agent");
+	t.assertDidNotRun();
+}
+
+unittest // Cancelling a queued call leaves the visible request in place.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	t.call("visible");
+	auto token = new ToolCallCancellation;
+	t.call("queued", "printf ran > marker", 5, token);
+	token.cancel();
+	socketManager.loop();
+	assert(t.queue.shown.length == 1);
+	assert(t.queue.replay() == t.queue.shown);
+	assert(t.queue.clears == 0);
+	assert(("visible" in t.results) is null);
+	assert(t.results["queued"].isError);
+	assert(t.results["queued"].text == "Cancelled by the agent");
+
+	t.queue.respond(t.queue.shown[0], `{"behavior":"deny","message":"Denied"}`);
+	socketManager.loop();
+	assert(t.queue.shown.length == 1);
+	assert(t.queue.clears == 1);
+	t.assertDidNotRun();
+}
+
+unittest // A call that arrives already cancelled never prompts or executes.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	auto token = new ToolCallCancellation;
+	token.cancel();
+	t.call("cancelled", "printf ran > marker", 5, token);
+	socketManager.loop();
+	assert(t.queue.shown.length == 0);
+	assert(t.results["cancelled"].isError);
+	assert(t.results["cancelled"].text == "Cancelled by the agent");
+	t.assertDidNotRun();
+}
+
+unittest // Cancellation after approval is dequeued prevents the deferred spawn.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	auto token = new ToolCallCancellation;
+	t.call("approved", "printf ran > marker", 5, token);
+	t.queue.respond(t.queue.shown[0]);
+	assert(t.queue.clears == 1);
+	assert(t.queue.replay().length == 0);
+	assert(t.results.length == 0);
+
+	token.cancel();
+	socketManager.loop();
+
+	t.assertDidNotRun();
+	assert(t.results["approved"].isError);
+	assert(t.results["approved"].text == "Cancelled by the agent");
+	assert(t.queue.backend.activeTerminals_.length == 0);
+}
+
+version (unittest)
+private void checkUnsandboxedProcessGroup(void delegate(ToolCallCancellation) cancel = null)
+{
+	import ae.net.asockets : socketManager;
+	import ae.sys.timing : setInterval;
+	import core.stdc.errno : ENOENT, ESRCH;
+	import core.sys.posix.signal : kill, SIGKILL;
+	import core.thread : Thread;
+	import core.time : MonoTime, msecs, seconds;
+	import std.algorithm.searching : canFind;
+	import std.conv : to;
+	import std.file : exists, FileException, readText;
+	import std.path : buildPath;
+	import std.string : lastIndexOf;
+
+	auto t = new UnsandboxedCommandTest;
+	scope (exit) t.cleanup();
+	auto token = new ToolCallCancellation;
+	auto pidFile = buildPath(t.cwd, "child.pid");
+	enum command = `
+		printf 'partial\n'
+		sleep 30 >/dev/null 2>&1 &
+		printf '%s\n' "$!" > child.tmp
+		mv child.tmp child.pid
+		wait
+	`;
+	t.call("running", command, cancel ? 10 : 1, token);
+	auto started = MonoTime.currTime;
+	t.queue.respond(t.queue.shown[0]);
+
+	TimerTask readiness;
+	if (cancel)
+	{
+		readiness = setInterval({
+			if (exists(pidFile))
+			{
+				readiness.cancel();
+				cancel(token);
+			}
+			else if ("running" in t.results || MonoTime.currTime - started > 5.seconds)
+				readiness.cancel();
+		}, 10.msecs);
+	}
+	scope (exit) if (readiness !is null && readiness.isWaiting()) readiness.cancel();
+
+	socketManager.loop();
+	auto elapsed = MonoTime.currTime - started;
+
+	auto settled = "running" in t.results;
+	assert(exists(pidFile), "command never reported a child process: "
+		~ (settled is null ? "no result within 5 s" : settled.text));
+	auto pid = readText(pidFile).strip.to!int;
+	assert(pid > 0);
+	bool stopped()
+	{
+		try
+		{
+			auto stat = readText(format("/proc/%s/stat", pid));
+			return stat[stat.lastIndexOf(") ") + 2] == 'Z';
+		}
+		catch (FileException e)
+		{
+			if (e.errno == ENOENT || e.errno == ESRCH)
+				return true;
+			throw e;
+		}
+	}
+	scope (failure) if (!stopped()) kill(pid, SIGKILL);
+
+	auto result = t.results["running"];
+	assert(result.isError);
+	assert(result.text.canFind("partial"), result.text);
+	assert(result.text.canFind(cancel ? "cancelled by the agent" : "timed out after 1 s"), result.text);
+	assert(result.text.canFind("process group killed"), result.text);
+	assert(elapsed < 5.seconds);
+	if (!cancel)
+		assert(elapsed >= 1.seconds);
+
+	auto deadline = MonoTime.currTime + 2.seconds;
+	while (!stopped())
+	{
+		assert(MonoTime.currTime < deadline, "command's child is still running");
+		Thread.sleep(10.msecs);
+	}
+}
+
+unittest // Execution timeout returns partial output and kills the process group.
+{
+	checkUnsandboxedProcessGroup();
+}
+
+unittest // Cancellation during execution returns partial output and kills the process group.
+{
+	checkUnsandboxedProcessGroup((ToolCallCancellation token) { token.cancel(); });
+}
+
+unittest // A Claude policy denial happens before any permission prompt.
+{
+	auto t = new PermissionQueueTest(Duration.zero, false);
+	t.policy = "deny";
+	auto ruling = t.backend.decidePreToolUse(t.tid, "mcp__cydo__UnsandboxedCommand",
+		JSONFragment(`{"command":"pwd","cwd":"/tmp","timeout":1}`));
+	assert(ruling.decision == ToolCallDecision.deny);
+	assert(t.shown.length == 0);
+}
+
+unittest // Only CyDo's exact MCP tool skips Claude's policy-ask control prompt.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new PermissionQueueTest(Duration.zero, false);
+	t.task.unsandboxedCommandExecution = UnsandboxedCommandExecution.ask;
+	enum tool = "mcp__cydo__UnsandboxedCommand";
+	auto input = JSONFragment(`{"command":"pwd","cwd":"/tmp","timeout":1}`);
+	assert(t.backend.decidePreToolUse(t.tid, tool, input).decision == ToolCallDecision.ask);
+
+	string decision;
+	t.backend.decideToolPermission(t.tid, PermissionPrompt("exact", tool, input, ""),
+		PermissionEscalation.policyAsk).then((string answer) { decision = answer; });
+	socketManager.loop();
+	assert(decision == makePermissionAllowJson(input.json));
+	assert(t.shown.length == 0);
+
+	foreach (name; ["UnsandboxedCommand", "mcp__other__UnsandboxedCommand",
+		"mcp__cydo__UnsandboxedCommandExtra"])
+	{
+		decision = null;
+		t.backend.decideToolPermission(t.tid, PermissionPrompt(name, name, input, ""),
+			PermissionEscalation.policyAsk).then((string answer) { decision = answer; });
+		socketManager.loop();
+		assert(decision is null);
+		assert(t.shown[$ - 1] == name);
+		t.respond(name, `{"behavior":"deny","message":"Denied"}`);
+		socketManager.loop();
+		assert(decision == makePermissionDenyJson("Denied"));
+	}
+}
+
+unittest // Under `yes`, CyDo does not prompt, so Claude's policy-ask prompt stays.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new PermissionQueueTest(Duration.zero, false);
+	t.task.unsandboxedCommandExecution = UnsandboxedCommandExecution.yes;
+	enum tool = "mcp__cydo__UnsandboxedCommand";
+	auto input = JSONFragment(`{"command":"pwd","cwd":"/tmp","timeout":1}`);
+	string decision;
+	t.backend.decideToolPermission(t.tid, PermissionPrompt("trusted", tool, input, ""),
+		PermissionEscalation.policyAsk).then((string answer) { decision = answer; });
+	socketManager.loop();
+	assert(decision is null);
+	assert(t.shown[$ - 1] == "trusted");
+	t.respond("trusted", `{"behavior":"allow"}`);
+	socketManager.loop();
+	assert(decision == makePermissionAllowJson(input.json));
+}
+
+unittest // A Claude classifier referral for the CyDo tool still prompts.
+{
+	import ae.net.asockets : socketManager;
+
+	auto t = new PermissionQueueTest(Duration.zero, false);
+	string decision;
+	auto prompt = PermissionPrompt("classifier", "mcp__cydo__UnsandboxedCommand",
+		JSONFragment(`{"command":"pwd","cwd":"/tmp","timeout":1}`), "");
+	t.backend.decideToolPermission(t.tid, prompt, PermissionEscalation.classifier)
+		.then((string answer) { decision = answer; });
+	socketManager.loop();
+	assert(t.shown == ["classifier"]);
+	assert(decision is null);
+	t.respond("classifier", `{"behavior":"deny","message":"Denied"}`);
+	socketManager.loop();
+	assert(decision == makePermissionDenyJson("Denied"));
 }

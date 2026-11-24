@@ -63,8 +63,6 @@ struct TaskMutationServiceHost
 	void delegate(int tid) stopTask;
 
 	TaskSessionLaunch delegate(int tid, Agent taskAgent,
-		TaskTypeDef* typeDef) prepareTaskSessionLaunch;
-	TaskSessionLaunch delegate(int tid, Agent taskAgent,
 		TaskTypeDef* typeDef) prepareOperationSessionLaunch;
 	TaskTypeDef* delegate(string projectPath, string taskTypeName) taskTypeForProject;
 	Promise!ProcessState delegate(ProcessState) delegate(int tid) makeProcessQueueSF;
@@ -1507,9 +1505,8 @@ private:
 		if (json.revert_files && rewindLaunch.nativeHistoryProfile.root.length == 0)
 		{
 			auto typeDef = host_.taskTypeForProject(td.projectPath, td.taskType);
-			auto fresh = host_.prepareTaskSessionLaunch(tid, ta, typeDef);
+			auto fresh = host_.prepareOperationSessionLaunch(tid, ta, typeDef);
 			rewindLaunch = fresh.processLaunch;
-			td.launch = ProcessLaunch.init;
 			ownsFreshLaunch = true;
 		}
 		scope(exit)
