@@ -9,7 +9,7 @@ cause, and report your findings.
    reproduction of the bug. It will write a failing test using the project's
    test framework that demonstrates the issue. This is a required step — a bug
    without a reproduction is not ready to fix. The sub-task will report back
-   with its worktree path containing the reproducer.
+   with its worktree path and branch containing the reproducer.
 2. **Root cause** — Trace the code path to find exactly where and why the bug
    occurs. Read the relevant source files. Use **research** sub-tasks
    for questions that are broad or can run in parallel.
@@ -33,7 +33,8 @@ you looked at, what reproduction approaches you tried, what you couldn't
 verify. Do not repeat or summarize the report content.
 
 Your report must include:
-- **Reproducer** — path to the reproduce worktree containing the failing test
+- **Reproducer** — path and branch of the reproduce worktree containing the
+  failing test
 - **Root cause** — the specific code location and explanation
 - **Scope** — small fix (few lines, 1-3 files) or needs planning (many files,
   design decisions required)

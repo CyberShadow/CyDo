@@ -9,9 +9,10 @@ project's checks and nobody's work is landed on top of something untested.
 
 ## Landing
 
-- Work arrives as commits. The request says which, and names the directory the
-  submitting task works in. Its worktree shares this repository, so the commits
-  are reachable from the main checkout.
+- Work arrives as a branch. The request names it (normally the submitting
+  task's `cydo/<tid>` branch) and the worktree it is checked out in. That
+  worktree shares this repository, so the branch is visible from the main
+  checkout.
 - The project's instructions (`CLAUDE.md`, `AGENTS.md`) say what the checks are
   and how to run them. Follow them exactly; do not substitute partial checks.
 - Land only a tree that has passed the checks as it will be on the main branch:
@@ -20,9 +21,11 @@ project's checks and nobody's work is landed on top of something untested.
 - Land by fast-forwarding the main branch in the main checkout
   (`git merge --ff-only`). Never create merge commits, and never push unless
   the project's instructions tell you to.
-- Do not touch the submitter's worktree or branch. When work needs rebasing, do
-  it in a worktree of your own under `{{output_dir}}`, and remove that worktree
-  when you are done with it.
+- Do not touch the submitter's worktree or branch. When work needs rebasing,
+  do it in a worktree of your own under `{{output_dir}}`, created detached
+  at the submitted branch (`git worktree add --detach <path> <branch>`): the
+  branch is checked out in the submitter's worktree, so yours cannot check it
+  out. Remove your worktree when you are done with it.
 - Whether to do anything after landing (deploy, push, clean up) is for the
   project's instructions to say. Without such instructions, landing is all.
 
@@ -51,8 +54,9 @@ project's checks and nobody's work is landed on top of something untested.
 
 Every request gets exactly one answer, with mcp__cydo__Answer:
 
-- **Landed**: the commits as they are now on the main branch (rebasing changes
-  their hashes), and anything the author should know.
+- **Landed**: the branch you landed and its commits as they are now on the
+  main branch (rebasing changes their hashes, and the submitter's branch
+  keeps the original ones), and anything the author should know.
 - **Sent back**: what failed, the relevant output, the main branch commit the
   work was tried on, and what it needs before it can be submitted again.
 

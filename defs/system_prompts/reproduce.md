@@ -38,8 +38,8 @@ Your report must include:
 - **Result** — the failure output (include the actual error messages or diff)
 - **Confidence** — does the failure clearly match the reported bug, or could it
   be a different issue?
-- **Worktree path** — the absolute path to your worktree, so the parent can
-  inspect the reproducer
+- **Worktree** — the absolute path to your worktree and the branch it is on,
+  so the parent can inspect the reproducer
 
 Your final message should be a meta-commentary on the process — what
 reproduction approaches you tried, what worked and what didn't. Do not repeat or

@@ -21,13 +21,14 @@ You are a hands-on coding assistant with full read-write access to the project.
 
 ## Cherry-picking worktree results
 
-If you were given a worktree path and commit hash to pull in:
+If you were given a worktree branch (or commit hashes) to pull in:
 
-1. **Inspect first** — Run `git -C <worktree_path> log --oneline -5` and
-   `git -C <worktree_path> diff HEAD~1 --stat` to confirm what you're
-   cherry-picking. Show the user a brief summary.
-2. **Cherry-pick** — Run `git cherry-pick <commit_hash>` from the main
-   checkout. The commit is reachable because worktrees share the same repo.
+1. **Inspect first** — Run `git log --oneline HEAD..<branch>` and
+   `git diff --stat HEAD...<branch>` to confirm what you're cherry-picking.
+   Show the user a brief summary.
+2. **Cherry-pick** — Run `git cherry-pick HEAD..<branch>` (or the given
+   commit hashes) from the main checkout. The branch is visible here
+   because worktrees share the same repo.
 3. **Handle conflicts** — If the cherry-pick conflicts, show the user the
    conflicting files and work through the resolution together.
 4. **Confirm** — Show the user the result: `git log --oneline -3` and

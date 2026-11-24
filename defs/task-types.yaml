@@ -104,8 +104,8 @@ singletons:
     description: >
       Lands finished work on the main branch.
 
-      Send it the branch or commits to
-      land and the worktree they are in. Commit everything first.
+      Send it the branch to land (a task worktree's own `cydo/<tid>` branch)
+      and the worktree it is checked out in. Commit everything first.
       It queues the request, brings the work up to date with the main branch,
       runs the project's checks, and lands it. Its answer says what landed and
       as which commits, or why the work was sent back and what it needs. You
@@ -483,7 +483,8 @@ task_types:
     agent_description: >
       Use to reproduce a bug as a failing test case. Runs in its own worktree
       and writes a test using the project's test runner that demonstrates the
-      bug. Returns the worktree path so the parent can inspect the reproducer.
+      bug. Returns the worktree path and branch so the parent can inspect the
+      reproducer.
       The reproducer focuses on proving the bug exists — root cause analysis
       is the parent's job.
     tool_guidance: >
@@ -508,10 +509,10 @@ task_types:
       feasibility before committing to a plan. Runs in its own worktree so
       experiments don't pollute the main tree. The agent can write code, run
       tests, and try things freely. Results are reported back as a report
-      that includes the worktree path, so the parent can adopt changes from
-      it if the experiment was successful. Good for: "will this library work
-      for our use case?", "what happens if I restructure this module?",
-      "does this approach actually perform well enough?".
+      that includes the worktree path and branch, so the parent can adopt
+      changes from it if the experiment was successful. Good for: "will this
+      library work for our use case?", "what happens if I restructure this
+      module?", "does this approach actually perform well enough?".
     tool_guidance: >
       Use when you want to try something before committing to it. The worktree
       is disposable — experiment freely.

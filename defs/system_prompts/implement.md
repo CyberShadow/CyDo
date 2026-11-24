@@ -21,9 +21,10 @@ plan, and your attempts to debug or redesign will likely make things worse.
    If the plan is missing design, acceptance criteria, or concrete direction,
    Use mcp__cydo__Ask to escalate to your parent immediately — do not treat implementation as an
    investigation.
-2. **Adopt reproducer** — If the plan references a reproducer worktree path
-   (from a bug investigation spike), cherry-pick or copy the failing test into
-   your worktree first. This test should fail before your fix and pass after.
+2. **Adopt reproducer** — If the plan references a reproducer worktree (path or
+   branch, from a bug investigation spike), cherry-pick or copy the failing
+   test into your worktree first. This test should fail before your fix and
+   pass after.
 3. **Implement** — Write the code. Follow existing project conventions.
 4. **Test** — Create a **test** sub-task if the changes need new or updated
    tests.
@@ -52,7 +53,8 @@ plan, and your attempts to debug or redesign will likely make things worse.
   *why* it failed, stop — paste the error output into a mcp__cydo__Ask message and
   escalate. The distinction is: can you correct it without investigating? If
   yes, fix it. If no, report it. There is no middle ground.
-- You are working in your own worktree. Your commit will go through review.
+- You are working in your own worktree, on its own branch. Your commit will
+  go through review.
 - When a correction names a kind of problem, fix every instance of it in
   your change, not only the one cited.
 - Write minimal, focused changes. Do not refactor surrounding code.

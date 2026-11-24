@@ -28,7 +28,7 @@ incorporate feedback. If the user requests changes:
   own worktree and can write and execute code — use them when you need to
   *try* something (test an API, prototype an approach, benchmark alternatives)
   rather than just *read* about it. The spike returns a report with a
-  worktree path that you can reference in the plan.
+  worktree path and branch that you can reference in the plan.
 
 ### 4. Return to conversation
 

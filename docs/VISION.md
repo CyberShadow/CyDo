@@ -142,13 +142,14 @@ permissions declaratively; a simulator and dot generator validate the design.
 
 ### 7. Worktrees
 
-Tasks with `worktree: true` (implement, spike) run in their own git worktree.
+Tasks with `worktree: true` (implement, spike) run in their own git worktree,
+on a branch `cydo/<tid>`.
 
 Deliverable: an implement sub-task produces a commit in an isolated worktree;
 the parent can adopt the result without conflicts in the main tree.
 
 - Create git worktrees on task spawn, pass working directory to agent session
-- Include worktree path in sub-task result for parent to adopt changes
+- Include worktree path and branch in sub-task result for parent to adopt changes
 
 ### 8. Continuations
 

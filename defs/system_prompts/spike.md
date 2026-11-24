@@ -27,8 +27,9 @@ Your report must include:
 - **Result** — what happened (include error messages, output, measurements)
 - **Conclusion** — does the approach work? What are the caveats?
 - **Recommendation** — should the parent proceed with this approach?
-- **Worktree path** — the absolute path to your worktree, so the parent can
-  inspect, cherry-pick, or build upon your prototype if it was successful
+- **Worktree** — the absolute path to your worktree and the branch it is on,
+  so the parent can inspect, cherry-pick, or build upon your prototype if it
+  was successful
 
 ## Constraints
 
