@@ -19,12 +19,7 @@ package enum ForkableMessageRole
 	assistant,
 }
 
-package enum CodexUserMessageLineClassification
-{
-	normal,
-	contextOnly,
-	turnAborted,
-}
+import cydo.agent.drivers.codex.user_message;
 
 /// Parse `num_turns` from a ThreadRolledBack event_msg JSONL line.
 /// The payload is `{"type":"thread_rolled_back","num_turns":N}`.
@@ -69,42 +64,6 @@ package bool isCodexSessionStartPrompt(string text)
 		&& match.kind == KnownSystemMessageKind.sessionStart;
 }
 
-package bool isCodexContextOnlyUserText(string text)
-{
-	import std.string : startsWith, stripLeft;
-
-	auto trimmed = text.stripLeft;
-	return trimmed.startsWith("<permissions instructions>")
-		|| trimmed.startsWith("<environment_context>")
-		|| trimmed.startsWith("[SYSTEM:")
-		|| isCodexTurnAbortedUserText(trimmed);
-}
-
-package bool isCodexTurnAbortedUserText(string text)
-{
-	import std.ascii : toLower;
-	import std.string : stripLeft, stripRight;
-
-	enum openingMarker = "<turn_aborted>";
-	enum closingMarker = "</turn_aborted>";
-
-	auto leftTrimmed = text.stripLeft;
-	if (leftTrimmed.length < openingMarker.length)
-		return false;
-	foreach (i, c; openingMarker)
-		if (leftTrimmed[i].toLower != c)
-			return false;
-
-	auto trimmed = leftTrimmed.stripRight;
-	if (trimmed.length < closingMarker.length)
-		return false;
-	foreach (i, c; closingMarker)
-		if (trimmed[trimmed.length - closingMarker.length + i].toLower != c)
-			return false;
-	return true;
-}
-
-
 /// True when a parsed role=user response item represents a Codex rollback turn.
 /// `[SYSTEM:]` retains its existing replay semantics; the Codex-generated
 /// abort fragment does not form a separate rollback turn.
@@ -127,7 +86,11 @@ bool isRollbackMarker(string line)
 /// the next user response_item).
 bool[int] computeRollbackSkipLines(string content)
 {
-	auto scan = scanRollout(content);
+	return computeRollbackSkipLines(scanRollout(content));
+}
+
+package bool[int] computeRollbackSkipLines(const(RolloutLineEvidence)[] scan)
+{
 	bool hasRollback;
 	foreach (ref line; scan)
 		if (line.probe.isThreadRolledBack)
@@ -154,7 +117,7 @@ bool[int] computeRollbackSkipLines(string content)
 			continue;
 		}
 		if (seenTaskStarted && line.probe.isUserMessage
-			&& isCodexRollbackEligibleUserMessage(line.userClassification))
+			&& isCodexRollbackEligibleUserMessage(line.user.classification))
 			userTurnStarts ~= TurnBoundary(line.lineNumber);
 	}
 
@@ -483,6 +446,14 @@ unittest
 /// Translate a response_item rollout line → item-based protocol events.
 string[] translateRolloutResponseItem(string line, string forkId = null, bool forceMeta = false)
 {
+	auto evidence = parseRolloutLineEvidence(line, 0);
+	if (evidence.probe.isUserMessage)
+		return translateCodexUserItem(evidence.user, forkId, forceMeta);
+	return translateNonUserRolloutResponseItem(line, forkId);
+}
+
+package string[] translateNonUserRolloutResponseItem(string line, string forkId)
+{
 	@JSONPartial
 	static struct Probe
 	{
@@ -524,8 +495,7 @@ string[] translateRolloutResponseItem(string line, string forkId = null, bool fo
 	string[] results;
 	if (ptype == "message")
 		results = translateRolloutMessage(probe.payload.role,
-			probe.payload.content.json !is null ? probe.payload.content.json : "[]",
-			forkId, forceMeta);
+			probe.payload.content.json !is null ? probe.payload.content.json : "[]", forkId);
 	else if (ptype == "local_shell_call")
 		results = translateRolloutToolUse(probe.payload.call_id, "local_shell_call",
 			extractCommandInput(probe.payload.action));
@@ -645,16 +615,8 @@ string[] translateRolloutResponseItem(string line, string forkId = null, bool fo
 }
 
 /// Translate a message response_item payload → item/started [+ item/completed].
-string[] translateRolloutMessage(string role, string contentJson, string forkId = null,
-	bool forceMeta = false)
+private string[] translateRolloutMessage(string role, string contentJson, string forkId = null)
 {
-	import std.array : replace;
-
-	// Remap Codex content types (input_text/output_text) → agnostic "text"
-	auto content = contentJson
-		.replace(`"type":"input_text"`, `"type":"text"`)
-		.replace(`"type":"output_text"`, `"type":"text"`);
-
 	if (role == "assistant")
 	{
 		import cydo.protocol : ItemCompletedEvent, ItemStartedEvent, TurnStopEvent, UsageInfo;
@@ -670,7 +632,7 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 		string[] events;
 		try
 		{
-			auto rawBlocks = jsonParse!(RawBlock[])(content);
+			auto rawBlocks = jsonParse!(RawBlock[])(contentJson);
 			foreach (i, ref rb; rawBlocks)
 			{
 				auto itemId = "codex-hist-" ~ to!string(i);
@@ -699,11 +661,10 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 		events ~= toJson(tsev);
 		return events;
 	}
-	else // user, developer, system
+	else // developer, system
 	{
 		import cydo.protocol : ItemStartedEvent;
 
-		// Extract text from the content array
 		@JSONPartial
 		static struct TextBlock
 		{
@@ -711,41 +672,74 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 			@JSONOptional string text;
 		}
 
-		string userText;
 		ContentBlock[] contentBlocks;
 		try
 		{
-			auto blocks = jsonParse!(TextBlock[])(content);
-			foreach (ref b; blocks)
-				if (b.type == "text")
-				{
-					userText ~= b.text;
-					ContentBlock cb;
-					cb.type = "text";
-					cb.text = b.text;
-					contentBlocks ~= cb;
-				}
+			auto blocks = jsonParse!(TextBlock[])(contentJson);
+			foreach (ref block; blocks)
+				if (block.type == "text" || block.type == "input_text" || block.type == "output_text")
+					contentBlocks ~= ContentBlock("text", block.text);
 		}
 		catch (Exception) {}
 
-		if (contentBlocks.length == 0)
-		{
-			ContentBlock cb;
-			cb.type = "text";
-			contentBlocks = [cb];
-		}
 		ItemStartedEvent ev;
 		ev.item_id = "codex-user-hist";
 		ev.item_type = "user_message";
-		ev.content = contentBlocks;
-		if (role != "user" || forceMeta)
-			ev.is_meta = true;
-		else if (isCodexContextOnlyUserText(userText) && !isCodexSessionStartPrompt(userText))
-			ev.is_meta = true;
-		if (forkId !is null)
-			ev.uuid = forkId;
+		ev.content = contentBlocks.length ? contentBlocks : [ContentBlock("text")];
+		ev.is_meta = true;
+		ev.uuid = forkId;
 		return [toJson(ev)];
 	}
+}
+
+package string[] translateCodexUserItem(const CodexUserItem user, string forkId, bool forceMeta)
+{
+	import std.algorithm : findSplit, startsWith;
+
+	import cydo.protocol : ItemStartedEvent;
+
+	if (user.kind == CodexUserItemKind.unrecognized)
+		return [makeUnrecognizedEvent("unrecognized Codex user message content")];
+
+	ItemStartedEvent ev;
+	ev.item_id = "codex-user-hist";
+	ev.item_type = "user_message";
+	ev.is_meta = forceMeta || (!user.isPrompt && !isCodexSessionStartPrompt(user.message()));
+	ev.uuid = forkId;
+	foreach (ref input; user.inputs)
+	{
+		if (input.type == CodexContentItem.Type.inputText)
+		{
+			ev.content ~= ContentBlock("text", input.text);
+			continue;
+		}
+
+		if (input.type == CodexContentItem.Type.inputAudio || input.mediaUrl is null)
+		{
+			ev.content ~= ContentBlock("text",
+				input.type == CodexContentItem.Type.inputAudio ? "[Audio]" : "[Image]");
+			continue;
+		}
+
+		enum dataPrefix = "data:";
+		if (input.mediaUrl.startsWith(dataPrefix))
+		{
+			auto split = input.mediaUrl[dataPrefix.length .. $].findSplit(";base64,");
+			if (split[1].length > 0)
+			{
+				ContentBlock image;
+				image.type = "image";
+				image.media_type = split[0];
+				image.data = split[2];
+				ev.content ~= image;
+				continue;
+			}
+		}
+		ev.content ~= ContentBlock("text", "[image: " ~ input.mediaUrl ~ "]");
+	}
+	if (user.isTurnBoundary && ev.content.length == 0)
+		ev.content = [ContentBlock("text")];
+	return [toJson(ev)];
 }
 
 unittest
@@ -759,8 +753,19 @@ unittest
 		@JSONOptional string uuid;
 	}
 
-	auto multipart = translateRolloutMessage("user",
-		`[{"type":"input_text","text":"first"},{"type":"output_text","text":""},{"type":"image"},{"type":"text","text":" third "}]`,
+	string userLine(string content)
+	{
+		return `{"type":"response_item","payload":{"type":"message","role":"user","content":`
+			~ content ~ "}}";
+	}
+
+	string[] translateUser(string content, string forkId = null)
+	{
+		return translateRolloutResponseItem(userLine(content), forkId);
+	}
+
+	auto multipart = translateUser(
+		`[{"type":"input_text","text":"first"},{"type":"output_text","text":"ignored"},{"type":"input_image","image_url":"data:image/png;base64,AA=="},{"type":"input_text","text":" third "}]`,
 		"line:17");
 	assert(multipart.length == 1);
 	auto event = jsonParse!UserEvent(multipart[0]);
@@ -770,8 +775,25 @@ unittest
 	assert(!event.is_meta);
 	assert(event.content.length == 3);
 	assert(event.content[0].text == "first");
-	assert(event.content[1].text == "");
+	assert(event.content[1].type == "image");
 	assert(event.content[2].text == " third ");
+
+	auto imagePrompt = jsonParse!UserEvent(translateUser(
+		`[{"type":"input_text","text":"<image name=[Image #1] path=\"/workspace/diagram.png\">"},{"type":"input_image","image_url":"data:image/png;base64,AA=="},{"type":"input_text","text":"</image>"},{"type":"input_text","text":"Explain this diagram."},{"type":"input_text","text":"<image>"}]`)[0]);
+	assert(!imagePrompt.is_meta);
+	assert(imagePrompt.content.length == 3);
+	assert(imagePrompt.content[0].type == "image");
+	assert(imagePrompt.content[1].text == "Explain this diagram.");
+	assert(imagePrompt.content[2].text == "<image>");
+
+	auto injected = jsonParse!UserEvent(translateUser(
+		`[{"type":"input_text","text":"Ordinary text"},{"type":"input_text","text":"<goal_context>Continue.</goal_context>"},{"type":"input_text","text":"<environment_context>cwd</environment_context>"}]`)[0]);
+	assert(injected.is_meta);
+	assert(injected.content.length == 3);
+
+	auto outputOnly = jsonParse!UserEvent(translateUser(
+		`[{"type":"output_text","text":"<goal_context>Continue.</goal_context>"}]`)[0]);
+	assert(!outputOnly.is_meta);
 
 	auto singleton = jsonParse!UserEvent(translateRolloutMessage("developer",
 		`[{"type":"text","text":"only"}]`)[0]);
@@ -779,10 +801,41 @@ unittest
 	assert(singleton.content[0].text == "only");
 	assert(singleton.is_meta);
 
-	auto empty = jsonParse!UserEvent(translateRolloutMessage("user",
-		`[{"type":"image"}]`)[0]);
-	assert(empty.content.length == 1);
-	assert(empty.content[0].text == "");
+	auto imageOnly = jsonParse!UserEvent(translateUser(
+		`[{"type":"input_image","image_url":"data:image/png;base64,AA=="}]`)[0]);
+	assert(!imageOnly.is_meta && imageOnly.content.length == 1);
+	assert(imageOnly.content[0].type == "image");
+	assert(imageOnly.content[0].media_type == "image/png");
+	assert(imageOnly.content[0].data == "AA==");
+
+	auto remoteImage = jsonParse!UserEvent(translateUser(
+		`[{"type":"input_image","image_url":"https://example.test/image.png"}]`)[0]);
+	assert(!remoteImage.is_meta && remoteImage.content.length == 1);
+	assert(remoteImage.content[0].type == "text");
+	assert(remoteImage.content[0].text == "[image: https://example.test/image.png]");
+
+	enum audio = `[{"type":"input_text","text":"<audio>"},{"type":"input_audio","audio_url":"data:audio/wav;base64,UklGRg=="},{"type":"input_text","text":"</audio>"}]`;
+	enum fileAudio = `[{"type":"input_audio","file_id":"file-audio"}]`;
+	enum fileImage = `[{"type":"input_image","file_id":"file-image"}]`;
+	foreach (fixture; [[audio, "[Audio]"], [fileAudio, "[Audio]"], [fileImage, "[Image]"]])
+	{
+		auto media = jsonParse!UserEvent(translateUser(fixture[0])[0]);
+		assert(!media.is_meta && media.content.length == 1);
+		assert(media.content[0].type == "text" && media.content[0].text == fixture[1]);
+		assert(parseRolloutLineEvidence(userLine(fixture[0]), 0).user.preview() == fixture[1]);
+	}
+
+	auto board = jsonParse!UserEvent(translateUser(
+		`[{"type":"input_text","text":"<agent_message_board_notification>Review is complete.</agent_message_board_notification>"}]`)[0]);
+	assert(board.is_meta && board.content.length == 1);
+	assert(board.content[0].text ==
+		"<agent_message_board_notification>Review is complete.</agent_message_board_notification>");
+
+	enum unknown = `[{"type":"future"}]`;
+	import cydo.protocol : AgentUnrecognizedEvent;
+	assert(jsonParse!AgentUnrecognizedEvent(translateUser(unknown)[0]).type == "agent/unrecognized");
+	auto evidence = parseRolloutLineEvidence(userLine(unknown), 0);
+	assert(evidence.user.kind == CodexUserItemKind.unrecognized);
 }
 
 /// Translate a tool_use response_item → item/started + item/completed.

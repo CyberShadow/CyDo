@@ -35,3 +35,62 @@ enum legacyRollout = `{"timestamp":"2026-11-21T15:14:57.959Z","type":"session_me
 {"timestamp":"2026-11-21T15:14:58.186Z","type":"response_item","payload":{"type":"message","id":"msg_mock_00002","role":"assistant","content":[{"type":"output_text","text":"Done."}],"internal_chat_message_metadata_passthrough":{"turn_id":"01a1feac-c580-79c3-8ea3-46e1938d56df"}}}
 {"timestamp":"2026-11-21T15:14:58.186Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30,"cached_input_tokens":0,"output_tokens":42,"reasoning_output_tokens":0,"total_tokens":72},"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15},"model_context_window":258400},"rate_limits":{"limit_id":"codex","limit_name":null,"primary":null,"secondary":null,"credits":null,"individual_limit":null,"plan_type":null,"rate_limit_reached_type":null}}}
 {"timestamp":"2026-11-21T15:14:58.189Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"01a1feac-c580-79c3-8ea3-46e1938d56df","last_agent_message":"Done.","completed_at":1795274098,"duration_ms":139,"time_to_first_token_ms":44}}`;
+
+struct NativeUserSchemaCase
+{
+	string fields;
+	string content;
+	string message;
+	string title;
+	string renderedMediaType;
+}
+
+private enum prompt = `[{"type":"input_text","text":"Prompt."}]`;
+private enum message = "Prompt.";
+
+enum nativeUserSchemaCases = [
+	NativeUserSchemaCase(
+		`,"encrypted_content":"encrypted","status":"unknown","id":"msg_1","phase":"partial_answer",`
+			~ `"internal_chat_message_metadata_passthrough":{"turn_id":"turn","create_time":3.25,`
+			~ `"content_token_count":false,"content_item_kinds":42,"content_item_metadata":true,`
+			~ `"cell_id":42,"executed_tool_calls":false,"tool_calls_complete":[],"future":42}`,
+		prompt, message, message),
+	NativeUserSchemaCase(
+		`,"phase":{"final_answer":{}},"internal_chat_message_metadata_passthrough":[null,3.25,false,42,true]`,
+		prompt, message, message),
+	NativeUserSchemaCase(
+		`,"internal_chat_message_metadata_passthrough":{"create_time":{"$serde_json::private::Number":"3.25"}}`,
+		prompt, message, message),
+	NativeUserSchemaCase(
+		`,"encrypted_content":null,"status":null,"id":null,"phase":null,"internal_chat_message_metadata_passthrough":null`,
+		prompt, message, message),
+	NativeUserSchemaCase(`,"encrypted_content":false`, prompt),
+	NativeUserSchemaCase(`,"status":[]`, prompt),
+	NativeUserSchemaCase(`,"id":{}`, prompt),
+	NativeUserSchemaCase(`,"phase":42`, prompt),
+	NativeUserSchemaCase(`,"phase":"unknown"`, prompt),
+	NativeUserSchemaCase(`,"phase":{"commentary":[]}`, prompt),
+	NativeUserSchemaCase(`,"internal_chat_message_metadata_passthrough":true`, prompt),
+	NativeUserSchemaCase(`,"internal_chat_message_metadata_passthrough":{"turn_id":42}`, prompt),
+	NativeUserSchemaCase(`,"internal_chat_message_metadata_passthrough":{"create_time":"3.25"}`, prompt),
+	NativeUserSchemaCase(`,"internal_chat_message_metadata_passthrough":[null,false]`, prompt),
+	NativeUserSchemaCase(`,"internal_chat_message_metadata_passthrough":[null,null,null,null,null,null]`, prompt),
+	NativeUserSchemaCase(null,
+		`[{"type":"input_image","image_url":null,"file_id":"file-image","detail":"original"}]`,
+		null, "[Image]", "text"),
+	NativeUserSchemaCase(null,
+		`[{"type":"input_image","image_url":"data:image/png;base64,AA==","file_id":42,"detail":{"auto":null}}]`,
+		null, "[Image]", "image"),
+	NativeUserSchemaCase(null, `[{"type":"input_audio","audio_url":42,"file_id":"file-audio"}]`,
+		null, "[Audio]", "text"),
+	NativeUserSchemaCase(null, `[{"type":"input_audio","audio_url":"audio","file_id":false}]`,
+		null, "[Audio]", "text"),
+	NativeUserSchemaCase(null, `[{"type":"input_image","image_url":null,"file_id":42}]`),
+	NativeUserSchemaCase(null, `[{"type":"input_audio","audio_url":42,"file_id":null}]`),
+];
+
+string nativeUserSchemaLine(NativeUserSchemaCase fixture)
+{
+	return `{"type":"response_item","payload":{"type":"message","role":"user","content":`
+		~ fixture.content ~ fixture.fields ~ "}}";
+}

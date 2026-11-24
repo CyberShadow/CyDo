@@ -32,6 +32,7 @@ import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.drivers.codex.app_server : CodexSessionRouteTarget;
 import cydo.agent.drivers.codex.history : readThreadHistory;
 public import cydo.agent.drivers.codex.process : AppServerProcess;
+import cydo.agent.drivers.codex.user_message : isCodexContextualFragment, isCodexSystemFramedText;
 public import cydo.agent.drivers.codex.rollout;
 public import cydo.agent.drivers.codex.rpc;
 public import cydo.agent.drivers.codex.thread_items;
@@ -163,8 +164,10 @@ class CodexAgent : DriverServedHistoryAgent
 	HistoryReplay createHistoryReplay()
 	{
 		bool seenTaskStarted;
-		return HistoryReplay((line, lineNum) =>
-			translateLegacyRolloutLine(line, lineNum, seenTaskStarted));
+		return HistoryReplay((line, lineNum) {
+			auto evidence = parseRolloutLineEvidence(line, lineNum);
+			return translateLegacyRolloutLine(line, evidence, seenTaskStarted);
+		});
 	}
 
 	void configureSandbox(ref SandboxPaths paths, ref string[string] env)
@@ -414,8 +417,7 @@ class CodexAgent : DriverServedHistoryAgent
 		});
 		server.onReady(() {
 			readThreadHistory((string method, string params) => server.sendRequest(method, params),
-				threadId, liveTurnIds, (string path) => readText(path),
-				&createHistoryReplay)
+				threadId, liveTurnIds, (string path) => readText(path))
 			.then((DriverHistory history) {
 				settle(() { result.fulfill(history); });
 			}, (Exception e) {
@@ -792,7 +794,7 @@ class CodexAgent : DriverServedHistoryAgent
 		return newest.values;
 	}
 
-	package static TranslatedEvent[] translateLegacyRolloutLine(string line, int lineNum,
+	package static TranslatedEvent[] translateLegacyRolloutLine(string line, const ref RolloutLineEvidence evidence,
 		ref bool seenTaskStarted)
 	{
 		import std.conv : to;
@@ -805,7 +807,7 @@ class CodexAgent : DriverServedHistoryAgent
 		try { ts = parseIso8601Timestamp(jsonParse!TimestampProbe(line).timestamp); }
 		catch (Exception) {}
 
-		auto probe = parseRolloutLineProbe(line);
+		auto probe = evidence.probe;
 		if (probe.isSessionMeta)
 		{
 			auto t = translateRolloutSessionMeta(line);
@@ -821,10 +823,12 @@ class CodexAgent : DriverServedHistoryAgent
 			// Pass line-number fork ID for user/assistant messages
 			string forkId = null;
 			if (probe.isForkableMessage)
-				forkId = "line:" ~ to!string(lineNum);
+				forkId = "line:" ~ to!string(evidence.lineNumber);
 			// Lines before task_started are system context injected by Codex — mark as meta.
 			bool forceMeta = !seenTaskStarted;
-			auto results = translateRolloutResponseItem(line, forkId, forceMeta);
+			auto results = probe.isUserMessage
+				? translateCodexUserItem(evidence.user, forkId, forceMeta)
+				: translateNonUserRolloutResponseItem(line, forkId);
 			TranslatedEvent[] evs;
 			foreach (r; results)
 				evs ~= TranslatedEvent(r, line, ts);
@@ -2758,7 +2762,8 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 			// The context bootstrap occupies the opener position too.
 			assert(activeTurnId_.length > 0, "Codex user message belongs to no turn");
 			attachUserBoundary(ev, activeTurnId_, submission.isContextBootstrap
-				|| isCodexContextOnlyUserText(submission.text), turnHasUserOpener_);
+				|| isCodexSystemFramedText(submission.text)
+				|| isCodexContextualFragment(submission.text), turnHasUserOpener_);
 			auto translated = TranslatedEvent(toJson(ev), rawNotification,
 				AbsTime.init, 0, submission.isContextBootstrap);
 			if (submission.accepted)
@@ -3379,7 +3384,7 @@ unittest
 	auto confirmed = jsonParse!ItemStartedEvent(emitted[$ - 1].translated);
 	assert(confirmed.correlation_id == contextPrefixedPrompt ~ "-nonce");
 	assert(!confirmed.is_meta, "A confirmed submission echo must remain non-meta");
-	assert(confirmed.history_boundary == HistoryBoundary.init);
+	assert(confirmed.history_boundary == HistoryBoundary("before:turn-3", HistoryBoundaryKind.user));
 }
 
 unittest

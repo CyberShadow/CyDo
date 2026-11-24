@@ -8,9 +8,11 @@ import ae.utils.jsonrpc : JsonRpcResponse;
 import ae.utils.json : jsonParse, toJson;
 import ae.utils.promise : Promise;
 
-import cydo.agent.contract : DriverHistory, HistoryReplay;
+import cydo.agent.contract : DriverHistory;
 import cydo.agent.drivers.codex.rollout : computeRollbackSkipLines,
-	isCodexSessionStartPrompt, parseRolloutLineEvidence;
+	isCodexSessionStartPrompt, scanRollout;
+import cydo.agent.drivers.codex : CodexAgent;
+import cydo.agent.drivers.codex.user_message : CodexUserItemKind;
 import cydo.agent.drivers.codex.rpc : ThreadItemEntry, ThreadItemsListParams,
 	ThreadItemsListResult, ThreadMetadata, ThreadMetadataResult, ThreadReadParams,
 	ThreadTurnsListParams, ThreadTurnsListResult, Turn;
@@ -40,8 +42,7 @@ private T resultOf(T)(JsonRpcResponse response)
 /// Read the whole history of `threadId`. `liveTurnIds` is asked once all of
 /// it has arrived, so a turn the live session started meanwhile is left to it.
 Promise!DriverHistory readThreadHistory(CodexRequest request, string threadId,
-	const(bool[string]) delegate() liveTurnIds, string delegate(string path) readRollout,
-	HistoryReplay delegate() createLegacyReplay)
+	const(bool[string]) delegate() liveTurnIds, string delegate(string path) readRollout)
 {
 	auto result = new Promise!DriverHistory;
 	ThreadMetadata thread;
@@ -111,8 +112,7 @@ Promise!DriverHistory readThreadHistory(CodexRequest request, string threadId,
 				case "legacy":
 					enforce(thread.path.length > 0, "Codex named no rollout file for a legacy thread");
 					result.fulfill(DriverHistory(
-						decodeLegacyRollout(readRollout(thread.path), liveTurnIds(),
-							createLegacyReplay()),
+						decodeLegacyRollout(readRollout(thread.path), liveTurnIds()),
 						CodexHistoryMode.legacy));
 					break;
 				default:
@@ -125,13 +125,14 @@ Promise!DriverHistory readThreadHistory(CodexRequest request, string threadId,
 /// Translate a legacy rollout. Its turns are the stretches that follow a
 /// `task_started` record; the ones that record carries an id for get the
 /// boundaries Codex can cut at.
-TranslatedEvent[] decodeLegacyRollout(string content, const bool[string] liveTurnIds,
-	HistoryReplay replay)
+TranslatedEvent[] decodeLegacyRollout(string content, const bool[string] liveTurnIds)
 {
 	import std.conv : to;
 	import std.string : lineSplitter;
 
-	auto rolledBack = computeRollbackSkipLines(content);
+	auto scan = scanRollout(content);
+	auto rolledBack = computeRollbackSkipLines(scan);
+	bool seenTaskStarted;
 	TranslatedEvent[] events;
 	string turnId;
 	bool live;
@@ -160,7 +161,7 @@ TranslatedEvent[] decodeLegacyRollout(string content, const bool[string] liveTur
 		lineNumber++;
 		if (line.length == 0)
 			continue;
-		auto evidence = parseRolloutLineEvidence(line, lineNumber);
+		auto evidence = &scan[lineNumber - 1];
 		enforce(evidence.parsed, "Cannot decode Codex rollout line " ~ lineNumber.to!string);
 		if (lineNumber in rolledBack)
 			continue;
@@ -187,21 +188,21 @@ TranslatedEvent[] decodeLegacyRollout(string content, const bool[string] liveTur
 			events[pendingUser].translated = toJson(user);
 		}
 		pendingUser = -1;
-		foreach (event; replay.translateHistoryLine(line, lineNumber))
+		foreach (event; CodexAgent.translateLegacyRolloutLine(line, *evidence, seenTaskStarted))
 		{
 			if (evidence.probe.isForkableMessage)
 			{
 				// The file replay named these events after their line.
-				if (evidence.probe.isUserMessage)
+				if (evidence.probe.isUserMessage && evidence.user.kind != CodexUserItemKind.unrecognized)
 				{
 					auto user = jsonParse!ItemStartedEvent(event.translated);
 					user.uuid = null;
 					user.item_id = "codex-user-hist-" ~ lineNumber.to!string;
 					event.translated = toJson(user);
 					pendingUser = events.length;
-					pendingUserText = evidence.inputText;
+					pendingUserText = evidence.user.message();
 				}
-				else if (isTurnStop(event.translated))
+				else if (evidence.probe.isAssistantMessage && isTurnStop(event.translated))
 				{
 					auto stop = jsonParse!TurnStopEvent(event.translated);
 					stop.uuid = null;
@@ -242,10 +243,7 @@ version (unittest)
 
 	private TranslatedEvent[] decodeLegacy(string content, const bool[string] liveTurnIds = null)
 	{
-		import cydo.agent.drivers.codex : CodexAgent;
-
-		auto agent = new CodexAgent;
-		return decodeLegacyRollout(content, liveTurnIds, agent.createHistoryReplay());
+		return decodeLegacyRollout(content, liveTurnIds);
 	}
 
 	/// The boundaries of `events`, as "<event type> <anchor>".
@@ -300,6 +298,71 @@ unittest
 	foreach (probe; users)
 		assert(probe.uuid.length == 0
 			&& (probe.is_meta || probe.item_id.length > "codex-user-hist-".length));
+}
+
+unittest
+{
+	import std.array : join;
+
+	enum media = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<image>"},{"type":"input_image","file_id":"file-image"},{"type":"input_text","text":"</image>"}`;
+	foreach (text; ["Explain.", ""])
+	{
+		auto response = media ~ (text.length ? `,{"type":"input_text","text":"Explain."}` : "") ~ "]}}";
+		auto event = `{"type":"event_msg","payload":{"type":"user_message","message":` ~ toJson(text) ~ "}}";
+		assert(boundariesOf(decodeLegacy([legacyLines()[1], response, event].join("\n")))
+			== ["item/started before:" ~ legacyRolloutFirstTurn]);
+	}
+}
+
+unittest
+{
+	import std.array : join;
+
+	foreach (part; [
+		`{"type":"input_audio","audio_url":42}`,
+		`{"type":"input_audio","file_id":42}`,
+		`{"type":"input_image","file_id":"image","detail":42}`,
+		`{"type":"input_image","image_url":"image","detail":"unknown"}`,
+		`{"type":"output_text","text":"output","annotations":{}}`,
+		`{"type":"output_text","text":"output","logprobs":42}`,
+	])
+	{
+		auto malformed = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Listen."},` ~ part ~ "]}}";
+		auto events = decodeLegacy([legacyLines()[1], malformed,
+			`{"type":"event_msg","payload":{"type":"user_message","message":"Listen."}}`,
+		].join("\n"));
+		assert(events.length == 1 && events[0].raw == malformed);
+		auto event = jsonParse!EventProbe(events[0].translated);
+		assert(event.type == "agent/unrecognized");
+		assert(event.history_boundary == HistoryBoundary.init);
+	}
+}
+
+unittest
+{
+	import std.array : join;
+	import cydo.agent.drivers.codex.history_fixtures : nativeUserSchemaCases, nativeUserSchemaLine;
+
+	foreach (fixture; nativeUserSchemaCases)
+	{
+		auto response = nativeUserSchemaLine(fixture);
+		auto event = `{"type":"event_msg","payload":{"type":"user_message","message":`
+			~ toJson(fixture.message.length == 0 ? "" : fixture.message) ~ "}}";
+		auto events = decodeLegacy([legacyLines()[1], response, event].join("\n"));
+		assert(events.length == 1 && events[0].raw == response, response);
+		if (fixture.title is null)
+		{
+			assert(jsonParse!EventProbe(events[0].translated).type == "agent/unrecognized", response);
+			assert(boundariesOf(events).length == 0, response);
+		}
+		else
+		{
+			assert(boundariesOf(events) == ["item/started before:" ~ legacyRolloutFirstTurn], response);
+			if (fixture.renderedMediaType !is null)
+				assert(jsonParse!ItemStartedEvent(events[0].translated).content[0].type
+					== fixture.renderedMediaType, response);
+		}
+	}
 }
 
 // Variations on that rollout.
@@ -398,10 +461,8 @@ version (unittest) private ReadOutcome readWith(FakeAppServer server,
 	const(bool[string]) delegate() liveTurnIds = null, string rollout = null,
 	string* rolloutPath = null)
 {
-	import cydo.agent.drivers.codex : CodexAgent;
 	import cydo.foundation.testing : drainNextTicks;
 
-	auto agent = new CodexAgent;
 	ReadOutcome outcome;
 	bool settled;
 	readThreadHistory(&server.request, "01a1feae-9e4c-7d83-a43c-dbd595e0221d",
@@ -410,8 +471,7 @@ version (unittest) private ReadOutcome readWith(FakeAppServer server,
 			assert(rolloutPath !is null, "a paginated thread is read over the app-server only");
 			*rolloutPath = path;
 			return rollout;
-		},
-		&agent.createHistoryReplay)
+		})
 	.then((DriverHistory history) { outcome.history = history; settled = true; },
 		(Exception e) { outcome.failure = e.msg; settled = true; }).ignoreResult();
 	drainNextTicks();

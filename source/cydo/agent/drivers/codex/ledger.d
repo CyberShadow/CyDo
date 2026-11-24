@@ -8,6 +8,7 @@ import ae.utils.serialization.serialization : isProtocolArray, isProtocolBoolean
 	isProtocolString;
 
 import cydo.agent.drivers.codex.rollout;
+import cydo.agent.drivers.codex.user_message;
 
 /// Preserve repeated object keys so field lookups can reject ambiguity.
 package enum RolloutValueType
@@ -181,8 +182,7 @@ package struct RolloutLineEvidence
 	bool parsed;
 	RolloutLineProbe probe;
 	string payloadType;
-	string inputText;
-	CodexUserMessageLineClassification userClassification;
+	CodexUserItem user;
 
 	bool eventTurnIdValid;
 	string eventTurnId;
@@ -190,36 +190,154 @@ package struct RolloutLineEvidence
 	string eventMessage;
 }
 
+private bool optionalField(const ref RolloutValue item, string key, RolloutValueType type)
+{
+	size_t count;
+	auto field = rolloutField(item, key, count);
+	return count == 0 || (count == 1 && (field.type == RolloutValueType.null_ || field.type == type));
+}
+
+private bool optionalUnitEnum(const ref RolloutValue item, string key, const(string)[] allowed)
+{
+	import std.algorithm : canFind;
+
+	size_t count;
+	auto field = rolloutField(item, key, count);
+	if (count == 0 || (count == 1 && field.type == RolloutValueType.null_))
+		return true;
+	if (count != 1)
+		return false;
+	if (field.type == RolloutValueType.string_)
+		return allowed.canFind(field.text);
+	// Serde also accepts an externally tagged unit variant as a one-key map.
+	if (field.type != RolloutValueType.object || field.keys.length != 1)
+		return false;
+	auto tag = &field.values[0];
+	return allowed.canFind(field.keys[0]) && (tag.type == RolloutValueType.null_
+		|| (tag.type == RolloutValueType.object && tag.keys.length == 0));
+}
+
 private void decodeContent(ref RolloutLineEvidence evidence,
 	const(RolloutValue)* value)
 {
 	if (value is null || value.type != RolloutValueType.array)
 		return;
-	bool classificationKnown = true;
+	alias Type = CodexContentItem.Type;
+	CodexContentItem[] content;
+	bool valid = true;
 	foreach (ref item; value.values)
 	{
-		size_t typeCount;
-		auto type = rolloutField(item, "type", typeCount);
-		string contentType;
-		if (typeCount != 1 || !rolloutString(type, contentType))
+		size_t count;
+		string type;
+		if (!rolloutString(rolloutField(item, "type", count), type) || count != 1)
 		{
-			classificationKnown = false;
+			valid = false;
 			continue;
 		}
-		if (contentType != "input_text" && contentType != "text")
-			continue;
-		size_t textCount;
-		auto text = rolloutField(item, "text", textCount);
-		string textValue;
-		if (textCount == 1 && rolloutString(text, textValue))
-			evidence.inputText ~= textValue;
-		else
-			classificationKnown = false;
+		string text;
+		switch (type)
+		{
+			case "output_text":
+				if (!optionalField(item, "annotations", RolloutValueType.array)
+					|| !optionalField(item, "logprobs", RolloutValueType.array))
+					break;
+				goto case "input_text";
+			case "input_text":
+				if (rolloutString(rolloutField(item, "text", count), text) && count == 1)
+				{
+					content ~= CodexContentItem(
+						type == "input_text" ? Type.inputText : Type.outputText, text);
+					continue;
+				}
+				break;
+			case "input_image":
+			case "input_audio":
+				auto image = type == "input_image";
+				if (image && !optionalUnitEnum(item, "detail",
+					["auto", "low", "high", "original"]))
+					break;
+				// Untagged references try Inline first. Each variant ignores the
+				// other variant's field, even when its value is malformed.
+				auto url = rolloutField(item, image ? "image_url" : "audio_url", count);
+				if (count == 1 && rolloutString(url, text))
+				{
+					content ~= CodexContentItem(image ? Type.inputImage : Type.inputAudio, null, text);
+					continue;
+				}
+				auto fileId = rolloutField(item, "file_id", count);
+				if (count == 1 && rolloutString(fileId, text))
+				{
+					content ~= CodexContentItem(image ? Type.inputImage : Type.inputAudio);
+					continue;
+				}
+				break;
+			default:
+				break;
+		}
+		valid = false;
 	}
-	if (classificationKnown && isCodexTurnAbortedUserText(evidence.inputText))
-		evidence.userClassification = CodexUserMessageLineClassification.turnAborted;
-	else if (classificationKnown && isCodexContextOnlyUserText(evidence.inputText))
-		evidence.userClassification = CodexUserMessageLineClassification.contextOnly;
+	evidence.user = parseCodexUserItem(content);
+	if (!valid)
+		evidence.user = CodexUserItem(CodexUserItemKind.unrecognized, null, false,
+			evidence.user.classification);
+}
+
+private bool validUserMessageFields(const ref RolloutValue payload)
+{
+	if (!optionalField(payload, "encrypted_content", RolloutValueType.string_)
+		|| !optionalField(payload, "status", RolloutValueType.string_)
+		|| !optionalField(payload, "id", RolloutValueType.string_)
+		|| !optionalUnitEnum(payload, "phase",
+			["commentary", "partial_answer", "final_answer"]))
+		return false;
+
+	size_t count;
+	auto metadata = rolloutField(payload, "internal_chat_message_metadata_passthrough", count);
+	if (count == 0 || (count == 1 && metadata.type == RolloutValueType.null_))
+		return true;
+	return count == 1 && validMessageMetadata(*metadata);
+}
+
+private bool validMessageMetadata(const ref RolloutValue metadata)
+{
+	if (metadata.type == RolloutValueType.array)
+	{
+		// Serde's positional struct representation has five input fields.
+		auto fields = metadata.values;
+		return fields.length <= 5
+			&& (fields.length < 1 || fields[0].type == RolloutValueType.null_
+				|| fields[0].type == RolloutValueType.string_)
+			&& (fields.length < 2 || validCreateTime(fields[1]));
+	}
+	if (metadata.type != RolloutValueType.object)
+		return false;
+
+	// DefaultOnError tolerates any value for these deserialized fields.
+	size_t count;
+	foreach (key; ["content_token_count", "content_item_kinds", "content_item_metadata"])
+	{
+		rolloutField(metadata, key, count);
+		if (count > 1)
+			return false;
+	}
+	// Host-only metadata fields are marked skip_deserializing.
+	auto createTime = rolloutField(metadata, "create_time", count);
+	return optionalField(metadata, "turn_id", RolloutValueType.string_)
+		&& (count == 0 || (count == 1 && validCreateTime(*createTime)));
+}
+
+private bool validCreateTime(const ref RolloutValue field)
+{
+	import std.regex : ctRegex, matchFirst;
+
+	if (field.type == RolloutValueType.null_ || field.type == RolloutValueType.numeric)
+		return true;
+	// serde_json's arbitrary-precision Number also decodes this tagged form.
+	return field.type == RolloutValueType.object && field.keys.length == 1
+		&& field.keys[0] == "$serde_json::private::Number"
+		&& field.values[0].type == RolloutValueType.string_
+		&& !field.values[0].text.matchFirst(
+			ctRegex!`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`).empty;
 }
 
 private void decodeResponseItem(ref RolloutLineEvidence evidence,
@@ -242,7 +360,7 @@ private void decodeResponseItem(ref RolloutLineEvidence evidence,
 	else if (messageRole == "assistant")
 		evidence.probe.messageRole = ForkableMessageRole.assistant;
 
-	if (!evidence.probe.isUserMessage)
+	if (!evidence.probe.isUserMessage || !validUserMessageFields(payload))
 		return;
 	size_t contentCount;
 	auto content = rolloutField(payload, "content", contentCount);

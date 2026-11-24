@@ -13,8 +13,9 @@ import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial, jsonPa
 import ae.utils.time.types : AbsTime;
 
 import cydo.agent.drivers.codex.app_server : extractCodexErrorMessage;
-import cydo.agent.drivers.codex.rollout : extractCommandInput, isCodexContextOnlyUserText,
+import cydo.agent.drivers.codex.rollout : extractCommandInput,
 	isCodexSessionStartPrompt;
+import cydo.agent.drivers.codex.user_message : isCodexContextualFragment, isCodexSystemFramedText;
 import cydo.agent.drivers.codex.rpc : SO, ThreadItem, ThreadItemEntry, ThreadMetadata, Turn;
 import cydo.protocol : ContentBlock, HistoryBoundary, HistoryBoundaryKind,
 	ItemCompletedEvent, ItemResultEvent, ItemStartedEvent, SessionCompactedEvent,
@@ -517,7 +518,10 @@ TranslatedEvent[] translateThreadHistory(ThreadMetadata thread, Turn[] turns,
 					string[] unrecognized;
 					auto ev = userMessageEvent(item, unrecognized);
 					auto text = userMessageText(item);
-					auto context = isCodexContextOnlyUserText(text);
+					import std.algorithm : any;
+
+					auto context = isCodexSystemFramedText(text) || ev.content.any!(
+						block => block.type == "text" && isCodexContextualFragment(block.text));
 					ev.is_meta = context && !isCodexSessionStartPrompt(text);
 					attachUserBoundary(ev, turn.id, context, seenUserMessage);
 					events ~= TranslatedEvent(toJson(ev), rawItem, ts);
@@ -1020,6 +1024,20 @@ unittest
 		`{"type":"userMessage","id":"user-3","content":[]}`), unrecognized);
 	assert(unrecognized.length == 0 && empty.content.length == 1
 		&& empty.content[0].type == "text" && empty.content[0].text.length == 0);
+}
+
+unittest
+{
+	auto turns = ascendingTurns(nineTurnTurnsPage)[0 .. 1];
+	auto items = pageItems(nineTurnItemsPage)[0 .. 1];
+	items[0].item.content = jsonParse!ThreadItem(`{"type":"userMessage","id":"user-1",`
+		~ `"content":[{"type":"text","text":"Ordinary text","text_elements":[]},`
+		~ `{"type":"text","text":"<environment_context>cwd</environment_context>","text_elements":[]}]}`).content;
+	assertOutline(outline(translateThreadHistory(fixtureThread(), turns, items), turns), [
+		"session/init",
+		"user [Ordinary text] [<environment_context>cwd</environment_context>] meta",
+		"turn success",
+	]);
 }
 
 // A reasoning item's text is its content when it has any, else its summary,
