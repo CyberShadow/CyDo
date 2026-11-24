@@ -5,7 +5,7 @@ import ae.net.jsonrpc.binding : JsonRpcDispatcher, jsonRpcDispatcher,
 	RPCFlatten, RPCName, RPCNamedParams;
 import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse;
-import ae.utils.jsonrpc : JsonRpcRequest, JsonRpcResponse;
+import ae.utils.jsonrpc : JsonRpcException, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.serialization.store : SerializedObject;
 
 private alias SO = SerializedObject!(immutable char);
@@ -90,6 +90,13 @@ struct PingResult
 	string message;
 	long timestamp;
 	int protocolVersion;
+}
+
+@JSONPartial
+struct AuthStatusResult
+{
+	bool isAuthenticated;
+	@JSONOptional string statusMessage;
 }
 
 // ---- Session results ----
@@ -307,6 +314,17 @@ class SdkProcess
 		req.method = method;
 		req.params = jsonParse!SO(params);
 		return codec.sendRequest(req);
+	}
+
+	Promise!void requireAuthentication()
+	{
+		return sendRequest("auth.getStatus", `{}`).then((JsonRpcResponse response) {
+			if (response.isError)
+				throw new JsonRpcException(response.error.get);
+			auto status = response.result.deserializeTo!AuthStatusResult();
+			if (!status.isAuthenticated)
+				throw new Exception("Copilot CLI is not authenticated: " ~ status.statusMessage);
+		});
 	}
 
 	/// Send a JSON-RPC notification (no id, no response expected).

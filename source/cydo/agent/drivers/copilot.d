@@ -805,23 +805,7 @@ class CopilotAgent : Agent
 			srv.registerSession(sessionId, session);
 
 			srv.onReady(() {
-				srv.sendRequest("session.create",
-					buildSessionCreateParams(sessionId, model, cwd, SessionConfig.init))
-				.then((JsonRpcResponse createResp) {
-					if (createResp.isError)
-						throw new JsonRpcException(createResp.error.get);
-					SessionSendParams oneShotSendP;
-					oneShotSendP.sessionId = sessionId;
-					oneShotSendP.prompt    = prompt;
-					return srv.sendRequest("session.send", toJson(oneShotSendP));
-				}).then((JsonRpcResponse sendResp) {
-					if (sendResp.isError)
-						throw new JsonRpcException(sendResp.error.get);
-					// session.idle completes the one-shot promise.
-				}).except((Exception e) {
-					session.handleStartupFailure(e);
-					srv.shutdown();
-				}).ignoreResult();
+				startOneShot(srv, session, sessionId, model, cwd, prompt);
 			});
 		}
 
@@ -1001,6 +985,30 @@ unittest
 	assert(ancestorPaths.exact(executableDir).isNull);
 }
 
+private void startOneShot(SdkProcess srv, OneShotCopilotSession session,
+	string sessionId, string model, string cwd, string prompt)
+{
+	srv.requireAuthentication().then(() {
+		return srv.sendRequest("session.create",
+			buildSessionCreateParams(sessionId, model, cwd, SessionConfig.init));
+	})
+	.then((JsonRpcResponse createResp) {
+		if (createResp.isError)
+			throw new JsonRpcException(createResp.error.get);
+		SessionSendParams oneShotSendP;
+		oneShotSendP.sessionId = sessionId;
+		oneShotSendP.prompt    = prompt;
+		return srv.sendRequest("session.send", toJson(oneShotSendP));
+	}).then((JsonRpcResponse sendResp) {
+		if (sendResp.isError)
+			throw new JsonRpcException(sendResp.error.get);
+		// session.idle completes the one-shot promise.
+	}).except((Exception e) {
+		session.handleStartupFailure(e);
+		srv.shutdown();
+	}).ignoreResult();
+}
+
 private CopilotSession attachSession(SdkProcess server, int tid,
 	string sessionId, string resumeSessionId, string model, string workDir,
 	string[] cmdPrefix, ToolDispatchFn toolDispatch,
@@ -1015,51 +1023,42 @@ private CopilotSession attachSession(SdkProcess server, int tid,
 	// Register before sending create/resume so events can be routed immediately.
 	server.registerSession(sessionId, session);
 
+	void failSetup(Exception e)
+	{
+		server.unregisterSession(sessionId);
+		session.handleStartupFailure(e);
+	}
+
 	server.onReady(() {
-		if (resumeSessionId.length > 0)
-		{
-			// session.resume replays history; set replayMode to suppress events.
-			session.startReplay();
-			server.sendRequest("session.resume",
-				buildSessionResumeParams(sessionId, model, config))
-			.then((JsonRpcResponse resp) {
-				if (resp.isError)
-				{
-					import std.logger : warningf;
-					warningf("session.resume error: %s", resp.error.get.message);
-					session.replayMode = false;
-					ProcessStderrEvent resumeErrEv;
-					resumeErrEv.text = "session.resume error: " ~ resp.error.get.message;
-					session.emitEvent(toJson(resumeErrEv));
-					server.unregisterSession(sessionId);
-					session.handleStartupFailure(new Exception(
-						"session.resume error: " ~ resp.error.get.message));
-					return;
-				}
-				session.onSessionStarted(model, workDir);
-			}, (Exception e) {
-				server.unregisterSession(sessionId);
-				session.handleStartupFailure(e);
-			});
-		}
-		else
-		{
-			server.sendRequest("session.create",
+		server.requireAuthentication().then(() {
+			if (resumeSessionId.length > 0)
+			{
+				// session.resume replays history; set replayMode to suppress events.
+				session.startReplay();
+				return server.sendRequest("session.resume",
+					buildSessionResumeParams(sessionId, model, config))
+				.then((JsonRpcResponse resp) {
+					if (resp.isError)
+					{
+						import std.logger : warningf;
+						warningf("session.resume error: %s", resp.error.get.message);
+						session.replayMode = false;
+						ProcessStderrEvent resumeErrEv;
+						resumeErrEv.text = "session.resume error: " ~ resp.error.get.message;
+						session.emitEvent(toJson(resumeErrEv));
+						throw new Exception(resumeErrEv.text);
+					}
+					session.onSessionStarted(model, workDir);
+				});
+			}
+			return server.sendRequest("session.create",
 				buildSessionCreateParams(sessionId, model, workDir, config))
 			.then((JsonRpcResponse resp) {
 				if (resp.isError)
-				{
-					server.unregisterSession(sessionId);
-					session.handleStartupFailure(new Exception(
-						"session.create error: " ~ resp.error.get.message));
-					return;
-				}
+					throw new Exception("session.create error: " ~ resp.error.get.message);
 				session.onSessionStarted(model, workDir);
-			}, (Exception e) {
-				server.unregisterSession(sessionId);
-				session.handleStartupFailure(e);
 			});
-		}
+		}).except(&failSetup).ignoreResult();
 	});
 
 	return session;
@@ -1078,6 +1077,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private string workDir;
 	private string[] cmdPrefix_;
 	private bool alive_;
+	private string startupFailure_;
 	private bool turnInProgress;
 	private bool replayMode; // true during session.resume replay
 	private bool gracefulShutdown_; // true after closeStdin() — handleExit reports 0
@@ -1472,7 +1472,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	}
 
 	@property void onOutput(void delegate(TranslatedEvent) dg) { outputHandler_ = dg; }
-	@property string startupFailure() { return null; }
+	@property string startupFailure() { return startupFailure_; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
 	@property void onToolCallsAbandoned(void delegate() dg) { toolCallsAbandonedHandler_ = dg; }
@@ -1811,8 +1811,12 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	void handleStartupFailure(Exception error)
 	{
+		if (startupFailure_ !is null)
+			return;
+		startupFailure_ = error.msg;
 		rejectUnsettledMessages(error);
 		handleExit(1);
+		server.shutdown();
 	}
 
 	void handleExit(int status)
@@ -2542,6 +2546,20 @@ unittest
 		assert(settlements == (rejectDispatch ? 0 : 1));
 	}
 
+	// Withhold the auth response until the connection has no other requests.
+	void finishAuthentication(TestCopilotConnection connection, JsonRpcResponse response)
+	{
+		auto request = connection.takeRequest("auth.getStatus");
+		drainPromiseNextTicks();
+		assert(connection.sentMessages.length == 0);
+		connection.respond(request, response);
+		drainPromiseNextTicks();
+	}
+
+	enum authenticated = `{"isAuthenticated":true,"login":"u"}`;
+	enum unauthenticated = `{"isAuthenticated":false,"statusMessage":"Not authenticated"}`;
+	enum unauthenticatedError = "Copilot CLI is not authenticated: Not authenticated";
+
 	// The create owner leaves a production sendMessage promise pending until
 	// session readiness, then the matching codec response accepts it once.
 	{
@@ -2551,6 +2569,7 @@ unittest
 		config.model = "test-model";
 		auto session = attachSession(server, 1, "create-success", null,
 			"test-model", "/test/workdir", null, null, null, null, config);
+		finishAuthentication(connection, acceptedResponse(authenticated));
 		auto createRequest = connection.takeRequest("session.create");
 		auto createParams = jsonParse!SessionCreateParams(
 			toJson(createRequest.params));
@@ -2823,6 +2842,32 @@ unittest
 		assertRejectedOnce(queued, "ping rejected");
 	}
 
+	void exerciseAuthenticationFailure(JsonRpcResponse response, string expectedError)
+	{
+		auto connection = new TestCopilotConnection;
+		auto server = makeTestSdkProcess(connection);
+		auto session = attachSession(server, 6, "auth-failure", null,
+			"test-model", "/test/workdir", null, null, null, null, SessionConfig.init);
+		int[] exitStatuses;
+		session.onExit = (int status) { exitStatuses ~= status; };
+		auto queued = new TestCopilotSubmissionOutcome(
+			session.sendMessage([ContentBlock("text", "queued during auth")],
+				"auth-queued"));
+		assertPending(queued);
+
+		finishAuthentication(connection, response);
+
+		assertRejectedOnce(queued, expectedError);
+		assert(session.startupFailure == queued.rejectionMessage);
+		assert(exitStatuses == [1]);
+		assert(!session.alive_ && server.dead);
+		assert(connection.sentMessages.length == 0);
+	}
+
+	exerciseAuthenticationFailure(acceptedResponse(unauthenticated), unauthenticatedError);
+	exerciseAuthenticationFailure(rejectedResponse("boom"), "boom");
+	exerciseAuthenticationFailure(acceptedResponse(), null);
+
 	void exerciseSessionSetupFailure(string resumeSessionId,
 		string expectedMethod)
 	{
@@ -2834,6 +2879,7 @@ unittest
 			? resumeSessionId : "create-failure";
 		auto session = attachSession(server, 6, sessionId, resumeSessionId,
 			"test-model", "/test/workdir", null, null, null, null, config);
+		finishAuthentication(connection, acceptedResponse(authenticated));
 		auto setupRequest = connection.takeRequest(expectedMethod);
 		if (resumeSessionId.length > 0)
 		{
@@ -2867,6 +2913,7 @@ unittest
 		drainPromiseNextTicks();
 		auto expectedError = expectedMethod ~ " error: setup rejected";
 		assertRejectedOnce(queued, expectedError);
+		assert(session.startupFailure == expectedError && server.dead);
 		assert(!session.alive_ && !session.sessionReady_);
 		assert(session.pendingMessages.length == 0
 			&& session.expectedUserMessages.length == 0);
@@ -2887,6 +2934,48 @@ unittest
 
 	exerciseSessionSetupFailure(null, "session.create");
 	exerciseSessionSetupFailure("resume-failure", "session.resume");
+
+	{
+		auto connection = new TestCopilotConnection;
+		auto server = makeTestSdkProcess(connection);
+		auto completion = new Promise!string;
+		auto session = new OneShotCopilotSession(completion);
+		server.registerSession("one-shot-auth-failure", session);
+		string[] errors;
+		completion.except((Exception e) { errors ~= e.msg; }).ignoreResult();
+
+		startOneShot(server, session, "one-shot-auth-failure",
+			"test-model", "/test/workdir", "test prompt");
+		finishAuthentication(connection, acceptedResponse(unauthenticated));
+
+		assert(errors == [unauthenticatedError]);
+		assert(connection.sentMessages.length == 0);
+		assert(server.dead);
+	}
+
+	{
+		auto connection = new TestCopilotConnection;
+		auto server = makeTestSdkProcess(connection);
+		auto completion = new Promise!string;
+		auto session = new OneShotCopilotSession(completion);
+		server.registerSession("one-shot-auth-success", session);
+
+		startOneShot(server, session, "one-shot-auth-success",
+			"test-model", "/test/workdir", "test prompt");
+		finishAuthentication(connection, acceptedResponse(authenticated));
+		auto createRequest = connection.takeRequest("session.create");
+		drainPromiseNextTicks();
+		assert(connection.sentMessages.length == 0);
+
+		connection.respond(createRequest, acceptedResponse());
+		drainPromiseNextTicks();
+		auto sendRequest = connection.takeRequest("session.send");
+		auto params = jsonParse!SessionSendParams(toJson(sendRequest.params));
+		assert(params.sessionId == "one-shot-auth-success" && params.prompt == "test prompt");
+		connection.respond(sendRequest, acceptedResponse());
+		drainPromiseNextTicks();
+		assert(connection.sentMessages.length == 0);
+	}
 }
 
 unittest
