@@ -106,10 +106,35 @@ describe("UserMessage multipart text rendering", () => {
     expect(items).toHaveLength(3);
     const [, firstItem, secondItem] = items;
     expect(html.match(/class="user-images"/g)).toHaveLength(1);
-    expect(html.match(/meta-badge meta/g)).toHaveLength(1);
+    expect(
+      html.match(/<span class="meta-badge meta">meta<\/span>/g),
+    ).toHaveLength(1);
     expect(firstItem).not.toContain("user-images");
     expect(firstItem).not.toContain("meta-badge meta");
     expect(secondItem).not.toContain("user-images");
     expect(secondItem).not.toContain("meta-badge meta");
+  });
+
+  it("renders raw kind badges in order once for a multipart meta message", () => {
+    const html = render(
+      userMessage(
+        [
+          { type: "text", text: "plugin recommendations" },
+          { type: "text", text: "agent instructions" },
+        ],
+        {
+          isMeta: true,
+          metaKinds: ["plugins.recommendations", "agents_md.instructions"],
+        },
+      ),
+    );
+
+    expect(
+      html.match(/<span class="meta-badge meta meta-kind">[^<]*<\/span>/g),
+    ).toEqual([
+      '<span class="meta-badge meta meta-kind">plugins.recommendations</span>',
+      '<span class="meta-badge meta meta-kind">agents_md.instructions</span>',
+    ]);
+    expect(html).not.toContain(">meta<");
   });
 });

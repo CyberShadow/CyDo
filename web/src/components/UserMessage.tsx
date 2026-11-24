@@ -55,7 +55,15 @@ export function UserMessage({ message }: Props) {
       )}
       {message.isMeta && (
         <div class="message-meta">
-          <span class="meta-badge meta">meta</span>
+          {message.metaKinds?.length ? (
+            message.metaKinds.map((kind) => (
+              <span class="meta-badge meta meta-kind" key={kind}>
+                {kind}
+              </span>
+            ))
+          ) : (
+            <span class="meta-badge meta">meta</span>
+          )}
         </div>
       )}
       {message.isSteering && !message.isMeta && (

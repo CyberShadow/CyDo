@@ -1096,6 +1096,7 @@ function reduceItemStartedUserMessage(
       isSidechain: event.is_sidechain,
       isSynthetic: event.is_synthetic || undefined,
       isMeta: event.is_meta || undefined,
+      metaKinds: event.meta_kinds,
       isSteering: event.is_steering || undefined,
       isCompactSummary: event.isCompactSummary || undefined,
       parentToolUseId: event.parent_tool_use_id,
@@ -1119,6 +1120,7 @@ function reduceItemStartedUserMessage(
     isSidechain: event.is_sidechain,
     isSynthetic: event.is_synthetic || undefined,
     isMeta: event.is_meta || undefined,
+    metaKinds: event.meta_kinds,
     isSteering:
       event.is_steering || displacedPlaceholder?.isSteering || undefined,
     isCompactSummary: event.isCompactSummary || undefined,

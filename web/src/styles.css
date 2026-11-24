@@ -2532,6 +2532,10 @@ body,
   border: 1px solid rgba(160, 140, 176, 0.3);
 }
 
+.meta-badge.meta-kind {
+  text-transform: none;
+}
+
 .meta-badge.synthetic {
   background: rgba(160, 140, 176, 0.12);
   color: var(--text-dim);

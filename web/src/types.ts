@@ -77,6 +77,8 @@ export interface DisplayMessage {
   retracted?: boolean;
   isSynthetic?: boolean;
   isMeta?: boolean;
+  /** Agent-reported kinds of a meta message, shown as badges. */
+  metaKinds?: string[];
   isSteering?: boolean;
   isCompactSummary?: boolean;
   parentToolUseId?: string | null;

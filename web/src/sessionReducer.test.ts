@@ -964,6 +964,41 @@ describe("live user echo reconciliation", () => {
   });
 });
 
+describe("user echo meta kinds", () => {
+  const echo = {
+    type: "item/started" as const,
+    item_type: "user_message",
+    item_id: "native-user",
+    content: [{ type: "text" as const, text: "harness context" }],
+    is_meta: true,
+  };
+
+  it.each([false, true])("preserves meta kinds with pending=%s", (pending) => {
+    const event = {
+      ...echo,
+      pending,
+      meta_kinds: ["plugins.recommendations", "agents_md.instructions"],
+    };
+
+    const next = reduceMessage(makeState(), event);
+
+    expect(next.messages).toEqual([
+      expect.objectContaining({
+        type: "user",
+        isMeta: true,
+        metaKinds: event.meta_kinds,
+      }),
+    ]);
+  });
+
+  it("leaves meta kinds undefined when the event omits them", () => {
+    const next = reduceMessage(makeState(), echo);
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]?.metaKinds).toBeUndefined();
+  });
+});
+
 describe("queue history reducer", () => {
   it("replaces a provisional enqueue bubble with its canonical text and image echo", () => {
     const image = {
