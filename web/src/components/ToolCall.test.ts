@@ -20,7 +20,7 @@ import type { ParseResult } from "../lib/shellParser";
 import { configureShellParserAssets } from "../lib/shellParser";
 import { loadParsedShellDocument } from "../lib/shellParser";
 import type { ToolResult } from "../types";
-import { ownedRoots } from "../test-support/preactAct";
+import { actPoll, ownedRoots } from "../test-support/preactAct";
 import bashEditDiff from "../testFixtures/claude-bash-edit-diff.json";
 import {
   ToolCall,
@@ -1114,6 +1114,39 @@ describe("ToolCall numbered shell output", () => {
   });
 });
 
+describe("ToolCall Copilot view output", () => {
+  const roots = ownedRoots();
+
+  it("preserves mixed line endings in highlighted numbered TypeScript", async () => {
+    const content = "1. const a = 1;\r\n2. const b =\r 2;\n3. const c = 3;\r";
+    const result = makeResult({}, content);
+    const root = roots.create();
+    await act(() => {
+      roots.render(
+        h(ToolCall, {
+          name: "view",
+          driver: "copilot",
+          toolUseId: result.toolUseId,
+          input: { path: "example.ts" },
+          result,
+        }),
+        root,
+      );
+    });
+    if (!root.querySelector("pre.tool-result")) {
+      await act(() => {
+        root.querySelector<HTMLElement>(".tool-result-header")!.click();
+      });
+    }
+    await actPoll({
+      description: "highlighted Copilot view output",
+      ready: () =>
+        root.querySelector("pre.tool-result span[style*='color']") !== null,
+    });
+    expect(root.querySelector("pre.tool-result")?.textContent).toBe(content);
+  });
+});
+
 describe("ToolCall asynchronous shell source tree", () => {
   const roots = ownedRoots();
 
@@ -1310,6 +1343,37 @@ describe("ToolCall asynchronous shell source tree", () => {
     expect(blocks[0]?.textContent).toContain("python3 - <<EOF");
     expect(blocks[1]?.textContent).toBe("print(1)");
     expect(blocks[2]?.textContent).toBe("\r\nEOF");
+  });
+
+  it("preserves mixed line endings and escaped quotes in highlighted Bash input", async () => {
+    // The backslash keeps the bare CR inside the parser's quoted word.
+    const command =
+      'python3 -c "print(\\"first\\")\r\nprint(\\"second\\")\nprint(\\\r\\"third\\")"';
+    const root = roots.create();
+    await act(async () => {
+      await loadParsedShellDocument(command);
+      mountedShellInput(root, command);
+    });
+    expect(
+      root.querySelector('[data-testid="source-projected-inline"]'),
+    ).not.toBeNull();
+    await actPoll({
+      description: "decoded Python strings projected across the CRLF",
+      ready: () => {
+        const spans = root.querySelectorAll(
+          '[data-testid="source-projected-inline"] span[style*="color"]',
+        );
+        const renderedStrings = Array.from(spans, (span) => span.textContent);
+        return (
+          renderedStrings.includes('\\"first\\"') &&
+          renderedStrings.includes('\\"second\\"')
+        );
+      },
+    });
+    const blocks = root.querySelectorAll("pre.write-content.source-tree-block");
+    expect(Array.from(blocks, (block) => block.textContent).join("")).toBe(
+      command,
+    );
   });
 
   it("keeps nested adapter failures raw without leaking valid siblings", async () => {

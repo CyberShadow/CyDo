@@ -1,28 +1,11 @@
-import { h, Fragment } from "preact";
 import { useMemo } from "preact/hooks";
 import HtmlDiff from "htmldiff-js";
 import { marked } from "marked";
 import { sanitizeHtml } from "../../sanitize";
-import { useHighlight, renderTokens } from "../../highlight";
+import { useHighlight, renderHighlightedSource } from "../../highlight";
 import { DiffView } from "../diff/DiffView";
 import { CodePre } from "../CopyButton";
 import { SourceRenderedToggle } from "./SourceRenderedToggle";
-
-function renderTokenLines(
-  tokens: ReturnType<typeof useHighlight>,
-): h.JSX.Element {
-  if (!tokens) return <></>;
-  return (
-    <Fragment>
-      {tokens.map((line, index) => (
-        <Fragment key={index}>
-          {index > 0 && "\n"}
-          {renderTokens(line)}
-        </Fragment>
-      ))}
-    </Fragment>
-  );
-}
 
 export function MarkdownDiffPreview({
   oldText,
@@ -51,7 +34,7 @@ export function MarkdownDiffPreview({
       sourceView={
         sourceText != null ? (
           <CodePre class="write-content" copyText={sourceText}>
-            {patchTokens ? renderTokenLines(patchTokens) : sourceText}
+            {renderHighlightedSource(sourceText, patchTokens)}
           </CodePre>
         ) : (
           <DiffView oldStr={oldText} newStr={newText} filePath={filePath} />

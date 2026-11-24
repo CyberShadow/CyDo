@@ -6,7 +6,13 @@ import type { ItemPermissionStage } from "../protocol";
 import type { ToolResult, ToolResultContent } from "../types";
 import { qualifiedToolKey, toolIs } from "../toolIdentity";
 import { sanitizeHtml } from "../sanitize";
-import { useHighlight, langFromPath, renderTokens } from "../highlight";
+import {
+  useHighlight,
+  useHighlightRows,
+  renderHighlightedSource,
+  langFromPath,
+  renderHighlightedRow,
+} from "../highlight";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { Markdown } from "./Markdown";
 import { CodePre, CopyButton } from "./CopyButton";
@@ -54,6 +60,7 @@ import {
   type ShellHeredocWriteSemantic,
   type ShellScriptExecSemantic,
 } from "../lib/shellSemantic";
+import { splitOutputRows } from "../lib/outputPlan";
 import type { SourceNode } from "../lib/sourceTree";
 import {
   buildShellSourceTree,
@@ -256,25 +263,6 @@ interface Props {
   getTaskHref?: (id: string) => string;
 }
 
-/** Render an array of token lines (no trailing newline). */
-function renderTokenLines(
-  tokens: ReturnType<typeof useHighlight>,
-  source?: string,
-): h.JSX.Element {
-  if (!tokens) return <></>;
-  const lineBreaks = source?.match(/\r\n|\r|\n/g);
-  return (
-    <Fragment>
-      {tokens.map((line, i) => (
-        <Fragment key={i}>
-          {i > 0 && (lineBreaks?.[i - 1] ?? "\n")}
-          {renderTokens(line)}
-        </Fragment>
-      ))}
-    </Fragment>
-  );
-}
-
 function getToolCallFilePaths(
   name: string,
   driver: string | undefined,
@@ -361,7 +349,7 @@ function ChangePatchFallback({ change }: { change: NormalizedFileChange }) {
   const tokens = useHighlight(patchText, "diff");
   return (
     <CodePre class="write-content" copyText={patchText}>
-      {tokens ? renderTokenLines(tokens) : patchText}
+      {renderHighlightedSource(patchText, tokens)}
     </CodePre>
   );
 }
@@ -370,7 +358,7 @@ function ApplyPatchFallback({ patchText }: { patchText: string }) {
   const patchTokens = useHighlight(patchText, "diff");
   return (
     <CodePre class="write-content" copyText={patchText}>
-      {patchTokens ? renderTokenLines(patchTokens) : patchText}
+      {renderHighlightedSource(patchText, patchTokens)}
     </CodePre>
   );
 }
@@ -656,7 +644,7 @@ function FileChangeRow({
         !canRenderPatchSvg &&
         !shouldSuppressContentFallback && (
           <CodePre class="write-content" copyText={change.content}>
-            {contentTokens ? renderTokenLines(contentTokens) : change.content}
+            {renderHighlightedSource(change.content, contentTokens)}
           </CodePre>
         )}
     </div>
@@ -749,7 +737,7 @@ function ExecInput({ input }: { input: Record<string, unknown> }) {
   return formatGenericInput(
     remaining,
     <CodePre class="write-content" copyText={script}>
-      {tokens ? renderTokenLines(tokens) : script}
+      {renderHighlightedSource(script, tokens)}
     </CodePre>,
   );
 }
@@ -847,7 +835,7 @@ function ShellCommandInput({
     remaining,
     displayCommand ? (
       <CodePre class="write-content" copyText={displayCommand}>
-        {tokens ? renderTokenLines(tokens, displayCommand) : displayCommand}
+        {renderHighlightedSource(displayCommand, tokens)}
       </CodePre>
     ) : undefined,
   );
@@ -947,26 +935,31 @@ function ReadResult({
   const format = detectRenderableFormat(filePath);
   const lang = langFromPath(filePath);
 
-  const rawLines = content.split("\n");
-  // Parse line-number prefixes:
-  //   cat -n format: "    1→code" (→ = U+2192) or "    1\tcode"
-  //   view format:   "1527. code"
-  const parsed = rawLines.map((line) => {
-    const match = line.match(/^(\s*\d+[\u2192\t]|\d+\.\s)(.*)/);
-    if (match) return { prefix: match[1], code: match[2] };
-    return { prefix: "", code: line };
-  });
+  // Claude Read uses arrow or tab gutters; Copilot view uses dotted numbers.
+  const parsed = Array.from(
+    splitOutputRows(content),
+    ({ text, terminator }) => {
+      const prefix =
+        text.match(/^(?:[^\S\r\n]*\d+[\u2192\t]|\d+\.[^\S\r\n])/)?.[0] ?? "";
+      return { prefix, code: text.slice(prefix.length), terminator };
+    },
+  );
 
-  const codeOnly = parsed.map((p) => p.code).join("\n");
-  const tokens = useHighlight(codeOnly, lang);
+  const codeOnly = parsed
+    .map(({ code, terminator }) => code + terminator)
+    .join("");
+  const tokens = useHighlightRows(
+    parsed.map(({ code }) => code),
+    lang,
+  );
 
   const sourceView = (
     <CodePre class="tool-result" copyText={codeOnly}>
-      {parsed.map((p, i) => (
+      {parsed.map(({ prefix, code, terminator }, i) => (
         <Fragment key={i}>
-          {i > 0 && "\n"}
-          {p.prefix && <span class="line-number">{p.prefix}</span>}
-          {tokens?.[i] ? renderTokens(tokens[i]) : p.code}
+          {prefix && <span class="line-number">{prefix}</span>}
+          {renderHighlightedRow(tokens, i, code)}
+          {terminator}
         </Fragment>
       ))}
     </CodePre>
@@ -2755,7 +2748,7 @@ function DiffResult({ content }: { content: string }) {
 
   return (
     <ResultPre content={content}>
-      {tokens ? renderTokenLines(tokens) : content}
+      {renderHighlightedSource(content, tokens)}
     </ResultPre>
   );
 }
@@ -2829,7 +2822,7 @@ function SmartResultPre({
     return (
       <ResultPre content={content} isError={isError}>
         {tokens
-          ? renderTokenLines(tokens)
+          ? renderHighlightedSource(content, tokens)
           : hasAnsi(content)
             ? renderAnsi(content)
             : content}
@@ -2842,7 +2835,7 @@ function SmartResultPre({
       defaultSource={true}
       sourceView={
         <ResultPre content={content} isError={isError}>
-          {tokens ? renderTokenLines(tokens) : content}
+          {renderHighlightedSource(content, tokens)}
         </ResultPre>
       }
       renderedView={<SvgPreview content={content} />}

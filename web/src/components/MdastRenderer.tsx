@@ -1,6 +1,6 @@
 import { h, Fragment, type VNode } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { useHighlight, renderTokens } from "../highlight";
+import { useHighlight, renderHighlightedSource } from "../highlight";
 import { useCurrentTheme } from "../useTheme";
 import { CopyButton, CodePre } from "./CopyButton";
 
@@ -335,21 +335,14 @@ function CodeBlock({
   lang: string | null;
   code: string;
 }): VNode {
-  const tokens = useHighlight(code, lang);
+  // Incremark gives empty fences and single blank body lines the same value.
+  const displayCode = code === "" ? "" : code + "\n";
+  const tokens = useHighlight(displayCode, lang);
   return (
     <div class="code-pre-wrap">
       <CopyButton text={code} />
       <pre class={lang ? `language-${lang}` : undefined}>
-        <code>
-          {tokens
-            ? tokens.map((line, i) => (
-                <span key={i}>
-                  {renderTokens(line)}
-                  {"\n"}
-                </span>
-              ))
-            : code}
-        </code>
+        <code>{renderHighlightedSource(displayCode, tokens)}</code>
       </pre>
     </div>
   );

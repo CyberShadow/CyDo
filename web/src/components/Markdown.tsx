@@ -3,7 +3,7 @@ import { memo } from "preact/compat";
 import { useMemo, useRef, useState } from "preact/hooks";
 import { createIncremarkParser } from "@incremark/core";
 import type { IncremarkParser } from "@incremark/core";
-import { useHighlight, renderTokens } from "../highlight";
+import { useHighlight, renderHighlightedSource } from "../highlight";
 import { MdastRenderer } from "./MdastRenderer";
 import { CodePre } from "./CopyButton";
 import sourceOnIcon from "../icons/source-on.svg?raw";
@@ -81,16 +81,7 @@ export const Markdown: FunctionComponent<Props> = memo(
         </button>
         {showRaw ? (
           <CodePre class="markdown-source" copyText={text}>
-            <code>
-              {tokens
-                ? tokens.map((line, i) => (
-                    <span key={i}>
-                      {renderTokens(line)}
-                      {"\n"}
-                    </span>
-                  ))
-                : text}
-            </code>
+            <code>{renderHighlightedSource(text, tokens)}</code>
           </CodePre>
         ) : (
           <div class={`markdown ${className ?? ""}`} {...rest}>

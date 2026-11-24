@@ -1,7 +1,13 @@
 import { h, Fragment } from "preact";
 import { diffLines, diffWordsWithSpace, type Change } from "diff";
 import type { ThemedToken } from "../../highlight";
-import { useHighlight, langFromPath, renderTokens } from "../../highlight";
+import {
+  useHighlightRows,
+  langFromPath,
+  renderHighlightedRow,
+  highlightRowAt,
+} from "../../highlight";
+import { splitOutputRows } from "../../lib/outputPlan";
 import type { PatchHunk } from "../../lib/patches";
 
 interface AnnotatedSpan {
@@ -12,9 +18,7 @@ interface AnnotatedSpan {
 
 /** Split a diffLines change value into individual line strings. */
 function splitChangeLines(value: string): string[] {
-  const lines = value.split("\n");
-  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-  return lines;
+  return Array.from(splitOutputRows(value), (row) => row.text);
 }
 
 /**
@@ -142,8 +146,8 @@ export function DiffView({
   filePath?: string;
 }) {
   const lang = filePath ? langFromPath(filePath) : null;
-  const oldTokens = useHighlight(oldStr, lang);
-  const newTokens = useHighlight(newStr, lang);
+  const oldTokens = useHighlightRows(splitChangeLines(oldStr), lang);
+  const newTokens = useHighlightRows(splitChangeLines(newStr), lang);
 
   const changes = diffLines(oldStr, newStr);
 
@@ -162,9 +166,7 @@ export function DiffView({
         elements.push(
           <div key={`c${lineIndex}`} class="diff-context">
             {"  "}
-            {oldTokens?.[lineIndex]
-              ? renderTokens(oldTokens[lineIndex])
-              : lines[i]}
+            {renderHighlightedRow(oldTokens, lineIndex, lines[i]!)}
           </div>,
         );
       }
@@ -181,7 +183,7 @@ export function DiffView({
           const lineIndex = oldLineIndex + i;
           if (i < pairCount && wordDiffs[i]!.similar) {
             const spans = overlayDiff(
-              oldTokens?.[lineIndex] ?? null,
+              highlightRowAt(oldTokens, lineIndex, lines[i]!),
               wordDiffs[i]!.changes,
               "old",
             );
@@ -195,9 +197,7 @@ export function DiffView({
             elements.push(
               <div key={`r${lineIndex}`} class="diff-removed">
                 {"- "}
-                {oldTokens?.[lineIndex]
-                  ? renderTokens(oldTokens[lineIndex])
-                  : lines[i]}
+                {renderHighlightedRow(oldTokens, lineIndex, lines[i]!)}
               </div>,
             );
           }
@@ -207,7 +207,7 @@ export function DiffView({
           const lineIndex = newLineIndex + i;
           if (i < pairCount && wordDiffs[i]!.similar) {
             const spans = overlayDiff(
-              newTokens?.[lineIndex] ?? null,
+              highlightRowAt(newTokens, lineIndex, addedLines[i]!),
               wordDiffs[i]!.changes,
               "new",
             );
@@ -221,9 +221,7 @@ export function DiffView({
             elements.push(
               <div key={`a${lineIndex}`} class="diff-added">
                 {"+ "}
-                {newTokens?.[lineIndex]
-                  ? renderTokens(newTokens[lineIndex])
-                  : addedLines[i]}
+                {renderHighlightedRow(newTokens, lineIndex, addedLines[i]!)}
               </div>,
             );
           }
@@ -238,9 +236,7 @@ export function DiffView({
           elements.push(
             <div key={`r${lineIndex}`} class="diff-removed">
               {"- "}
-              {oldTokens?.[lineIndex]
-                ? renderTokens(oldTokens[lineIndex])
-                : lines[i]}
+              {renderHighlightedRow(oldTokens, lineIndex, lines[i]!)}
             </div>,
           );
         }
@@ -251,9 +247,7 @@ export function DiffView({
         elements.push(
           <div key={`a${lineIndex}`} class="diff-added">
             {"+ "}
-            {newTokens?.[lineIndex]
-              ? renderTokens(newTokens[lineIndex])
-              : lines[i]}
+            {renderHighlightedRow(newTokens, lineIndex, lines[i]!)}
           </div>,
         );
       }
@@ -303,8 +297,8 @@ export function HunkDiffView({
     }
   }
 
-  const oldTokens = useHighlight(oldLinesList.join("\n"), lang);
-  const newTokens = useHighlight(newLinesList.join("\n"), lang);
+  const oldTokens = useHighlightRows(oldLinesList, lang);
+  const newTokens = useHighlightRows(newLinesList, lang);
 
   const elements: h.JSX.Element[] = [];
   let rowKey = 0;
@@ -342,9 +336,7 @@ export function HunkDiffView({
               {newNum}
             </span>
             {"  "}
-            {oldTokens?.[oldIndex]
-              ? renderTokens(oldTokens[oldIndex])
-              : content}
+            {renderHighlightedRow(oldTokens, oldIndex, content)}
           </div>,
         );
         lineIndex++;
@@ -382,7 +374,7 @@ export function HunkDiffView({
           const oldNum = oldLineNum++;
           if (i < pairCount && wordDiffs[i]!.similar) {
             const spans = overlayDiff(
-              oldTokens?.[oldIndex] ?? null,
+              highlightRowAt(oldTokens, oldIndex, removedContents[i]!),
               wordDiffs[i]!.changes,
               "old",
             );
@@ -404,9 +396,7 @@ export function HunkDiffView({
                 </span>
                 <span class="diff-gutter" style={{ minWidth: gutterWidth }} />
                 {"- "}
-                {oldTokens?.[oldIndex]
-                  ? renderTokens(oldTokens[oldIndex])
-                  : removedContents[i]}
+                {renderHighlightedRow(oldTokens, oldIndex, removedContents[i]!)}
               </div>,
             );
           }
@@ -417,7 +407,7 @@ export function HunkDiffView({
           const newNum = newLineNum++;
           if (i < pairCount && wordDiffs[i]!.similar) {
             const spans = overlayDiff(
-              newTokens?.[newIndex] ?? null,
+              highlightRowAt(newTokens, newIndex, addedContents[i]!),
               wordDiffs[i]!.changes,
               "new",
             );
@@ -439,9 +429,7 @@ export function HunkDiffView({
                   {newNum}
                 </span>
                 {"+ "}
-                {newTokens?.[newIndex]
-                  ? renderTokens(newTokens[newIndex])
-                  : addedContents[i]}
+                {renderHighlightedRow(newTokens, newIndex, addedContents[i]!)}
               </div>,
             );
           }
@@ -457,9 +445,7 @@ export function HunkDiffView({
               {newNum}
             </span>
             {"+ "}
-            {newTokens?.[newIndex]
-              ? renderTokens(newTokens[newIndex])
-              : content}
+            {renderHighlightedRow(newTokens, newIndex, content)}
           </div>,
         );
         lineIndex++;

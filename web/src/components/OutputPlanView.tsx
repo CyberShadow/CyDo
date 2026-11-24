@@ -1,6 +1,11 @@
 import { h, Fragment } from "preact";
 import { useMemo } from "preact/hooks";
-import { type ThemedToken, useHighlight, renderTokens } from "../highlight";
+import {
+  useHighlight,
+  useHighlightRows,
+  renderHighlightedSource,
+  renderHighlightedRow,
+} from "../highlight";
 import { Markdown } from "./Markdown";
 import { CodePre, CopyButton } from "./CopyButton";
 import { SourceRenderedToggle } from "./file-preview/SourceRenderedToggle";
@@ -17,50 +22,13 @@ import {
   type SegmentedOutputPiece,
 } from "../lib/outputPlan";
 
-function renderTokenLines(tokens: ThemedToken[][] | null): h.JSX.Element {
-  if (!tokens) return <></>;
-  return (
-    <Fragment>
-      {tokens.map((line, i) => (
-        <Fragment key={i}>
-          {i > 0 && "\n"}
-          {renderTokens(line)}
-        </Fragment>
-      ))}
-    </Fragment>
-  );
-}
-
-function useOutputRowTokens(
-  code: string,
-  language: string,
-  rowCount: number,
-): ThemedToken[][] | null {
-  const codeLanguage =
-    language === "text" ||
+function outputCodeLanguage(language: string): string | null {
+  return language === "text" ||
     language === "shell-output" ||
     language === "markdown"
-      ? null
-      : language;
-  const tokens = useHighlight(codeLanguage ? code : null, codeLanguage);
-  if (tokens && tokens.length !== rowCount) {
-    throw new Error("highlighted output row count does not match stdout");
-  }
-  return tokens;
+    ? null
+    : language;
 }
-
-function renderOutputRow(
-  text: string,
-  tokens: ThemedToken[] | undefined,
-): h.JSX.Element | string {
-  if (!tokens) return text;
-  if (tokens.map((token) => token.content).join("") !== text) {
-    throw new Error("highlighted output row text does not match stdout");
-  }
-  return renderTokens(tokens);
-}
-
-type NlRenderRow = { prefix: string; text: string; terminator: string };
 
 function NlNumberedRows({
   text,
@@ -78,32 +46,10 @@ function NlNumberedRows({
       return { ...row, terminator };
     },
   );
-  // Shiki splits on CRLF or LF. A CRLF joiner leaves any payload CR intact.
-  const code = rows.map((row) => row.text).join("\r\n");
-  // Key on the highlight input so tokens from a previous payload cannot be reused.
-  return (
-    <HighlightedNlRows
-      key={code}
-      code={code}
-      rows={rows}
-      language={format.format.language}
-      linePrefixTestId={linePrefixTestId}
-    />
+  const tokens = useHighlightRows(
+    rows.map((row) => row.text),
+    outputCodeLanguage(format.format.language),
   );
-}
-
-function HighlightedNlRows({
-  code,
-  rows,
-  language,
-  linePrefixTestId,
-}: {
-  code: string;
-  rows: NlRenderRow[];
-  language: string;
-  linePrefixTestId?: string;
-}): h.JSX.Element {
-  const tokens = useOutputRowTokens(code, language, rows.length);
   return (
     <>
       {rows.map(({ prefix, text: rowText, terminator }, i) => {
@@ -115,7 +61,7 @@ function HighlightedNlRows({
             >
               {prefix}
             </span>
-            {renderOutputRow(rowText, tokens?.[i])}
+            {renderHighlightedRow(tokens, i, rowText)}
             {terminator}
           </Fragment>
         );
@@ -131,8 +77,8 @@ function HighlightedInlineRow({
   text: string;
   language: string;
 }): h.JSX.Element {
-  const tokens = useOutputRowTokens(text, language, 1);
-  return <>{renderOutputRow(text, tokens?.[0])}</>;
+  const tokens = useHighlightRows([text], outputCodeLanguage(language));
+  return <>{renderHighlightedRow(tokens, 0, text)}</>;
 }
 
 function InlineFormatted({
@@ -240,12 +186,7 @@ function StructuredContent({
   linePrefixTestId?: string;
 }): h.JSX.Element {
   const codeLanguage =
-    format.kind === "content" &&
-    format.language !== "markdown" &&
-    format.language !== "shell-output" &&
-    format.language !== "text"
-      ? format.language
-      : null;
+    format.kind === "content" ? outputCodeLanguage(format.language) : null;
   const highlightedCode = useHighlight(
     codeLanguage ? text : null,
     codeLanguage,
@@ -290,7 +231,7 @@ function StructuredContent({
 
     return (
       <CodePre class="tool-result" copyText={text}>
-        {highlightedCode ? renderTokenLines(highlightedCode) : text}
+        {renderHighlightedSource(text, highlightedCode)}
       </CodePre>
     );
   }

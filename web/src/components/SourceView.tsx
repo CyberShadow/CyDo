@@ -8,7 +8,7 @@ import {
 } from "preact/hooks";
 import type { DisplayMessage } from "../types";
 import type { AgnosticEvent } from "../protocol";
-import { useHighlight, renderTokens } from "../highlight";
+import { useHighlight, renderHighlightedSource } from "../highlight";
 import { CopyButton } from "./CopyButton";
 import editIcon from "../icons/edit.svg?raw";
 
@@ -27,16 +27,7 @@ function HighlightedJson({ text }: { text: string }) {
   return (
     <div class="code-pre-wrap">
       <CopyButton text={text} />
-      <pre>
-        {tokens
-          ? tokens.map((line, i) => (
-              <span key={i}>
-                {i > 0 && "\n"}
-                {renderTokens(line)}
-              </span>
-            ))
-          : text}
-      </pre>
+      <pre>{renderHighlightedSource(text, tokens)}</pre>
     </div>
   );
 }
@@ -98,16 +89,7 @@ function EditableRawJson({
               />
             </button>
           )}
-          <pre ref={preRef}>
-            {tokens
-              ? tokens.map((line, i) => (
-                  <span key={i}>
-                    {i > 0 && "\n"}
-                    {renderTokens(line)}
-                  </span>
-                ))
-              : text}
-          </pre>
+          <pre ref={preRef}>{renderHighlightedSource(text, tokens)}</pre>
         </>
       )}
       {editing && (

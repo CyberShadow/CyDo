@@ -6,7 +6,11 @@ import { useMemo, useRef, useState } from "preact/hooks";
 import { applyPatch, structuredPatch } from "diff";
 import closeIcon from "../icons/close.svg?raw";
 import type { Block, FileEdit, TrackedFile } from "../types";
-import { useHighlight, langFromPath, renderTokens } from "../highlight";
+import {
+  useHighlightRows,
+  langFromPath,
+  renderHighlightedRow,
+} from "../highlight";
 import { HunkDiffView } from "./diff/DiffView";
 import { composeHunks } from "../lib/composeHunks";
 import type { PatchHunk } from "../lib/patches";
@@ -575,9 +579,8 @@ function FragmentSourceView({
   source: SourceContent;
   filePath: string;
 }) {
-  const { fragments, complete } = source;
-
-  if (fragments.length === 0) {
+  const { complete } = source;
+  if (source.fragments.length === 0) {
     return (
       <div class="file-viewer-empty">
         Source content not available for this edit.
@@ -585,14 +588,15 @@ function FragmentSourceView({
     );
   }
 
-  // Concatenate all fragment lines for syntax highlighting
-  const allLines: string[] = [];
-  for (const frag of fragments) {
-    allLines.push(...frag.lines);
-  }
-  const text = allLines.join("\n");
-  const lang = langFromPath(filePath);
-  const tokenLines = useHighlight(text, lang);
+  const text = sourceToContent(source);
+  const fragments =
+    text === null
+      ? source.fragments
+      : [{ startLine: 1, lines: text.split(/\r?\n/) }];
+  const tokenLines = useHighlightRows(
+    fragments.flatMap((fragment) => fragment.lines),
+    langFromPath(filePath),
+  );
 
   // Compute max line number for gutter width
   let maxLineNum = 0;
@@ -628,7 +632,7 @@ function FragmentSourceView({
           <span class="source-gutter" style={{ minWidth: gutterWidth }}>
             {lineNum}
           </span>
-          {tokenLines?.[idx] ? renderTokens(tokenLines[idx]) : frag.lines[li]}
+          {renderHighlightedRow(tokenLines, idx, frag.lines[li]!)}
         </div>,
       );
     }
@@ -648,7 +652,7 @@ function FragmentSourceView({
 
   return (
     <div class="code-pre-wrap">
-      {complete && <CopyButton text={text} />}
+      {text !== null && <CopyButton text={text} />}
       <pre class="file-viewer-source">{elements}</pre>
     </div>
   );

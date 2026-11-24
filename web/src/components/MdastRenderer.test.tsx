@@ -82,7 +82,7 @@ describe("MdastRenderer export fallback boundaries", () => {
       });
 
       const code = root.querySelector("pre.language-rust code");
-      expect(code?.textContent).toBe("fn main() {}");
+      expect(code?.textContent).toBe("fn main() {}\n");
       expect(code?.querySelector("span[style]")).toBeNull();
       expect(warn).toHaveBeenCalledWith(
         "Shiki: failed to create highlighter",

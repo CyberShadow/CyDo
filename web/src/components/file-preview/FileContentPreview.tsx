@@ -1,26 +1,12 @@
-import { h, Fragment } from "preact";
-import { useHighlight, langFromPath, renderTokens } from "../../highlight";
+import {
+  useHighlight,
+  renderHighlightedSource,
+  langFromPath,
+} from "../../highlight";
 import { detectRenderableFormat } from "../../lib/fileFormats";
 import { CodePre } from "../CopyButton";
 import { Markdown } from "../Markdown";
 import { SourceRenderedToggle } from "./SourceRenderedToggle";
-
-/** Render an array of token lines (no trailing newline). */
-function renderTokenLines(
-  tokens: ReturnType<typeof useHighlight>,
-): h.JSX.Element {
-  if (!tokens) return <></>;
-  return (
-    <Fragment>
-      {tokens.map((line, index) => (
-        <Fragment key={index}>
-          {index > 0 && "\n"}
-          {renderTokens(line)}
-        </Fragment>
-      ))}
-    </Fragment>
-  );
-}
 
 /** Inline SVG rendered from raw SVG content string. */
 export function SvgPreview({ content }: { content: string }) {
@@ -51,7 +37,7 @@ export function FileContentPreview({
 
   const sourceView = (
     <CodePre class="write-content" copyText={sourceText}>
-      {codeTokens ? renderTokenLines(codeTokens) : sourceText}
+      {renderHighlightedSource(sourceText, codeTokens)}
     </CodePre>
   );
 

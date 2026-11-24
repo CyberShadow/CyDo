@@ -8,6 +8,7 @@ import { h, Fragment } from "preact";
 import { useState, useEffect } from "preact/hooks";
 import { langFromPath } from "./highlightLanguages.mjs";
 import { useCurrentTheme } from "./useTheme";
+import { splitOutputRows } from "./lib/outputPlan";
 
 export type { ThemedToken };
 
@@ -64,24 +65,30 @@ export function useHighlight(
   const appTheme = useCurrentTheme();
   const shikiTheme: ShikiTheme =
     appTheme === "light" ? "github-light" : "github-dark";
-  const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
+  const [highlighted, setHighlighted] = useState<{
+    code: string;
+    lang: string;
+    theme: ShikiTheme;
+    tokens: ThemedToken[][] | null;
+  } | null>(null);
 
   useEffect(() => {
-    if (!code || !lang) {
-      setTokens(null);
-      return;
-    }
+    if (!code || !lang) return;
     let cancelled = false;
-    setTokens(null);
-    void tokenize(code, lang, shikiTheme).then((t) => {
-      if (!cancelled) setTokens(t);
+    setHighlighted(null);
+    void tokenize(code, lang, shikiTheme).then((tokens) => {
+      if (!cancelled) setHighlighted({ code, lang, theme: shikiTheme, tokens });
     });
     return () => {
       cancelled = true;
     };
   }, [code, lang, shikiTheme]);
 
-  return tokens;
+  return highlighted?.code === code &&
+    highlighted?.lang === lang &&
+    highlighted?.theme === shikiTheme
+    ? highlighted.tokens
+    : null;
 }
 
 export function renderTokens(tokens: ThemedToken[]): h.JSX.Element {
@@ -90,6 +97,75 @@ export function renderTokens(tokens: ThemedToken[]): h.JSX.Element {
     null,
     tokens.map((t, i) =>
       h("span", { key: i, style: { color: t.color } }, t.content),
+    ),
+  );
+}
+
+export function highlightRowAt(
+  tokens: ThemedToken[][] | null,
+  index: number,
+  source: string,
+): ThemedToken[] | null {
+  if (!tokens) return null;
+  const row = tokens[index];
+  if (!row || row.map((token) => token.content).join("") !== source) {
+    throw new Error("Highlight token rows do not match source rows");
+  }
+  return row;
+}
+
+export function renderHighlightedRow(
+  tokens: ThemedToken[][] | null,
+  index: number,
+  source: string,
+): h.JSX.Element | string {
+  const row = highlightRowAt(tokens, index, source);
+  return row ? renderTokens(row) : source;
+}
+
+function assertHighlightRowCount(
+  rowCount: number,
+  tokens: ThemedToken[][],
+): void {
+  if (rowCount !== tokens.length) {
+    throw new Error("Highlight token rows do not match source rows");
+  }
+}
+
+export function useHighlightRows(
+  rows: readonly string[],
+  lang: string | null,
+): ThemedToken[][] | null {
+  // This buffer is for tokenization only. CRLF keeps a payload CR intact.
+  const tokens = useHighlight(rows.join("\r\n"), lang);
+  if (tokens) assertHighlightRowCount(rows.length, tokens);
+  return tokens;
+}
+
+export function highlightedSourceRows(source: string, tokens: ThemedToken[][]) {
+  const rows = Array.from(splitOutputRows(source));
+  // Shiki includes an empty last row for empty or newline-terminated source.
+  if (source === "" || source.endsWith("\n")) {
+    rows.push({ text: "", terminator: "" });
+  }
+  assertHighlightRowCount(rows.length, tokens);
+  rows.forEach(({ text }, index) => highlightRowAt(tokens, index, text));
+  return rows;
+}
+
+export function renderHighlightedSource(
+  source: string,
+  tokens: ThemedToken[][] | null,
+): h.JSX.Element | string {
+  if (!tokens) return source;
+
+  const rows = highlightedSourceRows(source, tokens);
+
+  return h(
+    Fragment,
+    null,
+    rows.map(({ terminator }, index) =>
+      h(Fragment, { key: index }, renderTokens(tokens[index]!), terminator),
     ),
   );
 }

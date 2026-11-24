@@ -1,6 +1,5 @@
-import { Fragment } from "preact";
 import type { ComponentChildren } from "preact";
-import { useHighlight, renderTokens } from "../../highlight";
+import { useHighlight, renderHighlightedSource } from "../../highlight";
 import { CodePre } from "../CopyButton";
 import { SourceRenderedToggle } from "../file-preview/SourceRenderedToggle";
 
@@ -21,14 +20,7 @@ export function DiffWithToggle({
       defaultSource={defaultSource}
       sourceView={
         <CodePre class="write-content" copyText={rawText}>
-          {tokens
-            ? tokens.map((line, i) => (
-                <Fragment key={i}>
-                  {i > 0 && "\n"}
-                  {renderTokens(line)}
-                </Fragment>
-              ))
-            : rawText}
+          {renderHighlightedSource(rawText, tokens)}
         </CodePre>
       }
       renderedView={<>{children}</>}

@@ -8,27 +8,15 @@ import {
   buildSourceRenderPieces,
   type SourceRenderPiece,
 } from "../lib/sourceTreeRenderPlan";
-import { useHighlight, renderTokens } from "../highlight";
+import {
+  highlightedSourceRows,
+  useHighlight,
+  renderHighlightedSource,
+} from "../highlight";
 import { CodePre, CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { FileContentPreview } from "./file-preview/FileContentPreview";
 import { SourceRenderedToggle } from "./file-preview/SourceRenderedToggle";
-
-function renderTokenLines(
-  tokens: ReturnType<typeof useHighlight>,
-): h.JSX.Element {
-  if (!tokens) return <></>;
-  return (
-    <Fragment>
-      {tokens.map((line, i) => (
-        <Fragment key={i}>
-          {i > 0 && "\n"}
-          {renderTokens(line)}
-        </Fragment>
-      ))}
-    </Fragment>
-  );
-}
 
 export function SourceTextSpanView({
   piece,
@@ -42,12 +30,13 @@ export function SourceTextSpanView({
   const rawTokens = useHighlight(piece.text, piece.language);
 
   let content: h.JSX.Element = (
-    <>{rawTokens ? renderTokenLines(rawTokens) : piece.text}</>
+    <>{renderHighlightedSource(piece.text, rawTokens)}</>
   );
 
   if (piece.highlightText && piece.projection && decodedTokens) {
     const projected = renderProjectedTokenLines(
       piece.text,
+      piece.highlightText,
       piece.projection,
       decodedTokens,
     );
@@ -98,7 +87,7 @@ export function SourceRichEmbedView({
           defaultSource={false}
           sourceView={
             <CodePre class={preClass} copyText={piece.sourceText}>
-              {sourceTokens ? renderTokenLines(sourceTokens) : piece.sourceText}
+              {renderHighlightedSource(piece.sourceText, sourceTokens)}
             </CodePre>
           }
           renderedView={
@@ -128,7 +117,7 @@ export function SourceRichEmbedView({
 
   return (
     <pre class={`${preClass}${blockClassName}`}>
-      {tokens ? renderTokenLines(tokens) : piece.text}
+      {renderHighlightedSource(piece.text, tokens)}
     </pre>
   );
 }
@@ -149,22 +138,21 @@ type RenderBlock = InlineBlock | RichBlock;
 
 function renderProjectedTokenLines(
   rawText: string,
+  decodedText: string,
   projection: SourceProjection,
   tokens: NonNullable<ReturnType<typeof useHighlight>>,
 ): h.JSX.Element | null {
   let decodedOffset = 0;
   const lines: h.JSX.Element[] = [];
 
-  for (let lineIndex = 0; lineIndex < tokens.length; lineIndex++) {
+  const rows = highlightedSourceRows(decodedText, tokens);
+  for (const [lineIndex, row] of rows.entries()) {
     const line = tokens[lineIndex]!;
     const lineStart = decodedOffset;
-    const lineLength = line.reduce(
-      (sum, token) => sum + token.content.length,
-      0,
-    );
+    decodedOffset += row.text.length + row.terminator.length;
     const lineRawSpan = projectSpan(projection, {
       start: lineStart,
-      end: lineStart + lineLength,
+      end: decodedOffset,
     });
     if (!lineRawSpan) return null;
 
@@ -220,15 +208,7 @@ function renderProjectedTokenLines(
       );
     }
 
-    lines.push(
-      <Fragment key={lineIndex}>
-        {lineIndex > 0 && "\n"}
-        {lineParts}
-      </Fragment>,
-    );
-
-    decodedOffset += lineLength;
-    if (lineIndex + 1 < tokens.length) decodedOffset += 1;
+    lines.push(<Fragment key={lineIndex}>{lineParts}</Fragment>);
   }
 
   return <Fragment>{lines}</Fragment>;
