@@ -1,5 +1,13 @@
-import type { PreReloadDraft, TaskState } from "./types";
+import type { DisplayMessage, PreReloadDraft, TaskState } from "./types";
 import { canonicalUserTextFromDisplayMessage } from "./userText";
+
+function isRecoverableUserInput(message: DisplayMessage): boolean {
+  return (
+    message.type === "user" &&
+    message.parentToolUseId == null &&
+    !message.isSidechain
+  );
+}
 
 /** Remove only a draft tied to the exact native user UUID removed from JSONL. */
 export function excludeReloadDraftUuid(
@@ -18,7 +26,7 @@ export function snapshotUserDrafts(
   excludedNativeUuid?: string | null,
 ): PreReloadDraft[] | undefined {
   const drafts = task.messages
-    .filter((message) => message.type === "user")
+    .filter(isRecoverableUserInput)
     .map((message) => {
       const text = canonicalUserTextFromDisplayMessage(message);
       return message.uuid ? { text, nativeUuid: message.uuid } : { text };
@@ -37,7 +45,7 @@ export function reconcileInputDraft(task: TaskState): string | undefined {
 
   const finalCounts = new Map<string, number>();
   for (const message of task.messages) {
-    if (message.type !== "user") continue;
+    if (!isRecoverableUserInput(message)) continue;
     const text = canonicalUserTextFromDisplayMessage(message);
     if (text.length === 0) continue;
     finalCounts.set(text, (finalCounts.get(text) ?? 0) + 1);

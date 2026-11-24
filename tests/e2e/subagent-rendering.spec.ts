@@ -14,12 +14,27 @@
  * Root cause 2 (frontend): MessageView memo comparator did not check the
  *   `children` prop — fixed in web/src/components/MessageList.tsx.
  */
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  endSession,
+} from "./fixtures";
 
 test("sub-agent messages with parent_tool_use_id render nested", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
+  let historyReplays = 0;
+  page.on("websocket", (socket) => {
+    socket.on("framereceived", ({ payload }) => {
+      if (JSON.parse(payload.toString()).type === "task_history_end") {
+        historyReplays++;
+      }
+    });
+  });
   await enterSession(page);
 
   // Select the "blank" entry point which has allow_native_subagents: true,
@@ -37,11 +52,10 @@ test("sub-agent messages with parent_tool_use_id render nested", { tag: "@claude
   // Bug 1 (backend): the sub-agent's user message (task prompt) must appear
   // nested inside .sub-agent-messages. Verifies parent_tool_use_id is
   // propagated for user messages.
-  await expect(
-    page.locator(
-      '[style*="display: contents"] .sub-agent-messages .user-message',
-    ),
-  ).toBeVisible({ timeout });
+  const subagentUserMessage = page.locator(
+    '[style*="display: contents"] .sub-agent-messages .user-message',
+  );
+  await expect(subagentUserMessage).toBeVisible({ timeout });
 
   // Bug 2 (frontend): the sub-agent's assistant message (with the Bash
   // tool_use block) must also appear nested. Verifies MessageView re-renders
@@ -51,4 +65,24 @@ test("sub-agent messages with parent_tool_use_id render nested", { tag: "@claude
       '[style*="display: contents"] .sub-agent-messages .assistant-message',
     ),
   ).toBeVisible();
+
+  const input = page.locator(".input-textarea:visible");
+  await expect(input).toHaveValue("");
+  const beforeEnd = historyReplays;
+  await endSession(page);
+  await expect.poll(() => historyReplays).toBeGreaterThan(beforeEnd);
+  await expect(subagentUserMessage).toHaveCount(0);
+  await expect(page.locator(".session-loading:visible")).toHaveCount(0);
+
+  // Preact queues passive effects in a timer after the replay paint.
+  // Queue our timer on the next frame so it runs after draft application.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => setTimeout(resolve, 0));
+        });
+      }),
+  );
+  expect(await input.inputValue()).toBe("");
 });

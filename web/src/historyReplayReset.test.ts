@@ -354,6 +354,48 @@ describe("history replay reset", () => {
     expect(reconcileInputDraft(replayed)).toBe(duplicateText);
   });
 
+  it("does not recover a child user message as a draft after its matching root replays", () => {
+    const root = {
+      id: "root-user",
+      type: "user" as const,
+      content: [{ type: "text" as const, text: "same user text" }],
+    };
+    const before = {
+      ...makeTaskState(1, true, true),
+      messages: [
+        root,
+        { ...root, id: "child-user", parentToolUseId: "agent-1" },
+      ],
+    };
+    const replayed = {
+      ...before,
+      messages: [root],
+      preReloadDrafts: snapshotUserDrafts(before),
+    };
+
+    expect(reconcileInputDraft(replayed)).toBeUndefined();
+  });
+
+  it("preserves a root user draft when only a child with matching text replays", () => {
+    const text = "same user text";
+    const root = {
+      id: "root-user",
+      type: "user" as const,
+      content: [{ type: "text" as const, text }],
+    };
+    const before = {
+      ...makeTaskState(1, true, true),
+      messages: [root],
+    };
+    const replayed = {
+      ...before,
+      messages: [{ ...root, id: "child-user", parentToolUseId: "agent-1" }],
+      preReloadDrafts: snapshotUserDrafts(before),
+    };
+
+    expect(reconcileInputDraft(replayed)).toBe(text);
+  });
+
   it("keeps live events that arrive after reload before its replay starts", () => {
     const reloaded = {
       ...makeTaskState(1, true, true),
