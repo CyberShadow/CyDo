@@ -1190,7 +1190,7 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
   await enterSession(page);
 
   // Create two sub-tasks that both call Ask(question) with no tid (ask parent).
-  // The parent's Task call returns early with the first child's question.
+  // The first child's question is the next event returned by the parent's Task call.
   // The second question is queued and delivered after the first is answered.
   await sendMessage(page, "call 2 tasks research call ask what approach?");
 

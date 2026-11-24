@@ -778,7 +778,7 @@ task_types: {}
 ## Purpose: Wraps the startup message when CyDo creates the task.
 ## Type: Path string relative to defs.
 ## Default: Required for a new singleton. An overlay inherits it.
-## Notes: Requests arrive separately via Ask. The caller waits for Answer.
+## Notes: Requests arrive separately via Ask. Reply with Answer.
 # singletons:
 #   research_desk:
 #     prompt_template: prompts/blank.md

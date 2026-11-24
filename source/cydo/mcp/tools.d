@@ -5,24 +5,44 @@ import ae.utils.json : JSONFragment;
 import cydo.mcp : Description, McpName, McpResult;
 import cydo.mcp.payloads : TaskResult;
 
-/// Static Task description shared by MCP-backed agents and Copilot's SDK tools.
+private enum string mailboxDescription =
+	"Any blocked Task, Ask, or Answer call returns the next event in arrival order. "
+	~ "It may belong to an earlier call. In a call's result, check `status` (`question` or `answered`) "
+	~ "and `qid` for questions and replies, or the child `tid`s in the `tasks` list for batch results. "
+	~ "Question failures returned by a call are tool errors. "
+	~ "When you go idle, queued events arrive as system messages.";
+
 enum string taskToolDescription =
 	"Create sub-tasks that run autonomously and return their output.\n\n"
 	~ "Use this when work can stand alone in its own session. Detailed task-type guidance "
 	~ "lives in the session instructions.\n\n"
 	~ "Each created child appears in the CyDo task tree; the returned `tid` opens that "
 	~ "child session.\n\n"
-	~ "If the harness restarts, CyDo resumes in-flight child tasks and later delivers "
-	~ "recovered results to the parent as a system message rather than through the "
-	~ "interrupted Task call.\n\n"
 	~ "Accepted multi-task batches launch every child before waiting, so the children run "
-	~ "concurrently. Subject to the early-question flow below, a live batch returns after "
-	~ "every child settles with one result item per requested task in request order, "
-	~ "regardless of completion order.\n\n"
-	~ "Results include each child task's output file path and `tid`, and completed children "
-	~ "can be queried again with mcp__cydo__Ask(message, tid). If a sub-task asks a question, "
-	~ "the mcp__cydo__Task or mcp__cydo__Ask call returns early with a `qid`; answer it with "
-	~ "mcp__cydo__Answer(qid, answer).";
+	~ "concurrently. Once every child settles, the batch result contains one item per requested "
+	~ "task in request order, regardless of completion order. Each item includes the child's "
+	~ "output file path and `tid` when available. Use Ask with the child's `tid` to follow up.\n\n"
+	~ mailboxDescription ~ "\n\n"
+	~ "After a restart, CyDo resumes in-flight children and keeps unfinished batches grouped. "
+	~ "Unanswered questions and recovered results are queued again and delivered like any other event.";
+
+enum string askToolDescription =
+	"Ask a question to another task in your workspace. Omit `tid` to ask your parent, or pass "
+	~ "a task's `tid` to ask that task. If that task is your child and you have received a question "
+	~ "from it that you have not answered, use Answer with that `qid` instead. "
+	~ "Ask waits for the next event.\n\n"
+	~ "Use Ask when you need information to continue. Your final message and output "
+	~ "are delivered to your parent automatically when your task ends.\n\n"
+	~ mailboxDescription ~ " The answer to your question may arrive through a later call.";
+
+enum string answerToolDescription =
+	"Answer a question from a related task using the `qid` you received. "
+	~ "A cancelled question returns an error. If answering requires work, finish it "
+	~ "before calling Answer.\n\n"
+	~ "After a successful Answer, the call returns `status: \"delivered\"` immediately unless "
+	~ "you owe no other received question an answer and are still waiting for a Task batch result "
+	~ "or for a reply or failure to your own question. In that case, it waits for the next event.\n\n"
+	~ mailboxDescription;
 
 /// Static Handoff description shared by MCP-backed agents and Copilot's SDK tools.
 enum string handoffToolDescription =
@@ -36,7 +56,7 @@ enum string handoffToolDescription =
 	~ "Do not call any other tools after Handoff.";
 
 enum string requestToolDescription =
-	"Send a request to a singleton and wait for its answer.\n\nAvailable singletons:\n\n";
+	"Send a request to a singleton. Results follow the same delivery rules as Ask.\n\nAvailable singletons:\n\n";
 
 /// Specification for a single sub-task.
 struct TaskSpec
@@ -140,23 +160,7 @@ interface CydoTools
 	    AskQuestion[] questions
 	);
 
-	@Description(
-	    "Ask a question to a related task and wait for the answer.\n\n"
-	    ~ "Call this when you are blocked on information you need to continue: it "
-	    ~ "pauses your task until the target responds, and obligates them to produce "
-	    ~ "an answer. Do not use it to announce what you are about to do or to report "
-	    ~ "progress or completion — your final message and output are delivered to "
-	    ~ "your parent automatically when your task ends, without any tool call.\n\n"
-	    ~ "## Ask your parent (tid omitted)\n"
-	    ~ "Call mcp__cydo__Ask(message) to ask your parent task a question. Your execution "
-	    ~ "pauses until the parent answers with mcp__cydo__Answer(qid, response).\n\n"
-	    ~ "## Ask a completed sub-task (follow-up)\n"
-	    ~ "After a mcp__cydo__Task call completes, use mcp__cydo__Ask(message, tid) to ask a follow-up "
-	    ~ "question. Pass tid when asking a specific task by ID.\n\n"
-	    ~ "The result includes a `qid` (question ID) that the answerer uses.\n"
-	    ~ "If a sub-task asked you a question you have received and still owe an answer to, "
-	    ~ "use mcp__cydo__Answer with its qid instead of asking that sub-task."
-	)
+	@Description(askToolDescription)
 	@McpName("Ask")
 	McpResult ask(
 	    @Description("The question to ask")
@@ -166,17 +170,10 @@ interface CydoTools
 	    int tid = -1
 	);
 
-	@Description(
-	    "Answer a question from a related task.\n\n"
-	    ~ "When another task asks you a question (returned from mcp__cydo__Task or mcp__cydo__Ask with "
-	    ~ "a qid), use mcp__cydo__Answer(qid, message) to respond.\n\n"
-	    ~ "**Finish the work first, then answer.** If the question requires you to "
-	    ~ "investigate, run commands, or otherwise do work to produce the answer, "
-	    ~ "complete that work *before* calling mcp__cydo__Answer."
-	)
+	@Description(answerToolDescription)
 	@McpName("Answer")
 	McpResult answer(
-	    @Description("The question ID to answer (from the question result)")
+	    @Description("The ID of the question received in a tool result or system message")
 	    int qid,
 	    @Description("Your answer")
 	    string message

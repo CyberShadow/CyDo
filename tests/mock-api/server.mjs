@@ -1522,8 +1522,8 @@ function handleMessages(req, res) {
     // this only affects that test's batch-result resume turn.
     const resumeOrig = findOriginalUserText(messages);
     if (
-      /Process these results as if they were returned normally by the Task tool/i.test(
-        userText,
+      userText.includes(
+        "Continue your work using these results, as you would with a Task tool result.",
       ) &&
       resumeOrig &&
       resumeOrig.includes("RESPAWN-AFTER-RESUME")

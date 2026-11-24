@@ -40,7 +40,8 @@ import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule,
 import cydo.runtime.launch.sandbox : cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
 import cydo.mcp : McpResult;
-import cydo.mcp.tools : handoffToolDescription, requestToolDescription, taskToolDescription;
+import cydo.mcp.tools : answerToolDescription, askToolDescription, handoffToolDescription,
+	requestToolDescription, taskToolDescription;
 import cydo.foundation.text.title : truncateTitle;
 
 // Callback type for dispatching custom tool calls.
@@ -3261,11 +3262,11 @@ string buildToolDefinitions(SessionConfig config)
 		JSONFragment(`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object"}}},"required":["questions"]}`),
 		true);
 	tools ~= ToolDefinition("cydo-Ask",
-		"Ask a blocking question to a related task and wait for the answer",
+		askToolDescription,
 		JSONFragment(`{"type":"object","properties":{"message":{"type":"string"},"tid":{"type":"integer"}},"required":["message"]}`),
 		true);
 	tools ~= ToolDefinition("cydo-Answer",
-		"Answer a question from a related task",
+		answerToolDescription,
 		JSONFragment(`{"type":"object","properties":{"qid":{"type":"integer"},"message":{"type":"string"}},"required":["qid","message"]}`),
 		true);
 	if (config.singletons.length > 0)
@@ -3318,6 +3319,8 @@ unittest
 	}
 	assert(tools[0].description == taskToolDescription);
 	assert(tools[3].description == handoffToolDescription);
+	assert(tools[5].description == askToolDescription);
+	assert(tools[6].description == answerToolDescription);
 }
 
 /// Build JSON params string for session.create.

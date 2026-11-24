@@ -20,12 +20,9 @@ package(cydo):
 string renderBatchResults(string[] resultJsons)
 {
 	auto resultsArray = "[" ~ resultJsons.join(",") ~ "]";
-	return "The following sub-task(s) completed while your session was interrupted. "
-		~ "Their results are provided below exactly as they would have been "
-		~ "returned by the Task tool.\n\n"
+	return "A Task batch completed. Its results are below.\n\n"
 		~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n"
-		~ "Continue from where you left off. Process these results as if they "
-		~ "were returned normally by the Task tool.";
+		~ "Continue your work using these results, as you would with a Task tool result.";
 }
 
 struct SubtaskResultDeliveryHost

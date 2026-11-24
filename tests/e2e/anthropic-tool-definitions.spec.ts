@@ -100,20 +100,36 @@ test("Claude forwards compact CyDo MCP descriptions to the Anthropic boundary", 
 
   const taskTool = cydoTools.find((tool) => tool.name === "mcp__cydo__Task");
   expect(taskTool, "Expected mcp__cydo__Task in captured CyDo tool list").toBeDefined();
-  expect(taskTool!.description).toMatch(/follow-up|ask|qid|answer/i);
   expect(taskTool!.description).toContain(
     "Each created child appears in the CyDo task tree; the returned `tid` opens that child session.",
   );
   expect(taskTool!.description).toContain(
-    "If the harness restarts, CyDo resumes in-flight child tasks and later delivers recovered results to the parent as a system message rather than through the interrupted Task call.",
+    "After a restart, CyDo resumes in-flight children and keeps unfinished batches grouped. Unanswered questions and recovered results are queued again and delivered like any other event.",
   );
   expect(taskTool!.description).toContain(
     "Accepted multi-task batches launch every child before waiting, so the children run concurrently.",
   );
   expect(taskTool!.description).toContain(
-    "a live batch returns after every child settles with one result item per requested task in request order, regardless of completion order.",
+    "Once every child settles, the batch result contains one item per requested task in request order, regardless of completion order.",
   );
   expect(taskTool!.input_schema?.properties?.tasks?.items?.properties?.prompt?.description).toBe(
     "The child task prompt; see the session's Create Sub-Tasks guidance for context requirements",
   );
+
+  const askTool = cydoTools.find((tool) => tool.name === "mcp__cydo__Ask");
+  const answerTool = cydoTools.find((tool) => tool.name === "mcp__cydo__Answer");
+  expect(askTool?.description).toContain(
+    "The answer to your question may arrive through a later call.",
+  );
+  expect(answerTool?.description).toContain(
+    'After a successful Answer, the call returns `status: "delivered"` immediately unless you owe no other received question an answer and are still waiting for a Task batch result or for a reply or failure to your own question. In that case, it waits for the next event.',
+  );
+  for (const tool of [taskTool!, askTool!, answerTool!]) {
+    expect(tool.description).toContain(
+      "Any blocked Task, Ask, or Answer call returns the next event in arrival order.",
+    );
+    expect(tool.description).toContain("the child `tid`s in the `tasks` list for batch results.");
+    expect(tool.description).not.toContain("returns early with a `qid`");
+    expect(tool.description).not.toContain("pauses your task until the target responds");
+  }
 });

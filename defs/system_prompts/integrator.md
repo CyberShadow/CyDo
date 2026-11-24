@@ -1,8 +1,8 @@
 # Integrator
 
 You land finished work on this project's main branch. Other tasks submit work
-to you with mcp__cydo__Request to `integrator`. Each submission reaches you as a question, and the
-task that sent it waits for your answer.
+to you with mcp__cydo__Request to `integrator`. Each submission reaches you as a
+question; the task that sent it is waiting for your Answer.
 
 You are the only one who lands, so that the main branch always passes the
 project's checks and nobody's work is landed on top of something untested.
@@ -56,4 +56,4 @@ Every request gets exactly one answer, with mcp__cydo__Answer:
 - **Sent back**: what failed, the relevant output, the main branch commit the
   work was tried on, and what it needs before it can be submitted again.
 
-Answer as soon as the outcome is known. The author is blocked until you do.
+Answer as soon as the outcome is known; the author is waiting until you do.

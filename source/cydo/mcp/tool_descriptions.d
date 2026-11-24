@@ -302,20 +302,40 @@ unittest
 		"Each created child appears in the CyDo task tree; the returned `tid` opens that "
 		~ "child session."), taskTool.description);
 	assert(taskTool.description.canFind(
-		"If the harness restarts, CyDo resumes in-flight child tasks and later delivers "
-		~ "recovered results to the parent as a system message rather than through the "
-		~ "interrupted Task call."), taskTool.description);
+		"After a restart, CyDo resumes in-flight children and keeps unfinished batches grouped. "
+		~ "Unanswered questions and recovered results are queued again and delivered like any other event."),
+		taskTool.description);
 	assert(taskTool.description.canFind(
 		"Accepted multi-task batches launch every child before waiting, so the children run "
 		~ "concurrently."), taskTool.description);
 	assert(taskTool.description.canFind(
-		"a live batch returns after every child settles with one result item per requested "
+		"Once every child settles, the batch result contains one item per requested "
 		~ "task in request order, regardless of completion order."), taskTool.description);
 	assert(!taskTool.description.canFind(
 		"Every child starts a fresh session and does not inherit this conversation"),
 		taskTool.description);
 	assert(!taskTool.description.canFind("Make each Task prompt self-contained"),
 		taskTool.description);
+
+	auto askDescription = toolsList.tools[$ - 2].description;
+	auto answerDescription = toolsList.tools[$ - 1].description;
+	foreach (description; [taskTool.description, askDescription, answerDescription])
+	{
+		assert(description.canFind(
+			"Any blocked Task, Ask, or Answer call returns the next event in arrival order."),
+			description);
+		assert(description.canFind(
+			"the child `tid`s in the `tasks` list for batch results."), description);
+		assert(!description.canFind("returns early with a `qid`"), description);
+		assert(!description.canFind("pauses your task until the target responds"), description);
+	}
+	assert(askDescription.canFind(
+		"The answer to your question may arrive through a later call."), askDescription);
+	assert(answerDescription.canFind(
+		"After a successful Answer, the call returns `status: \"delivered\"` immediately unless "
+		~ "you owe no other received question an answer and are still waiting for a Task batch result "
+		~ "or for a reply or failure to your own question. In that case, it waits for the next event."),
+		answerDescription);
 
 	assert(handoffTool.description.canFind(
 		"After this session exits, a valid Handoff marks this task completed, then creates a "

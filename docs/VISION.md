@@ -168,13 +168,15 @@ approval on continuation gates (stewards still review).
 Session forking for user-initiated interrogation already works (JSONL
 truncation). Richer communication between tasks in the tree is needed.
 
-Deliverable: agents can ask questions up the task tree (child → parent → user)
-and parents can re-engage completed children for follow-up.
+Deliverable: agents can direct questions to another task in their workspace,
+including completed children for follow-up.
 
 - Parent wakes a completed child to ask follow-up questions
 - Child asks parent for clarification of its prompt
-- Clarification requests bubble up the task tree, ultimately reaching the
-  user if no ancestor can answer
+- Events can arrive through any blocked Task, Ask, or Answer call, or as a
+  system message when the receiving task is idle
+- Longer-term goal: clarification requests can escalate up the task tree,
+  ultimately reaching the user if no ancestor can answer
 
 ### 10. Stewards
 

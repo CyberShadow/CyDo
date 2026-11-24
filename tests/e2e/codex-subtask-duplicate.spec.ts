@@ -4,14 +4,14 @@
  * Bug: When a Codex sub-task completes, the result is delivered twice:
  *   1. Correctly via the MCP tool result (pending promise fulfillment)
  *   2. Spuriously via deliverBatchResults() which sends a "[SYSTEM: Sub-task
- *      results] ... your session was interrupted" user message
+ *      results] ... A Task batch completed" user message
  *
  * Root cause: closeStdin() on Codex sessions synchronously fires exitHandler_(0),
  * which triggers onExit before onToolCallDelivered cleans up taskDeps. The onExit
  * handler sees the child still in taskDeps and takes the batch delivery path.
  *
  * This test sends a simple sub-task prompt and asserts that the spurious
- * "session was interrupted" message does NOT appear in the parent's message list.
+ * "A Task batch completed" message does NOT appear in the parent's message list.
  */
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
@@ -31,14 +31,14 @@ test("codex sub-task result should not be delivered twice", { tag: "@codex-only"
   ).toBeVisible();
 
   // Now check for the spurious duplicate: the batch delivery path sends a
-  // message containing "session was interrupted". This should NOT appear.
+  // message containing "A Task batch completed". This should NOT appear.
   // Wait a few seconds to give the duplicate a chance to arrive.
   await page.waitForTimeout(3_000);
 
-  const interruptedMessages = messageList.getByText("session was interrupted");
-  const count = await interruptedMessages.count();
+  const batchMessages = messageList.getByText("A Task batch completed. Its results are below.");
+  const count = await batchMessages.count();
   expect(
     count,
-    'Spurious "session was interrupted" message found — sub-task result was delivered twice',
+    'Spurious "A Task batch completed" message found — sub-task result was delivered twice',
   ).toBe(0);
 });
