@@ -1914,7 +1914,9 @@ class App
 				accepted.description = textContent;
 				persistence.setDescription(tid, textContent);
 			}
-			if (accepted.status != TaskStatus.active)
+			// A waiting task resumes when a tool result is delivered or
+			// assistant work is observed.
+			if (accepted.status != TaskStatus.active && accepted.status != TaskStatus.waiting)
 			{
 				assert(isLegalTaskStatusTransition(accepted.status, TaskStatus.active),
 					"Accepted browser submission has an illegal status transition");
@@ -5063,6 +5065,7 @@ unittest
 	fixture.socket.sent = null;
 	fixture.publicationOrder = null;
 	td.status = TaskStatus.waiting;
+	fixture.app.persistence.setStatus(fixture.tid, cast(string) td.status);
 	td.description = "";
 	td.title = "";
 	td.draft = "saved retry draft";
@@ -5071,11 +5074,11 @@ unittest
 	auto suggestionHandle = new Promise!string;
 	td.suggestGenHandle = suggestionHandle;
 	td.suggestGeneration = 41;
-	string readPersistedDraft()
+	Persistence.TaskRow readPersistedTask()
 	{
 		foreach (row; fixture.app.persistence.loadTasks())
 			if (row.tid == fixture.tid)
-				return row.draft;
+				return row;
 		assert(false, "Expected persisted browser task row");
 	}
 	auto message = testBrowserSubmission(fixture.tid, "first browser message",
@@ -5095,7 +5098,7 @@ unittest
 		&& fixture.titlePromptReads == 0);
 	assert(td.lastSuggestions == ["pending suggestion"]
 		&& td.suggestGenHandle is suggestionHandle && td.suggestGeneration == 41);
-	assert(readPersistedDraft() == "saved retry draft");
+	assert(readPersistedTask().draft == "saved retry draft");
 
 	fixture.publicationOrder = null;
 	fixture.submissionMessages = null;
@@ -5116,7 +5119,7 @@ unittest
 	assert(fixture.titlePromptReads == 0);
 	assert(td.lastSuggestions == ["pending suggestion"]
 		&& td.suggestGenHandle is suggestionHandle && td.suggestGeneration == 41);
-	assert(readPersistedDraft() == "saved retry draft");
+	assert(readPersistedTask().draft == "saved retry draft");
 	assert(fixture.socket.sent.length == 3);
 	assert(fixture.socket.sent[0].canFind(`"type":"cydo/task_diagnostic"`)
 		&& fixture.socket.sent[0].canFind(`"subject":"Failed to submit message"`)
@@ -5144,7 +5147,7 @@ unittest
 	assert(toJson(fixture.session.contents[0]) == toJson(fixture.session.contents[1]));
 	assert(td.status == TaskStatus.waiting && td.description.length == 0
 		&& td.title.length == 0 && td.draft == "saved retry draft");
-	assert(readPersistedDraft() == "saved retry draft");
+	assert(readPersistedTask().draft == "saved retry draft");
 
 	td.archiving = true;
 	fixture.app.handleUserMessage(fixture.socket, message);
@@ -5154,7 +5157,7 @@ unittest
 
 	fixture.session.accept(1, AgentSubmissionReceipt.appServerAccepted);
 	drainSubmissionNextTicks();
-	assert(td.status == TaskStatus.active);
+	assert(td.status == TaskStatus.waiting && readPersistedTask().status == TaskStatus.waiting);
 	assert(td.description == "first browser message");
 	assert(td.title == truncateTitle("first browser message", 80));
 	assert(td.draft.length == 0 && td.history.length == 2 && td.isProcessing);
@@ -5163,17 +5166,21 @@ unittest
 	assert(fixture.titlePromptReads == 1);
 	assert(td.lastSuggestions.length == 0 && td.suggestGenHandle is null
 		&& td.suggestGeneration == 42);
-	assert(readPersistedDraft().length == 0);
+	assert(readPersistedTask().draft.length == 0);
 	assert(fixture.publicationOrder == ["title_update", "draft_updated",
 		"unconfirmed", "task_update", "agent_ack"]);
 	bool sentDraftClear;
 	foreach (payload; fixture.socket.sent)
+	{
 		if (payload.canFind(`"type":"draft_updated"`))
 		{
 			assert(payload.canFind(`"old_draft":"saved retry draft"`));
 			assert(payload.canFind(`"new_draft":""`));
 			sentDraftClear = true;
 		}
+		if (payload.canFind(`"type":"task_updated"`))
+			assert(payload.canFind(`"status":"waiting"`) && payload.canFind(`"isProcessing":true`));
+	}
 	assert(sentDraftClear);
 
 	fixture.socket.sent = null;
@@ -5187,6 +5194,18 @@ unittest
 	drainSubmissionNextTicks();
 	assert(fixture.session.sendCalls == 2 && fixture.socket.sent.length == 0,
 		"Archiving must not turn an accepted duplicate into a rejection");
+
+	td.archiving = false;
+	td.status = TaskStatus.alive;
+	fixture.app.persistence.setStatus(fixture.tid, cast(string) td.status);
+	td.isProcessing = false;
+	fixture.app.handleUserMessage(fixture.socket,
+		testBrowserSubmission(fixture.tid, "new turn", "new-turn-nonce"));
+	drainSubmissionNextTicks();
+	assert(fixture.session.sendCalls == 3 && td.status == TaskStatus.alive);
+	fixture.session.accept(2, AgentSubmissionReceipt.appServerAccepted);
+	drainSubmissionNextTicks();
+	assert(td.status == TaskStatus.active && readPersistedTask().status == TaskStatus.active);
 }
 
 unittest
