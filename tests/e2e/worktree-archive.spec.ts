@@ -1,5 +1,5 @@
 import { existsSync } from "fs";
-import { execSync } from "child_process";
+import { execFileSync, execSync, spawnSync } from "child_process";
 import {
   test,
   expect,
@@ -88,6 +88,12 @@ test("archive and unarchive a spike task's worktree", { tag: "@no-codex" }, asyn
   // Verify worktree directory exists before archiving.
   const wtDir = `${backend.wsDir}/.cydo/tasks/${spikeTid}/worktree`;
   expect(existsSync(wtDir)).toBe(true);
+  const branchRef = `refs/heads/cydo/${spikeTid}`;
+  expect(
+    execFileSync("git", ["-C", wtDir, "symbolic-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim(),
+  ).toBe(branchRef);
 
   // 6. Archive the spike task.
   await page.locator(".btn-banner-archive").click();
@@ -108,6 +114,16 @@ test("archive and unarchive a spike task's worktree", { tag: "@no-codex" }, asyn
     /* ref does not exist */
   }
   expect(archiveRefExists).toBe(true);
+  expect(
+    spawnSync("git", [
+      "-C",
+      backend.wsDir,
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      branchRef,
+    ]).status,
+  ).toBe(1);
 
   // 7. Unarchive the spike task.
   await page.locator(".btn-banner-archive").click();
@@ -117,6 +133,11 @@ test("archive and unarchive a spike task's worktree", { tag: "@no-codex" }, asyn
 
   // Verify worktree directory is restored.
   expect(existsSync(wtDir)).toBe(true);
+  expect(
+    execFileSync("git", ["-C", wtDir, "symbolic-ref", "HEAD"], {
+      encoding: "utf8",
+    }).trim(),
+  ).toBe(branchRef);
 });
 
 test("cannot archive parent with alive descendant", { tag: "@no-codex" }, async ({

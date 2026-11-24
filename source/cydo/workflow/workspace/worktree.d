@@ -139,14 +139,76 @@ unittest
     assert(getArchiveRefState(dir, 2) == ArchiveRefState.Missing);
 }
 
-private void throwGitFailure(string context, int tid, string[] cmd, string output)
+private noreturn throwGitFailure(string context, int tid, string[] cmd, string output)
 {
     auto details = output.strip();
     throw new Exception(format!"%s failed for tid=%d: cmd='%s' output='%s'"(
         context, tid, cmd.join(" "), details.length > 0 ? details : "<empty>"));
 }
 
-/// Create a detached worktree with a registration id derived from its host task.
+string worktreeBranchName(int tid)
+{
+    return format!"cydo/%d"(tid);
+}
+
+string worktreeBranchTip(string repoDir, int tid)
+{
+    auto cmd = ["git", "-C", repoDir, "rev-parse", "--verify", "--quiet",
+        "refs/heads/" ~ worktreeBranchName(tid) ~ "^{commit}"];
+    auto result = execute(cmd);
+    if (result.status == 0)
+        return result.output.strip();
+    if (result.status == 1)
+        return null;
+    throwGitFailure("worktreeBranchTip: rev-parse", tid, cmd, result.output);
+}
+
+struct WorktreeHeadStatus
+{
+    string branchTip;
+    string currentBranch;
+    string headSha;
+}
+
+WorktreeHeadStatus worktreeHeadStatus(string worktreePath, int worktreeTid)
+{
+    auto tip = worktreeBranchTip(worktreePath, worktreeTid);
+    if (tip is null)
+        return WorktreeHeadStatus.init;
+    auto branchCmd = ["git", "-C", worktreePath, "branch", "--show-current"];
+    auto branch = execute(branchCmd);
+    if (branch.status != 0)
+        throwGitFailure("worktreeHeadStatus: branch --show-current", worktreeTid, branchCmd, branch.output);
+    auto currentBranch = branch.output.strip();
+    if (currentBranch.length != 0)
+        return WorktreeHeadStatus(tip, currentBranch);
+    auto headCmd = ["git", "-C", worktreePath, "rev-parse", "HEAD"];
+    auto head = execute(headCmd);
+    if (head.status != 0)
+        throwGitFailure("worktreeHeadStatus: rev-parse HEAD", worktreeTid, headCmd, head.output);
+    return WorktreeHeadStatus(tip, currentBranch, head.output.strip());
+}
+
+private auto executeGitWithInput(string[] cmd, string input)
+{
+    import std.typecons : tuple;
+
+    auto pipes = pipeProcess(cmd, Redirect.stdin | Redirect.stdout | Redirect.stderrToStdout);
+    pipes.stdin.write(input);
+    pipes.stdin.close();
+    auto output = pipes.stdout.byChunk(4096).join;
+    return tuple!("status", "output")(wait(pipes.pid), cast(string) output);
+}
+
+private void runGitWithInput(string context, int tid, string[] cmd, string input)
+{
+    auto result = executeGitWithInput(cmd, input);
+    if (result.status != 0)
+        throwGitFailure(context, tid, cmd, result.output);
+}
+
+/// Create a worktree on a new branch `cydo/<tid>` with a registration id
+/// derived from its host task.
 void addWorktree(string repoDir, int tid, string worktreePath, string commitish = null)
 {
     import std.array : replicate;
@@ -172,7 +234,8 @@ void addWorktree(string repoDir, int tid, string worktreePath, string commitish 
         return result.output;
     }
 
-    auto addCmd = ["git", "-C", repoDir, "worktree", "add", "--detach", "--no-checkout", temporaryPath];
+    auto addCmd = ["git", "-C", repoDir, "worktree", "add", "--no-checkout",
+        "-b", worktreeBranchName(tid), temporaryPath];
     if (commitish !is null)
         addCmd ~= commitish;
     runGit("addWorktree: worktree add", addCmd);
@@ -220,6 +283,8 @@ void addWorktree(string repoDir, int tid, string worktreePath, string commitish 
             }
             runGit("addWorktree: rollback",
                 ["git", "-C", repoDir, "worktree", "remove", "-f", "-f", registeredPath]);
+            runGit("addWorktree: rollback branch",
+                ["git", "-C", repoDir, "branch", "-D", worktreeBranchName(tid)]);
         }
         catch (Exception rollbackFailure)
             throw new Exception(failure.msg ~ "\n" ~ rollbackFailure.msg, __FILE__, __LINE__, failure);
@@ -233,6 +298,8 @@ void addWorktree(string repoDir, int tid, string worktreePath, string commitish 
 ///   base → [cydo:archive:staged] → [cydo:archive:modified] → [cydo:archive:untracked]
 /// Only layers with actual changes are created. The final SHA is stored as
 /// refs/cydo/worktree-archive/<tid>, then the worktree directory is removed.
+/// Deletes branch `cydo/<tid>`. Refuses if the branch holds commits not in HEAD
+/// or is checked out in another worktree.
 ///
 /// Throws on failure (with command details); logs successes/skips via std.logger.
 /// Idempotent: no-op if the archive ref already exists.
@@ -253,6 +320,50 @@ void archiveWorktree(string worktreePath, string projectPath, int tid)
     if (headResult.status != 0)
         throwGitFailure("archiveWorktree: rev-parse HEAD", tid, headCmd, headResult.output);
     string currentHead = headResult.output.strip();
+
+    auto branch = worktreeBranchName(tid);
+    auto branchRef = "refs/heads/" ~ branch;
+    auto symrefCmd = ["git", "-C", projectPath, "symbolic-ref", "-q", branchRef];
+    auto symrefResult = execute(symrefCmd);
+    if (symrefResult.status == 0)
+        throw new Exception(format!"archiveWorktree: branch '%s' is a symbolic ref for tid=%d; refusing to archive"(
+            branch, tid));
+    if (symrefResult.status != 1)
+        throwGitFailure("archiveWorktree: symbolic-ref", tid, symrefCmd, symrefResult.output);
+
+    auto branchTip = worktreeBranchTip(projectPath, tid);
+    if (branchTip !is null)
+    {
+        auto cmd = ["git", "-C", projectPath, "merge-base", "--is-ancestor", branchTip, currentHead];
+        auto result = execute(cmd);
+        if (result.status == 1)
+            throw new Exception(format!"archiveWorktree: branch '%s' at %s has commits that are not in the worktree HEAD %s for tid=%d; put them into the worktree (or switch it back to %s) before archiving"(
+                branch, branchTip, currentHead, tid, branch));
+        if (result.status != 0)
+            throwGitFailure("archiveWorktree: merge-base --is-ancestor", tid, cmd, result.output);
+
+        import std.string : split, startsWith;
+
+        auto listCmd = ["git", "-C", projectPath, "worktree", "list", "--porcelain", "-z"];
+        auto listResult = execute(listCmd);
+        if (listResult.status != 0)
+            throwGitFailure("archiveWorktree: worktree list", tid, listCmd, listResult.output);
+        auto rootCmd = ["git", "-C", worktreePath, "rev-parse", "--show-toplevel"];
+        auto rootResult = execute(rootCmd);
+        if (rootResult.status != 0)
+            throwGitFailure("archiveWorktree: rev-parse --show-toplevel", tid, rootCmd, rootResult.output);
+        auto checkoutRoot = rootResult.output[0 .. $ - 1]; // Strip only Git’s terminating newline.
+        enum prefix = "worktree ";
+        string registeredPath;
+        foreach (field; listResult.output.split("\0"))
+        {
+            if (field.startsWith(prefix))
+                registeredPath = field[prefix.length .. $];
+            if (field == "branch " ~ branchRef && registeredPath != checkoutRoot)
+                throw new Exception(format!"archiveWorktree: branch '%s' is checked out in another worktree %s for tid=%d; switch that worktree off it before archiving"(
+                    branch, registeredPath, tid));
+        }
+    }
 
     // Layer 1: staged changes (index differs from HEAD)
     auto stagedDiff = execute(["git", "-C", worktreePath, "diff", "--cached", "--quiet"]);
@@ -310,12 +421,14 @@ void archiveWorktree(string worktreePath, string projectPath, int tid)
         currentHead = commitResult.output.strip();
     }
 
-    // Store archive ref
     auto refName = format!"refs/cydo/worktree-archive/%d"(tid);
-    auto updateRefCmd = ["git", "-C", projectPath, "update-ref", refName, currentHead];
-    auto updateRefResult = execute(updateRefCmd);
-    if (updateRefResult.status != 0)
-        throwGitFailure("archiveWorktree: update-ref", tid, updateRefCmd, updateRefResult.output);
+    auto updateRefCmd = ["git", "-C", projectPath, "update-ref", "--no-deref", "--stdin"];
+    auto archiveInput = format!"create %s %s\n"(refName, currentHead);
+    if (branchTip !is null)
+        archiveInput ~= format!"delete %s %s\n"(branchRef, branchTip);
+    else
+        archiveInput ~= format!"verify %s\n"(branchRef);
+    runGitWithInput("archiveWorktree: update-ref", tid, updateRefCmd, archiveInput);
 
     // Remove the worktree
     auto removeCmd = ["git", "-C", projectPath, "worktree", "remove", "--force", worktreePath];
@@ -324,14 +437,15 @@ void archiveWorktree(string worktreePath, string projectPath, int tid)
     {
         errorf("archiveWorktree: worktree remove failed for tid=%d: cmd='%s' output='%s'",
             tid, removeCmd.join(" "), removeResult.output.strip());
-        // Clean up ref since worktree removal failed
-        auto cleanupCmd = ["git", "-C", projectPath, "update-ref", "-d", refName];
-        auto cleanupResult = execute(cleanupCmd);
+        auto rollbackInput = format!"delete %s %s\n"(refName, currentHead);
+        if (branchTip !is null)
+            rollbackInput ~= format!"create %s %s\n"(branchRef, branchTip);
+        auto cleanupResult = executeGitWithInput(updateRefCmd, rollbackInput);
         if (cleanupResult.status != 0)
             throw new Exception(format!"archiveWorktree: worktree remove failed for tid=%d: cmd='%s' output='%s'; cleanup failed: cmd='%s' output='%s'"(
                 tid,
                 removeCmd.join(" "), removeResult.output.strip(),
-                cleanupCmd.join(" "), cleanupResult.output.strip()));
+                updateRefCmd.join(" "), cleanupResult.output.strip()));
         throwGitFailure("archiveWorktree: worktree remove", tid, removeCmd, removeResult.output);
     }
 
@@ -341,8 +455,9 @@ void archiveWorktree(string worktreePath, string projectPath, int tid)
 /// Restore a worktree from the archive ref, recreating all dirty state.
 ///
 /// Reads the commit chain stored at refs/cydo/worktree-archive/<tid>, recreates
-/// the worktree at the base commit, then unrolls each layer: staged files to the
-/// index, modified files to the working tree, untracked files to the filesystem.
+/// the worktree on a new branch `cydo/<tid>` at the base commit, then unrolls
+/// each layer: staged files to the index, modified files to the working tree,
+/// untracked files to the filesystem.
 /// Deletes the archive ref after successful restoration.
 ///
 /// Throws on failure (with command details); logs successes/skips via std.logger.
@@ -515,6 +630,14 @@ version(unittest)
         return repoDir;
     }
 
+    private string testGit(string repoDir, string[] args...)
+    {
+        import std.string : stripRight;
+
+        auto result = execute(["git", "-C", repoDir] ~ args);
+        assert(result.status == 0, result.output);
+        return result.output.stripRight();
+    }
 }
 
 unittest
@@ -530,8 +653,8 @@ unittest
     addWorktree(repoDir, 101, wtDir);
 
     assert(baseName(readText(buildPath(wtDir, ".git")).strip()) == "cydo-workspace-101");
-    auto head = execute(["git", "-C", wtDir, "rev-parse", "HEAD"]);
-    assert(head.status == 0, head.output);
+    assert(testGit(wtDir, "symbolic-ref", "HEAD") == "refs/heads/cydo/101");
+    assert(testGit(repoDir, "rev-parse", "cydo/101") == testGit(repoDir, "rev-parse", "HEAD"));
     assert(!exists(buildPath(repoDir, "cydo-workspace-101")));
 
     auto worktrees = execute(["git", "-C", repoDir, "worktree", "list", "--porcelain"]);
@@ -612,6 +735,53 @@ unittest
     auto head = execute(["git", "-C", wtDir, "rev-parse", "HEAD"]);
     assert(head.status == 0, head.output);
     assert(head.output.strip() == olderHead.output.strip(), head.output);
+    assert(testGit(repoDir, "rev-parse", "cydo/102") == olderHead.output.strip());
+}
+
+unittest
+{
+    import std.algorithm : canFind;
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-branch-collision");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    auto sha = testGit(repoDir, "rev-parse", "HEAD");
+    testGit(repoDir, "branch", "cydo/113", sha);
+    auto before = testGit(repoDir, "worktree", "list", "--porcelain");
+
+    try
+    {
+        addWorktree(repoDir, 113, wtDir);
+        assert(0, "expected existing branch to prevent worktree creation");
+    }
+    catch (Exception e)
+    {
+        assert(e.msg.canFind("a branch named 'cydo/113' already exists"), e.msg);
+        assert(e.msg.canFind("tid=113"), e.msg);
+    }
+
+    assert(testGit(repoDir, "rev-parse", "cydo/113") == sha);
+    assert(testGit(repoDir, "worktree", "list", "--porcelain") == before);
+    assert(!exists(wtDir));
+    assert(!exists(buildPath(repoDir, "cydo-workspace-113")));
+}
+
+unittest
+{
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-fork-base");
+    scope(exit) rmdirRecurse(repoDir);
+    auto parent = buildPath(repoDir, "parent");
+    auto child = buildPath(repoDir, "child");
+    addWorktree(repoDir, 114, parent);
+    testGit(parent, "commit", "--allow-empty", "-qm", "parent work");
+
+    addWorktree(parent, 115, child);
+
+    assert(testGit(child, "symbolic-ref", "HEAD") == "refs/heads/cydo/115");
+    assert(testGit(repoDir, "rev-parse", "cydo/115") == testGit(parent, "rev-parse", "HEAD"));
 }
 
 unittest
@@ -622,9 +792,9 @@ unittest
 
     auto repoDir = setupTestRepo("cydo-wt-test-add-duplicate-id");
     scope(exit) rmdirRecurse(repoDir);
-    auto first = buildPath(repoDir, "first");
+    auto first = buildPath(repoDir, "other", "cydo-workspace-103");
     auto second = buildPath(repoDir, "second");
-    addWorktree(repoDir, 103, first);
+    testGit(repoDir, "worktree", "add", "--detach", first);
 
     try
     {
@@ -643,6 +813,8 @@ unittest
     assert(entries == ["worktree " ~ repoDir, "worktree " ~ first], worktrees.output);
     assert(!exists(second));
     assert(!exists(buildPath(repoDir, "cydo-workspace-103")));
+    auto branch = execute(["git", "-C", repoDir, "rev-parse", "--verify", "--quiet", "refs/heads/cydo/103"]);
+    assert(branch.status == 1, branch.output);
 }
 
 unittest
@@ -677,6 +849,8 @@ unittest
     assert(after.output == before.output, after.output);
     assert(!exists(wtDir));
     assert(!exists(buildPath(repoDir, "cydo-workspace-107")));
+    auto branch = execute(["git", "-C", repoDir, "rev-parse", "--verify", "--quiet", "refs/heads/cydo/107"]);
+    assert(branch.status == 1, branch.output);
 }
 
 unittest
@@ -754,6 +928,8 @@ unittest
     assert(after.output == before.output, after.output);
     assert(!exists(wtDir));
     assert(!exists(buildPath(repoDir, "cydo-workspace-109")));
+    auto branch = execute(["git", "-C", repoDir, "rev-parse", "--verify", "--quiet", "refs/heads/cydo/109"]);
+    assert(branch.status == 1, branch.output);
 }
 
 unittest
@@ -987,6 +1163,7 @@ unittest
     // HEAD should be same as original
     auto headResult2 = execute(["git", "-C", wtDir2, "rev-parse", "HEAD"]);
     assert(headResult2.output.strip() == originalHead, "HEAD should match original after clean round-trip");
+    assert(testGit(wtDir2, "symbolic-ref", "HEAD") == "refs/heads/cydo/99");
 
     // No staged or unstaged changes
     auto stagedCheck = execute(["git", "-C", wtDir2, "diff", "--cached", "--quiet"]);
@@ -1167,4 +1344,370 @@ unittest
 
     // After unarchive: ref is deleted
     assert(!hasArchiveRef(repoDir, 77));
+}
+
+unittest
+{
+    import std.file : rmdirRecurse, write;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-archive-branch");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    auto restored = buildPath(repoDir, "restored");
+    addWorktree(repoDir, 120, wtDir);
+    testGit(wtDir, "commit", "--allow-empty", "-qm", "task work");
+    auto sha = testGit(wtDir, "rev-parse", "HEAD");
+    write(buildPath(wtDir, "staged.txt"), "staged\n");
+    testGit(wtDir, "add", "staged.txt");
+    write(buildPath(wtDir, "README.md"), "modified\n");
+    write(buildPath(wtDir, "untracked.txt"), "untracked\n");
+
+    archiveWorktree(wtDir, repoDir, 120);
+
+    assert(!exists(wtDir));
+    assert(hasArchiveRef(repoDir, 120));
+    auto branch = execute(["git", "-C", repoDir, "rev-parse", "--verify", "--quiet", "refs/heads/cydo/120"]);
+    assert(branch.status == 1, branch.output);
+
+    unarchiveWorktree(repoDir, 120, restored);
+
+    assert(testGit(restored, "symbolic-ref", "HEAD") == "refs/heads/cydo/120");
+    assert(testGit(repoDir, "rev-parse", "cydo/120") == sha);
+    assert(!hasArchiveRef(repoDir, 120));
+    assert(testGit(restored, "status", "--porcelain", "--untracked-files=all")
+        == " M README.md\nA  staged.txt\n?? untracked.txt");
+    assert(testGit(restored, "show", ":staged.txt") == "staged");
+    assert(readText(buildPath(restored, "README.md")) == "modified\n");
+    assert(readText(buildPath(restored, "untracked.txt")) == "untracked\n");
+}
+
+unittest
+{
+    import std.algorithm : canFind;
+    import std.file : rmdirRecurse, write;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-archive-branch-ahead");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    addWorktree(repoDir, 121, wtDir);
+    testGit(wtDir, "commit", "--allow-empty", "-qm", "task work");
+    auto sha = testGit(wtDir, "rev-parse", "HEAD");
+    testGit(wtDir, "switch", "--detach", "HEAD~1");
+    write(buildPath(wtDir, "README.md"), "modified\n");
+
+    try
+    {
+        archiveWorktree(wtDir, repoDir, 121);
+        assert(0, "expected archive to refuse commits outside worktree HEAD");
+    }
+    catch (Exception e)
+    {
+        assert(e.msg.canFind("branch 'cydo/121'"), e.msg);
+    }
+
+    assert(!hasArchiveRef(repoDir, 121));
+    assert(exists(wtDir));
+    assert(testGit(repoDir, "rev-parse", "cydo/121") == sha);
+    testGit(wtDir, "diff", "--cached", "--quiet");
+    assert(testGit(wtDir, "diff", "--name-only") == "README.md");
+    assert(readText(buildPath(wtDir, "README.md")) == "modified\n");
+}
+
+unittest
+{
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-archive-branch-behind");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    addWorktree(repoDir, 122, wtDir);
+    testGit(wtDir, "switch", "--detach");
+    testGit(wtDir, "commit", "--allow-empty", "-qm", "detached work");
+    auto sha = testGit(wtDir, "rev-parse", "HEAD");
+
+    archiveWorktree(wtDir, repoDir, 122);
+
+    auto branch = execute(["git", "-C", repoDir, "rev-parse", "--verify", "--quiet", "refs/heads/cydo/122"]);
+    assert(branch.status == 1, branch.output);
+
+    unarchiveWorktree(repoDir, 122, wtDir);
+
+    assert(testGit(wtDir, "symbolic-ref", "HEAD") == "refs/heads/cydo/122");
+    assert(testGit(repoDir, "rev-parse", "cydo/122") == sha);
+}
+
+unittest
+{
+    import std.algorithm : canFind;
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-unarchive-branch-collision");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    testGit(repoDir, "worktree", "add", "--detach", wtDir);
+    archiveWorktree(wtDir, repoDir, 123);
+    testGit(repoDir, "branch", "cydo/123");
+    enum archiveRef = "refs/cydo/worktree-archive/123";
+    auto archived = testGit(repoDir, "rev-parse", archiveRef);
+
+    try
+    {
+        unarchiveWorktree(repoDir, 123, wtDir);
+        assert(0, "expected existing branch to prevent restoration");
+    }
+    catch (Exception e)
+    {
+        assert(e.msg.canFind("a branch named 'cydo/123' already exists"), e.msg);
+    }
+
+    assert(testGit(repoDir, "rev-parse", archiveRef) == archived);
+    assert(!exists(wtDir));
+}
+
+unittest
+{
+    import std.algorithm : canFind;
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-archive-branch-rollback");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    addWorktree(repoDir, 124, wtDir);
+    auto sha = testGit(wtDir, "rev-parse", "HEAD");
+    testGit(repoDir, "worktree", "lock", wtDir);
+    scope(exit) testGit(repoDir, "worktree", "unlock", wtDir);
+
+    try
+    {
+        archiveWorktree(wtDir, repoDir, 124);
+        assert(0, "expected locked worktree to prevent removal");
+    }
+    catch (Exception e)
+    {
+        assert(e.msg.canFind("worktree remove failed"), e.msg);
+    }
+
+    assert(!hasArchiveRef(repoDir, 124));
+    assert(testGit(repoDir, "rev-parse", "cydo/124") == sha);
+    assert(exists(wtDir));
+    assert(testGit(wtDir, "symbolic-ref", "HEAD") == "refs/heads/cydo/124");
+}
+
+unittest
+{
+    import std.conv : octal;
+    import std.exception : collectException;
+    import std.file : mkdir, remove, rmdirRecurse, setAttributes, write;
+    import std.string : startsWith;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-archive-rollback-new-branch");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    testGit(repoDir, "worktree", "add", "--detach", wtDir);
+    auto tip = testGit(wtDir, "rev-parse", "HEAD");
+    assert(worktreeBranchTip(repoDir, 133) is null);
+    testGit(repoDir, "worktree", "lock", wtDir);
+
+    auto hooksDir = buildPath(repoDir, ".git", "test-hooks");
+    mkdir(hooksDir);
+    testGit(repoDir, "config", "core.hooksPath", hooksDir);
+    auto hook = buildPath(hooksDir, "reference-transaction");
+    write(hook, "#!/bin/sh\n"
+        ~ "[ \"$1\" = committed ] || exit 0\n"
+        ~ "while read -r old new ref; do\n"
+        ~ "    [ \"$ref\" = refs/cydo/worktree-archive/133 ] || continue\n"
+        ~ "    case \"$old\" in\n"
+        ~ "        *[!0]*) continue ;;\n"
+        ~ "    esac\n"
+        ~ "    git update-ref refs/heads/cydo/133 HEAD\n"
+        ~ "    exit $?\n"
+        ~ "done\n");
+    setAttributes(hook, octal!755);
+
+    auto error = collectException!Exception(archiveWorktree(wtDir, repoDir, 133));
+    assert(error !is null);
+    assert(error.msg.startsWith("archiveWorktree: worktree remove failed for tid=133"), error.msg);
+    assert(!hasArchiveRef(repoDir, 133), error.msg);
+    assert(testGit(repoDir, "rev-parse", "refs/heads/cydo/133") == tip);
+    assert(exists(wtDir));
+    assert(testGit(wtDir, "rev-parse", "HEAD") == tip);
+
+    remove(hook);
+    testGit(repoDir, "worktree", "unlock", wtDir);
+    archiveWorktree(wtDir, repoDir, 133);
+
+    assert(testGit(repoDir, "rev-parse", "refs/cydo/worktree-archive/133") == tip);
+    assert(worktreeBranchTip(repoDir, 133) is null);
+    assert(!exists(wtDir));
+}
+
+unittest
+{
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-head-status");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    addWorktree(repoDir, 125, wtDir);
+    auto tip = testGit(wtDir, "rev-parse", "HEAD");
+    assert(worktreeBranchTip(repoDir, 125) == tip);
+    auto assigned = worktreeHeadStatus(wtDir, 125);
+    assert(assigned.branchTip == tip);
+    assert(assigned.currentBranch == "cydo/125");
+    assert(assigned.headSha is null);
+
+    testGit(wtDir, "switch", "--detach");
+    testGit(wtDir, "commit", "--allow-empty", "-qm", "detached work");
+    auto detached = worktreeHeadStatus(wtDir, 125);
+    assert(detached.branchTip == tip);
+    assert(detached.currentBranch == "");
+    assert(detached.headSha == testGit(wtDir, "rev-parse", "HEAD"));
+
+    testGit(wtDir, "switch", "-c", "feature");
+    assert(worktreeHeadStatus(wtDir, 125).currentBranch == "feature");
+}
+
+unittest
+{
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-orphan-head-status");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    addWorktree(repoDir, 130, wtDir);
+    auto tip = testGit(wtDir, "rev-parse", "HEAD");
+    testGit(wtDir, "switch", "--orphan", "scratch");
+
+    auto status = worktreeHeadStatus(wtDir, 130);
+    assert(status.currentBranch == "scratch");
+    assert(status.headSha is null);
+    assert(status.branchTip == tip);
+}
+
+unittest
+{
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-legacy-head-status");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    testGit(repoDir, "worktree", "add", "--detach", wtDir);
+    assert(worktreeBranchTip(repoDir, 126) is null);
+    assert(worktreeHeadStatus(wtDir, 126).branchTip is null);
+}
+
+unittest
+{
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-deleted-branch-head-status");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    addWorktree(repoDir, 128, wtDir);
+    testGit(repoDir, "update-ref", "-d", "refs/heads/cydo/128");
+    assert(testGit(wtDir, "symbolic-ref", "HEAD") == "refs/heads/cydo/128");
+    assert(worktreeHeadStatus(wtDir, 128) == WorktreeHeadStatus.init);
+}
+
+unittest
+{
+    import std.exception : collectException;
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-archive-symbolic-branch");
+    scope(exit) rmdirRecurse(repoDir);
+    testGit(repoDir, "branch", "-M", "master");
+    auto master = testGit(repoDir, "rev-parse", "refs/heads/master");
+    auto wtDir = buildPath(repoDir, "wt");
+    testGit(repoDir, "worktree", "add", "--detach", wtDir);
+    testGit(repoDir, "symbolic-ref", "refs/heads/cydo/131", "refs/heads/master");
+
+    auto error = collectException!Exception(archiveWorktree(wtDir, repoDir, 131));
+    assert(error !is null);
+    assert(error.msg == "archiveWorktree: branch 'cydo/131' is a symbolic ref for tid=131; refusing to archive",
+        error.msg);
+    assert(testGit(repoDir, "rev-parse", "refs/heads/master") == master);
+    assert(testGit(repoDir, "symbolic-ref", "refs/heads/cydo/131") == "refs/heads/master");
+    assert(!hasArchiveRef(repoDir, 131));
+    assert(exists(wtDir));
+}
+
+unittest
+{
+    import std.conv : octal;
+    import std.exception : collectException;
+    import std.file : mkdir, rmdirRecurse, setAttributes, write;
+    import std.string : startsWith;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-archive-new-branch");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    testGit(repoDir, "worktree", "add", "--detach", wtDir);
+    auto tip = testGit(wtDir, "rev-parse", "HEAD");
+    assert(worktreeBranchTip(repoDir, 132) is null);
+
+    auto hooksDir = buildPath(repoDir, ".git", "test-hooks");
+    mkdir(hooksDir);
+    testGit(repoDir, "config", "core.hooksPath", hooksDir);
+    // Stage a tracked edit during archive to create the branch after it sampled the refs.
+    auto hook = buildPath(hooksDir, "post-index-change");
+    write(hook, "#!/bin/sh\ngit update-ref refs/heads/cydo/132 HEAD\n");
+    setAttributes(hook, octal!755);
+    write(buildPath(wtDir, "README.md"), "modified\n");
+
+    auto error = collectException!Exception(archiveWorktree(wtDir, repoDir, 132));
+    assert(error !is null);
+    assert(error.msg.startsWith("archiveWorktree: update-ref failed for tid=132"), error.msg);
+    assert(testGit(repoDir, "rev-parse", "refs/heads/cydo/132") == tip);
+    assert(!hasArchiveRef(repoDir, 132));
+    assert(exists(wtDir));
+}
+
+unittest
+{
+    import std.file : rmdirRecurse, write;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-archive-branch-in-other-worktree");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    auto otherDir = buildPath(repoDir, "other wt");
+    addWorktree(repoDir, 129, wtDir);
+    auto sha = testGit(wtDir, "rev-parse", "HEAD");
+    testGit(wtDir, "switch", "--detach");
+    testGit(repoDir, "worktree", "add", otherDir, "cydo/129");
+    auto otherRoot = testGit(otherDir, "rev-parse", "--show-toplevel");
+    auto worktrees = testGit(repoDir, "worktree", "list", "--porcelain");
+    auto readme = buildPath(wtDir, "README.md");
+    write(readme, "modified\n");
+
+    try
+    {
+        archiveWorktree(wtDir, repoDir, 129);
+        assert(0, "expected archive to refuse a branch checked out elsewhere");
+    }
+    catch (Exception e)
+    {
+        assert(e.msg == "archiveWorktree: branch 'cydo/129' is checked out in another worktree "
+            ~ otherRoot ~ " for tid=129; switch that worktree off it before archiving", e.msg);
+    }
+
+    assert(!hasArchiveRef(repoDir, 129));
+    assert(exists(wtDir) && exists(otherDir));
+    assert(testGit(repoDir, "worktree", "list", "--porcelain") == worktrees);
+    assert(testGit(repoDir, "rev-parse", "cydo/129") == sha);
+    testGit(wtDir, "diff", "--cached", "--quiet");
+    assert(testGit(wtDir, "diff", "--name-only") == "README.md");
+    assert(readText(readme) == "modified\n");
+}
+
+unittest
+{
+    import std.exception : assertThrown;
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-invalid-head-status");
+    scope(exit) rmdirRecurse(repoDir);
+    rmdirRecurse(buildPath(repoDir, ".git"));
+
+    assertThrown(worktreeBranchTip(repoDir, 127));
 }
