@@ -1893,6 +1893,9 @@ class ClaudeCodeSession : AgentSession
 		outputHandler = dg;
 	}
 
+	private string startupFailure_;
+	@property string startupFailure() { return startupFailure_; }
+
 	@property void onStderr(void delegate(string line) dg)
 	{
 		stderrHandler = dg;
@@ -2324,6 +2327,8 @@ class ClaudeCodeSession : AgentSession
 
 	private void translateLiveLine(string rawLine)
 	{
+		if (startupFailure_.length > 0)
+			return;
 		import std.datetime : Clock;
 		lineReceiptTs_ = AbsTime(Clock.currStdTime);
 		@JSONPartial static struct TypeProbe { string type; string subtype; }
@@ -2353,6 +2358,7 @@ class ClaudeCodeSession : AgentSession
 				@JSONOptional string session_id;
 				@JSONOptional string cwd;
 				@JSONOptional string claude_code_version;
+				@JSONOptional JSONFragment[] mcp_servers;
 			}
 			InitProbe init;
 			try
@@ -2360,6 +2366,12 @@ class ClaudeCodeSession : AgentSession
 			catch (Exception e)
 			{
 				tracef("Claude native session init parse error: %s", e.msg);
+				return;
+			}
+			if (claudeMcpStartupFailed(init.mcp_servers))
+			{
+				startupFailure_ = "Claude reported that the CyDo MCP server failed to connect.";
+				killAfterTimeout(0.seconds);
 				return;
 			}
 			// Register before the native-ID notification so the live binding
@@ -4646,6 +4658,65 @@ private string translateHookAttachment(string rawLine)
 		default:
 			assert(0);
 	}
+}
+
+@("Claude detects a failed CyDo MCP connection in system/init")
+unittest
+{
+	auto servers = jsonParse!(JSONFragment[])(`[
+		{"name":"cydo","status":"pending","source":"dynamic"},
+		{"name":"cydo","status":"connected","source":"dynamic"},
+		{"name":"other","status":"failed","source":"dynamic"},
+		{"name":"cydo","status":"failed","source":"dynamic"}
+	]`);
+	assert(!claudeMcpStartupFailed(servers[0 .. 1]));
+	assert(!claudeMcpStartupFailed(servers[1 .. 2]));
+	assert(!claudeMcpStartupFailed(servers[2 .. 3]));
+	assert(claudeMcpStartupFailed(servers[2 .. $]));
+}
+
+@("Claude stops before reporting native readiness when CyDo MCP startup fails")
+unittest
+{
+	static class StartupTestSession : ClaudeCodeSession
+	{
+		Duration[] stopTimeouts;
+
+		this() { super("true"); }
+
+		override void killAfterTimeout(Duration timeout)
+		{
+			stopTimeouts ~= timeout;
+		}
+	}
+
+	auto session = new StartupTestSession;
+	scope (exit) session.stop();
+	string[] nativeSessions;
+	session.onNativeSessionStarted = (string id) { nativeSessions ~= id; };
+	session.translateLiveLine(`{"type":"system","subtype":"init","session_id":"claude-native-id",`
+		~ `"mcp_servers":[{"name":"cydo","status":"failed","source":"dynamic"}]}`);
+
+	assert(session.startupFailure == "Claude reported that the CyDo MCP server failed to connect.");
+	assert(session.stopTimeouts == [0.seconds]);
+	assert(nativeSessions.length == 0);
+}
+
+private bool claudeMcpStartupFailed(JSONFragment[] servers)
+{
+	@JSONPartial static struct ServerStatus
+	{
+		string name;
+		string status;
+	}
+
+	foreach (server; servers)
+	{
+		auto status = jsonParse!ServerStatus(server.json);
+		if (status.name == "cydo" && status.status == "failed")
+			return true;
+	}
+	return false;
 }
 
 /// Normalize a Claude session/init event to the agnostic SessionInitEvent format.

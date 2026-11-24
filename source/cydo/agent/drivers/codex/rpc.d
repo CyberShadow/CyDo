@@ -444,6 +444,7 @@ struct McpServerConfig
 	string[] args;
 	string[string] env;
 	uint tool_timeout_sec;
+	bool required;
 }
 
 unittest

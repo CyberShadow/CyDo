@@ -4247,6 +4247,7 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 			dg(nativeSessionId_);
 	}
 	@property void onOutput(void delegate(TranslatedEvent) dg) { outputHandler_ = dg; }
+	@property string startupFailure() { return null; }
 	@property void onStderr(void delegate(string line) dg) {}
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
 	@property bool alive() { return alive_; }

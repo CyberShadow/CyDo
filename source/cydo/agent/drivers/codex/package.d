@@ -2205,8 +2205,6 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 		if (!alive_)
 			return;
 		threadStartError_ = error;
-		if (stderrHandler_)
-			stderrHandler_(error.msg);
 		rejectUnsettledMessages(error);
 		closeStdin();
 	}
@@ -2723,6 +2721,11 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 			routeReadyHandler_();
 	}
 
+	@property string startupFailure()
+	{
+		return threadStartError_ is null ? null : threadStartError_.msg;
+	}
+
 	@property void onOutput(void delegate(TranslatedEvent) dg) { outputHandler_ = dg; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
@@ -3087,12 +3090,21 @@ string buildConfigOverride(int tid, SessionConfig config)
 			["mcp-server"],
 			env,
 			toolTimeout.length > 0 ? to!uint(toolTimeout) : 100000000,
+			true,
 		);
 
 		overrides["mcp_servers.cydo"] = JSONFragment(toJson(serverConfig));
 	}
 
 	return toJson(overrides);
+}
+
+unittest
+{
+	@JSONPartial struct RequiredMcpConfig { bool required; }
+	auto overrides = jsonParse!(JSONFragment[string])(
+		buildConfigOverride(31, SessionConfig.init));
+	assert(jsonParse!RequiredMcpConfig(overrides["mcp_servers.cydo"].json).required);
 }
 
 unittest
@@ -3959,6 +3971,12 @@ unittest
 		auto session = cast(CodexSession) agent.createSession(
 			31, resumeSessionId, launch, config);
 		assert(session !is null);
+		string[] startupFailures;
+		int[] exitStatuses;
+		session.onExit = (int status) {
+			startupFailures ~= session.startupFailure;
+			exitStatuses ~= status;
+		};
 		auto setupRequest = connection.takeRequest(expectedMethod);
 		if (resumeSessionId.length > 0)
 		{
@@ -3982,13 +4000,18 @@ unittest
 		assert(session.pendingMessages_.length == 2
 			&& session.inFlightMessages_.length == 0);
 
-		connection.respond(setupRequest,
-			rejectedResponse(expectedMethod ~ " failed"));
+		enum timeoutMessage = "error creating thread: Fatal error: Failed to initialize session: "
+			~ "required MCP servers failed to initialize: cydo: timed out handshaking "
+			~ "with MCP server after 29.9999994s: deadline has elapsed";
+		JsonRpcResponse response;
+		response.error = JsonRpcError.fromCode(JsonRpcErrorCode.internalError,
+			timeoutMessage);
+		connection.respond(setupRequest, response);
 		drainPromiseNextTicks();
 		assertRejectedOnce(first);
 		assertRejectedOnce(second);
-		assert(first.rejectionMessage == expectedMethod ~ " failed"
-			&& second.rejectionMessage == expectedMethod ~ " failed");
+		assert(first.rejectionMessage == timeoutMessage
+			&& second.rejectionMessage == timeoutMessage);
 		assert(!session.alive_);
 		assert(session.pendingMessages_.length == 0
 			&& session.inFlightMessages_.length == 0);
@@ -3997,6 +4020,8 @@ unittest
 		drainPromiseNextTicks();
 		assertRejectedOnce(first);
 		assertRejectedOnce(second);
+		assert(startupFailures == [timeoutMessage]);
+		assert(exitStatuses == [1]);
 		assert(connection.sentMessages.length == 0);
 	}
 

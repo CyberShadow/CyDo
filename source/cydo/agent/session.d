@@ -104,6 +104,9 @@ interface AgentSession
 	/// Callback: called for each line of stderr from the agent.
 	@property void onStderr(void delegate(string line) dg);
 
+	/// Startup failure message, available when the session exits.
+	@property string startupFailure();
+
 	/// Callback: called when the agent process exits.
 	@property void onExit(void delegate(int status) dg);
 

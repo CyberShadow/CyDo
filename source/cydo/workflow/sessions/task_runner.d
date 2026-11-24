@@ -1162,6 +1162,11 @@ public:
 				return;
 			}
 
+			auto startupFailure = session.startupFailure;
+			bool failedStartup = startupFailure.length > 0
+				&& current.killPromise is null
+				&& current.processQueue.goalState == ProcessState.Alive
+				&& !current.wasKilledByUser;
 			host_.touchAndPersistLastActive(tid);
 
 			tracef("onExit: tid=%d exitCode=%d status=%s",
@@ -1172,7 +1177,8 @@ public:
 
 			auto onYieldDef = currentOnYieldDef(current);
 			bool hasOnYield = onYieldDef !is null;
-			auto cleanExit = (exitCode == 0 || current.pendingContinuation !is null || hasOnYield)
+			auto cleanExit = !failedStartup
+				&& (exitCode == 0 || current.pendingContinuation !is null || hasOnYield)
 				&& !current.wasKilledByUser;
 			if (cleanExit && (current.pendingContinuation !is null || hasOnYield))
 				ev.is_continuation = true;
@@ -1214,7 +1220,7 @@ public:
 			host_.failPendingPermissionPromptOnExit(tid);
 			host_.cancelExitBackgroundWork(tid);
 
-			bool missingExecutableLaunchFailure = exitCode != 0
+			bool missingExecutableLaunchFailure = !failedStartup && exitCode != 0
 				&& !current.hadTurnResult
 				&& isMissingExecutableMessage(current.error);
 			// A Codex revert settles and reloads its own history, even
@@ -1222,14 +1228,15 @@ public:
 			bool revertOwnsHistory = cast(CodexSession) session !is null
 				&& (current.undoStopInProgress || current.nativeUndoState == NativeUndoState.inFlight);
 			bool reloadEmitted;
-			if (missingExecutableLaunchFailure)
+			if (failedStartup || missingExecutableLaunchFailure)
 			{
 				reloadEmitted = host_.resetHistoryWatermarkOnly(tid);
-				auto translated = host_.appendTaskDiagnostic(
-					tid, "Failed to resume session",
-					buildLaunchFailureBody(tid, current.error));
-				host_.broadcastAppendedTaskEvent(tid, translated);
-				host_.unsubscribeTaskHistorySubscribers(tid);
+				if (missingExecutableLaunchFailure)
+				{
+					publishLaunchFailure(tid, "Failed to resume session",
+						buildLaunchFailureBody(tid, current.error));
+					host_.unsubscribeTaskHistorySubscribers(tid);
+				}
 			}
 			else if (revertOwnsHistory)
 				reloadEmitted = true;
@@ -1246,7 +1253,7 @@ public:
 			current.clearSubmissionCorrelationState();
 
 			auto ta = host_.tryAgentForTask(tid);
-			bool intentionalExit = !missingExecutableLaunchFailure
+			bool intentionalExit = !failedStartup && !missingExecutableLaunchFailure
 				&& (current.killPromise !is null
 					|| current.processQueue.goalState != ProcessState.Alive
 					|| (ta !is null && ta.driver == AgentDriver.codex && exitCode == 143));
@@ -1262,6 +1269,16 @@ public:
 				if (!intentionalExit)
 					current.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 				current.processQueue.setCurrentState(ProcessState.Dead);
+			}
+
+			if (failedStartup)
+			{
+				finalizeLaunchFailure(tid, startupFailure,
+					"Agent startup failed", startupFailure);
+				host_.unsubscribeTaskHistorySubscribers(tid);
+				if (!reloadEmitted)
+					host_.emitTaskReload(tid);
+				return;
 			}
 
 			if (current.undoStopInProgress)
@@ -1431,18 +1448,8 @@ public:
 				spawnTaskSession(tid);
 			catch (Exception e)
 			{
-				td = requireTask(tid, "Task must exist when spawn fails");
-				td.error = e.msg;
-				td.resultText = e.msg;
-				host_.persistResultText(tid, td.resultText);
-				host_.transitionTaskFrom(tid,
-					[TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
-						TaskStatus.waiting, TaskStatus.completed], TaskStatus.failed,
-					TaskNotificationChange.preserve);
-				auto translated = host_.appendTaskDiagnostic(
-					tid, "Failed to resume session", buildLaunchFailureBody(tid, e));
-				host_.broadcastAppendedTaskEvent(tid, translated);
-				host_.recordChildTerminal(tid);
+				finalizeLaunchFailure(tid, e.msg,
+					"Failed to resume session", buildLaunchFailureBody(tid, e));
 				return reject!ProcessState(e);
 			}
 			return resolve(ProcessState.Alive);
@@ -1650,6 +1657,28 @@ private:
 	{
 		auto td = host_.getTask(tid);
 		return td is null ? "(gone)" : td.status;
+	}
+
+	private void finalizeLaunchFailure(int tid, string message, string subject, string body)
+	{
+		auto td = requireTask(tid, "Task must exist when launch fails");
+		td.error = td.resultText = message;
+		host_.persistResultText(tid, message);
+		if (td.status == TaskStatus.failed)
+			host_.publishTaskSnapshot(tid);
+		else
+			host_.transitionTaskFrom(tid,
+				[TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
+					TaskStatus.waiting, TaskStatus.completed], TaskStatus.failed,
+				TaskNotificationChange.preserve);
+		publishLaunchFailure(tid, subject, body);
+		host_.recordChildTerminal(tid);
+	}
+
+	private void publishLaunchFailure(int tid, string subject, string body)
+	{
+		auto event = host_.appendTaskDiagnostic(tid, subject, body);
+		host_.broadcastAppendedTaskEvent(tid, event);
 	}
 
 	bool isMissingExecutableMessage(string message)
@@ -2804,6 +2833,7 @@ version (unittest) private final class YieldGateTestSession : AgentSession
 	void killAfterTimeout(Duration timeout) {}
 	@property void onNativeSessionStarted(void delegate(string) callback) {}
 	@property void onOutput(void delegate(TranslatedEvent) callback) { outputCallback = callback; }
+	@property string startupFailure() { return null; }
 	@property void onStderr(void delegate(string) callback) {}
 	@property void onExit(void delegate(int) callback) { exitCallback = callback; }
 	@property bool alive() { return true; }
@@ -3567,6 +3597,7 @@ version (unittest) private final class DeferredExitTestSession : AgentSession
 	import cydo.protocol : ContentBlock;
 
 	bool running = true;
+	string failureAtExit;
 	void delegate(TranslatedEvent) emit;
 	void delegate(int) exit;
 
@@ -3583,6 +3614,7 @@ version (unittest) private final class DeferredExitTestSession : AgentSession
 	void killAfterTimeout(Duration timeout) {}
 	@property void onNativeSessionStarted(void delegate(string) callback) {}
 	@property void onOutput(void delegate(TranslatedEvent) callback) { emit = callback; }
+	@property string startupFailure() { return failureAtExit; }
 	@property void onStderr(void delegate(string) callback) {}
 	@property void onExit(void delegate(int) callback) { exit = callback; }
 	@property bool alive() { return running; }
@@ -3592,16 +3624,188 @@ version (unittest) private final class DeferredExitTestSession : AgentSession
 version (unittest) private final class DeferredExitTestAgent : ClaudeCodeAgent
 {
 	DeferredExitTestSession[] sessions;
+	string resumeId;
+	string createFailure;
 
 	override string executableName(string[string] env) { return "/bin/true"; }
 
 	override AgentSession createSession(int tid, string resumeSessionId,
 		ProcessLaunch launch, SessionConfig config)
 	{
+		resumeId = resumeSessionId;
+		if (createFailure.length > 0)
+			throw new Exception(createFailure);
 		auto session = new DeferredExitTestSession;
 		sessions ~= session;
 		return session;
 	}
+}
+
+version (unittest) private void testStartupFailureAtExit(string resumeId, TaskStatus initialStatus,
+	bool failDuringCreate = false)
+{
+	import std.algorithm : canFind;
+
+	import ae.utils.statequeue : StateQueue;
+	import cydo.domain.tasks.lifecycle : TaskLifecycle;
+	import cydo.domain.tasks.model : Watermark, extractEventFromEnvelope;
+	import cydo.foundation.testing : drainNextTicks;
+	import cydo.protocol : TaskDiagnosticEvent, TaskDiagnosticSeverity;
+	import cydo.workflow.history.pipeline : HistoryEventPipeline, HistoryEventPipelineHost;
+
+	enum failure = "The CyDo MCP server failed to connect.";
+	withGitMetadataLaunchFixture("cydo-startup-failure-at-exit",
+		(GitMetadataLaunchFixture fixture) {
+			auto catalog = gitMetadataTaskCatalog(fixture,
+				"task_types:\n  runner:\n    model_class: large\n");
+			TaskData[int] tasks;
+			tasks[1] = TaskData(1, "local", "");
+			auto task = &tasks[1];
+			task.taskType = "runner";
+			task.agentName = "claude";
+			task.agentSessionId = resumeId;
+			task.status = initialStatus;
+			auto runner = gitMetadataTestRunner(&tasks, catalog, fixture,
+				unrestrictedLaunchTestSandbox(), "", fixture.workspaceRoot);
+			scope (exit) runner.cleanupTaskLaunch(task);
+
+			auto agent = new DeferredExitTestAgent;
+			if (failDuringCreate)
+				agent.createFailure = failure;
+			string[] publications;
+			auto lifecycle = TaskLifecycle(
+				getTask: runner.host_.getTask,
+				persistStatus: (int tid, string status) {
+					publications ~= "status:" ~ status;
+				},
+				publishSnapshot: (int tid) {
+					publications ~= "snapshot:" ~ cast(string) task.status
+						~ ":" ~ task.error ~ ":" ~ task.resultText;
+				},
+			);
+			TaskStatus[] terminalOutcomes;
+			string[] liveDiagnostics;
+			task.history.reset(Watermark.init);
+			auto generation = task.history.generation;
+			auto historyPipeline = new HistoryEventPipeline(HistoryEventPipelineHost(
+				getTask: runner.host_.getTask,
+				makeTaskDiagnosticEventJson: (string subject, string body) =>
+					toJson(TaskDiagnosticEvent("cydo/task_diagnostic",
+						TaskDiagnosticSeverity.error, subject, body)),
+			));
+			with (runner.host_)
+			{
+				agentForTask = (int tid) => agent;
+				tryAgentForTask = agentForTask;
+				shuttingDown = () => false;
+				clearLastActive = (int tid) {};
+				publishTaskSnapshot = lifecycle.publishSnapshot;
+				broadcastTask = (int tid, TranslatedEvent event) {};
+				hasPendingChildQuestion = (int tid) => false;
+				touchAndPersistLastActive = (int tid) {};
+				ensureHistoryLoadedForExit = (int tid) => Nullable!TaskHistoryResolution.init;
+				finalReconcileJsonlIfPresent = (int tid, Nullable!TaskHistoryResolution resolution) {};
+				stopJsonlWatch = (int tid) {};
+				failPendingAskUserQuestionOnExit = (int tid) {};
+				failPendingPermissionPromptOnExit = (int tid) {};
+				cancelExitBackgroundWork = (int tid) {};
+				resetHistoryWatermarkOnly = (int tid) {
+					task.history.reset(Watermark.init);
+					return false;
+				};
+				resetHistoryWatermarkAfterExit = resetHistoryWatermarkOnly;
+				persistResultText = (int tid, string result) { publications ~= "result:" ~ result; };
+				transitionTask = &lifecycle.transitionTask;
+				transitionTaskFrom = &lifecycle.transitionTask;
+				appendTaskDiagnostic = &historyPipeline.appendTaskDiagnostic;
+				broadcastAppendedTaskEvent = (int tid, string event) { liveDiagnostics ~= event; };
+				unsubscribeTaskHistorySubscribers = (int tid) {};
+				recordChildTerminal = (int tid) {
+					terminalOutcomes ~= task.status;
+					return true;
+				};
+				emitTaskReload = (int tid) {};
+			}
+
+			task.processQueue = new StateQueue!ProcessState(runner.makeProcessQueueSF(1),
+				ProcessState.Dead);
+			if (failDuringCreate)
+			{
+				string rejected;
+				runner.processTransition(1, ProcessState.Alive)
+					.then((ProcessState) { assert(false, "launch unexpectedly succeeded"); },
+						(Exception e) { rejected = e.msg; }).ignoreResult();
+				drainNextTicks();
+				assert(rejected == failure);
+				assert(agent.sessions.length == 0);
+			}
+			else
+			{
+				task.processQueue.setGoal(ProcessState.Alive).ignoreResult();
+				drainNextTicks();
+				assert(agent.sessions.length == 1 && agent.resumeId == resumeId);
+				assert(task.status == (initialStatus == TaskStatus.pending
+					? TaskStatus.active : initialStatus));
+				publications.length = 0;
+				auto session = agent.sessions[0];
+				session.failureAtExit = failure;
+				session.closeStdin();
+				session.exit(1);
+				drainNextTicks();
+				assert(task.history.generation > generation);
+			}
+
+			assert(task.status == TaskStatus.failed);
+			assert(task.error == failure && task.resultText == failure);
+			string[] expectedPublications = ["result:" ~ failure];
+			if (initialStatus != TaskStatus.failed)
+				expectedPublications ~= "status:failed";
+			expectedPublications ~= "snapshot:failed:" ~ failure ~ ":" ~ failure;
+			assert(publications == expectedPublications);
+			assert(terminalOutcomes == [TaskStatus.failed]);
+			assert(liveDiagnostics.length == 1);
+			assert(task.history.length == 1);
+			auto replayEvent = extractEventFromEnvelope(cast(string) task.history[0].toGC());
+			assert(replayEvent == liveDiagnostics[0]);
+			static struct Diagnostic
+			{
+				string type;
+				string severity;
+				string subject;
+				string body;
+			}
+			auto diagnostic = jsonParse!Diagnostic(replayEvent);
+			assert(diagnostic.type == "cydo/task_diagnostic");
+			assert(diagnostic.severity == TaskDiagnosticSeverity.error);
+			if (failDuringCreate)
+			{
+				assert(diagnostic.subject == "Failed to resume session");
+				assert(diagnostic.body.canFind(failure));
+			}
+			else
+				assert(diagnostic.subject == "Agent startup failed" && diagnostic.body == failure);
+		});
+}
+
+@("Runner persists a typed startup failure from a fresh session")
+unittest
+{
+	testStartupFailureAtExit(null, TaskStatus.pending);
+}
+
+@("Runner persists a typed startup failure from a resumed session")
+unittest
+{
+	foreach (status; [TaskStatus.active, TaskStatus.alive, TaskStatus.waiting,
+		TaskStatus.completed, TaskStatus.failed])
+		testStartupFailureAtExit("existing-session", status);
+}
+
+@("Runner publishes synchronous session creation failures")
+unittest
+{
+	testStartupFailureAtExit(null, TaskStatus.pending, true);
+	testStartupFailureAtExit("existing-session", TaskStatus.failed, true);
 }
 
 unittest

@@ -1466,6 +1466,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	}
 
 	@property void onOutput(void delegate(TranslatedEvent) dg) { outputHandler_ = dg; }
+	@property string startupFailure() { return null; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
 	@property bool alive() { return alive_ && (server is null || !server.dead); }
