@@ -1136,7 +1136,7 @@ describe("ToolCall semantic shell output", () => {
     },
   );
 
-  it("renders unclassified numbered SVG stdout without a preview", async () => {
+  it("renders sliced numbered SVG rows without a preview", async () => {
     const stdout =
       '     1\t<svg xmlns="http://www.w3.org/2000/svg">\n' +
       '     2\t  <rect width="10" height="10"/>\n' +
@@ -1145,10 +1145,25 @@ describe("ToolCall semantic shell output", () => {
       "nl -ba x.svg | tail | head -3",
       makeResult({ toolResult: { stdout } }),
     );
+    const block = root.querySelector('[data-testid="semantic-shell-block-0"]');
+    expect(block?.querySelector("pre")?.textContent).toBe(stdout);
+    expect(
+      block?.querySelectorAll('[data-testid="semantic-shell-line-prefix"]'),
+    ).toHaveLength(3);
+    expectNoPreview(root);
+  });
+
+  it("renders unclassified numbered SVG stdout without a preview", async () => {
+    const root = await mountResult(
+      "nl -ba x.svg | sort",
+      makeResult({ toolResult: { stdout: numberedSvg } }),
+    );
     expect(
       root.querySelector('[data-testid="semantic-shell-output"]'),
     ).toBeNull();
-    expect(root.querySelector("pre.tool-result")?.textContent).toBe(stdout);
+    expect(root.querySelector("pre.tool-result")?.textContent).toBe(
+      numberedSvg,
+    );
     expectNoPreview(root);
   });
 

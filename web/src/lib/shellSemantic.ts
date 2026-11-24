@@ -1,5 +1,6 @@
 import { useState, useEffect } from "preact/hooks";
 import {
+  rowsLanguage,
   shellOutputView,
   type FileOrigin,
   type OutputSegment,
@@ -782,7 +783,7 @@ function fromInterval({ start, end }: LineInterval): IntervalRange {
 function applySlice(
   input: ReadRange,
   applied: SliceRange,
-): ParseResult<ReadRange | "unchanged"> {
+): ParseResult<ReadRange | "unchanged" | "unpositioned"> {
   if (
     input.type === "all" ||
     (input.type === "tail" && input.startLine === 1)
@@ -816,16 +817,10 @@ function applySlice(
         },
       };
     }
-    return reject(
-      "unsafe_shell_syntax",
-      "slicing the output of a last-lines slice depends on the file length",
-    );
+    return { ok: true, value: "unpositioned" };
   }
   if (applied.type === "tail-count") {
-    return reject(
-      "unsafe_shell_syntax",
-      "a last-lines slice of an already sliced range depends on the file length",
-    );
+    return { ok: true, value: "unpositioned" };
   }
 
   const { start: baseStart, end: baseEnd } = toInterval(input);
@@ -860,14 +855,24 @@ function applyStage(
     case "identity":
       return unchanged;
     case "slice": {
-      if (stream.kind === "diff" || stream.numbering?.kind === "grep")
+      if (
+        stream.kind === "diff" ||
+        stream.numbering?.kind === "grep" ||
+        stream.source.kind === "unpositioned"
+      )
         return unchanged;
       const range = applySlice(stream.source.range, op.range);
       if (!range.ok) return range;
       if (range.value === "unchanged") return unchanged;
       return {
         ok: true,
-        value: { ...stream, source: { ...stream.source, range: range.value } },
+        value: {
+          ...stream,
+          source:
+            range.value === "unpositioned"
+              ? { kind: "unpositioned", language: rowsLanguage(stream.source) }
+              : { ...stream.source, range: range.value },
+        },
       };
     }
     case "number-lines": {
@@ -940,13 +945,35 @@ function buildPipelineStream(
   cdPath: string,
 ): ParseResult<ShellStream> {
   if (stages.length === 0) return reject("empty", "empty pipeline");
+  let rowBound = Infinity;
+  function applyPipelineStage(stream: ShellStream, op: StageOp) {
+    if (
+      op.kind === "slice" &&
+      stream.kind === "rows" &&
+      stream.numbering?.kind !== "grep"
+    ) {
+      if (op.range.type === "tail-count") {
+        rowBound = Math.min(rowBound, op.range.count);
+      } else {
+        const { start, end } = toInterval(op.range);
+        if (start > rowBound) {
+          return reject(
+            "unsafe_shell_syntax",
+            "slice selects no lines of its input",
+          );
+        }
+        rowBound = Math.min(rowBound, end ?? Infinity) - (start - 1);
+      }
+    }
+    return applyStage(stream, op);
+  }
   const first = parseStage(stages[0]!, "first", cdPath);
   if (!first.ok) return first;
   const source = first.value;
   const opened =
     source.kind === "source"
       ? ({ ok: true, value: source.stream } as const)
-      : applyStage(
+      : applyPipelineStage(
           openFile({
             kind: "worktree",
             filePath: resolveAgainstCd(cdPath, source.operand!),
@@ -960,7 +987,7 @@ function buildPipelineStream(
     if (!parsed.ok) return parsed;
     if (parsed.value.kind !== "filter")
       throw new Error("Expected a pipeline filter");
-    const next = applyStage(stream, parsed.value.op);
+    const next = applyPipelineStage(stream, parsed.value.op);
     if (!next.ok) return next;
     stream = next.value;
   }
@@ -985,6 +1012,7 @@ function resolveAgainstCd(cdPath: string, path: string): string {
 function isGitObjectRead(segment: OutputSegment): boolean {
   return (
     segment.kind === "rows" &&
+    segment.source.kind === "file" &&
     segment.source.origin.kind === "git-object" &&
     segment.numbering?.kind !== "grep"
   );

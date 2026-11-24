@@ -257,6 +257,37 @@ describe("SemanticShellOutput document and numbered rendering", () => {
     expect(html).not.toContain("text-content");
   });
 
+  it("renders unpositioned Markdown rows as source", async () => {
+    const result = await parseShellSemantic("tail x.md | head -2");
+    assert(result.ok && result.value.kind === "output");
+    const view = shellOutputView(result.value.output);
+    assert(view.ok && view.value.kind === "plan");
+
+    const html = renderSemantic("# T\nbody\n", view.value.plan);
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
+    expect(html).toContain("# T");
+    expect(html).not.toContain("semantic-shell-raw");
+    expect(html).not.toContain("text-content");
+    expect(html).not.toContain("<h1");
+    expect(html).not.toContain('title="Show rendered"');
+    expect(html).not.toContain('title="Show source"');
+  });
+
+  it("renders unpositioned SVG rows as one source block", async () => {
+    const result = await parseShellSemantic("tail x.svg | head -2");
+    assert(result.ok && result.value.kind === "output");
+    const view = shellOutputView(result.value.output);
+    assert(view.ok && view.value.kind === "plan");
+
+    const html = renderSemantic(SVG_CONTENT, view.value.plan);
+    expect(html).not.toContain('alt="SVG preview"');
+    expect(
+      html.match(/data-testid="semantic-shell-block-[^"]+"/g),
+    ).toHaveLength(1);
+    expect(html).not.toContain("semantic-shell-raw");
+    expect(html).toContain("&lt;svg");
+  });
+
   it("routes head output of an SVG file through file content preview", () => {
     const outputPlan: OutputPlan = {
       version: 1,

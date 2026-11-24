@@ -544,17 +544,6 @@ describe("pipe reads (should reject)", () => {
     const r = await parseShellSemantic("echo hello | cat");
     expect(r.ok).toBe(false);
   });
-
-  it("cat file.txt | head -5 | tail -2 rejects a file-length-dependent range", async () => {
-    await expect(
-      parseShellSemantic("cat file.txt | head -5 | tail -2"),
-    ).resolves.toEqual({
-      ok: false,
-      code: "unsafe_shell_syntax",
-      reason:
-        "a last-lines slice of an already sliced range depends on the file length",
-    });
-  });
 });
 
 describe("stream composition", () => {
@@ -658,22 +647,7 @@ describe("stream composition", () => {
       "line range exceeds integer precision",
     ],
     ["head -n 5 f.d | sed -n 7,9p", "slice selects no lines of its input"],
-    [
-      "tail f.d | head -5",
-      "slicing the output of a last-lines slice depends on the file length",
-    ],
-    [
-      "cat f.d | head | tail -n 2",
-      "a last-lines slice of an already sliced range depends on the file length",
-    ],
-    [
-      "sed -n 10,20p f.d | tail -n 3",
-      "a last-lines slice of an already sliced range depends on the file length",
-    ],
-    [
-      "tail -n 9 f.d | head -n 2",
-      "slicing the output of a last-lines slice depends on the file length",
-    ],
+    ["tail f.d | head -2 | wc -l", "wc output is not planned"],
     ["nl f.d | nl", "nested nl numbering is not supported"],
     ["nl f.d | grep -n x", "search over nl-numbered output is not supported"],
     ["nl f.d | wc -l", "wc output is not planned"],
@@ -772,6 +746,134 @@ describe("stream composition", () => {
       reason: "wc output is not planned",
     });
   }, 30_000);
+});
+
+describe("unpositioned rows", () => {
+  function unpositionedRows(
+    language: string,
+    numbering: NumberingLayer | null = null,
+  ): RowsSegment {
+    return {
+      kind: "rows",
+      source: { kind: "unpositioned", language },
+      numbering,
+    };
+  }
+
+  it.each([
+    ["tail f.d | head -2", "d"],
+    ["cat file.txt | head -5 | tail -2", "text"],
+    ["tail f.d | head -5", "d"],
+    ["cat f.d | head | tail -n 2", "d"],
+    ["sed -n 10,20p f.d | tail -n 3", "d"],
+    ["tail -n 9 f.d | head -n 2", "d"],
+    ["tail f.d | head -2 | head -1", "d"],
+    ["tail f.d | head -2 | sed -n 1,1p", "d"],
+    ["tail -n 3 f.d | head -2 | sed -n 2,2p", "d"],
+    ["git show HEAD:f.d | tail | head -2", "d"],
+    ["cd X && tail f.d | head -2", "d"],
+  ])("%s plans unpositioned content", async (command, language) => {
+    const result = await parseShellSemantic(command);
+    assert(result.ok);
+    expect(result.value).toEqual({
+      kind: "output",
+      command,
+      output: [unpositionedRows(language)],
+    });
+    expect(plan(result.value)?.blocks).toEqual([
+      {
+        id: "0",
+        format: { kind: "content", language },
+        location: {
+          kind: "from-cursor",
+          end: { kind: "end-of-output", requiresComplete: true },
+          validator: "non-empty",
+        },
+      },
+    ]);
+  });
+
+  it.each([
+    "tail -n 10 f.d | sed -n 11,12p",
+    "head -n 3 f.d | tail | sed -n 5,6p",
+    "tail -n 2 f.d | tail -n +5",
+    "tail -n 4 f.d | head -3 | head -5 | sed -n 4,5p",
+    "tail -n 4 f.d | head -3 | tail -n 2 | tail -n +3",
+    "tail -n 4 f.d | head -2 | tail -n 5 | sed -n 3,4p",
+    "tail -n 5 f.d | sed -n 2,4p | tail -n +2 | sed -n 3,4p",
+    "tail -n 4 f.d | head -2 | nl | sed -n 3,4p",
+  ])("%s rejects a slice starting past the row bound", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsafe_shell_syntax",
+      reason: "slice selects no lines of its input",
+    });
+  });
+
+  it.each([
+    "cat f.d | head | tail -n 2 | grep -n x",
+    "tail f.d | head -2 | grep -n x",
+  ])("%s plans numbered search over unpositioned rows", async (command) => {
+    const result = await parseShellSemantic(command);
+    assert(result.ok);
+    expect(segmentsOf(result.value)).toEqual([unpositionedRows("d", grep)]);
+    expect(plan(result.value)?.blocks).toEqual([
+      {
+        id: "0",
+        format: {
+          kind: "individual-lines",
+          format: {
+            kind: "line-number-prefixed",
+            format: { kind: "content", language: "d" },
+          },
+        },
+        location: {
+          kind: "from-cursor",
+          end: { kind: "end-of-output", requiresComplete: true },
+          validator: "colon-line-number-prefixed",
+        },
+      },
+    ]);
+  });
+
+  it.each(["tail f.d | head -2 | nl", "nl f.d | tail | head -2"])(
+    "%s plans nl-numbered unpositioned rows",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      assert(result.ok);
+      expect(segmentsOf(result.value)).toEqual([unpositionedRows("d", nl)]);
+      expect(plan(result.value)?.blocks).toEqual([
+        {
+          id: "0",
+          format: {
+            kind: "nl-line-number-prefixed",
+            width: nl.width,
+            separator: nl.separator,
+            format: { kind: "content", language: "d" },
+          },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+          },
+        },
+      ]);
+    },
+  );
+
+  it.each([
+    ["tail f.d | head -2 && echo done", unpositionedRows("d")],
+    [
+      "nl f.d | tail -n 3 && echo done",
+      fileRows("f.d", { type: "tail-count", count: 3 }, nl),
+    ],
+  ] as const)(
+    "%s preserves the literal after the rows",
+    async (command, rows) => {
+      const result = await parseShellSemantic(command);
+      assert(result.ok);
+      expect(segmentsOf(result.value)).toEqual([rows, literal("done\n")]);
+    },
+  );
 });
 
 describe("argv vs pipeline equivalence", () => {

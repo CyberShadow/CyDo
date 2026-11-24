@@ -1,6 +1,6 @@
 import { assert, describe, expect, it } from "vitest";
 import { derivePlan, shellOutputView } from "./shellOutput";
-import type { OutputSegment, RowsSegment } from "./shellOutput";
+import type { FileOrigin, OutputSegment, RowsSegment } from "./shellOutput";
 
 const nl = { kind: "nl", width: 6, separator: "\t" } as const;
 const grep = { kind: "grep", context: false } as const;
@@ -11,7 +11,7 @@ const diff = { kind: "diff" } as const;
 function rows(
   filePath = "a.md",
   numbering: RowsSegment["numbering"] = null,
-  origin: RowsSegment["source"]["origin"]["kind"] = "worktree",
+  origin: FileOrigin["kind"] = "worktree",
 ): RowsSegment {
   return {
     kind: "rows",

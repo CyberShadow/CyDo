@@ -223,6 +223,34 @@ describe("numbered output span validation", () => {
 });
 
 describe("outputPlan", () => {
+  it.each([
+    ["a\nb\n", 1],
+    ["", 0],
+  ])(
+    "segments documentless content %j into %i structured pieces",
+    (stdout, count) => {
+      const plan: OutputPlan = {
+        version: 1,
+        blocks: [
+          {
+            id: "0",
+            format: { kind: "content", language: "text" },
+            location: {
+              kind: "from-cursor",
+              end: { kind: "end-of-output", requiresComplete: true },
+              validator: "non-empty",
+            },
+          },
+        ],
+      };
+      const structured = segmentOutput(stdout, plan, {
+        kind: "complete",
+      }).pieces.filter((piece) => piece.kind === "structured");
+      expect(structured).toHaveLength(count);
+      if (count === 1) assertCoverage(stdout, structured);
+    },
+  );
+
   it("round-trips output plan through JSON", () => {
     const plan: OutputPlan = {
       version: 1,

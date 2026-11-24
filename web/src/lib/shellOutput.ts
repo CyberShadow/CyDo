@@ -14,7 +14,9 @@ export type ReadRange =
   | { type: "tail-count"; count: number };
 
 export type FileOrigin = { kind: "worktree" | "git-object"; filePath: string };
-export type RowSource = { kind: "file"; origin: FileOrigin; range: ReadRange };
+export type RowSource =
+  | { kind: "file"; origin: FileOrigin; range: ReadRange }
+  | { kind: "unpositioned"; language: string };
 export type NumberingLayer =
   | { kind: "nl"; width: number; separator: string }
   | { kind: "grep"; context: boolean };
@@ -35,8 +37,10 @@ export type ShellOutputView =
 
 type ViewResult<T> = { ok: true; value: T } | { ok: false; reason: string };
 
-function rowsLanguage(source: RowSource): string {
-  return langFromPath(source.origin.filePath) || "text";
+export function rowsLanguage(source: RowSource): string {
+  return source.kind === "file"
+    ? langFromPath(source.origin.filePath) || "text"
+    : source.language;
 }
 
 export function shellOutputView(
@@ -47,6 +51,7 @@ export function shellOutputView(
     if (first?.kind === "diff") return { ok: true, value: { kind: "diff" } };
     if (
       first?.kind === "rows" &&
+      first.source.kind === "file" &&
       first.source.origin.kind === "git-object" &&
       first.numbering === null
     ) {
@@ -114,7 +119,6 @@ export function derivePlan(
       case "rows": {
         const next = output[index + 1];
         if (next && next.kind !== "literal") return ambiguous;
-        const { filePath } = segment.source.origin;
         const content: OutputFormat = {
           kind: "content",
           language: rowsLanguage(segment.source),
@@ -152,7 +156,12 @@ export function derivePlan(
         }
         if (validator) location.validator = validator;
         const block: OutputBlockPlan = { id, format, location };
-        if (!numbering) block.document = { filePath, preview: !next };
+        if (!numbering && segment.source.kind === "file") {
+          block.document = {
+            filePath: segment.source.origin.filePath,
+            preview: !next,
+          };
+        }
         blocks.push(block);
         break;
       }
