@@ -9,10 +9,13 @@ vi.hoisted(() => {
 
 import { SessionView, UndoConfirmDialog } from "./SessionView";
 
-function renderSession(undoPending: TaskState["undoPending"]) {
+function renderSession(
+  undoPending: TaskState["undoPending"],
+  state: Partial<TaskState> = {},
+) {
   return renderToString(
     <SessionView
-      task={{ ...makeTaskState(7), undoPending }}
+      task={{ ...makeTaskState(7), undoPending, ...state }}
       connected={true}
       tasksLoading={false}
       isActive={true}
@@ -25,6 +28,8 @@ function renderSession(undoPending: TaskState["undoPending"]) {
       onUndo={() => {}}
       onUndoConfirm={() => {}}
       onUndoDismiss={() => {}}
+      onEditMessage={() => {}}
+      onEditRawEvent={() => {}}
       onClearInputDraft={() => {}}
       ordinaryDraftStore={createOrdinaryDraftStore()}
       onAskUserResponse={() => {}}
@@ -35,6 +40,38 @@ function renderSession(undoPending: TaskState["undoPending"]) {
     />,
   );
 }
+
+it("keeps raw inspection but hides history mutations on import offers", () => {
+  const state: Partial<TaskState> = {
+    historyLoaded: true,
+    messages: [
+      { id: "prompt", type: "user", content: [], seq: 1, rawSource: {} },
+    ],
+    replacementEvents: new Map([
+      [
+        1,
+        {
+          type: "item/started",
+          item_id: "prompt",
+          item_type: "user_message",
+          history_boundary: { anchor: "before:turn", kind: "user" },
+        },
+      ],
+    ]),
+    historyOperations: {
+      fork: { first_user: "codex_native" },
+      undo: { first_user: "codex_native" },
+    },
+  };
+  const imported = renderSession(null, { ...state, status: "completed" });
+  const offer = renderSession(null, { ...state, status: "importable" });
+
+  for (const action of ["fork-btn", "undo-btn", "Edit message"]) {
+    expect(imported).toContain(action);
+    expect(offer).not.toContain(action);
+  }
+  expect(offer).toContain("View source");
+});
 
 describe("UndoConfirmDialog", () => {
   const render = (props: Partial<Parameters<typeof UndoConfirmDialog>[0]>) =>

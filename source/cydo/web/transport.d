@@ -40,6 +40,7 @@ enum RawSourceLookupStatus
 	ok,
 	taskNotFound,
 	seqOutOfRange,
+	historyNotLoaded,
 }
 
 struct RawSourceLookupResult
@@ -294,6 +295,10 @@ class TransportAdapter
 				case RawSourceLookupStatus.seqOutOfRange:
 					response.setStatus(HttpStatusCode.NotFound);
 					conn.sendResponse(response.serveData("Seq out of range"));
+					return;
+				case RawSourceLookupStatus.historyNotLoaded:
+					response.setStatus(HttpStatusCode.Conflict);
+					conn.sendResponse(response.serveData("History is not loaded. Preview the session first."));
 					return;
 				case RawSourceLookupStatus.ok:
 					break;

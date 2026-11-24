@@ -3,6 +3,7 @@
 /// reconstruction and native ROLLBACK admission are deliberately separate.
 module cydo.workflow.history.native_history;
 
+import std.typecons : Nullable;
 import std.exception : enforce;
 import std.file : exists, isFile;
 import std.path : isAbsolute;
@@ -48,7 +49,7 @@ struct HistoryAccess
 	string sessionId;
 	private string path_;
 	private DriverServedHistoryAgent historyDriver_;
-	private const(ConfiguredNativeHistoryContext)* discoveryContext_;
+	Nullable!string previewWorkspace;
 
 	this(Agent agent, NativeHistoryProfile profile, string sessionId, string path)
 	{
@@ -66,8 +67,7 @@ struct HistoryAccess
 	}
 
 	static HistoryAccess driverServed(DriverServedHistoryAgent driver,
-		NativeHistoryProfile profile, string sessionId,
-		const(ConfiguredNativeHistoryContext)* discoveryContext = null)
+		NativeHistoryProfile profile, string sessionId)
 	{
 		assert(driver !is null);
 		HistoryAccess access;
@@ -75,13 +75,7 @@ struct HistoryAccess
 		access.profile = profile;
 		access.sessionId = sessionId;
 		access.historyDriver_ = driver;
-		access.discoveryContext_ = discoveryContext;
 		return access;
-	}
-
-	@property const(ConfiguredNativeHistoryContext)* discoveryContext() const
-	{
-		return discoveryContext_;
 	}
 
 	@property bool isDriverServed() const { return historyDriver_ !is null; }

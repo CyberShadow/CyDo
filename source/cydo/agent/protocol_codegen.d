@@ -222,6 +222,8 @@ string generateAll() pure
 	static foreach (S; DepStructs)
 		out_ ~= generateStruct!S() ~ "\n";
 
+	out_ ~= generateStruct!RequestHistory() ~ "\n";
+
 	// Event structs
 	static foreach (S; EventStructs)
 		out_ ~= generateStruct!S() ~ "\n";

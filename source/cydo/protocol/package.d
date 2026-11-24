@@ -553,6 +553,14 @@ struct TranslatedEvent
 
 // ── Envelope structs ───────────────────────────────────────────────────────
 
+/// The workspace is empty for an unscoped task view.
+struct RequestHistory
+{
+	string type = "request_history";
+	int tid = -1;
+	@JSONOptional string workspace;
+}
+
 /// Envelope wrapping a translated event with its task ID.
 struct TaskEventEnvelope
 {

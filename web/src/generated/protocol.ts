@@ -60,6 +60,12 @@ export interface HistoryBoundary {
   checkpoint_uuid?: string;
 }
 
+export interface RequestHistory {
+  type: "request_history";
+  tid: number;
+  workspace?: string;
+}
+
 export interface SessionInitEvent {
   type: "session/init";
   session_id: string;

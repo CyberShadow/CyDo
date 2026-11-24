@@ -1,3 +1,4 @@
+import type { RequestHistory } from "./generated/protocol";
 import type { AgnosticEvent, ControlMessage, ContentBlock } from "./protocol";
 
 function isHistoryOperationsMessage(raw: Record<string, unknown>): boolean {
@@ -373,8 +374,9 @@ export class Connection {
     );
   }
 
-  requestHistory(tid: number): boolean {
-    return this.send(JSON.stringify({ type: "request_history", tid }));
+  requestHistory(tid: number, workspace: string): boolean {
+    const request: RequestHistory = { type: "request_history", tid, workspace };
+    return this.send(JSON.stringify(request));
   }
 
   forkTask(tid: number, anchor: string) {

@@ -78,6 +78,7 @@ import cydo.agent.resolver : createConfiguredAgent, displayNameForDriver,
 	effectiveDefaultAgentName, isConfiguredAgentName, resolvePermissionSettings,
 	tryCreateConfiguredAgent;
 import cydo.agent.contract : Agent;
+import cydo.protocol : RequestHistory;
 import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope,
 	BrowserSubmissionRejectedEvent, BrowserSubmissionRejectionKind, ContentBlock,
 	HistoryBoundary, ItemStartedEvent, SessionRateLimitEvent, TaskDiagnosticEvent,
@@ -1169,6 +1170,17 @@ class App
 
 	private void lookupRawSource(int tid, size_t seq, RawSourceReady ready)
 	{
+		auto task = tid in tasks;
+		if (task !is null && task.status == TaskStatus.importable)
+		{
+			if (!task.history.isLoaded)
+				ready(RawSourceLookupResult(RawSourceLookupStatus.historyNotLoaded, null));
+			else if (seq >= task.history.length)
+				ready(RawSourceLookupResult(RawSourceLookupStatus.seqOutOfRange, null));
+			else
+				ready(RawSourceLookupResult(RawSourceLookupStatus.ok, task.history.rawAt(seq)));
+			return;
+		}
 		historyPipeline.whenHistoryLoaded(tid, () {
 			auto td = tid in tasks;
 			if (td is null)
@@ -1328,7 +1340,7 @@ class App
 		switch (json.type)
 		{
 			case "create_task":       handleCreateTaskMsg(ws, json); break;
-			case "request_history":   handleRequestHistory(ws, json); break;
+			case "request_history":   handleRequestHistory(ws, jsonParse!RequestHistory(text)); break;
 			case "message":           handleUserMessage(ws, json); break;
 			case "resume":            handleResumeMsg(json); break;
 			case "interrupt":         handleInterruptMsg(json); break;
@@ -1631,9 +1643,24 @@ class App
 		});
 	}
 
-	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)
+	private void handleRequestHistory(WebSocketAdapter ws, RequestHistory json)
 	{
-		historyPipeline.handleRequestHistory(ws, json.tid);
+		auto td = json.tid in tasks;
+		if (td is null || td.status != TaskStatus.importable || !td.history.isDriverServed)
+		{
+			historyPipeline.handleRequestHistory(ws, json.tid);
+			return;
+		}
+
+		HistoryAccess access;
+		try
+			access = resolveImportPreview(*td, json.workspace);
+		catch (Exception e)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", e.msg, json.tid)).representation));
+			return;
+		}
+		historyPipeline.handleRequestHistory(ws, json.tid, Nullable!HistoryAccess(access));
 	}
 
 	private void sendHistoryReplaySupplementalState(WebSocketAdapter ws, int tid)
@@ -2693,6 +2720,24 @@ class App
 		return resolveImportableScanRecord(*record);
 	}
 
+	private HistoryAccess resolveImportPreview(ref TaskData task, string workspace)
+	{
+		auto resolution = resolveTaskHistory(task.tid);
+		enforce(resolution.kind == TaskHistoryResolutionKind.access,
+			resolution.kind == TaskHistoryResolutionKind.unavailable
+				? resolution.requireUnavailable().detail : "Import preview history is unavailable");
+		auto access = resolution.requireAccess();
+		enforce(workspace.length == 0 || workspaceHasProjectPath(workspace, task.projectPath),
+			"The selected workspace does not contain the import preview checkout");
+		auto context = ConfiguredNativeHistoryContext(task.agentName, workspace, task.repoPath, false);
+		auto resolved = resolveNativeHistoryContext(config, access.agent, context);
+		enforce(resolved.profile == access.profile && task.agentSessionId == access.sessionId,
+			"Import preview for session " ~ access.sessionId ~ " belongs to " ~ access.profile.root
+				~ " but the selected checkout resolves to " ~ resolved.profile.root);
+		access.previewWorkspace = Nullable!string(workspace);
+		return access;
+	}
+
 	private TaskHistoryResolution resolveImportableScanRecord(
 		const ref ImportableScanRecord record)
 	{
@@ -2729,8 +2774,12 @@ class App
 					UnavailableHistoryKind.profilePath, record.agentName,
 					record.key.sessionId, e.msg, resolved.rule, resolved.profile));
 			if (auto driver = HistoryAccess.driverServingHistory(resolved.agent))
+			{
+				if (context.agentName != record.agentName)
+					continue;
 				return TaskHistoryResolution.access(HistoryAccess.driverServed(driver,
-					resolved.profile, record.key.sessionId, &context));
+					resolved.profile, record.key.sessionId));
+			}
 			return TaskHistoryResolution.access(HistoryAccess(resolved.agent,
 				resolved.profile, record.key.sessionId,
 				record.discovered.exactHistoryPath));
@@ -7561,6 +7610,41 @@ unittest
 	assert(access.sessionId == fixture.sessionId && access.profile.root == fixture.profileRoot);
 	assert(fixture.app.tasks[fixture.tid].history.isDriverServed,
 		"The offer's history store must match its driver-served access");
+}
+
+unittest
+{
+	import std.exception : assertThrown;
+
+	auto root = buildPath(tempDir(), "cydo-app-codex-offer-selected-workspace");
+	scope(exit) if (exists(root)) rmdirRecurse(root);
+	auto fixture = new CodexOfferFixture(root);
+	auto app = fixture.app;
+	auto task = fixture.tid in app.tasks;
+	auto other = app.config.workspaces[0];
+	other.name = "other";
+	other.sandbox.env = ["CODEX_HOME": buildPath(root, "other-profile")];
+	app.config.workspaces = [other, app.config.workspaces[0]];
+	auto projects = app.discoveryService.workspacesInfo[0].projects;
+	app.discoveryService.workspacesInfo = [WorkspaceInfo("other", projects),
+		app.discoveryService.workspacesInfo[0]];
+
+	auto access = app.resolveImportPreview(*task, "local");
+	assert(access.previewWorkspace.get == "local" && access.profile.root == fixture.profileRoot);
+	assertThrown!Exception(app.resolveImportPreview(*task, "other"));
+}
+
+unittest
+{
+	auto root = buildPath(tempDir(), "cydo-app-codex-offer-raw-source");
+	scope(exit) if (exists(root)) rmdirRecurse(root);
+	auto fixture = new CodexOfferFixture(root);
+	bool answered;
+	fixture.app.lookupRawSource(fixture.tid, 0, (RawSourceLookupResult result) {
+		assert(result.status == RawSourceLookupStatus.historyNotLoaded);
+		answered = true;
+	});
+	assert(answered && fixture.driverReads == 0);
 }
 
 unittest

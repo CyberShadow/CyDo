@@ -374,7 +374,8 @@ class CodexAgent : DriverServedHistoryAgent
 			{
 				auto launch = obtainLaunch();
 				enforce(launch.processLaunch.nativeHistoryProfile == profile,
-					"Codex history launch must use the profile the history belongs to");
+					"Codex history for session " ~ sessionId ~ " belongs to " ~ profile.root
+					~ " but the launch resolves to " ~ launch.processLaunch.nativeHistoryProfile.root);
 				auto workspace = launch.sessionConfig.workspace.length > 0
 					? launch.sessionConfig.workspace : "default";
 				server = getOrCreateServer(serverPoolKey(workspace, launch.processLaunch),
@@ -4901,6 +4902,15 @@ unittest
 	server.terminate();
 	drainNextTicks();
 	assert(outcomes == ["Codex app-server exited while reading history"]);
+
+	// A cold read cannot use a launch from a different profile.
+	outcomes = null;
+	auto otherProfile = NativeHistoryProfile(AgentDriver.codex, "/other-codex-profile");
+	observe(agent.loadHistory("thread", otherProfile, () => null,
+		() => DriverHistoryLaunch(launch, config)));
+	drainNextTicks();
+	assert(outcomes == ["Codex history for session thread belongs to " ~ otherProfile.root
+		~ " but the launch resolves to " ~ profile.root]);
 
 	// A launch that cannot be had is a history that cannot be read.
 	outcomes = null;

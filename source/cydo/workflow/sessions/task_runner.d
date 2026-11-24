@@ -645,7 +645,7 @@ public:
 				assert(!launched, "A history read obtains one launch");
 				auto td = requireTask(tid, "History launch requires an existing task");
 				auto launch = buildTaskSessionLaunch(tid, access.agent, currentTaskTypeDef(td),
-					LaunchOwnership.operation, access.discoveryContext);
+					LaunchOwnership.operation, access.previewWorkspace);
 				readLaunch = launch.processLaunch;
 				launched = true;
 				return DriverHistoryLaunch(launch.processLaunch, launch.sessionConfig);
@@ -726,8 +726,7 @@ public:
 	}
 
 	private TaskSessionLaunch buildTaskSessionLaunch(int tid, Agent taskAgent,
-		TaskTypeDef* typeDef, LaunchOwnership ownership,
-		const(ConfiguredNativeHistoryContext)* discoveryContext = null)
+		TaskTypeDef* typeDef, LaunchOwnership ownership, Nullable!string previewWorkspace = Nullable!string.init)
 	{
 		auto td = requireTask(tid,
 			"Task must exist before preparing session launch");
@@ -770,8 +769,10 @@ public:
 		auto chdir = taskCwd.length > 0 ? taskCwd : workDir;
 
 		bool readOnly = typeDef !is null && typeDef.read_only;
-		auto context = discoveryContext !is null ? *discoveryContext
-			: ConfiguredNativeHistoryContext(td.agentName, td.workspace, td.repoPath, readOnly);
+		assert(td.status != TaskStatus.importable || !previewWorkspace.isNull,
+			"Importable driver history requires an explicit preview workspace");
+		auto workspace = previewWorkspace.isNull ? td.workspace : previewWorkspace.get;
+		auto context = ConfiguredNativeHistoryContext(td.agentName, workspace, workDir, readOnly);
 		auto nativeHistoryContext = resolveNativeHistoryContext(*host_.currentConfig(),
 			taskAgent, context);
 		enforce(nativeHistoryContext.agent.driver == taskAgent.driver,
@@ -2134,6 +2135,66 @@ unittest
 			assert(tasks[1].launch.nativeHistoryProfile.root.length == 0);
 			assert(launch.processLaunch.nativeHistoryProfile.root.length > 0);
 			launchSandbox.cleanup(launch.processLaunch.sandbox);
+		});
+}
+
+version (unittest) private final class ColdImportPreviewTestAgent : CodexAgent
+{
+	DriverHistoryLaunch launch;
+
+	override string executableName(string[string] env) { return "/bin/true"; }
+
+	override Promise!DriverHistory loadHistory(string sessionId,
+		const ref NativeHistoryProfile profile, AgentSession delegate() currentOwner,
+		DriverHistoryLaunch delegate() obtainLaunch)
+	{
+		assert(currentOwner() is null);
+		launch = obtainLaunch();
+		assert(launch.processLaunch.nativeHistoryProfile == profile);
+		return resolve(DriverHistory.init);
+	}
+}
+
+unittest
+{
+	import cydo.foundation.testing : drainNextTicks;
+
+	withGitMetadataLaunchFixture("cydo-task-runner-cold-import-preview",
+		(GitMetadataLaunchFixture fixture) {
+			auto catalog = gitMetadataTaskCatalog(fixture,
+				"task_types:\n  operation:\n    model_class: large\n");
+			auto workspaceProfile = buildPath(fixture.root, "workspace-codex-profile");
+			auto workspaceSandbox = unrestrictedLaunchTestSandbox();
+			workspaceSandbox.env["CODEX_HOME"] = workspaceProfile;
+			TaskData[int] tasks;
+			tasks[1] = TaskData(1, "", fixture.linkedCheckout);
+			auto task = &tasks[1];
+			task.status = TaskStatus.importable;
+			task.agentName = "codex";
+			task.agentSessionId = "imported-thread";
+			auto runner = gitMetadataTestRunner(&tasks, catalog, fixture,
+				workspaceSandbox, "", fixture.linkedCheckout, driver: AgentDriver.codex);
+			auto config = runner.host_.currentConfig();
+			auto otherWorkspace = config.workspaces[0];
+			otherWorkspace.name = "other";
+			otherWorkspace.sandbox.env = ["CODEX_HOME": buildPath(fixture.root, "other-profile")];
+			config.workspaces = [otherWorkspace, config.workspaces[0]];
+
+			auto agent = new ColdImportPreviewTestAgent;
+			auto profile = NativeHistoryProfile(AgentDriver.codex, workspaceProfile);
+			auto access = HistoryAccess.driverServed(agent, profile, task.agentSessionId);
+			access.previewWorkspace = Nullable!string("local");
+			bool loaded;
+			runner.loadDriverHistory(task.tid, access)
+				.then((DriverHistory) { loaded = true; },
+					(Exception e) { assert(false, e.msg); }).ignoreResult();
+			drainNextTicks();
+
+			assert(loaded);
+			assert(agent.launch.sessionConfig.workspace == "local");
+			assert(agent.launch.sessionConfig.workDir == fixture.linkedCheckout);
+			assert(agent.launch.processLaunch.sandbox.env["CODEX_HOME"] == workspaceProfile);
+			assert(task.launch.nativeHistoryProfile.root.length == 0);
 		});
 }
 

@@ -134,8 +134,11 @@ function SessionViewInner({
   const resumeRef = useRef<HTMLButtonElement>(null);
 
   const tid = task.tid as number;
+  const canMutateHistory = task.status !== "importable";
   const undoPreview =
-    task.undoPending && task.undoPending.kind !== "requesting"
+    canMutateHistory &&
+    task.undoPending &&
+    task.undoPending.kind !== "requesting"
       ? task.undoPending
       : null;
 
@@ -465,14 +468,18 @@ function SessionViewInner({
             task.stdinClosed,
             task.alive,
           )}
-          onFork={onFork}
-          onUndo={onUndo}
+          onFork={canMutateHistory ? onFork : undefined}
+          onUndo={canMutateHistory ? onUndo : undefined}
           onUnsend={
             task.alive && task.driver === "claude" ? onUnsend : undefined
           }
           onApproveRetry={task.alive ? onApproveRetry : undefined}
-          onEditMessage={!task.alive ? onEditMessage : undefined}
-          onEditRawEvent={!task.alive ? onEditRawEvent : undefined}
+          onEditMessage={
+            canMutateHistory && !task.alive ? onEditMessage : undefined
+          }
+          onEditRawEvent={
+            canMutateHistory && !task.alive ? onEditRawEvent : undefined
+          }
           onViewFile={openFileViewer}
           spawnedTidsByItemId={task.spawnedTidsByItemId}
           getTaskHref={getTaskHref}

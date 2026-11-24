@@ -815,7 +815,7 @@ export function useTaskManager(
   // to the composer once the agent confirms the withdrawal.
   const unsendRequestsRef = useRef(new Map<string, string>());
   // Track which tasks have had history requested (avoid duplicate requests), keyed by uuid
-  const requestedHistoryRef = useRef(new Set<string>());
+  const requestedHistoryRef = useRef(new Map<string, string>());
   const outboxReplayedEpochRef = useRef<number | null>(null);
   const outboxAttemptedNoncesRef = useRef(new Set<string>());
   const tasksListEpochRef = useRef<number | null>(null);
@@ -989,11 +989,11 @@ export function useTaskManager(
   const requestTaskHistory = useCallback((tid: number) => {
     const task = findByTid(tid);
     if (!task) throw new Error(`History request requires task ${tid}`);
-    if (requestedHistoryRef.current.has(task.uuid)) return;
-    if (!connRef.current?.requestHistory(tid)) {
+    if (requestedHistoryRef.current.get(task.uuid) === "") return;
+    if (!connRef.current?.requestHistory(tid, "")) {
       throw new Error(`History request failed for ${tid}`);
     }
-    requestedHistoryRef.current.add(task.uuid);
+    requestedHistoryRef.current.set(task.uuid, "");
   }, []);
 
   const sendMessageAttempt = useCallback(
@@ -1895,8 +1895,12 @@ export function useTaskManager(
           // won't re-fire because activeTaskId hasn't changed.
           let final = reset;
           if (String(tid) === getActiveTaskId()) {
-            if (connRef.current?.requestHistory(tid)) {
-              requestedHistoryRef.current.add(t.uuid);
+            const workspace =
+              t.status === "importable"
+                ? (readBrowserRoute().workspace ?? "")
+                : "";
+            if (connRef.current?.requestHistory(tid, workspace)) {
+              requestedHistoryRef.current.set(t.uuid, workspace);
               final = {
                 ...reset,
                 pendingHistoryReplies: reset.pendingHistoryReplies + 1,
@@ -2580,12 +2584,13 @@ export function useTaskManager(
     if (controlledOwnerByTidRef.current.has(tid)) return;
     const t = findByTid(tid);
     if (!t) return;
-    if (requestedHistoryRef.current.has(t.uuid)) return;
-    if (t.historyLoaded) return;
-    if (connRef.current?.requestHistory(tid)) {
-      requestedHistoryRef.current.add(t.uuid);
+    const workspace = t.status === "importable" ? (activeWorkspace ?? "") : "";
+    if (requestedHistoryRef.current.get(t.uuid) === workspace) return;
+    if (t.historyLoaded && t.status !== "importable") return;
+    if (connRef.current?.requestHistory(tid, workspace)) {
+      requestedHistoryRef.current.set(t.uuid, workspace);
     }
-  }, [connected, activeTaskId, tasks]);
+  }, [connected, activeTaskId, activeWorkspace, tasks]);
 
   // Replay outbox entries after tasks_list arrives and WS is connected.
   // The backend deduplicates by nonce, so replaying is safe.

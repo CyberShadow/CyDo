@@ -26,7 +26,7 @@ import cydo.protocol : ContentBlock, ItemStartedEvent, TaskEventEnvelope,
 	HistoryBoundaryKind, extractContentText;
 import cydo.runtime.config : AgentDriver;
 import cydo.domain.storage.persistence : LoadedHistory;
-import cydo.domain.tasks.model : QueueOperationProbe, TaskData, TaskHistoryEndMessage,
+import cydo.domain.tasks.model : QueueOperationProbe, TaskData, TaskStatus, TaskHistoryEndMessage,
 	TaskHistoryStartMessage, Watermark, buildSyntheticUserEvent, extractEventFromEnvelope,
 	extractTsFromEnvelope, isQueueOperation, watermarkFromPath;
 import cydo.workflow.history.native_history : HistoryAccess,
@@ -151,9 +151,12 @@ class HistoryEventPipeline
 	}
 
 	private Nullable!TaskHistoryResolution whenHistoryLoadedImpl(int tid,
-		HistoryLoaded dg, bool fileOnly, bool reportUnavailable)
+		HistoryLoaded dg, bool fileOnly, bool reportUnavailable,
+		Nullable!HistoryAccess preview = Nullable!HistoryAccess.init)
 	{
 		auto td = host_.getTask(tid);
+		assert(td is null || td.status != TaskStatus.importable || !td.history.isDriverServed
+			|| !preview.isNull, "Importable driver history requires a validated preview request");
 		assert(!fileOnly || td is null || !td.history.isDriverServed,
 			"Synchronous load requires file-backed history");
 		if (td is null || td.history.isLoaded)
@@ -166,11 +169,12 @@ class HistoryEventPipeline
 			auto load = driverLoads_[tid];
 			assert(load.generation == td.history.generation,
 				"A loading store belongs to the read of its own generation");
-			load.waiters ~= dg;
+			load.waiters ~= () { whenHistoryLoadedImpl(tid, dg, fileOnly, reportUnavailable, preview); };
 			return Nullable!TaskHistoryResolution.init;
 		}
 
-		auto resolution = host_.resolveTaskHistory(tid);
+		auto resolution = preview.isNull ? host_.resolveTaskHistory(tid)
+			: TaskHistoryResolution.access(preview.get);
 		if (resolution.kind != TaskHistoryResolutionKind.access
 			|| !resolution.requireAccess().isDriverServed)
 		{
@@ -180,7 +184,8 @@ class HistoryEventPipeline
 		}
 		assert(!fileOnly, "Synchronous load requires file-backed history");
 		auto access = resolution.requireAccess();
-		auto load = new DriverLoad(td.history.beginDriverLoad(), access, [dg]);
+		auto load = new DriverLoad(td.history.beginDriverLoad(), access,
+			[() { whenHistoryLoadedImpl(tid, dg, fileOnly, reportUnavailable, preview); }]);
 		// A read of an earlier generation keeps its own waiters until it settles.
 		driverLoads_[tid] = load;
 
@@ -242,7 +247,7 @@ class HistoryEventPipeline
 			return;
 		scope (exit)
 			deliver(tid, waiters[1 .. $]);
-		whenHistoryLoaded(tid, waiters[0]);
+		waiters[0]();
 	}
 
 	private void loadFileHistory(int tid, TaskData* td,
@@ -520,14 +525,15 @@ class HistoryEventPipeline
 				"replayed native history identity does not match its persisted boundary");
 	}
 
-	void handleRequestHistory(WebSocketAdapter ws, int tid)
+	void handleRequestHistory(WebSocketAdapter ws, int tid,
+		Nullable!HistoryAccess preview = Nullable!HistoryAccess.init)
 	{
 		if (tid < 0)
 			return;
-		whenHistoryLoaded(tid, () {
+		whenHistoryLoadedImpl(tid, () {
 			if (ws.state == ConnectionState.connected)
 				sendHistory(ws, tid);
-		});
+		}, false, true, preview);
 	}
 
 	private void sendHistory(WebSocketAdapter ws, int tid)
