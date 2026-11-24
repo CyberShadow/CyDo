@@ -91,6 +91,7 @@ const processLike = (
   globalThis as typeof globalThis & {
     process: {
       getBuiltinModule(name: string): unknown;
+      env: { PATH?: string };
     };
   }
 ).process;
@@ -807,6 +808,11 @@ describe("unpositioned rows", () => {
     ["tail -n 3 f.d | head -2 | sed -n 2,2p", "d"],
     ["git show HEAD:f.d | tail | head -2", "d"],
     ["cd X && tail f.d | head -2", "d"],
+    ["grep x f.d", "d"],
+    ["cat f.d | grep x", "d"],
+    ["grep x f.d | head -3", "d"],
+    ["sed -n 1,9p f.d | grep x", "d"],
+    ["tail f.d | head -2 | grep x", "d"],
   ])("%s plans unpositioned content", async (command, language) => {
     const result = await parseShellSemantic(command);
     assert(result.ok);
@@ -848,6 +854,7 @@ describe("unpositioned rows", () => {
   it.each([
     "cat f.d | head | tail -n 2 | grep -n x",
     "tail f.d | head -2 | grep -n x",
+    "grep x f.d | grep -n y",
   ])("%s plans numbered search over unpositioned rows", async (command) => {
     const result = await parseShellSemantic(command);
     assert(result.ok);
@@ -2872,6 +2879,213 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
   });
 });
 
+describe("search without -n", () => {
+  it.each([
+    "rg x f.d",
+    "rg -C1 x f.d",
+    "rg x f.d | head -3",
+    "cat a.d && rg x b.d | cat",
+  ])("%s rejects file search without line numbers", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsupported_option",
+      reason:
+        "rg without -n/--line-number is not planned: its output depends on whether the operand is a directory",
+    });
+  });
+
+  it.each([
+    "cat f.d | rg x",
+    "nl f.d | rg x",
+    "grep -n p f.d | rg x",
+    "git diff | rg x",
+  ])("%s rejects stdin search without line numbers", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsupported_option",
+      reason: "rg without -n/--line-number is not planned",
+    });
+  });
+
+  it("rejects grep context without line numbers", async () => {
+    await expect(parseShellSemantic("grep -A2 x f.d")).resolves.toEqual({
+      ok: false,
+      code: "unsupported_option",
+      reason: "grep context lines require -n/--line-number",
+    });
+  });
+
+  it.each([
+    ["nl f.d | grep x", "nl-numbered"],
+    ["grep -n p f.d | grep x", "search"],
+    ["git diff | grep x", "diff"],
+  ])("%s rejects searching this output", async (command, kind) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsafe_shell_syntax",
+      reason: `search over ${kind} output is not supported`,
+    });
+  });
+
+  it.each([
+    ["grep x a.d b.d", "multiple_paths", "unexpected grep operand b.d"],
+    ["rg x a.d b.d", "multiple_paths", "unexpected rg operand b.d"],
+    ["cat f.d | rg x a.d", "multiple_paths", "unexpected rg operand a.d"],
+    ['grep "" f.d', "variable_path", "grep pattern must be non-empty"],
+    ['rg "" f.d', "variable_path", "rg pattern must be non-empty"],
+    ['rg x ""', "variable_path", "rg file operand must name a file"],
+    ["grep -i x f.d", "unsupported_option", "unsupported grep option -i"],
+  ])("%s still rejects invalid arguments", async (command, code, reason) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code,
+      reason,
+    });
+  });
+
+  it("still rejects a standalone grep member in a list", async () => {
+    await expect(parseShellSemantic("cat a.d && grep x b.d")).resolves.toEqual({
+      ok: false,
+      code: "unsupported_command",
+      reason: "unsupported command in list: grep",
+    });
+  });
+});
+
+describe("grep output boundaries", () => {
+  it.each([
+    ["-r", "-r"],
+    ["-R", "-R"],
+    ["--recursive", "--recursive"],
+    ["--dereference-recursive", "--dereference-recursive"],
+    ["-d recurse", "-d"],
+    ["--directories=recurse", "--directories=recurse"],
+    ["-a", "-a"],
+    ["--text", "--text"],
+    ["--binary-files=text", "--binary-files=text"],
+    ["--binary-files=binary", "--binary-files=binary"],
+    ["--binary-files=without-match", "--binary-files=without-match"],
+    ["-I", "-I"],
+    ["-U", "-U"],
+    ["--binary", "--binary"],
+  ])("rejects grep %s", async (args, flag) => {
+    await expect(
+      parseShellSemantic(`grep ${args} needle f.d`),
+    ).resolves.toEqual({
+      ok: false,
+      code: "unsupported_option",
+      reason: `unsupported grep option ${flag}`,
+    });
+  });
+
+  const { spawnSync } = processLike.getBuiltinModule("node:child_process") as {
+    spawnSync: (
+      file: string,
+      args: string[],
+      options: {
+        cwd: string;
+        encoding: "utf8";
+        env: { PATH?: string; LC_ALL: string };
+        input?: string;
+      },
+    ) => { status: number | null; stdout: string; stderr: string };
+  };
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } =
+    processLike.getBuiltinModule("node:fs") as {
+      mkdtempSync: (prefix: string) => string;
+      mkdirSync: (path: string) => void;
+      writeFileSync: (path: string, data: string) => void;
+      rmSync: (path: string, options: { recursive: true }) => void;
+    };
+  const { tmpdir } = processLike.getBuiltinModule("node:os") as {
+    tmpdir: () => string;
+  };
+
+  it.each([
+    {
+      label: "directory",
+      operands: ["directory.d"],
+      status: 2,
+      stderr: "grep: directory.d: Is a directory\n",
+    },
+    {
+      label: "binary file",
+      operands: ["binary.d"],
+      status: 0,
+      stderr: "grep: binary.d: binary file matches\n",
+    },
+    {
+      label: "binary stdin",
+      operands: [],
+      input: "needle\0data\n",
+      status: 0,
+      stderr: "grep: (standard input): binary file matches\n",
+    },
+    {
+      label: "text file",
+      operands: ["text.d"],
+      status: 0,
+      stdout: "needle here\n",
+    },
+  ])("GNU grep keeps diagnostics off stdout for $label", (fixture) => {
+    const cwd = mkdtempSync(`${tmpdir()}/cydo-grep-`);
+    try {
+      mkdirSync(`${cwd}/directory.d`);
+      writeFileSync(`${cwd}/directory.d/matching.d`, "needle here\n");
+      writeFileSync(`${cwd}/binary.d`, "needle\0data\n");
+      writeFileSync(`${cwd}/text.d`, "skip this\nneedle here\n");
+      const result = spawnSync("grep", ["needle", ...fixture.operands], {
+        cwd,
+        encoding: "utf8",
+        env: { PATH: processLike.env.PATH, LC_ALL: "C" },
+        input: fixture.input,
+      });
+      expect(result).toMatchObject({
+        status: fixture.status,
+        stdout: fixture.stdout ?? "",
+        stderr: fixture.stderr ?? "",
+      });
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
+});
+
+describe("search with missing operands", () => {
+  const invocations = [
+    "grep",
+    "grep -n",
+    "grep --line-number",
+    "rg",
+    "rg -n",
+    "rg --line-number",
+  ];
+
+  it.each([
+    ...invocations.map((invocation) => [invocation, invocation]),
+    ["rg x", "rg"],
+  ])("%s requires a pattern and file operand", async (command, invocation) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "missing_path",
+      reason: `${invocation} requires exactly one pattern and one file operand`,
+    });
+  });
+
+  it.each(invocations)(
+    "cat f.d | %s requires a pattern",
+    async (invocation) => {
+      await expect(
+        parseShellSemantic(`cat f.d | ${invocation}`),
+      ).resolves.toEqual({
+        ok: false,
+        code: "missing_path",
+        reason: `${invocation} requires exactly one pattern`,
+      });
+    },
+  );
+});
+
 describe("batch 1 rg/sed/structured output plans", () => {
   it("classifies the exact reported command as a D context search", async () => {
     const result = await parseShellSemantic(
@@ -3003,24 +3217,26 @@ describe("batch 1 rg/sed/structured output plans", () => {
   it.each([
     ['rg -n "" README.md', "rg"],
     ['grep -n "" README.md', "grep"],
-  ] as const)(
-    "rejects a direct empty quoted %s pattern",
-    async (command, tool) => {
-      const r = await parseShellSemantic(command);
-      expect(r, `${tool}: ${command}`).toMatchObject({
-        ok: false,
-        code: "variable_path",
-      });
-    },
-  );
+    ['cat README.md | rg -n ""', "rg"],
+    ['cat README.md | grep -n ""', "grep"],
+  ])("rejects an empty quoted pattern in %s", async (command, tool) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "variable_path",
+      reason: `${tool} pattern must be non-empty`,
+    });
+  });
 
-  it.each(['cat README.md | rg -n ""', 'cat README.md | grep -n ""'])(
-    "rejects an empty quoted pattern in a search pipeline: %s",
-    async (command) => {
-      const r = await parseShellSemantic(command);
-      expect(r).toMatchObject({ ok: false, code: "variable_path" });
-    },
-  );
+  it.each([
+    ['rg -n x ""', "rg"],
+    ['grep -n x ""', "grep"],
+  ])("rejects an empty file operand in %s", async (command, tool) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "variable_path",
+      reason: `${tool} file operand must name a file`,
+    });
+  });
 
   it("unsupported rg forms reject", async () => {
     const bad = [

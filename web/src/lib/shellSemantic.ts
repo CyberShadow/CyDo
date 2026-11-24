@@ -178,7 +178,7 @@ type StageOp =
       options: NlOptions;
       lastRowMayBeUnterminated: boolean;
     }
-  | { kind: "search"; context: boolean }
+  | { kind: "search"; lineNumbers: boolean; context: boolean }
   | { kind: "opaque"; commandName: string };
 
 type ParsedStage =
@@ -490,9 +490,9 @@ function parseNlArgs(
 function parseRgArgs(
   cmd: SimpleCommand,
   requireFile: boolean,
-): ParseResult<{ filePath?: string; context: boolean }> {
+): ParseResult<{ filePath?: string; lineNumbers: boolean; context: boolean }> {
   const toolName = cmd.name === "grep" ? "grep" : "rg";
-  let hasLineNumbers = false;
+  let lineNumberFlag: "-n" | "--line-number" | undefined;
   let context = false;
   const values: string[] = [];
   for (let i = 0; i < cmd.args.length; i++) {
@@ -502,7 +502,7 @@ function parseRgArgs(
       continue;
     }
     if (text === "-n" || text === "--line-number") {
-      hasLineNumbers = true;
+      lineNumberFlag = text;
       continue;
     }
     const contextOption =
@@ -525,13 +525,7 @@ function parseRgArgs(
       `unsupported ${toolName} option ${text}`,
     );
   }
-  if (!hasLineNumbers) {
-    return reject(
-      "unsupported_option",
-      `${toolName} must include -n/--line-number`,
-    );
-  }
-
+  const hasLineNumbers = lineNumberFlag !== undefined;
   const expectedCount = requireFile ? 2 : 1;
   if (values.length > expectedCount) {
     return reject(
@@ -540,23 +534,26 @@ function parseRgArgs(
     );
   }
   if (values.length < expectedCount) {
+    const invocation = lineNumberFlag
+      ? `${toolName} ${lineNumberFlag}`
+      : toolName;
     return reject(
       "missing_path",
       requireFile
-        ? `${toolName} -n requires exactly one pattern and one file operand`
-        : `${toolName} -n requires exactly one pattern`,
+        ? `${invocation} requires exactly one pattern and one file operand`
+        : `${invocation} requires exactly one pattern`,
     );
   }
 
   const pattern = values[0]!;
   const filePath = values[1];
   if (!pattern)
-    return reject("variable_path", `${toolName} pattern/path must be literal`);
+    return reject("variable_path", `${toolName} pattern must be non-empty`);
   if (requireFile) {
     if (filePath === undefined || !isFileOperand(filePath))
       return reject(
         "variable_path",
-        `${toolName} pattern/path must be literal`,
+        `${toolName} file operand must name a file`,
       );
     if (filePath === "." || filePath === ".." || filePath.endsWith("/")) {
       return reject(
@@ -566,7 +563,25 @@ function parseRgArgs(
     }
   }
 
-  return { ok: true, value: { filePath, context } };
+  if (!hasLineNumbers && toolName === "rg") {
+    return reject(
+      "unsupported_option",
+      requireFile
+        ? "rg without -n/--line-number is not planned: its output depends on whether the operand is a directory"
+        : "rg without -n/--line-number is not planned",
+    );
+  }
+  if (!hasLineNumbers && context) {
+    return reject(
+      "unsupported_option",
+      `${toolName} context lines require -n/--line-number`,
+    );
+  }
+
+  return {
+    ok: true,
+    value: { filePath, lineNumbers: hasLineNumbers, context },
+  };
 }
 
 function openFile(origin: FileOrigin): RowsSegment {
@@ -724,6 +739,7 @@ function parseStage(
       return filter(
         {
           kind: "search",
+          lineNumbers: parsed.value.lineNumbers,
           context: parsed.value.context,
         },
         parsed.value.filePath === undefined ? [] : [parsed.value.filePath],
@@ -952,6 +968,19 @@ function applyStage(
           "unsafe_shell_syntax",
           "search over nl-numbered output is not supported",
         );
+      }
+      if (!op.lineNumbers) {
+        if (stream.source.kind === "unpositioned") return unchanged;
+        return {
+          ok: true,
+          value: {
+            ...stream,
+            source: {
+              kind: "unpositioned",
+              language: rowsLanguage(stream.source),
+            },
+          },
+        };
       }
       return {
         ok: true,
