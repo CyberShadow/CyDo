@@ -3226,6 +3226,7 @@ unittest
 		auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
 			getTask: (int tid) => tid in f.tasks,
 			snapshotTaskIds: () => taskIds,
+			isSingletonTask: (const TaskData* td) => false,
 			hasRestoredWork: &b.hasRestoredWork,
 			sendSystemRestartNudge: (int tid, bool retryToolCall) {
 				nudged ~= tid;
@@ -3601,6 +3602,7 @@ unittest
 		auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
 			getTask: (int tid) => &f.tasks[tid],
 			snapshotTaskIds: () => waitingTasks,
+			isSingletonTask: (const TaskData* td) => false,
 			hasRestoredWork: &b.hasRestoredWork,
 			sendSystemRestartNudge: (int tid, bool retryToolCall) {
 				assert(retryToolCall);

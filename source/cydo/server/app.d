@@ -854,6 +854,7 @@ class App
 			},
 			sendSystemRestartNudge: &workflowTools.sendSystemRestartNudge,
 			snapshotTaskIds: &snapshotTaskIdsForResume,
+			isSingletonTask: &isSingletonTask,
 			hasRestoredWork: &workflowTools.hasRestoredWork,
 			shuttingDown: () => shuttingDown,
 			taskTypeCatalog: taskTypeCatalog,

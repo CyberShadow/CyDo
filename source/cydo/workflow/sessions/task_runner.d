@@ -259,6 +259,7 @@ struct TaskSessionRunnerHost
 	void delegate(int tid) broadcastHistoryOperations;
 	Promise!void delegate(int tid, bool retryToolCall) sendSystemRestartNudge;
 	int[] delegate() snapshotTaskIds;
+	bool delegate(const TaskData* td) isSingletonTask;
 	bool delegate(int tid) hasRestoredWork;
 	bool delegate() shuttingDown;
 	TaskTypeCatalog taskTypeCatalog;
@@ -1513,7 +1514,14 @@ public:
 			auto td = host_.getTask(tid);
 			if (td is null)
 				continue;
-			if (td.status == "alive" || td.status == "active" || td.status == "waiting")
+			// The completed transition settles mailbox questions, so preserve
+			// startup recovery for singletons with restored work.
+			if (td.status == TaskStatus.alive && host_.isSingletonTask(td)
+				&& !host_.hasRestoredWork(tid))
+				host_.transitionTask(tid, TaskStatus.alive, TaskStatus.completed,
+					TaskNotificationChange.preserve);
+			else if (td.status == TaskStatus.alive || td.status == TaskStatus.active
+				|| td.status == TaskStatus.waiting)
 				toResume ~= tid;
 		}
 
@@ -1776,6 +1784,56 @@ private:
 		return buildLaunchFailureBody(tid,
 			e.classinfo.name ~ ": " ~ e.msg);
 	}
+}
+
+unittest
+{
+	import ae.utils.statequeue : StateQueue;
+	import cydo.foundation.testing : drainNextTicks;
+
+	void assertRestart(TaskStatus before, bool singleton, bool restoredWork,
+		TaskStatus after, ProcessState expectedGoal, bool[] expectedNudges)
+	{
+		enum tid = 1;
+		auto task = TaskData(tid, "local", "/tmp/cydo-singleton-restart");
+		task.status = before;
+		task.processQueue = new StateQueue!ProcessState(
+			(ProcessState goal) => resolve(goal), ProcessState.Dead);
+		bool[] nudges;
+		auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
+			getTask: (int id) {
+				assert(id == tid);
+				return &task;
+			},
+			snapshotTaskIds: () => [tid],
+			isSingletonTask: (const TaskData* td) => singleton,
+			hasRestoredWork: (int id) => restoredWork,
+			transitionTask: (int id, TaskStatus from, TaskStatus to,
+				TaskNotificationChange notification) {
+				assert(id == tid && task.status == from);
+				assert(notification == TaskNotificationChange.preserve);
+				task.status = to;
+			},
+			sendSystemRestartNudge: (int id, bool retryToolCall) {
+				assert(id == tid);
+				nudges ~= retryToolCall;
+				return resolve();
+			},
+		));
+
+		runner.resumeInFlightTasks();
+		drainNextTicks();
+		assert(task.status == after);
+		assert(task.processQueue.goalState == expectedGoal);
+		assert(nudges == expectedNudges);
+	}
+
+	assertRestart(TaskStatus.alive, true, false, TaskStatus.completed, ProcessState.Dead, []);
+	assertRestart(TaskStatus.alive, true, true, TaskStatus.alive, ProcessState.Alive, []);
+	assertRestart(TaskStatus.alive, false, false, TaskStatus.alive, ProcessState.Alive, []);
+	assertRestart(TaskStatus.active, true, false, TaskStatus.active, ProcessState.Alive, [true]);
+	assertRestart(TaskStatus.waiting, true, false, TaskStatus.waiting, ProcessState.Alive, [true]);
+	assertRestart(TaskStatus.waiting, true, true, TaskStatus.waiting, ProcessState.Alive, []);
 }
 
 // Codex announces a call to a CyDo tool in its output and makes the call over
