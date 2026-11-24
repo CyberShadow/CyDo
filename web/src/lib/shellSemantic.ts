@@ -202,15 +202,20 @@ function parsePositiveDecimal(text: string): number | undefined {
 function parseCatArgs(
   cmd: SimpleCommand,
   requireFile: boolean,
-): ParseResult<{ operands: string[] }> {
+): ParseResult<{ operands: string[]; numberLines: boolean }> {
   const operands: string[] = [];
   let options = true;
+  let numberLines = false;
   for (const { text, kind } of cmd.args) {
     if (options && text === "--") {
       options = false;
       continue;
     }
     if (options && kind === "flag") {
+      if (text === "-n" || text === "--number") {
+        numberLines = true;
+        continue;
+      }
       return reject("unsupported_option", `unsupported cat option ${text}`);
     }
     if (!isFileOperand(text)) {
@@ -224,7 +229,7 @@ function parseCatArgs(
   if (requireFile && operands.length === 0) {
     return reject("missing_path", "expected one file path");
   }
-  return { ok: true, value: { operands } };
+  return { ok: true, value: { operands, numberLines } };
 }
 
 function parseLineCountArgs(
@@ -652,7 +657,13 @@ function parseStage(
     case "cat": {
       const parsed = parseCatArgs(cmd, first);
       if (!parsed.ok) return parsed;
-      return filter({ kind: "identity" }, parsed.value.operands);
+      const { operands, numberLines } = parsed.value;
+      return filter(
+        numberLines
+          ? { kind: "number-lines", options: {} }
+          : { kind: "identity" },
+        operands,
+      );
     }
     case "head": {
       const parsed = parseHeadArgs(cmd, first);

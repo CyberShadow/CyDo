@@ -227,6 +227,31 @@ describe("nl reads", () => {
   });
 });
 
+describe("numbered cat reads", () => {
+  it.each(["cat -n f.d", "cat f.d | cat -n", "cat --number f.d", "cat f.d -n"])(
+    "%s produces the same numbered rows as nl -ba",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      const reference = await parseShellSemantic("nl -ba f.d");
+      assert(result.ok);
+      assert(reference.ok);
+      expect(result.value.command).toBe(command);
+      expect(withoutCommand(result.value)).toEqual(
+        withoutCommand(reference.value),
+      );
+      expect(segmentsOf(result.value)).toEqual([fileRows("f.d", all, nl)]);
+    },
+  );
+
+  it.each(["-b", "-nA"])("rejects the cat option %s", async (option) => {
+    await expect(parseShellSemantic(`cat ${option} f.d`)).resolves.toEqual({
+      ok: false,
+      code: "unsupported_option",
+      reason: `unsupported cat option ${option}`,
+    });
+  });
+});
+
 describe("strict shell argv", () => {
   it.each([
     ["cat f | sed -z -n 1,1p | head -2", "-z"],
@@ -255,7 +280,6 @@ describe("strict shell argv", () => {
     ["nl -w 9007199254740993 f", "9007199254740993"],
     ["nl -w 2e0 f", "2e0"],
     ["nl f -z", "-z"],
-    ["cat f -n", "-n"],
     ["cat -- -", "-"],
     ['cat ""', '""'],
     ["cat f && cd -Z /tmp", "-Z"],
@@ -1358,6 +1382,7 @@ describe("concatenated rows", () => {
 
   it.each([
     ["nl -ba a.d b.d", nl],
+    ["cat -n a.d b.d", nl],
     ["cat a.d b.d | grep -n x", grep],
   ] as const)("%s numbers unpositioned rows", async (command, numbering) => {
     const result = await parseShellSemantic(command);
