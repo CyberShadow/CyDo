@@ -15,6 +15,7 @@ import ae.sys.process : asyncWait;
 import ae.sys.timing : setTimeout, TimerTask;
 import ae.utils.array : asBytes;
 
+import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.net.jsonrpc.contentlength : ContentLengthAdapter;
 
 /// Selects the framing mode for stdout of an AgentProcess.
@@ -200,11 +201,7 @@ class AgentProcess
 			}
 		};
 
-		stdoutLines.handleDisconnect = (string reason, DisconnectType type) {
-			disconnected = true;
-			stdoutEOF = true;
-			tryFireExit();
-		};
+		stdoutLines.handleDisconnect = &onStdoutDisconnect;
 
 		stderrLines = new LineBufferedAdapter(stderrConn, "\n");
 		stderrLines.handleReadData = (Data data) {
@@ -302,10 +299,20 @@ class AgentProcess
 	/// Whether the process pipes have been disconnected.
 	@property bool dead() { return disconnected || exited; }
 
-	/// The framed connection (LineBufferedAdapter or ContentLengthAdapter over Duplex).
-	/// When used with JsonRpcCodec, the codec takes over handleReadData
-	/// and onStdoutLine will no longer be called.
-	@property ConnectionAdapter connection() { return stdoutLines; }
+	/// Install JSON-RPC framing handlers while preserving process exit tracking.
+	JsonRpcCodec createJsonRpcCodec()
+	{
+		auto codec = new JsonRpcCodec(stdoutLines);
+		codec.handleDisconnect = &onStdoutDisconnect;
+		return codec;
+	}
+
+	private void onStdoutDisconnect(string reason, DisconnectType type)
+	{
+		disconnected = true;
+		stdoutEOF = true;
+		tryFireExit();
+	}
 
 	/// The underlying process PID, for use with asyncWait.
 	@property Pid processId() { return pid; }

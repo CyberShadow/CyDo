@@ -9,7 +9,7 @@ import ae.utils.jsonrpc : JsonRpcRequest, JsonRpcResponse;
 import ae.utils.serialization.store : SerializedObject;
 
 private alias SO = SerializedObject!(immutable char);
-import ae.utils.promise : Promise, resolve;
+import ae.utils.promise : Promise, reject, resolve;
 
 import cydo.agent.process : AgentProcess, FramingMode;
 
@@ -199,8 +199,7 @@ class SdkProcess
 	{
 		process = new AgentProcess(args, env, workDir, false, FramingMode.contentLength, logName: logName);
 
-		IConnection connection = process.connection;
-		codec = new JsonRpcCodec(connection);
+		codec = process.createJsonRpcCodec();
 		auto router = new SdkServerRouter(this);
 		serverDispatcher = jsonRpcDispatcher!ISdkServer(router);
 		codec.handleRequest = &serverDispatcher.dispatch;
@@ -302,6 +301,8 @@ class SdkProcess
 	/// Send a JSON-RPC request, returning a promise for the response.
 	Promise!JsonRpcResponse sendRequest(string method, string params)
 	{
+		if (dead)
+			return reject!JsonRpcResponse(new Exception("Copilot SDK process is no longer running"));
 		JsonRpcRequest req;
 		req.method = method;
 		req.params = jsonParse!SO(params);

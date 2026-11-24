@@ -1647,6 +1647,25 @@ unittest
 	}, (Exception e) { assert(false, e.msg); }).ignoreResult();
 	auto lateForkRequest = connection.takeRequest("thread/fork");
 
+	bool disconnectedForkSettled;
+	agent.forkSession(owner, 76, "source-thread", "source-turn",
+		HistoryBoundaryKind.agent_turn, childLaunch, childConfig)
+		.then((ThreadForkOutcome failedFork) {
+			assert(!failedFork.ok);
+			assert(failedFork.error == "JSON-RPC connection closed: app-server disconnected");
+			disconnectedForkSettled = true;
+		}, (Exception e) { assert(false, e.msg); }).ignoreResult();
+	connection.takeRequest("thread/fork");
+
+	bool forkReplyBeforeDisconnectSettled;
+	agent.forkSession(owner, 77, "source-thread", "source-turn",
+		HistoryBoundaryKind.agent_turn, childLaunch, childConfig)
+		.then((ThreadForkOutcome failedFork) {
+			assert(!failedFork.ok && failedFork.error == "Codex fork parent exited");
+			forkReplyBeforeDisconnectSettled = true;
+		}, (Exception e) { assert(false, e.msg); }).ignoreResult();
+	auto forkReplyBeforeDisconnect = connection.takeRequest("thread/fork");
+
 	operation.closeStdin();
 	assert(!owner.alive && !server.dead);
 	assert(!server.hasThreadRouteForTest("source-thread"));
@@ -1665,6 +1684,11 @@ unittest
 	connection.respond(lateUnsubscribe, unsubscribed);
 	drainNextTicks();
 	assert(!server.hasThreadRouteForTest("late-child-thread"));
+	assert(!disconnectedForkSettled);
+	connection.respond(forkReplyBeforeDisconnect, threadResponse("disconnected-child-thread"));
+	connection.peerDisconnected("app-server disconnected");
+	drainNextTicks();
+	assert(disconnectedForkSettled && forkReplyBeforeDisconnectSettled);
 }
 
 unittest
@@ -3005,14 +3029,17 @@ version (unittest) private final class TestCodexConnection : IConnection
 {
 	string[] sentMessages;
 	private ReadDataHandler readDataHandler;
+	private DisconnectHandler disconnectHandler;
+	private ConnectionState state_ = ConnectionState.connected;
 
 	@property ConnectionState state()
 	{
-		return ConnectionState.connected;
+		return state_;
 	}
 
 	void send(scope Data[] data, int priority = DEFAULT_PRIORITY)
 	{
+		assert(state_ == ConnectionState.connected);
 		ubyte[] message;
 		foreach (ref datum; data)
 			datum.enter((contents) { message ~= cast(ubyte[]) contents; });
@@ -3056,9 +3083,15 @@ version (unittest) private final class TestCodexConnection : IConnection
 	{
 		assert(false, reason);
 	}
+
+	void peerDisconnected(string reason)
+	{
+		state_ = ConnectionState.disconnected;
+		disconnectHandler(reason, DisconnectType.error);
+	}
 	@property void handleConnect(ConnectHandler value) {}
 	@property void handleReadData(ReadDataHandler value) { readDataHandler = value; }
-	@property void handleDisconnect(DisconnectHandler value) {}
+	@property void handleDisconnect(DisconnectHandler value) { disconnectHandler = value; }
 	@property void handleBufferFlushed(BufferFlushedHandler value) {}
 }
 

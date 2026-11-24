@@ -8,7 +8,7 @@ import std.format : format;
 import std.path : buildPath, dirName, expandTilde;
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.time.types : AbsTime;
-import ae.utils.jsonrpc : JsonRpcResponse;
+import ae.utils.jsonrpc : JsonRpcException, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 import ae.net.asockets : onNextTick, socketManager;
 
@@ -799,7 +799,7 @@ class CopilotAgent : Agent
 				SessionIdParams destP;
 				destP.sessionId = sessionId;
 				srv.sendRequest("session.destroy", toJson(destP))
-				.then((JsonRpcResponse r) { srv.shutdown(); });
+				.finish(&srv.shutdown).ignoreResult();
 			};
 
 			srv.registerSession(sessionId, session);
@@ -808,14 +808,20 @@ class CopilotAgent : Agent
 				srv.sendRequest("session.create",
 					buildSessionCreateParams(sessionId, model, cwd, SessionConfig.init))
 				.then((JsonRpcResponse createResp) {
+					if (createResp.isError)
+						throw new JsonRpcException(createResp.error.get);
 					SessionSendParams oneShotSendP;
 					oneShotSendP.sessionId = sessionId;
 					oneShotSendP.prompt    = prompt;
-					srv.sendRequest("session.send", toJson(oneShotSendP))
-					.then((JsonRpcResponse sendResp) {
-						// Turn completion via session.idle event → handleEvent → promise fulfilled
-					});
-				});
+					return srv.sendRequest("session.send", toJson(oneShotSendP));
+				}).then((JsonRpcResponse sendResp) {
+					if (sendResp.isError)
+						throw new JsonRpcException(sendResp.error.get);
+					// session.idle completes the one-shot promise.
+				}).except((Exception e) {
+					session.handleStartupFailure(e);
+					srv.shutdown();
+				}).ignoreResult();
 			});
 		}
 
@@ -1389,7 +1395,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		SessionIdParams abortP;
 		abortP.sessionId = sessionId;
 		server.sendRequest("session.abort", toJson(abortP))
-		.then((JsonRpcResponse resp) {});
+		.ignoreResult();
 	}
 
 	void sigint()
@@ -1408,7 +1414,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			SessionIdParams stopP;
 			stopP.sessionId = sessionId;
 			server.sendRequest("session.abort", toJson(stopP))
-			.then((JsonRpcResponse resp) {});
+			.ignoreResult();
 		}
 		alive_ = false;
 		forcedStop_ = true;
@@ -1426,7 +1432,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			SessionIdParams closeP;
 			closeP.sessionId = sessionId;
 			server.sendRequest("session.abort", toJson(closeP))
-			.then((JsonRpcResponse resp) {});
+			.ignoreResult();
 		}
 		alive_ = false;
 		gracefulShutdown_ = true;

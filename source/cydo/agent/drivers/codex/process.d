@@ -8,9 +8,9 @@ import ae.net.jsonrpc.binding : JsonRpcDispatcher, jsonRpcDispatcher;
 import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.utils.json : JSONFragment, jsonParse, toJson;
 import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcException, JsonRpcRequest, JsonRpcResponse;
-import ae.utils.promise : Promise, resolve;
+import ae.utils.promise : Promise, reject, resolve;
 
-version (unittest) import ae.net.asockets : IConnection;
+version (unittest) import ae.net.asockets : DisconnectType, IConnection;
 
 import cydo.agent.drivers.codex.app_server;
 import cydo.agent.drivers.codex.rpc;
@@ -85,10 +85,7 @@ class AppServerProcess
 		// Environment and current directory are handled by bwrap (included in args).
 		process = new AgentProcess(args, logName: "codex");
 
-		// Set up bidirectional JSON-RPC codec on the process connection.
-		// The codec takes over handleReadData from stdoutLines; onStdoutLine
-		// is no longer called.
-		codec = new JsonRpcCodec(process.connection);
+		codec = process.createJsonRpcCodec();
 
 		// Dispatcher for incoming notifications/requests from Codex.
 		auto owner = CodexServerOwner(&sessionForThread, &allSessions, &onLoginCompleted);
@@ -315,6 +312,8 @@ class AppServerProcess
 	/// Returns a promise for the response. For fire-and-forget, ignore the promise.
 	package Promise!JsonRpcResponse sendRequest(string method, string params)
 	{
+		if (dead)
+			return reject!JsonRpcResponse(new Exception("Codex app-server is no longer running"));
 		JsonRpcRequest req;
 		req.method = method;
 		req.params = params.jsonParse!SO;
@@ -473,6 +472,10 @@ version (unittest) package AppServerProcess makeTestAppServerProcess(
 	if (server is null)
 		server = new AppServerProcess(null);
 	server.codec = new JsonRpcCodec(connection);
+	server.codec.handleDisconnect = (string reason, DisconnectType) {
+		server.readinessError_ = new Exception(reason);
+		server.state_ = AppServerProcess.State.dead;
+	};
 	if (startHandshake)
 		server.sendInitialize();
 	else
