@@ -855,6 +855,60 @@ describe("argv vs pipeline equivalence", () => {
   });
 });
 
+describe("later-stage redirections", () => {
+  const output = "output redirection diverts the command output";
+  const input = "input redirection replaces the pipeline input";
+  const merge = "stderr redirection mixes diagnostics into the output";
+
+  it.each([
+    ["cat f.d | head -5 >out", "head", output],
+    ["cat f.d | head -5 >>out", "head", output],
+    ["cat f.d | head -5 &>out", "head", output],
+    ["cat f.d | head -5 >&2", "head", output],
+    ["cat f.d | head -5 1>&2", "head", output],
+    ["cat f.d | head -5 >out && echo done", "head", output],
+    ["git diff | wc -l >out", "wc", output],
+    ["git diff | cat >out", "cat", output],
+    ["cat f.d | head -5 <g.py", "head", input],
+    ["cat f.md | head -5 <g.svg", "head", input],
+    ["cat f.d | head -5 <<<text", "head", input],
+    ["cat f.d | head -5 2>&1", "head", merge],
+    ["cat f.d | grep -n x >out", "grep", output],
+  ])("reports the redirect effect in %s", async (command, name, effect) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "redirection_on_read",
+      reason: `${name} ${effect}`,
+    });
+  });
+
+  it.each([
+    ["cat f.d | head -5 2>/dev/null", "cat f.d | head -5"],
+    ["cat f.d | head -5 2>err", "cat f.d | head -5"],
+    ["cat f.d | head -5 3>x", "cat f.d | head -5"],
+    ["cat f.d | sed -n 1,3p 2>err", "cat f.d | sed -n 1,3p"],
+  ])("preserves the output semantics of %s", async (command, plainCommand) => {
+    const redirected = await parseShellSemantic(command);
+    const plain = await parseShellSemantic(plainCommand);
+    expect(redirected.ok).toBe(true);
+    expect(plain.ok).toBe(true);
+    if (!redirected.ok || !plain.ok) return;
+    expect(normalizeSemanticForComparison(redirected.value)).toEqual(
+      normalizeSemanticForComparison(plain.value),
+    );
+  });
+
+  it("keeps the first-stage redirect rejection", async () => {
+    await expect(parseShellSemantic("cat f.d 2>&1 | head -5")).resolves.toEqual(
+      {
+        ok: false,
+        code: "redirection_on_read",
+        reason: "read commands with redirection are not display-only reads",
+      },
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // cd + read patterns
 // ---------------------------------------------------------------------------

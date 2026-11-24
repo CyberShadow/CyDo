@@ -148,6 +148,8 @@ type CommandArg =
 
 type Redirect = {
   op: ParsedShellRedirect["operator"];
+  descriptor: string | null;
+  destination: string | null;
 };
 
 type ShellAST =
@@ -634,6 +636,32 @@ function openFile(origin: FileOrigin, producer: ReadStageName): ShellStream {
   };
 }
 
+function redirectEffect(
+  redirect: Redirect,
+): "stdin" | "stdout" | "stderr-into-stdout" | null {
+  const { op, descriptor, destination } = redirect;
+  if (
+    op === "&>" ||
+    op === "&>>" ||
+    (op === ">&" && destination !== null && !/^\d+$/.test(destination))
+  ) {
+    return "stdout";
+  }
+
+  const fd = descriptor ?? (op.startsWith("<") ? "0" : "1");
+  if (fd === "0") return "stdin";
+  if (fd === "1") return "stdout";
+  if (
+    fd === "2" &&
+    (op === ">&" || op === "<&") &&
+    destination !== null &&
+    /^0*1$/.test(destination)
+  ) {
+    return "stderr-into-stdout";
+  }
+  return null;
+}
+
 function parseStage(
   cmd: SimpleCommand,
   position: "first" | "later",
@@ -648,6 +676,28 @@ function parseStage(
       "redirection_on_read",
       "read commands with redirection are not display-only reads",
     );
+  }
+
+  if (!first) {
+    for (const redirect of cmd.redirects) {
+      switch (redirectEffect(redirect)) {
+        case "stdin":
+          return reject(
+            "redirection_on_read",
+            `${name} input redirection replaces the pipeline input`,
+          );
+        case "stdout":
+          return reject(
+            "redirection_on_read",
+            `${name} output redirection diverts the command output`,
+          );
+        case "stderr-into-stdout":
+          return reject(
+            "redirection_on_read",
+            `${name} stderr redirection mixes diagnostics into the output`,
+          );
+      }
+    }
   }
 
   function filter(
@@ -1383,7 +1433,14 @@ function adaptCommand(
   }
   const redirects = command.redirectIds.map((redirectId) => {
     const redirect = redirectForId(document, redirectId);
-    return { op: redirect.operator };
+    return {
+      op: redirect.operator,
+      descriptor: redirect.descriptor?.value ?? null,
+      destination:
+        redirect.kind === "file" && redirect.destination?.kind === "literal"
+          ? redirect.destination.value
+          : null,
+    };
   });
   return {
     id: command.id,
