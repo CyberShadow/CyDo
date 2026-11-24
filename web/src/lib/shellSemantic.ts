@@ -1881,19 +1881,6 @@ function parseLsReadbackCommands(
   };
 }
 
-function parseLsDirectoryCommand(command: SimpleCommand): string | null {
-  if (
-    command.name !== "ls" ||
-    command.args.length !== 2 ||
-    command.args[0]!.kind !== "flag" ||
-    command.args[0]!.text !== "-1" ||
-    command.args[1]!.kind !== "value" ||
-    command.redirects.length > 0
-  )
-    return null;
-  return command.args[1]!.text;
-}
-
 function structuredReadbackSteps(readback: {
   filePath: string;
   sedStart: number;
@@ -1930,22 +1917,6 @@ function structuredReadbackSteps(readback: {
       },
     },
   ];
-}
-
-function classifyLsCommands(
-  commands: readonly SimpleCommand[],
-  originalCommand: string,
-): ShellSemanticResult | null {
-  if (commands.length === 1 && parseLsDirectoryCommand(commands[0]!) !== null)
-    return {
-      ok: true,
-      value: {
-        kind: "structured-output",
-        commandName: "ls",
-        command: originalCommand,
-      },
-    };
-  return null;
 }
 
 function classifyLsReadbackAST(
@@ -2183,10 +2154,6 @@ function classifyNormalizedAST(
   if (ast.type === "unsupported")
     return reject("unsupported_command", ast.reason);
   if (ast.type === "simple") {
-    if (ast.command.name === "ls") {
-      const classified = classifyLsCommands([ast.command], originalCommand);
-      if (classified !== null) return classified;
-    }
     const name = ast.command.name;
     if (!name) return reject("empty", "empty command");
     if (

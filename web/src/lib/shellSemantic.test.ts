@@ -3015,17 +3015,22 @@ describe("Unit 2 public shell semantic contracts", () => {
     const command = "cat >output.md <<EOF\nbody\nEOF\nls -1 src";
     const result = await parseShellSemantic(command);
     expect(result.ok).toBe(true);
-    if (!result.ok || result.value.kind !== "write") return;
+    assert(result.ok);
+    assert(result.value.kind === "write");
     expect(result.value.steps).toBeUndefined();
   });
 
-  it("classifies direct ls -1 src without an output plan", async () => {
-    const result = await parseShellSemantic("ls -1 src");
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.kind).toBe("structured-output");
-    expect(result.value.steps).toBeUndefined();
-  });
+  it.each(["ls -1 src", "zsh -lc 'ls -1 src'", "bash -c 'ls -1 src' >out"])(
+    "rejects standalone directory listing %s",
+    async (command) => {
+      expect(await parseShellSemantic(command)).toEqual({
+        ok: false,
+        code: "unsupported_command",
+        reason:
+          "only cat, nl, sed, head, tail, git, diff, and interpreters are recognized",
+      });
+    },
+  );
 
   it.each([
     "env -i python3 -c 'print(1)'",
