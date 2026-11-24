@@ -2,10 +2,10 @@ module cydo.workflow.workspace.worktree;
 
 import std.algorithm : filter;
 import std.array : array, join;
-import std.file : exists;
+import std.file : exists, readText;
 import std.format : format;
 import std.logger : infof, errorf;
-import std.path : buildPath, dirName;
+import std.path : baseName, buildPath, dirName;
 import std.process : execute, pipeProcess, Redirect, wait;
 import std.string : strip;
 import cydo.workflow.workspace.worktree_dedup : dedupWorktree;
@@ -144,6 +144,87 @@ private void throwGitFailure(string context, int tid, string[] cmd, string outpu
     auto details = output.strip();
     throw new Exception(format!"%s failed for tid=%d: cmd='%s' output='%s'"(
         context, tid, cmd.join(" "), details.length > 0 ? details : "<empty>"));
+}
+
+/// Create a detached worktree with a registration id derived from its host task.
+void addWorktree(string repoDir, int tid, string worktreePath, string commitish = null)
+{
+    import std.array : replicate;
+    import std.exception : enforce;
+    import std.path : absolutePath, buildNormalizedPath, isAbsolute;
+
+    enforce(isAbsolute(worktreePath), format!"addWorktree: worktree path '%s' must be absolute for tid=%d"(
+        worktreePath, tid));
+
+    auto expectedId = format!"cydo-workspace-%d"(tid);
+    auto temporaryPath = buildPath(dirName(worktreePath), expectedId);
+    // Git can adopt an existing temporary directory or move inside an existing destination.
+    foreach (path; [worktreePath, temporaryPath])
+        if (exists(path) || isSymlinkPath(path))
+            throw new Exception(format!"addWorktree: worktree path '%s' already exists for tid=%d"(
+                path, tid));
+
+    string runGit(string context, string[] cmd)
+    {
+        auto result = execute(cmd);
+        if (result.status != 0)
+            throwGitFailure(context, tid, cmd, result.output);
+        return result.output;
+    }
+
+    auto addCmd = ["git", "-C", repoDir, "worktree", "add", "--detach", "--no-checkout", temporaryPath];
+    if (commitish !is null)
+        addCmd ~= commitish;
+    runGit("addWorktree: worktree add", addCmd);
+
+    string registrationDir;
+    try
+    {
+        registrationDir = runGit("addWorktree: resolve temporary registration",
+            ["git", "-C", temporaryPath, "rev-parse", "--absolute-git-dir"]).strip();
+        auto actualId = baseName(registrationDir);
+        if (actualId != expectedId)
+            throw new Exception(format!"addWorktree: expected registration '%s' for tid=%d in repo '%s', got '%s'"(
+                expectedId, tid, repoDir, actualId));
+
+        runGit("addWorktree: worktree move",
+            ["git", "-C", repoDir, "worktree", "move", temporaryPath, worktreePath]);
+        // Git may move inside a destination created after our existence check.
+        auto destinationRegistration = runGit("addWorktree: resolve destination registration",
+            ["git", "-C", worktreePath, "rev-parse", "--absolute-git-dir"]).strip();
+        if (destinationRegistration != registrationDir)
+            throw new Exception(format!"addWorktree: checkout '%s' for tid=%d resolves to '%s', expected '%s'"(
+                worktreePath, tid, destinationRegistration, registrationDir));
+
+        // Populate after the move so the initial hook can initialize submodules.
+        runGit("addWorktree: reset",
+            ["git", "-C", worktreePath, "reset", "--hard", "--no-recurse-submodules"]);
+        auto head = runGit("addWorktree: rev-parse HEAD",
+            ["git", "-C", worktreePath, "rev-parse", "HEAD"]).strip();
+        // Requires Git 2.36. Unlike worktree add, hook run resolves relative
+        // hooks from the new checkout and uses Git's normal hook environment.
+        runGit("addWorktree: post-checkout hook",
+            ["git", "-C", worktreePath, "hook", "run", "--ignore-missing", "post-checkout",
+                "--", "0".replicate(head.length), head, "1"]);
+    }
+    catch (Exception failure)
+    {
+        try
+        {
+            auto registeredPath = temporaryPath;
+            if (registrationDir !is null)
+            {
+                auto gitFile = readText(buildPath(registrationDir, "gitdir")).strip();
+                // Git writes links between canonical paths, even if the checkout is now gone.
+                registeredPath = dirName(buildNormalizedPath(absolutePath(gitFile, registrationDir)));
+            }
+            runGit("addWorktree: rollback",
+                ["git", "-C", repoDir, "worktree", "remove", "-f", "-f", registeredPath]);
+        }
+        catch (Exception rollbackFailure)
+            throw new Exception(failure.msg ~ "\n" ~ rollbackFailure.msg, __FILE__, __LINE__, failure);
+        throw failure;
+    }
 }
 
 /// Save dirty worktree state into a custom ref chain and remove the worktree.
@@ -321,11 +402,7 @@ void unarchiveWorktree(string projectPath, int tid, string worktreePath)
             tid, refName));
 
     // Recreate the worktree at the base commit
-    auto addCmd = ["git", "-C", projectPath, "worktree", "add",
-        "--detach", worktreePath, baseSha];
-    auto addResult = execute(addCmd);
-    if (addResult.status != 0)
-        throwGitFailure("unarchiveWorktree: worktree add", tid, addCmd, addResult.output);
+    addWorktree(projectPath, tid, worktreePath, baseSha);
 
     // Restore staged layer: set index to staged tree, check out files to working tree
     if (stagedSha.length > 0)
@@ -438,6 +515,322 @@ version(unittest)
         return repoDir;
     }
 
+}
+
+unittest
+{
+    import std.algorithm : canFind;
+    import std.file : rmdirRecurse;
+    import std.string : splitLines;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-add");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+
+    addWorktree(repoDir, 101, wtDir);
+
+    assert(baseName(readText(buildPath(wtDir, ".git")).strip()) == "cydo-workspace-101");
+    auto head = execute(["git", "-C", wtDir, "rev-parse", "HEAD"]);
+    assert(head.status == 0, head.output);
+    assert(!exists(buildPath(repoDir, "cydo-workspace-101")));
+
+    auto worktrees = execute(["git", "-C", repoDir, "worktree", "list", "--porcelain"]);
+    assert(worktrees.status == 0, worktrees.output);
+    assert(worktrees.output.splitLines().canFind("worktree " ~ wtDir), worktrees.output);
+}
+
+unittest
+{
+    import std.algorithm : startsWith;
+    import std.file : mkdirRecurse, remove, rmdirRecurse, symlink;
+    import std.path : isAbsolute;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-add-relative-paths");
+    scope(exit) rmdirRecurse(repoDir);
+    auto taskDir = buildPath(repoDir, "tasks", "110");
+    mkdirRecurse(taskDir);
+    // Git writes the relative link from the physical checkout directory.
+    auto taskLink = buildPath(repoDir, "task-link");
+    symlink(taskDir, taskLink);
+    scope(exit) remove(taskLink);
+    auto wtDir = buildPath(taskLink, "wt");
+    auto config = execute(["git", "-C", repoDir, "config", "worktree.useRelativePaths", "true"]);
+    assert(config.status == 0, config.output);
+
+    addWorktree(repoDir, 110, wtDir);
+
+    auto registration = execute(["git", "-C", wtDir, "rev-parse", "--absolute-git-dir"]);
+    assert(registration.status == 0, registration.output);
+    assert(baseName(registration.output.strip()) == "cydo-workspace-110", registration.output);
+    enum prefix = "gitdir: ";
+    auto gitFile = readText(buildPath(wtDir, ".git")).strip();
+    assert(gitFile.startsWith(prefix), gitFile);
+    assert(!isAbsolute(gitFile[prefix.length .. $]), gitFile);
+}
+
+unittest
+{
+    import std.algorithm : canFind;
+    import std.file : chdir, getcwd, rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-add-relative-destination");
+    scope(exit) rmdirRecurse(repoDir);
+    auto previousDir = getcwd();
+    chdir(repoDir);
+    scope(exit) chdir(previousDir);
+
+    try
+    {
+        addWorktree(repoDir, 112, "relative-checkout");
+        assert(0, "expected relative destination to throw");
+    }
+    catch (Exception e)
+    {
+        assert(e.msg.canFind("'relative-checkout' must be absolute"), e.msg);
+        assert(e.msg.canFind("tid=112"), e.msg);
+    }
+
+    assert(!exists(buildPath(repoDir, "relative-checkout")));
+    assert(!exists(buildPath(repoDir, "cydo-workspace-112")));
+    assert(!exists(buildPath(repoDir, ".git", "worktrees")));
+}
+
+unittest
+{
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-add-revision");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    auto olderHead = execute(["git", "-C", repoDir, "rev-parse", "HEAD"]);
+    assert(olderHead.status == 0, olderHead.output);
+    auto commit = execute(["git", "-C", repoDir, "commit", "--allow-empty", "-qm", "new tip"]);
+    assert(commit.status == 0, commit.output);
+
+    addWorktree(repoDir, 102, wtDir, olderHead.output.strip());
+
+    auto head = execute(["git", "-C", wtDir, "rev-parse", "HEAD"]);
+    assert(head.status == 0, head.output);
+    assert(head.output.strip() == olderHead.output.strip(), head.output);
+}
+
+unittest
+{
+    import std.algorithm : canFind, startsWith;
+    import std.file : rmdirRecurse;
+    import std.string : splitLines;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-add-duplicate-id");
+    scope(exit) rmdirRecurse(repoDir);
+    auto first = buildPath(repoDir, "first");
+    auto second = buildPath(repoDir, "second");
+    addWorktree(repoDir, 103, first);
+
+    try
+    {
+        addWorktree(repoDir, 103, second);
+        assert(0, "expected duplicate task ID to throw");
+    }
+    catch (Exception e)
+    {
+        assert(e.msg.canFind("expected registration 'cydo-workspace-103'"), e.msg);
+        assert(e.msg.canFind("got 'cydo-workspace-103"), e.msg);
+    }
+
+    auto worktrees = execute(["git", "-C", repoDir, "worktree", "list", "--porcelain"]);
+    assert(worktrees.status == 0, worktrees.output);
+    auto entries = worktrees.output.splitLines().filter!(line => line.startsWith("worktree ")).array;
+    assert(entries == ["worktree " ~ repoDir, "worktree " ~ first], worktrees.output);
+    assert(!exists(second));
+    assert(!exists(buildPath(repoDir, "cydo-workspace-103")));
+}
+
+unittest
+{
+    import std.algorithm : canFind;
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-add-move-failure");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    auto add = execute(["git", "-C", repoDir, "worktree", "add", "--detach", wtDir]);
+    assert(add.status == 0, add.output);
+    auto lock = execute(["git", "-C", repoDir, "worktree", "lock", wtDir]);
+    assert(lock.status == 0, lock.output);
+    rmdirRecurse(wtDir);
+    auto before = execute(["git", "-C", repoDir, "worktree", "list", "--porcelain"]);
+    assert(before.status == 0, before.output);
+
+    try
+    {
+        addWorktree(repoDir, 107, wtDir);
+        assert(0, "expected move to a missing locked worktree to throw");
+    }
+    catch (Exception e)
+    {
+        assert(e.msg.canFind("worktree move failed"), e.msg);
+        assert(e.msg.canFind("is a missing but locked worktree"), e.msg);
+    }
+
+    auto after = execute(["git", "-C", repoDir, "worktree", "list", "--porcelain"]);
+    assert(after.status == 0, after.output);
+    assert(after.output == before.output, after.output);
+    assert(!exists(wtDir));
+    assert(!exists(buildPath(repoDir, "cydo-workspace-107")));
+}
+
+unittest
+{
+    import std.array : replicate;
+    import std.conv : octal;
+    import std.file : rmdirRecurse, setAttributes, write;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-add-submodule-hook");
+    scope(exit) rmdirRecurse(repoDir);
+    auto subRepo = setupTestRepo("cydo-wt-test-add-submodule-source");
+    scope(exit) rmdirRecurse(subRepo);
+    auto wtDir = buildPath(repoDir, "wt");
+
+    auto submodule = execute(["git", "-C", repoDir, "-c", "protocol.file.allow=always",
+        "submodule", "add", subRepo, "dep"]);
+    assert(submodule.status == 0, submodule.output);
+    auto commit = execute(["git", "-C", repoDir, "commit", "-qm", "add submodule"]);
+    assert(commit.status == 0, commit.output);
+    auto head = execute(["git", "-C", repoDir, "rev-parse", "HEAD"]);
+    assert(head.status == 0, head.output);
+
+    auto hooksDir = buildPath(repoDir, ".git", "hooks");
+    auto hook = buildPath(hooksDir, "post-checkout");
+    write(hook, "#!/bin/sh\n"
+        ~ "printf '%s\\n' \"$PWD\" \"$@\" >> hook-args\n"
+        ~ "git -c protocol.file.allow=always submodule update --init\n");
+    setAttributes(hook, octal!755);
+    auto config = execute(["git", "-C", repoDir, "config", "core.hooksPath", hooksDir]);
+    assert(config.status == 0, config.output);
+
+    addWorktree(repoDir, 108, wtDir);
+
+    assert(baseName(readText(buildPath(wtDir, ".git")).strip()) == "cydo-workspace-108");
+    assert(readText(buildPath(wtDir, "dep", "README.md")) == "initial\n");
+    auto oid = head.output.strip();
+    auto args = readText(buildPath(wtDir, "hook-args"));
+    assert(args == wtDir ~ "\n" ~ "0".replicate(oid.length) ~ "\n" ~ oid ~ "\n1\n", args);
+}
+
+unittest
+{
+    import std.algorithm : canFind;
+    import std.conv : octal;
+    import std.file : rmdirRecurse, setAttributes, write;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-add-hook-failure");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    auto hooksDir = buildPath(repoDir, ".git", "hooks");
+    auto hook = buildPath(hooksDir, "post-checkout");
+    write(hook, "#!/bin/sh\n"
+        ~ "git worktree lock \"$PWD\" || exit 2\n"
+        ~ "echo 'checkout hook rejected worktree' >&2\n"
+        ~ "exit 1\n");
+    setAttributes(hook, octal!755);
+    auto config = execute(["git", "-C", repoDir, "config", "core.hooksPath", hooksDir]);
+    assert(config.status == 0, config.output);
+    auto before = execute(["git", "-C", repoDir, "worktree", "list", "--porcelain"]);
+    assert(before.status == 0, before.output);
+
+    try
+    {
+        addWorktree(repoDir, 109, wtDir);
+        assert(0, "expected failing post-checkout hook to throw");
+    }
+    catch (Exception e)
+    {
+        assert(e.msg.canFind("post-checkout hook failed"), e.msg);
+        assert(e.msg.canFind("checkout hook rejected worktree"), e.msg);
+    }
+
+    auto after = execute(["git", "-C", repoDir, "worktree", "list", "--porcelain"]);
+    assert(after.status == 0, after.output);
+    assert(after.output == before.output, after.output);
+    assert(!exists(wtDir));
+    assert(!exists(buildPath(repoDir, "cydo-workspace-109")));
+}
+
+unittest
+{
+    import std.algorithm : canFind;
+    import std.file : mkdir, rmdirRecurse, write;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-add-existing-destination");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    mkdir(wtDir);
+    write(buildPath(wtDir, "existing.txt"), "keep\n");
+
+    try
+    {
+        addWorktree(repoDir, 106, wtDir);
+        assert(0, "expected existing destination to throw");
+    }
+    catch (Exception e)
+    {
+        assert(e.msg.canFind("already exists"), e.msg);
+    }
+
+    assert(readText(buildPath(wtDir, "existing.txt")) == "keep\n");
+    assert(!exists(buildPath(repoDir, ".git", "worktrees", "cydo-workspace-106")));
+    assert(!exists(buildPath(repoDir, "cydo-workspace-106")));
+}
+
+unittest
+{
+    import std.algorithm : canFind;
+    import std.file : dirEntries, isDir, mkdir, rmdirRecurse, SpanMode;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-add-existing-temporary-path");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    auto temporaryPath = buildPath(repoDir, "cydo-workspace-111");
+    mkdir(temporaryPath);
+
+    try
+    {
+        addWorktree(repoDir, 111, wtDir);
+        assert(0, "expected existing temporary directory to throw");
+    }
+    catch (Exception e)
+    {
+        assert(e.msg.canFind("already exists"), e.msg);
+    }
+
+    assert(isDir(temporaryPath));
+    assert(dirEntries(temporaryPath, SpanMode.shallow).empty);
+    assert(!exists(wtDir));
+    assert(!exists(buildPath(repoDir, ".git", "worktrees", "cydo-workspace-111")));
+}
+
+unittest
+{
+    import std.file : rmdirRecurse;
+
+    auto repoDir = setupTestRepo("cydo-wt-test-add-after-prune");
+    scope(exit) rmdirRecurse(repoDir);
+    auto wtDir = buildPath(repoDir, "wt");
+    auto gitFilePath = buildPath(wtDir, ".git");
+    addWorktree(repoDir, 104, wtDir);
+    auto originalGitFile = readText(gitFilePath).strip();
+    auto registration = execute(["git", "-C", wtDir, "rev-parse", "--absolute-git-dir"]);
+    assert(registration.status == 0, registration.output);
+    auto originalRegistration = registration.output.strip();
+    assert(exists(originalRegistration), originalRegistration);
+
+    rmdirRecurse(wtDir);
+    auto prune = execute(["git", "-C", repoDir, "worktree", "prune"]);
+    assert(prune.status == 0, prune.output);
+    addWorktree(repoDir, 105, wtDir);
+
+    assert(!exists(originalRegistration), originalRegistration);
+    assert(readText(gitFilePath).strip() != originalGitFile);
 }
 
 unittest

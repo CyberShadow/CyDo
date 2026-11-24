@@ -3,10 +3,10 @@ module cydo.workflow.workspace.worktree_allocator;
 import std.file : exists, mkdirRecurse;
 import std.format : format;
 import std.logger : infof;
-import std.process : execute;
 
 import cydo.domain.task_types.definition : WorktreeMode;
 import cydo.domain.tasks.model : TaskData, worktreePathForTaskDir;
+import cydo.workflow.workspace.worktree : addWorktree;
 import cydo.workflow.workspace.worktree_dedup : dedupWorktreeInBackground;
 
 package(cydo):
@@ -93,10 +93,11 @@ private:
 		{
 			mkdirRecurse(rootTaskDir);
 			auto workDir = rootTd.projectPath.length > 0 ? rootTd.projectPath : null;
-			auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
-			if (gitResult.status != 0)
+			try
+				addWorktree(workDir, rootTid, wtPath);
+			catch (Exception e)
 				throw new Exception(format!"Failed to create required worktree for root task %d: %s"(
-					rootTid, gitResult.output));
+					rootTid, e.msg), __FILE__, __LINE__, e);
 			infof("Created shared worktree at root task %d: %s", rootTid, wtPath);
 			dedupWorktreeInBackground(workDir, wtPath);
 		}
@@ -121,10 +122,11 @@ private:
 		auto workDir = baseFrom.length > 0 ? baseFrom
 			: (td.projectPath.length > 0 ? td.projectPath : null);
 
-		auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
-		if (gitResult.status != 0)
+		try
+			addWorktree(workDir, childTid, wtPath);
+		catch (Exception e)
 			throw new Exception(format!"Failed to create fork worktree for task %d: %s"(
-				childTid, gitResult.output));
+				childTid, e.msg), __FILE__, __LINE__, e);
 		infof("Created fork worktree for task %d: %s", childTid, wtPath);
 		dedupWorktreeInBackground(workDir, wtPath);
 		return childTid;
