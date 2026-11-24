@@ -740,6 +740,9 @@ export function DraftSessionView({
             onChange={changeText}
             onSubmit={submit}
             submitDisabled={!draftView.submitReady}
+            submitLabel={
+              draftView.lifecycle === "submitting" ? "Submitting…" : undefined
+            }
             composerResetToken={draftView.composerResetToken}
             imageStore={imageStore}
             imageKey={

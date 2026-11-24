@@ -47,6 +47,7 @@ interface ControlledProps extends CommonProps {
   onChange: (value: string) => void;
   onSubmit: (text: string, images: ImageAttachment[]) => void;
   submitDisabled?: boolean;
+  submitLabel?: string;
   composerResetToken: number;
   imageStore?: ControlledImageStore;
   imageKey?: string;
@@ -141,14 +142,15 @@ function useImageAttachments(
   const imagesRef = useRef(images);
   const invalidatedRef = useRef(false);
 
-  const wasEnabled = enabledRef.current;
-  if (resetTokenRef.current !== resetToken || wasEnabled !== enabled) {
+  const reset = resetTokenRef.current !== resetToken;
+  if (reset || enabledRef.current !== enabled) {
     generationRef.current =
       (imageEntry?.generation ?? generationRef.current) + 1;
     if (imageEntry) {
       imageEntry.generation = generationRef.current;
-      imageEntry.images = [];
+      if (reset) imageEntry.images = [];
     }
+    if (reset) imagesRef.current = [];
     invalidatedRef.current = true;
   }
   enabledRef.current = enabled;
@@ -175,8 +177,7 @@ function useImageAttachments(
   useLayoutEffect(() => {
     if (!invalidatedRef.current) return;
     invalidatedRef.current = false;
-    const next: ImageAttachment[] = [];
-    imagesRef.current = next;
+    const next = imagesRef.current;
     if (imageEntry) publishImages(imageEntry, next);
     else setImagesState(next);
     setImagesGeneration(generationRef.current);
@@ -278,7 +279,8 @@ function useImageAttachments(
   };
 
   return {
-    images: enabled && imagesGeneration === generationRef.current ? images : [],
+    images:
+      imagesGeneration === generationRef.current ? images : imagesRef.current,
     setImages,
     isDragging: enabled && isDragging,
     onPaste,
@@ -605,6 +607,7 @@ function ControlledInputBox({
   onChange,
   onSubmit,
   submitDisabled = false,
+  submitLabel = "Send",
   composerResetToken,
   imageStore,
   imageKey,
@@ -690,9 +693,7 @@ function ControlledInputBox({
     if (disabled || submitDisabled) return;
     const text = valueRef.current.trim();
     if (!text && images.length === 0) return;
-    const attachments = images;
-    setImages([]);
-    onSubmit(text, attachments);
+    onSubmit(text, [...images]);
     textareaRef.current?.focus();
   };
 
@@ -750,7 +751,7 @@ function ControlledInputBox({
           (!value.trim() && images.length === 0)
         }
       >
-        Send
+        {submitLabel}
       </button>
     </div>
   );

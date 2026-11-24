@@ -75,8 +75,9 @@ test("draft task becomes active on send", async ({ page, agentType }) => {
   // Send the message
   await page.locator(".btn-send:visible").first().click();
 
-  // Assert URL changed to /task/:tid pattern
-  await expect(page).toHaveURL(/\/task\/\d+/);
+  await expect(page).toHaveURL(new RegExp(`/task/${draftTid}$`));
+  await expect(page.locator(".task-type-picker:visible")).toHaveCount(0);
+  await expect(input).toHaveValue("");
 
   // Assert agent response arrives
   await expect(assistantText(page, "draft-active-test")).toBeVisible({
@@ -172,6 +173,14 @@ test("fast type and send before task_created", async ({ page, agentType }) => {
   // Type and immediately send (no delay for task_created)
   await input.fill('Please reply with "fast-send-test"');
   await input.press("Enter");
+  await expect(page).toHaveURL(/\/task\/\d+/, { timeout: 15_000 });
+  await expect(page.locator(".task-type-picker:visible")).toHaveCount(0);
+  await expect(input).toHaveValue("");
+  await expect(
+    page.locator(".message.user-message:visible", {
+      hasText: "fast-send-test",
+    }),
+  ).toHaveCount(1);
 
   // Assert agent response arrives (the atomic create+send path handled it)
   await expect(assistantText(page, "fast-send-test")).toBeVisible({

@@ -70,27 +70,64 @@ test("controlled pending draft persists across an immediate page reload", async 
   );
 });
 
-test("draft clears after sending message", async ({ page, agentType }) => {
+test("server clears the persisted draft after accepting its first message", async ({
+  page,
+  agentType,
+}) => {
+  const sent: Array<{ type: string; tid?: number; content?: string }> = [];
+  const received: Array<{ type: string; tid?: number; new_draft?: string }> =
+    [];
+  page.on("websocket", (socket) => {
+    if (!socket.url().endsWith("/ws")) return;
+    socket.on("framesent", ({ payload }) =>
+      sent.push(JSON.parse(payload.toString())),
+    );
+    socket.on("framereceived", ({ payload }) =>
+      received.push(JSON.parse(payload.toString())),
+    );
+  });
   await enterSession(page);
 
-  // Send a real message (this should clear the draft)
-  await sendMessage(page, 'Please reply with "draft-clear-test"');
+  const prompt = 'Please reply with "draft-clear-test"';
+  const input = page.locator(".input-textarea:visible");
+  await input.fill(prompt);
+  await expect(page).toHaveURL(/\/task\/\d+/, { timeout: 15_000 });
+  const tid = currentTaskTid(page);
+  await expect
+    .poll(() =>
+      sent.some(
+        (frame) =>
+          frame.type === "set_draft" &&
+          frame.tid === tid &&
+          frame.content === prompt,
+      ),
+    )
+    .toBe(true);
+
+  await page.locator(".btn-send:visible").click();
+  await expect
+    .poll(() =>
+      received.some(
+        (frame) =>
+          frame.type === "draft_updated" &&
+          frame.tid === tid &&
+          frame.new_draft === "",
+      ),
+    )
+    .toBe(true);
+  await expect(page.locator(".task-type-picker:visible")).toHaveCount(0);
+  await expect(input).toHaveValue("");
+  expect(
+    sent.filter(
+      (frame) =>
+        frame.type === "set_draft" && frame.tid === tid && frame.content === "",
+    ),
+  ).toHaveLength(0);
+
   await expect(assistantText(page, "draft-clear-test")).toBeVisible({
     timeout: responseTimeout(agentType),
   });
-
-  // Wait for any draft-clear debounce
-  await page.waitForTimeout(1000);
-
-  // Reload and navigate back
   await page.reload();
-  await page
-    .locator(".sidebar-item .sidebar-label", { hasText: "draft-clear-test" })
-    .click();
-
-  // Input should be empty (draft was cleared on send)
-  const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeVisible();
   await expect(input).toHaveValue("");
 });
 

@@ -379,6 +379,10 @@ describe("DraftSessionView draft availability", () => {
     try {
       mount(draftView);
       expectFullyDisabledControls();
+      expect(container.querySelector("textarea")?.value).toBe("submit this");
+      expect(container.querySelector(".btn-send")?.textContent).toBe(
+        "Submitting…",
+      );
 
       const { taskTypePicker, taskTypeButtons } = controls();
       await act(() => {

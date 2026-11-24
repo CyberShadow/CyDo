@@ -47,6 +47,9 @@ const testState = vi.hoisted(() => {
           ) => void)
         | null;
       onHistoryBoundaryReplaced: ((...args: unknown[]) => void) | null;
+      onUnconfirmedUserMessage:
+        | ((tid: number, event: AgnosticEvent, correlationId?: string) => void)
+        | null;
       onAgentAck: ((tid: number, nonce: string) => void) | null;
       onControlMessage: ((message: ControlMessage) => void) | null;
       onStatusChange: ((connected: boolean) => void) | null;
@@ -374,7 +377,7 @@ async function bootstrapGlobalDefaultProject(
   });
 }
 
-async function prepareSubmittingDraft(): Promise<void> {
+async function prepareSubmittingDraft(withImage = false) {
   await bootstrapProject();
 
   const draftManager = await renderManager();
@@ -382,18 +385,25 @@ async function prepareSubmittingDraft(): Promise<void> {
   if (!draftView || draftView.kind !== "resolved") {
     throw new Error("Project root draft view did not resolve");
   }
+  const image = withImage ? seedEditorImage(draftView.editorId) : undefined;
   await act(() => {
     draftView.onTextChange("submit before acknowledgement");
-    draftView.onSubmit("submit before acknowledgement", []);
+    draftView.onSubmit("submit before acknowledgement", image?.images ?? []);
   });
   expect(testState.connection!.createTask).toHaveBeenCalledWith(
     "source",
     "/source-project",
     "entry",
-    [{ type: "text", text: "submit before acknowledgement" }],
+    [
+      { type: "text", text: "submit before acknowledgement" },
+      ...(image
+        ? [{ type: "image", data: "aQ==", media_type: "image/png" }]
+        : []),
+    ],
     "agent",
     "submission-uuid",
   );
+  return image;
 }
 
 async function prepareEditableDraft(): Promise<DraftViewSnapshot> {
@@ -552,6 +562,23 @@ function acknowledgeSubmission(tid: number, correlationId = "submission-uuid") {
     project_path: "/source-project",
     correlation_id: correlationId,
   } satisfies ControlMessage);
+}
+
+function acceptSubmission(tid: number) {
+  testState.connection!.onControlMessage?.({
+    type: "task_updated",
+    task: { ...activeSnapshot(tid), draft: "" },
+  });
+}
+
+function rejectSubmission(correlationId: string, tid?: number) {
+  testState.connection!.onControlMessage?.({
+    type: "cydo/submission_rejected",
+    correlation_id: correlationId,
+    ...(tid === undefined ? {} : { tid }),
+    kind: "delivery_failed",
+    reason: "Agent rejected the submission",
+  });
 }
 
 describe("submission acknowledgement routing", () => {
@@ -970,14 +997,9 @@ describe("submission acknowledgement routing", () => {
     expect(testState.outbox.remove).not.toHaveBeenCalled();
   });
 
-  it("does not surface a correlated submission rejection to the user", async () => {
+  it("does not surface an unmatched submission rejection to the user", async () => {
     await renderManager();
 
-    // The receipt is a correlation channel, not a reporting channel: every
-    // rejection kind is already reported by the server through an ErrorMessage
-    // or a task diagnostic, or is deliberately silent (a user-initiated stop).
-    // Displaying it here would double-report the former and mislabel the
-    // latter as a command failure.
     expect(testState.connection!.onControlMessage).not.toBeNull();
     await act(() => {
       testState.connection!.onControlMessage!({
@@ -1005,6 +1027,52 @@ describe("submission acknowledgement routing", () => {
     );
     expect(testState.connection!.requestHistory).toHaveBeenCalledTimes(1);
     expect(testState.connection!.requestHistory).toHaveBeenCalledWith(61);
+
+    testState.route.tid = "61";
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "composition:submission-uuid",
+      text: "submit before acknowledgement",
+      lifecycle: "submitting",
+      disabled: true,
+    });
+    const connection = testState.connection!;
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "focus_hint",
+        from_tid: 0,
+        to_tid: 61,
+      });
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: { ...activeSnapshot(61), isProcessing: false, draft: "" },
+      });
+      connection.onUnconfirmedUserMessage?.(
+        61,
+        {
+          type: "item/started",
+          item_id: "atomic-user",
+          item_type: "user_message",
+          content: [{ type: "text", text: "submit before acknowledgement" }],
+        },
+        "submission-uuid",
+      );
+      connection.onAgentAck?.(61, "submission-uuid");
+    });
+    expect((await renderManager()).draftView?.lifecycle).toBe("submitting");
+    expect(connection.createTask).toHaveBeenCalledTimes(1);
+    expect(connection.sendMessage).not.toHaveBeenCalled();
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+
+    await act(() => {
+      acceptSubmission(61);
+    });
+    expect(manager!.draftView).toBeNull();
+    expect(manager!.getByTid(61)?.serverDraft ?? "").toBe("");
+    await act(() => {
+      acceptSubmission(61);
+    });
+    expect(manager!.draftView).toBeNull();
+    expect(testState.navigate).toHaveBeenCalledTimes(1);
   });
 
   it("does not route a submission acknowledgement after attachment changes", async () => {
@@ -3115,11 +3183,22 @@ describe("submission acknowledgement routing", () => {
     );
   });
 
-  it("submits a present numeric draft immediately after history subscription", async () => {
+  it("keeps a present numeric draft controlled until its own processing update", async () => {
     const draftView = await prepareEditableDraft();
     testState.connection!.requestHistory.mockClear();
     testState.connection!.sendMessage.mockClear();
     testState.navigate.mockClear();
+    const connection = testState.connection!;
+    connection.saveDraft.mockClear();
+    connection.setEntryPoint.mockClear();
+    connection.setAgentName.mockClear();
+    const image = seedEditorImage(draftView.editorId);
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: persistedSnapshot(71, draftView.text),
+      });
+    });
 
     await act(() => {
       testState.uuid = "present-send-nonce";
@@ -3140,9 +3219,619 @@ describe("submission acknowledgement routing", () => {
     );
     expect(testState.navigate).not.toHaveBeenCalled();
 
-    testState.route.tid = "71";
-    expect((await renderManager()).draftView).toBeNull();
+    expect(connection.sendMessage).toHaveBeenCalledTimes(1);
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+    expect(connection.setEntryPoint).not.toHaveBeenCalled();
+    expect(connection.setAgentName).not.toHaveBeenCalled();
+    expect(manager!.getByTid(71)?.isProcessing).toBe(false);
+    expect(manager!.getByTid(71)?.messages).toEqual([]);
+    expect(manager!.getByTid(71)?.serverDraft).toBe(draftView.text);
+    const frozen = {
+      editorId: draftView.editorId,
+      text: "draft to delete",
+      lifecycle: "submitting",
+      disabled: true,
+    };
+    expect((await renderManager()).draftView).toMatchObject(frozen);
+    expect(imageStore.entries.get(draftView.editorId)).toBe(image);
+
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "draft_updated",
+        tid: 71,
+        old_draft: "draft to delete",
+        new_draft: "",
+      });
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: { ...activeSnapshot(71), isProcessing: false, draft: "" },
+      });
+      connection.onUnconfirmedUserMessage?.(
+        71,
+        {
+          type: "item/started",
+          item_id: "present-user",
+          item_type: "user_message",
+          content: [{ type: "text", text: "draft to delete" }],
+        },
+        "present-send-nonce",
+      );
+      connection.onAgentAck?.(71, "present-send-nonce");
+      acceptSubmission(72);
+    });
+    expect((await renderManager()).draftView).toMatchObject(frozen);
+    await act(() => {
+      acceptSubmission(71);
+    });
+    expect(manager!.draftView).toBeNull();
+    expect(manager!.getByTid(71)?.serverDraft ?? "").toBe("");
+    expect(imageStore.entries.get(draftView.editorId)?.images ?? []).toEqual(
+      [],
+    );
+    expect(testState.navigate).not.toHaveBeenCalled();
   });
+
+  it.each(["creating", "present"] as const)(
+    "writes only the changed picker before sending a %s draft",
+    async (state) => {
+      const correlationId =
+        state === "creating" ? await prepareCreatingDraft() : undefined;
+      const view =
+        state === "present"
+          ? await prepareEditableDraft()
+          : ((await renderManager()).draftView as DraftViewSnapshot);
+      const connection = testState.connection!;
+      connection.setEntryPoint.mockClear();
+      connection.setAgentName.mockClear();
+      await act(() => {
+        connection.onControlMessage?.({
+          type: "agents_list",
+          agents: [
+            { name: "agent", driver: "claude" },
+            { name: "alternate", driver: "claude" },
+          ],
+          default_agent: "agent",
+        });
+        view.onAgentChange("alternate");
+      });
+      if (state === "present") {
+        expect(connection.setAgentName).toHaveBeenCalledExactlyOnceWith(
+          71,
+          "alternate",
+        );
+      } else {
+        expect(connection.setAgentName).not.toHaveBeenCalled();
+      }
+      const selected = (await renderManager()).draftView as DraftViewSnapshot;
+      await act(() => {
+        selected.onSubmit(selected.text, []);
+      });
+      if (state === "creating") {
+        expect(connection.sendMessage).not.toHaveBeenCalled();
+        await act(() => {
+          acknowledgeSubmission(71, correlationId);
+        });
+      }
+      expect(connection.setAgentName).toHaveBeenCalledExactlyOnceWith(
+        71,
+        "alternate",
+      );
+      expect(connection.setEntryPoint).not.toHaveBeenCalled();
+      expect(connection.sendMessage).toHaveBeenCalledExactlyOnceWith(
+        71,
+        [{ type: "text", text: selected.text }],
+        expect.any(String),
+      );
+      expect(connection.setAgentName.mock.invocationCallOrder[0]).toBeLessThan(
+        connection.sendMessage.mock.invocationCallOrder[0]!,
+      );
+      expect(
+        connection.saveDraft.mock.calls.filter(([, text]) => text === ""),
+      ).toEqual([]);
+    },
+  );
+
+  it("recovers only the rejected normal-message attempt and permits a new nonce", async () => {
+    const view = await prepareEditableDraft();
+    const connection = testState.connection!;
+    const image = seedEditorImage(view.editorId);
+    testState.navigate.mockClear();
+    testState.outbox.add({
+      tid: 94,
+      nonce: "another-attempt",
+      content: [{ type: "text", text: "other task" }],
+      createdAt: Date.now(),
+    });
+    testState.uuid = "rejected-nonce";
+    await act(() => {
+      view.onSubmit(view.text, image.images);
+    });
+    await act(() => {
+      rejectSubmission("unmatched-nonce", 71);
+    });
+    expect(manager!.draftView?.lifecycle).toBe("submitting");
+    expect(manager!.serverError).toBeNull();
+
+    await act(() => {
+      rejectSubmission("rejected-nonce", 71);
+    });
+    const recovered = manager!.draftView as DraftViewSnapshot;
+    expect(recovered).toMatchObject({
+      editorId: view.editorId,
+      remoteTid: 71,
+      lifecycle: "present",
+      disabled: false,
+      text: view.text,
+      entryPoint: view.entryPoint,
+      agent: view.agent,
+    });
+    expect(imageStore.entries.get(view.editorId)).toBe(image);
+    expect(image.images).toHaveLength(1);
+    expect(testState.outboxEntries.map((entry) => entry.nonce)).toEqual([
+      "another-attempt",
+    ]);
+    expect(testState.outbox.remove).toHaveBeenCalledExactlyOnceWith(
+      "rejected-nonce",
+    );
+    expect(manager!.serverError?.message).toBe("Agent rejected the submission");
+    expect(testState.navigate).not.toHaveBeenCalled();
+    expect(connection.deleteTask).not.toHaveBeenCalled();
+
+    await act(() => {
+      manager!.dismissServerError();
+    });
+    testState.uuid = "retry-nonce";
+    await act(() => {
+      recovered.onSubmit(recovered.text, image.images);
+    });
+    await act(() => {
+      rejectSubmission("rejected-nonce", 71);
+    });
+    expect(connection.sendMessage).toHaveBeenCalledTimes(2);
+    expect(connection.sendMessage).toHaveBeenLastCalledWith(
+      71,
+      expect.any(Array),
+      "retry-nonce",
+    );
+    expect(manager!.draftView?.lifecycle).toBe("submitting");
+    expect(manager!.serverError).toBeNull();
+  });
+
+  it.each([
+    ["validation", "error first"],
+    ["validation", "receipt first"],
+    ["native_undo_refused", "error first"],
+    ["native_undo_refused", "receipt first"],
+  ] as const)(
+    "displays paired %s exactly once with %s",
+    async (kind, order) => {
+      const validation = kind === "validation";
+      if (validation) await prepareSubmittingDraft();
+      else await prepareEditableDraft();
+      const view = manager!.draftView as DraftViewSnapshot;
+      const connection = testState.connection!;
+      const image = seedEditorImage(view.editorId);
+      testState.navigate.mockClear();
+      const tid = validation ? undefined : 71;
+      const correlation = validation ? "submission-uuid" : "native-undo-nonce";
+      if (!validation) {
+        testState.uuid = correlation;
+        await act(() => {
+          view.onSubmit(view.text, image.images);
+        });
+      }
+      const reason = validation
+        ? "Invalid draft configuration"
+        : "Native undo in progress";
+      const error = { type: "error", tid, message: reason } as const;
+      const receipt = {
+        type: "cydo/submission_rejected",
+        correlation_id: correlation,
+        tid,
+        kind,
+        reason,
+      } as const;
+      const errorFirst = order === "error first";
+      await act(() =>
+        connection.onControlMessage?.(errorFirst ? error : receipt),
+      );
+      expect(manager!.serverError).toEqual(
+        errorFirst ? { message: reason, tid } : null,
+      );
+      expect(manager!.draftView?.disabled).toBe(errorFirst);
+      if (errorFirst)
+        await act(() => {
+          manager!.dismissServerError();
+        });
+      await act(() =>
+        connection.onControlMessage?.(errorFirst ? receipt : error),
+      );
+      expect(manager!.serverError).toEqual(
+        errorFirst ? null : { message: reason, tid },
+      );
+      if (!errorFirst)
+        await act(() => {
+          manager!.dismissServerError();
+        });
+      await act(() => connection.onControlMessage?.(receipt));
+      expect(manager!.serverError).toBeNull();
+      expect(manager!.draftView).toMatchObject({
+        editorId: view.editorId,
+        text: view.text,
+        entryPoint: view.entryPoint,
+        agent: view.agent,
+        disabled: false,
+        remoteTid: view.remoteTid,
+      });
+      expect(imageStore.entries.get(view.editorId)).toBe(image);
+      expect(image.images).toHaveLength(1);
+      if (validation) expect(connection.createTask).toHaveBeenCalledTimes(1);
+      else
+        expect(testState.outbox.remove).toHaveBeenCalledExactlyOnceWith(
+          correlation,
+        );
+      expect(connection.deleteTask).not.toHaveBeenCalled();
+      expect(testState.navigate).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "task_unavailable",
+    "task_archiving",
+    "history_cancelled",
+    "delivery_failed",
+  ] as const)("displays unpaired %s exactly once", async (kind) => {
+    const view = await prepareEditableDraft();
+    testState.uuid = "unpaired-nonce";
+    await act(() => {
+      view.onSubmit(view.text, []);
+    });
+    const connection = testState.connection!;
+    const receipt = {
+      type: "cydo/submission_rejected",
+      correlation_id: "unpaired-nonce",
+      tid: 71,
+      kind,
+      reason: "Submission failed",
+    } as const;
+    await act(() => connection.onControlMessage?.(receipt));
+    expect(manager!.serverError).toEqual({ message: receipt.reason, tid: 71 });
+    expect(manager!.draftView).toMatchObject({
+      editorId: view.editorId,
+      disabled: false,
+    });
+    await act(() => {
+      manager!.dismissServerError();
+    });
+    await act(() => connection.onControlMessage?.(receipt));
+    expect(manager!.serverError).toBeNull();
+    expect(testState.outbox.remove).toHaveBeenCalledExactlyOnceWith(
+      "unpaired-nonce",
+    );
+  });
+
+  it.each(["acceptance", "correlated rejection"] as const)(
+    "keeps submitting after an unrelated same-tid error until %s",
+    async (outcome) => {
+      const view = await prepareEditableDraft();
+      testState.uuid = "pending-nonce";
+      await act(() => {
+        view.onSubmit(view.text, []);
+      });
+      const connection = testState.connection!;
+      await act(() =>
+        connection.onControlMessage?.({
+          type: "error",
+          tid: 71,
+          message: "Cannot archive a running task",
+        }),
+      );
+      expect(manager!.serverError?.message).toBe(
+        "Cannot archive a running task",
+      );
+      expect(manager!.draftView).toMatchObject({
+        editorId: view.editorId,
+        lifecycle: "submitting",
+        disabled: true,
+      });
+      expect(testState.outboxEntries.map(({ nonce }) => nonce)).toEqual([
+        "pending-nonce",
+      ]);
+      expect(testState.outbox.remove).not.toHaveBeenCalled();
+      await act(() => {
+        if (outcome === "acceptance") acceptSubmission(71);
+        else rejectSubmission("pending-nonce", 71);
+      });
+      if (outcome === "acceptance") expect(manager!.draftView).toBeNull();
+      else {
+        expect(manager!.draftView).toMatchObject({
+          editorId: view.editorId,
+          disabled: false,
+        });
+        expect(testState.outbox.remove).toHaveBeenCalledExactlyOnceWith(
+          "pending-nonce",
+        );
+      }
+    },
+  );
+
+  it.each(["atomic", "waiting-for-tid"] as const)(
+    "retries a rejected pre-tid %s submission only on explicit Submit",
+    async (delivery) => {
+      if (delivery === "atomic") await prepareSubmittingDraft();
+      else {
+        await prepareCreatingDraft();
+        const view = manager!.draftView as DraftViewSnapshot;
+        await act(() => {
+          view.onSubmit(view.text, []);
+        });
+      }
+      const pending = manager!.draftView as DraftViewSnapshot;
+      const connection = testState.connection!;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await act(() => {
+        rejectSubmission("submission-uuid");
+        vi.runOnlyPendingTimers();
+      });
+      const recovered = manager!.draftView as DraftViewSnapshot;
+      expect(recovered).toMatchObject({
+        editorId: pending.editorId,
+        text: pending.text,
+        disabled: false,
+      });
+      expect(connection.createTask).toHaveBeenCalledTimes(1);
+      expect(connection.sendMessage).not.toHaveBeenCalled();
+      expect(testState.navigate).not.toHaveBeenCalled();
+      await act(() => {
+        recovered.onSubmit(recovered.text, []);
+      });
+      expect(connection.createTask).toHaveBeenCalledTimes(2);
+      expect(connection.createTask).toHaveBeenLastCalledWith(
+        "source",
+        "/source-project",
+        "entry",
+        [{ type: "text", text: pending.text }],
+        "agent",
+        "submission-uuid",
+      );
+    },
+  );
+
+  it.each(["receipt", "initial delivery failure", "launch failure"] as const)(
+    "persists a rejected atomic draft through %s and retries it as a message",
+    async (outcome) => {
+      const image = (await prepareSubmittingDraft(true))!;
+      await act(() => {
+        acknowledgeSubmission(61);
+      });
+      testState.route.tid = "61";
+      const pending = (await renderManager()).draftView as DraftViewSnapshot;
+      expect(pending).toMatchObject({ lifecycle: "submitting", remoteTid: 61 });
+      const connection = testState.connection!;
+      testState.navigate.mockClear();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      if (outcome === "receipt") {
+        await act(() => {
+          rejectSubmission("submission-uuid", 61);
+        });
+      } else {
+        const launchFailure = outcome === "launch failure";
+        const reason = launchFailure
+          ? "Agent executable missing"
+          : "Agent rejected delivery";
+        await act(() =>
+          connection.onControlMessage?.({
+            type: "task_updated",
+            task: {
+              ...persistedSnapshot(61, ""),
+              status: "failed",
+              error: reason,
+            },
+          }),
+        );
+        expect(manager!.serverError?.message).toBe(reason);
+        await act(() => {
+          manager!.dismissServerError();
+        });
+        await act(() => {
+          connection.onTaskMessage?.(
+            61,
+            {
+              type: "cydo/task_diagnostic",
+              severity: "error",
+              subject: launchFailure
+                ? "Failed to resume session"
+                : "Failed to submit initial message",
+              body: reason,
+            },
+            1,
+          );
+          rejectSubmission("submission-uuid", 61);
+          connection.onControlMessage?.({
+            type: "task_updated",
+            task: {
+              ...persistedSnapshot(61, ""),
+              status: undefined,
+              alive: true,
+            },
+          });
+        });
+        expect(manager!.serverError).toBeNull();
+      }
+      const recovered = (await renderManager()).draftView as DraftViewSnapshot;
+      expect(recovered).toMatchObject({
+        editorId: pending.editorId,
+        text: pending.text,
+        remoteTid: 61,
+        disabled: false,
+      });
+      expect(imageStore.entries.get(pending.editorId)).toBe(image);
+      expect(image.images).toHaveLength(1);
+      await act(() => {
+        vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+      });
+      expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+        61,
+        pending.text,
+      );
+      await act(() => {
+        rejectSubmission("submission-uuid", 61);
+      });
+      expect(connection.saveDraft).toHaveBeenCalledTimes(1);
+      expect(connection.deleteTask).not.toHaveBeenCalled();
+      expect(testState.navigate).not.toHaveBeenCalled();
+
+      testState.uuid = "atomic-retry";
+      await act(() => {
+        recovered.onSubmit(recovered.text, image.images);
+      });
+      expect(connection.createTask).toHaveBeenCalledTimes(1);
+      expect(connection.sendMessage).toHaveBeenCalledExactlyOnceWith(
+        61,
+        [
+          { type: "text", text: pending.text },
+          { type: "image", data: "aQ==", media_type: "image/png" },
+        ],
+        "atomic-retry",
+      );
+      await act(() => {
+        acceptSubmission(61);
+      });
+      expect(manager!.draftView).toBeNull();
+    },
+  );
+
+  it.each(["normal", "atomic"] as const)(
+    "clearing a recovered failed %s editor leaves the durable task reachable",
+    async (delivery) => {
+      const tid = delivery === "normal" ? 71 : 61;
+      if (delivery === "normal") {
+        const view = await prepareEditableDraft();
+        testState.uuid = "normal-failure";
+        await act(() => {
+          view.onSubmit(view.text, []);
+        });
+      } else {
+        await prepareSubmittingDraft();
+        await act(() => {
+          acknowledgeSubmission(tid);
+        });
+        testState.route.tid = String(tid);
+        await renderManager();
+      }
+
+      const connection = testState.connection!;
+      const submitting = manager!.draftView as DraftViewSnapshot;
+      const image = seedEditorImage(submitting.editorId);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await act(() => {
+        connection.onControlMessage?.({
+          type: "task_updated",
+          task: {
+            ...persistedSnapshot(
+              tid,
+              delivery === "normal" ? submitting.text : "",
+            ),
+            status: "failed",
+            error: "Agent executable missing",
+          },
+        });
+        connection.onTaskMessage?.(
+          tid,
+          {
+            type: "cydo/task_diagnostic",
+            severity: "error",
+            subject: "Failed to resume session",
+            body: "Agent executable missing",
+          },
+          1,
+        );
+        rejectSubmission(
+          delivery === "normal" ? "normal-failure" : "submission-uuid",
+          tid,
+        );
+      });
+
+      const recovered = (await renderManager()).draftView as DraftViewSnapshot;
+      expect(recovered).toMatchObject({
+        editorId: submitting.editorId,
+        text: submitting.text,
+        disabled: false,
+      });
+      expect(imageStore.entries.get(recovered.editorId)).toBe(image);
+      connection.saveDraft.mockClear();
+      testState.navigate.mockClear();
+      await act(() => {
+        manager!.dismissServerError();
+        recovered.onTextChange("");
+      });
+
+      await act(() => {
+        vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+      });
+      expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(tid, "");
+      expect(testState.navigate).not.toHaveBeenCalled();
+      expect(testState.route.tid).toBe(String(tid));
+      const closed = await renderManager();
+      expect({
+        taskStatus: closed.getByTid(tid)?.status,
+        serverDraft: closed.getByTid(tid)?.serverDraft,
+        sidebarContainsTask: closed.sidebarTasks.some(
+          (task) => task.tid === tid,
+        ),
+        deleteCalls: connection.deleteTask.mock.calls,
+        controlledEditorOpen: closed.draftView !== null,
+        imagesRetained: imageStore.entries.has(recovered.editorId),
+      }).toEqual({
+        taskStatus: "failed",
+        serverDraft: undefined,
+        sidebarContainsTask: true,
+        deleteCalls: [],
+        controlledEditorOpen: false,
+        imagesRetained: false,
+      });
+    },
+  );
+
+  it.each(["atomic", "normal"] as const)(
+    "forgets a submitting editor and its %s correlation on reset",
+    async (delivery) => {
+      if (delivery === "atomic") {
+        await prepareSubmittingDraft();
+      } else {
+        const view = await prepareEditableDraft();
+        testState.uuid = "prior-message-nonce";
+        await act(() => {
+          view.onSubmit(view.text, []);
+        });
+      }
+      const previous = manager!.draftView as DraftViewSnapshot;
+      expect(previous.lifecycle).toBe("submitting");
+      seedEditorImage(previous.editorId);
+      const connection = testState.connection!;
+      testState.route.tid = null;
+      await act(() => {
+        connection.onStatusChange?.(false);
+        connection.onStatusChange?.(true);
+        emitGlobalDefaultProjectBootstrap("entry", "blank", "agent");
+      });
+      const fresh = (await renderManager()).draftView as DraftViewSnapshot;
+      expect(fresh.editorId).not.toBe(previous.editorId);
+      expect(imageStore.entries.get(previous.editorId)?.images ?? []).toEqual(
+        [],
+      );
+      await act(() => {
+        if (delivery === "atomic") rejectSubmission("submission-uuid");
+        else rejectSubmission("prior-message-nonce", 71);
+      });
+      expect(manager!.draftView).toMatchObject({
+        editorId: fresh.editorId,
+        text: "",
+        disabled: false,
+      });
+      expect(manager!.serverError).toBeNull();
+    },
+  );
 
   it("delivers a present draft after detachment without stealing navigation", async () => {
     const attached = await prepareEditableDraft();
@@ -3885,6 +4574,11 @@ describe("submission acknowledgement routing", () => {
     await act(() => {
       accepted.onSubmit("peer B", []);
     });
+    await act(() => {
+      acceptSubmission(71);
+    });
+    await flushAnimationFrames();
+    expect(manager!.draftView).toBeNull();
     const released = (await renderManager()).getByTid(71);
     if (!released) throw new Error("Expected released ordinary task");
     expect(manager!.ordinaryDraftStore.read(released.uuid)).toBeUndefined();
@@ -3978,6 +4672,7 @@ describe("submission acknowledgement routing", () => {
             break;
           case "submit":
             attached.onSubmit(attached.text, entry.images);
+            acceptSubmission(71);
             break;
           case "external delete":
             connection.onControlMessage?.({ type: "task_deleted", tid: 71 });
@@ -4007,22 +4702,22 @@ describe("submission acknowledgement routing", () => {
     const attached = await prepareEditableDraft();
     const connection = testState.connection!;
 
+    await act(() => {
+      attached.onSubmit("draft to delete", []);
+    });
     testState.hidden = false;
+    acceptSubmission(71);
     connection.onControlMessage?.({
       type: "draft_updated",
       tid: 71,
       old_draft: "draft to delete",
       new_draft: "peer B",
     } satisfies ControlMessage);
-
-    await act(() => {
-      attached.onSubmit("draft to delete", []);
-    });
-    const released = (await renderManager()).getByTid(71);
-    if (!released) throw new Error("Expected submitted task");
-
     await flushAnimationFrames();
 
+    const released = manager!.getByTid(71);
+    if (!released) throw new Error("Expected submitted task");
+    expect(manager!.draftView).toBeNull();
     expect(manager!.ordinaryDraftStore.read(released.uuid)).toBeUndefined();
     expect(manager!.getByTid(71)?.serverDraft).toBeUndefined();
     expect(
@@ -4302,7 +4997,7 @@ describe("submission acknowledgement routing", () => {
       [{ type: "text", text: "latest submitted text" }],
       expect.any(String),
     );
-    expect(connection.saveDraft.mock.calls).toEqual([[96, ""]]);
+    expect(connection.saveDraft).not.toHaveBeenCalled();
   });
   it("a pre-save snapshot queued behind a rejecting catalog keeps the controlled text", async () => {
     const snapshot = persistedSnapshot(95, "server draft");

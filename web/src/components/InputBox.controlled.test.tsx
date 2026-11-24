@@ -276,7 +276,7 @@ describe("controlled InputBox", () => {
     expect(entryB.generation).toBe(9);
   });
 
-  it("submits trimmed text and exact images without clearing controlled text", async () => {
+  it("retains controlled text and submitted images until its reset token changes", async () => {
     class Reader {
       onload: ((event: ProgressEvent<FileReader>) => void) | null = null;
       readAsDataURL() {
@@ -314,6 +314,24 @@ describe("controlled InputBox", () => {
           ],
         },
       ]);
+      expect(textarea().value).toBe("  send this  ");
+      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+
+      mount("  send this  ", 0, { disabled: true, submitLabel: "Submitting…" });
+      expect(send().textContent).toBe("Submitting…");
+      expect(send().disabled).toBe(true);
+      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+
+      mount("  send this  ");
+      expect(send().disabled).toBe(false);
+      await flush(() => {
+        send().click();
+      });
+      expect(submits).toEqual([submits[0], submits[0]]);
+
+      mount("", 1);
+      await flush();
+      expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
     } finally {
       vi.unstubAllGlobals();
       vi.stubGlobal("CSS", { supports: () => false });

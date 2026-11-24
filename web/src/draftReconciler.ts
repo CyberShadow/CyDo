@@ -1,3 +1,5 @@
+import type { TaskStatus } from "./types";
+
 export type ProjectKey = string;
 export type DraftId = string;
 export type CompositionId = `composition:${string}`;
@@ -47,19 +49,36 @@ export interface DraftContent {
   images: readonly ImageAttachment[];
 }
 
+type SubmissionAttempt =
+  | {
+      delivery: "atomic-create";
+      phase: "awaiting-acceptance";
+      correlationId: DraftId;
+    }
+  | {
+      delivery: "send-when-present";
+      phase: "waiting-for-tid";
+      createCorrelationId: DraftId;
+    }
+  | {
+      delivery: "send-when-present";
+      phase: "awaiting-acceptance";
+      messageCorrelationId: string;
+    };
+
 export type Desired =
   | { kind: "none" }
-  | ({ kind: "editing" } & DraftForm)
+  | ({ kind: "editing"; recovered?: true } & DraftForm)
   | ({
       kind: "submitting";
       images: readonly ImageAttachment[];
-      delivery: "atomic-create" | "send-when-present";
+      attempt: SubmissionAttempt;
     } & DraftForm);
 
 export type Remote =
   | { kind: "absent" }
   | { kind: "creating"; correlationId: DraftId }
-  | { kind: "present"; tid: number }
+  | { kind: "present"; tid: number; status: TaskStatus }
   | { kind: "deleting"; tid: number };
 
 export interface SaveSchedule {
@@ -129,8 +148,9 @@ export type ProjectedDraftForm = DraftForm & { entryPoint: string };
 
 export interface TaskObservation {
   tid: number;
-  active?: boolean;
-  processing?: boolean;
+  status?: TaskStatus;
+  alive?: boolean;
+  isProcessing?: boolean;
   hasMessages?: boolean;
   text?: string;
   oldText?: string;
@@ -197,11 +217,13 @@ export type DraftEffect =
       form: ProjectedDraftForm;
       formVersion: number;
     }
+  | { type: "clear-task-draft"; editorId: EditorId; tid: number }
   | { type: "delete-task"; editorId: EditorId; tid: number }
   | {
       type: "send-first-message";
       editorId: EditorId;
       tid: number;
+      messageCorrelationId: string;
       content: DraftContent;
     };
 
@@ -238,6 +260,7 @@ export type DraftEvent =
   | {
       type: "submit";
       editorId: EditorId;
+      messageCorrelationId?: string;
       images: readonly ImageAttachment[];
     }
   | { type: "flush"; editorId: EditorId }
@@ -255,10 +278,13 @@ export type DraftEvent =
   | {
       type: "task-created";
       editorId: EditorId;
+      messageCorrelationId?: string;
       correlationId: DraftId;
       tid: number;
       successor?: CompositionId;
     }
+  | { type: "submission-accepted"; editorId: EditorId; tid: number }
+  | { type: "submission-rejected"; editorId: EditorId; tid?: number }
   | { type: "task-deleted"; editorId: EditorId; tid: number }
   | {
       type: "task-observed";
@@ -399,6 +425,22 @@ export function reduceDraft(state: DraftState, event: DraftEvent): DraftResult {
       return taskCreated(state, event);
     case "task-deleted":
       return taskDeleted(state, event);
+    case "submission-accepted": {
+      const current = getEditor(state, event.editorId);
+      if (
+        current.desired.kind !== "submitting" ||
+        current.desired.attempt.phase !== "awaiting-acceptance" ||
+        current.remote.kind !== "present" ||
+        current.remote.tid !== event.tid
+      ) {
+        throw new Error("Acceptance does not match a bound submission");
+      }
+      return { state: removeEditor(state, event.editorId), effects: [] };
+    }
+
+    case "submission-rejected":
+      return rejectSubmission(state, event);
+
     case "task-observed":
       return taskObserved(state, event);
     case "open-persisted":
@@ -660,7 +702,7 @@ function clearEditor(
     return { state, effects: [] };
   }
   if (current.remote.kind === "present")
-    return beginDeletion(state, editorId, current, current.remote.tid);
+    return closePresentEditor(state, editorId, current, current.remote);
   const next = replaceNewTask(state, editorId, successor);
   return {
     state:
@@ -776,28 +818,121 @@ function submit(
   if (current.desired.text.trim().length === 0 && images.length === 0) {
     throw new Error("Cannot submit an empty draft");
   }
-  const next = replaceEditor(state, event.editorId, {
-    ...current,
-    defaults: defaultsOf(current.desired),
-    desired: {
-      ...current.desired,
-      kind: "submitting",
-      images,
-      delivery:
-        current.remote.kind === "absent"
-          ? "atomic-create"
-          : "send-when-present",
-    },
-    createSchedule: null,
-  });
-  const reconciled = reconcileCore(next, event.editorId);
-  return {
-    state: reconciled.state,
-    effects: [
-      ...cancelCreateEffect(current, event.editorId),
-      ...reconciled.effects,
-    ],
+  const editorId = event.editorId;
+  const { remote } = current;
+  if (remote.kind === "deleting")
+    throw new Error("Cannot submit a deleting draft");
+  const attempt: SubmissionAttempt =
+    remote.kind === "absent"
+      ? {
+          delivery: "atomic-create",
+          phase: "awaiting-acceptance",
+          correlationId: compositionCorrelation(editorId),
+        }
+      : remote.kind === "creating"
+        ? {
+            delivery: "send-when-present",
+            phase: "waiting-for-tid",
+            createCorrelationId: remote.correlationId,
+          }
+        : messageAttempt(event.messageCorrelationId);
+  const desired = {
+    ...formOf(current.desired),
+    kind: "submitting" as const,
+    images,
+    attempt,
   };
+  const effects = [
+    ...cancelCreateEffect(current, editorId),
+    ...cancelSaveEffect(current, editorId),
+  ];
+  const nextEditor: EditorState = {
+    ...current,
+    defaults: defaultsOf(desired),
+    desired,
+    createSchedule: null,
+    saveSchedule: null,
+  };
+  if (attempt.delivery === "atomic-create") {
+    assertResolvedDraftForm(desired);
+    nextEditor.observed = { ...defaultsOf(desired), text: "" };
+    nextEditor.remote = {
+      kind: "creating",
+      correlationId: attempt.correlationId,
+    };
+    effects.push({
+      type: "create-task",
+      editorId,
+      correlationId: attempt.correlationId,
+      entryPoint: desired.entryPoint,
+      agent: desired.agent,
+      content: contentOf(desired),
+    });
+  } else if (
+    remote.kind === "present" &&
+    attempt.phase === "awaiting-acceptance"
+  ) {
+    effects.push({
+      type: "send-first-message",
+      editorId,
+      tid: remote.tid,
+      messageCorrelationId: attempt.messageCorrelationId,
+      content: contentOf(desired),
+    });
+  }
+  return { state: replaceEditor(state, editorId, nextEditor), effects };
+}
+
+function messageAttempt(messageCorrelationId: string | undefined) {
+  if (!messageCorrelationId)
+    throw new Error("First message requires a correlation");
+  return {
+    delivery: "send-when-present",
+    phase: "awaiting-acceptance",
+    messageCorrelationId,
+  } as const;
+}
+
+function rejectSubmission(
+  state: DraftState,
+  { editorId, tid }: Extract<DraftEvent, { type: "submission-rejected" }>,
+): DraftResult {
+  const current = getEditor(state, editorId);
+  const { desired, remote, observed } = current;
+  if (desired.kind !== "submitting")
+    throw new Error("Rejection requires a submitting editor");
+  const editing = { kind: "editing" as const, ...formOf(desired) };
+  if (remote.kind === "creating" && tid === undefined) {
+    return {
+      state: replaceEditor(state, editorId, {
+        ...current,
+        remote: { kind: "absent" },
+        desired: editing,
+      }),
+      effects: [],
+    };
+  }
+  if (remote.kind !== "present" || remote.tid !== tid)
+    throw new Error("Rejection does not match a bound submission");
+  const editable: EditorState = {
+    ...current,
+    desired: { ...editing, recovered: true },
+  };
+  const next = replaceEditor(state, editorId, editable);
+  const changed = {
+    entryPoint: editing.entryPoint !== observed.entryPoint,
+    agent: editing.agent !== observed.agent,
+  };
+  if (changed.entryPoint || changed.agent)
+    return afterLocalFormChange(
+      next,
+      editorId,
+      changed,
+      editing.text !== observed.text,
+    );
+  if (editing.text !== observed.text)
+    return ensureDraftSave(next, editorId, editable, tid);
+  return { state: next, effects: [] };
 }
 
 function flush(state: DraftState, editorId: EditorId): DraftResult {
@@ -915,8 +1050,42 @@ function taskCreated(
       : replaceNewTask(state, editorId, event.successor);
   const next = replaceEditor(promoted, editorId, {
     ...current,
-    remote: { kind: "present", tid },
+    remote: { kind: "present", tid, status: "pending" },
   });
+  if (
+    current.desired.kind === "submitting" &&
+    current.desired.attempt.phase === "waiting-for-tid"
+  ) {
+    const desired = current.desired;
+    assertResolvedDraftForm(desired);
+    const attempt = messageAttempt(event.messageCorrelationId);
+    const effects: DraftEffect[] = [];
+    if (desired.entryPoint !== current.observed.entryPoint) {
+      effects.push({
+        type: "set-entry-point",
+        editorId,
+        tid,
+        entryPoint: desired.entryPoint,
+      });
+    }
+    if (desired.agent !== current.observed.agent) {
+      effects.push({ type: "set-agent", editorId, tid, agent: desired.agent });
+    }
+    effects.push({
+      type: "send-first-message",
+      editorId,
+      tid,
+      messageCorrelationId: attempt.messageCorrelationId,
+      content: contentOf(desired),
+    });
+    return {
+      state: replaceEditor(next, editorId, {
+        ...getEditor(next, editorId),
+        desired: { ...desired, attempt },
+      }),
+      effects,
+    };
+  }
   const reconciled = reconcileCore(next, editorId);
   if (current.desired.kind !== "editing") return reconciled;
 
@@ -979,7 +1148,28 @@ function taskObserved(
   assertObservedFormFieldTypes(observation);
   assertObservedActivityFactTypes(observation);
 
-  if (isActiveObservation(observation)) {
+  const remote =
+    current.remote.kind === "present" &&
+    hasOwnProperty(observation, "status") &&
+    observation.status !== undefined &&
+    observation.status !== current.remote.status
+      ? { ...current.remote, status: observation.status }
+      : current.remote;
+
+  if (current.desired.kind === "submitting") {
+    const observed = mergeObservedBaseline(current.observed, observation);
+    return {
+      state:
+        remote !== current.remote || hasObservedFormFields(observation)
+          ? replaceEditor(state, editorId, { ...current, remote, observed })
+          : state,
+      effects: [],
+    };
+  }
+  if (
+    isActiveObservation(observation) &&
+    !(current.desired.kind === "editing" && current.desired.recovered)
+  ) {
     return {
       state: removeEditor(state, editorId),
       effects: [...cancelSaveEffect(current, editorId)],
@@ -995,7 +1185,10 @@ function taskObserved(
 
   if (!hasObservedFormFields(observation)) {
     return {
-      state,
+      state:
+        remote === current.remote
+          ? state
+          : replaceEditor(state, editorId, { ...current, remote }),
       effects: [
         projectEffect(editorId, observation.tid, {
           desired: current.desired,
@@ -1021,6 +1214,7 @@ function taskObserved(
       : current.saveSchedule;
   const nextEditor = {
     ...current,
+    remote,
     defaults: mergeObservedDefaults(current.defaults, form, observation),
     observed: mergeObservedBaseline(current.observed, observation),
     desired: changed ? { ...current.desired, ...form } : current.desired,
@@ -1062,7 +1256,7 @@ function openPersisted(
     ...createEditor(project, defaultsOf(form)),
     observed: form,
     desired: { kind: "editing", ...form },
-    remote: { kind: "present", tid: snapshot.tid },
+    remote: { kind: "present", tid: snapshot.tid, status: "pending" },
   });
   return resolveEditorDefaults(
     next,
@@ -1075,6 +1269,7 @@ function afterLocalFormChange(
   state: DraftState,
   editorId: EditorId,
   changed: { entryPoint: boolean; agent: boolean },
+  saveText = true,
 ): DraftResult {
   const reconciled = reconcileCore(state, editorId);
   const current = getEditor(reconciled.state, editorId);
@@ -1100,6 +1295,7 @@ function afterLocalFormChange(
     }
   }
   effects.push(projectEffect(editorId, current.remote.tid, current));
+  if (!saveText) return { state: reconciled.state, effects };
 
   const scheduled = ensureDraftSave(
     reconciled.state,
@@ -1121,6 +1317,11 @@ function reconcileCore(state: DraftState, editorId: EditorId): DraftResult {
       switch (current.desired.kind) {
         case "none":
           return { state, effects: [] };
+
+        case "submitting":
+          throw new Error(
+            "Submitting editor must have an in-flight or bound task",
+          );
 
         case "editing": {
           if (
@@ -1148,39 +1349,6 @@ function reconcileCore(state: DraftState, editorId: EditorId): DraftResult {
           };
         }
 
-        case "submitting": {
-          const correlationId = compositionCorrelation(editorId);
-          assertResolvedDraftForm(current.desired);
-          if (current.desired.delivery !== "atomic-create") {
-            throw new Error("send-when-present cannot target an absent task");
-          }
-          if (current.createSchedule !== null) {
-            throw new Error(
-              "Atomic submission must cancel its create schedule",
-            );
-          }
-          const next = replaceEditor(state, editorId, {
-            ...current,
-            remote: {
-              kind: "creating",
-              correlationId,
-            },
-          });
-          return {
-            state: next,
-            effects: [
-              {
-                type: "create-task",
-                editorId,
-                correlationId,
-                entryPoint: current.desired.entryPoint,
-                agent: current.desired.agent,
-                content: contentOf(current.desired),
-              },
-            ],
-          };
-        }
-
         default:
           return assertNever(current.desired);
       }
@@ -1192,20 +1360,11 @@ function reconcileCore(state: DraftState, editorId: EditorId): DraftResult {
     case "present":
       switch (current.desired.kind) {
         case "editing":
+        case "submitting":
           return { state, effects: [] };
 
-        case "submitting":
-          return submitPresent(
-            state,
-            editorId,
-            current as EditorState & {
-              desired: Extract<Desired, { kind: "submitting" }>;
-              remote: Extract<Remote, { kind: "present" }>;
-            },
-          );
-
         case "none":
-          return beginDeletion(state, editorId, current, current.remote.tid);
+          return closePresentEditor(state, editorId, current, current.remote);
 
         default:
           return assertNever(current.desired);
@@ -1216,12 +1375,21 @@ function reconcileCore(state: DraftState, editorId: EditorId): DraftResult {
   }
 }
 
-function beginDeletion(
+function closePresentEditor(
   state: DraftState,
   editorId: EditorId,
   current: EditorState,
-  tid: number,
+  { tid, status }: Extract<Remote, { kind: "present" }>,
 ): DraftResult {
+  if (status !== "pending") {
+    return {
+      state: removeEditor(state, editorId),
+      effects: [
+        ...cancelSaveEffect(current, editorId),
+        { type: "clear-task-draft", editorId, tid },
+      ],
+    };
+  }
   const next = replaceEditor(state, editorId, {
     ...current,
     remote: { kind: "deleting", tid },
@@ -1235,70 +1403,6 @@ function beginDeletion(
       ...cancelCreateEffect(current, editorId),
       ...cancelSaveEffect(current, editorId),
       { type: "delete-task", editorId, tid },
-    ],
-  };
-}
-
-function submitPresent(
-  state: DraftState,
-  editorId: EditorId,
-  current: EditorState & {
-    desired: Extract<Desired, { kind: "submitting" }>;
-    remote: Extract<Remote, { kind: "present" }>;
-  },
-): DraftResult {
-  const next = removeEditor(state, editorId);
-
-  if (current.desired.delivery === "atomic-create") {
-    return {
-      state: next,
-      effects: [],
-    };
-  }
-
-  assertResolvedDraftForm(current.desired);
-
-  const clearedForm: ResolvedDraftForm = {
-    text: "",
-    entryPoint: current.desired.entryPoint,
-    agent: current.desired.agent,
-  };
-  return {
-    state: next,
-    effects: [
-      ...cancelSaveEffect(current, editorId),
-      {
-        type: "set-entry-point",
-        editorId,
-        tid: current.remote.tid,
-        entryPoint: current.desired.entryPoint,
-      },
-      {
-        type: "set-agent",
-        editorId,
-        tid: current.remote.tid,
-        agent: current.desired.agent,
-      },
-      {
-        type: "project-draft",
-        editorId,
-        tid: current.remote.tid,
-        form: clearedForm,
-        formVersion: current.formVersion,
-      },
-      {
-        type: "set-draft",
-        editorId,
-        tid: current.remote.tid,
-        text: "",
-        formVersion: current.formVersion,
-      },
-      {
-        type: "send-first-message",
-        editorId,
-        tid: current.remote.tid,
-        content: contentOf(current.desired),
-      },
     ],
   };
 }
@@ -1476,14 +1580,19 @@ function assertObservedFormFieldType(
 }
 
 function assertObservedActivityFactTypes(observation: TaskObservation): void {
-  assertObservedActivityFactType(observation, "active");
-  assertObservedActivityFactType(observation, "processing");
+  if (
+    hasOwnProperty(observation, "status") &&
+    typeof observation.status !== "string"
+  )
+    throw new Error("Observed activity field status must be a string");
+  assertObservedActivityFactType(observation, "alive");
+  assertObservedActivityFactType(observation, "isProcessing");
   assertObservedActivityFactType(observation, "hasMessages");
 }
 
 function assertObservedActivityFactType(
   observation: TaskObservation,
-  field: "active" | "processing" | "hasMessages",
+  field: "alive" | "isProcessing" | "hasMessages",
 ): void {
   if (
     hasOwnProperty(observation, field) &&
@@ -1509,11 +1618,13 @@ function isActiveSnapshot(snapshot: PersistedSnapshot): boolean {
   return snapshot.active || snapshot.processing || snapshot.hasMessages;
 }
 
-function isActiveObservation(observation: TaskObservation): boolean {
+export function isActiveObservation(observation: TaskObservation): boolean {
   return (
-    (hasOwnProperty(observation, "active") && observation.active === true) ||
-    (hasOwnProperty(observation, "processing") &&
-      observation.processing === true) ||
+    (hasOwnProperty(observation, "status") &&
+      observation.status !== "pending") ||
+    (hasOwnProperty(observation, "alive") && observation.alive === true) ||
+    (hasOwnProperty(observation, "isProcessing") &&
+      observation.isProcessing === true) ||
     (hasOwnProperty(observation, "hasMessages") &&
       observation.hasMessages === true)
   );

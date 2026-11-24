@@ -1372,6 +1372,9 @@ class App
 		string correlationId, int tid, BrowserSubmissionRejectionKind kind,
 		string reason)
 	{
+		if (kind == BrowserSubmissionRejectionKind.native_undo_refused)
+			clientHub.sendToSubscribed(tid,
+				Data(toJson(ErrorMessage("error", reason, tid)).representation));
 		if (correlationId.length == 0)
 			return;
 		BrowserSubmissionRejectedEvent event;
@@ -1807,8 +1810,6 @@ class App
 		// the task, not of one requester, so every subscribed client hears it.
 		if (auto refusal = nativeUndoDeliveryRefusal(td))
 		{
-			clientHub.sendToSubscribed(tid,
-				Data(toJson(ErrorMessage("error", refusal, tid)).representation));
 			sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
 				BrowserSubmissionRejectionKind.native_undo_refused, refusal);
 			return;
@@ -5257,11 +5258,27 @@ unittest
 
 	assert(fixture.session.sendCalls == 0);
 	assert(nonce !in fixture.app.tasks[fixture.tid].inFlightUiNonceGeneration);
-	assert(submissionRejectionCount(fixture.socket.sent) == 1);
-	auto receipt = parseJSON(fixture.socket.sent[$ - 1]);
-	assert(receipt["type"].str == "cydo/submission_rejected" && receipt["correlation_id"].str == nonce
-		&& receipt["tid"].integer == fixture.tid
-		&& receipt["kind"].str == "native_undo_refused");
+	void assertPairedRefusal(string expectedNonce)
+	{
+		assert(submissionRejectionCount(fixture.socket.sent) == 1);
+		auto error = parseJSON(fixture.socket.sent[$ - 2]);
+		auto receipt = parseJSON(fixture.socket.sent[$ - 1]);
+		assert(error["type"].str == "error" && error["tid"].integer == fixture.tid);
+		assert(receipt["type"].str == "cydo/submission_rejected"
+			&& receipt["correlation_id"].str == expectedNonce
+			&& receipt["tid"].integer == fixture.tid
+			&& receipt["kind"].str == "native_undo_refused"
+			&& receipt["reason"].str == error["message"].str);
+	}
+
+	assertPairedRefusal(nonce);
+	fixture.socket.sent = null;
+	enum entryNonce = "entry-native-undo-nonce";
+	fixture.app.handleUserMessage(fixture.socket,
+		testBrowserSubmission(fixture.tid, "new send during undo", entryNonce));
+	assert(fixture.session.sendCalls == 0);
+	assert(fixture.socket.sent.length == 2);
+	assertPairedRefusal(entryNonce);
 }
 
 unittest

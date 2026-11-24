@@ -209,7 +209,7 @@ describe("identity-keyed draft editors", () => {
       successor: b,
     });
     expect(getEditor(trace.state, a)).toMatchObject({
-      remote: { kind: "present", tid: 71 },
+      remote: { kind: "present", tid: 71, status: "pending" },
       desired: { text: "before metadata", ...defaults },
     });
     expect(trace.state.newTaskByProject[projectKey]).toBe(b);
@@ -271,7 +271,7 @@ describe("identity-keyed draft editors", () => {
     expect(trace.state.editors[a]).toBeUndefined();
     expect(tombstonedTids(trace.state)).toEqual([]);
     expect(getEditor(trace.state, b)).toMatchObject({
-      remote: { kind: "present", tid: 72 },
+      remote: { kind: "present", tid: 72, status: "pending" },
       desired: { text: "keep B" },
     });
     expect(trace.state.newTaskByProject[projectKey]).toBe(c);
@@ -407,6 +407,21 @@ describe("identity-keyed draft editors", () => {
         successor: b,
       }),
     ).toEqual([]);
+    expect(getEditor(trace.state, a)).toMatchObject({
+      remote: { kind: "present", tid: 71, status: "pending" },
+      desired: {
+        kind: "submitting",
+        text: "",
+        ...defaults,
+        images: [image],
+        attempt: {
+          delivery: "atomic-create",
+          correlationId: uuidA,
+          phase: "awaiting-acceptance",
+        },
+      },
+    });
+    trace.dispatch({ type: "submission-accepted", editorId: a, tid: 71 });
     expect(trace.state.editors[a]).toBeUndefined();
   });
 
@@ -610,7 +625,7 @@ describe("identity-keyed draft editors", () => {
       trace.dispatch({
         type: "task-observed",
         editorId: "task:72",
-        observation: { tid: 72, processing: true },
+        observation: { tid: 72, isProcessing: true },
       }),
     ).toEqual([]);
     expect(tombstonedTids(trace.state)).toEqual([]);
@@ -737,25 +752,129 @@ describe("identity-keyed draft editors", () => {
     expect(trace.dispatch({ type: "submit", editorId: a, images: [] })).toEqual(
       [],
     );
+    expect(getEditor(trace.state, a).desired).toMatchObject({
+      kind: "submitting",
+      text: "send after create",
+      ...defaults,
+      attempt: {
+        delivery: "send-when-present",
+        phase: "waiting-for-tid",
+        createCorrelationId: uuidA,
+      },
+    });
     const effects = trace.dispatch({
       type: "task-created",
       editorId: a,
       correlationId: uuidA,
+      messageCorrelationId: "first-message",
       tid: 71,
       successor: b,
     });
-    expect(effects.filter(({ type }) => type === "send-first-message")).toEqual(
-      [
-        {
-          type: "send-first-message",
+    expect(effects).toEqual([
+      expect.objectContaining({
+        type: "send-first-message",
+        editorId: a,
+        tid: 71,
+        content: { text: "send after create", images: [] },
+      }),
+    ]);
+    const frozen = getEditor(trace.state, a).desired;
+    expect(frozen).toMatchObject({
+      kind: "submitting",
+      text: "send after create",
+      attempt: {
+        delivery: "send-when-present",
+        phase: "awaiting-acceptance",
+        messageCorrelationId: "first-message",
+      },
+    });
+    for (const observation of [
+      { status: "active" },
+      { hasMessages: true },
+      { isProcessing: true, text: "" },
+    ] as const) {
+      expect(
+        trace.dispatch({
+          type: "task-observed",
           editorId: a,
-          tid: 71,
-          content: { text: "send after create", images: [] },
-        },
-      ],
-    );
-    expect(trace.state.editors[a]).toBeUndefined();
+          observation: { tid: 71, ...observation },
+        }),
+      ).toEqual([]);
+      expect(getEditor(trace.state, a).desired).toEqual(frozen);
+    }
     expect(trace.state.newTaskByProject[projectKey]).toBe(b);
+    trace.dispatch({ type: "submission-accepted", editorId: a, tid: 71 });
+    expect(trace.state.editors[a]).toBeUndefined();
+  });
+
+  it.each(["atomic", "waiting-for-tid"] as const)(
+    "returns a rejected %s submission to the same root without issuing a create",
+    (delivery) => {
+      const trace = editorTrace();
+      trace.dispatch(metadata);
+      trace.dispatch({ type: "attach-new-task", editorId: a, project });
+      trace.dispatch({ type: "edit-text", editorId: a, text: "retry this" });
+      if (delivery === "waiting-for-tid") {
+        trace.dispatch({
+          type: "create-timer-due",
+          editorId: a,
+          correlationId: uuidA,
+        });
+      }
+      const submit = { type: "submit", editorId: a, images: [] } as const;
+      trace.dispatch(submit);
+
+      expect(
+        trace.dispatch({ type: "submission-rejected", editorId: a }),
+      ).toEqual([]);
+      expect(trace.state.newTaskByProject[projectKey]).toBe(a);
+      expect(getEditor(trace.state, a)).toMatchObject({
+        remote: { kind: "absent" },
+        desired: { kind: "editing", text: "retry this", ...defaults },
+      });
+      expect(trace.dispatch(submit)).toEqual([
+        expect.objectContaining({
+          type: "create-task",
+          correlationId: uuidA,
+          content: { text: "retry this", images: [] },
+        }),
+      ]);
+    },
+  );
+
+  it("does not clear or release a present submission and preserves its form for a new nonce after rejection", () => {
+    const trace = editorTrace();
+    const editorId = "task:71";
+    trace.dispatch(metadata);
+    trace.dispatch({
+      type: "open-persisted",
+      editorId,
+      project,
+      snapshot: snapshot(71, "send this"),
+    });
+    const submit = { type: "submit", editorId, images: [] } as const;
+    expect(
+      trace.dispatch({ ...submit, messageCorrelationId: "first" }),
+    ).toEqual([
+      expect.objectContaining({
+        type: "send-first-message",
+        editorId,
+        tid: 71,
+      }),
+    ]);
+    trace.dispatch({ type: "submission-rejected", editorId, tid: 71 });
+    expect(getEditor(trace.state, editorId)).toMatchObject({
+      remote: { kind: "present", tid: 71, status: "pending" },
+      desired: { kind: "editing", text: "send this", ...defaults },
+    });
+    trace.dispatch({ ...submit, messageCorrelationId: "retry" });
+    expect(getEditor(trace.state, editorId).desired).toMatchObject({
+      attempt: {
+        delivery: "send-when-present",
+        phase: "awaiting-acceptance",
+        messageCorrelationId: "retry",
+      },
+    });
   });
 
   it("drops open, creating, and tombstoned editors and the project pointer on reset", () => {
@@ -997,8 +1116,8 @@ describe("draft reducer validation and full observations", () => {
     "oldText",
     "entryPoint",
     "agent",
-    "active",
-    "processing",
+    "status",
+    "isProcessing",
     "hasMessages",
   ] as const)(
     "rejects malformed observation field %s before applying an active fact",
@@ -1010,14 +1129,14 @@ describe("draft reducer validation and full observations", () => {
         {
           type: "task-observed",
           editorId: id,
-          observation: { tid: 71, active: true, [field]: null },
+          observation: { tid: 71, status: "active", [field]: null },
         },
-        `Observed ${["active", "processing", "hasMessages"].includes(field) ? "activity" : "form"} field ${field}`,
+        `Observed ${["status", "isProcessing", "hasMessages"].includes(field) ? "activity" : "form"} field ${field}`,
       );
     },
   );
 
-  it.each(["active", "processing", "hasMessages"] as const)(
+  it.each(["status", "isProcessing", "hasMessages"] as const)(
     "ignores inherited activity flag %s",
     (field) => {
       const trace = editorTrace();
@@ -1026,9 +1145,14 @@ describe("draft reducer validation and full observations", () => {
       trace.dispatch({
         type: "task-observed",
         editorId: id,
-        observation: Object.assign(Object.create({ [field]: true }) as object, {
-          tid: 71,
-        }),
+        observation: Object.assign(
+          Object.create({
+            [field]: field === "status" ? "active" : true,
+          }) as object,
+          {
+            tid: 71,
+          },
+        ),
       });
       expect(trace.state).toBe(before);
     },
@@ -1210,24 +1334,30 @@ describe("draft reducer validation and full observations", () => {
       corrupt({
         ...current,
         remote: { kind: "absent" },
-        desired: { ...current.desired, delivery: "send-when-present" },
+        desired: {
+          ...current.desired,
+          attempt: {
+            delivery: "send-when-present",
+            phase: "waiting-for-tid",
+            createCorrelationId: uuidA,
+          },
+        },
       }),
       restoreDefaults,
-      "send-when-present cannot target an absent task",
+      "Submitting editor must have an in-flight or bound task",
+    );
+    reject(
+      trace,
+      { type: "submission-accepted", editorId: a, tid: 71 },
+      "Acceptance does not match a bound submission",
     );
     reject(
       corrupt({
         ...current,
-        remote: { kind: "absent" },
-        createSchedule: uuidA,
+        remote: { kind: "present", tid: 71, status: "pending" },
       }),
-      restoreDefaults,
-      "Atomic submission must cancel its create schedule",
-    );
-    reject(
-      corrupt({ ...current, remote: { kind: "present", tid: 71 } }),
-      { type: "task-observed", editorId: a, observation: { tid: 71 } },
-      "Only an editing draft",
+      { type: "task-observed", editorId: a, observation: { tid: 72 } },
+      "does not match",
     );
   });
 });
@@ -1549,7 +1679,7 @@ describe("project metadata and ownership handoff", () => {
       trace.dispatch({
         type: "task-observed",
         editorId: id,
-        observation: { tid: 71, processing: true },
+        observation: { tid: 71, isProcessing: true },
       }),
     ).toEqual([
       { type: "cancel-draft-save", editorId: id, tid: 71, formVersion },

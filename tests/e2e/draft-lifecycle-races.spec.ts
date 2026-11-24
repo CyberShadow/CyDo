@@ -18,9 +18,15 @@ type ControlFrame = {
   to_tid?: number;
   correlation_id?: string;
   content?: unknown;
+  new_draft?: string;
   entry_point?: string;
   agent_name?: string;
   entry_points?: unknown;
+  task?: {
+    tid?: number;
+    draft?: string;
+    isProcessing?: boolean;
+  };
 };
 
 type CreateRequest = {
@@ -74,6 +80,11 @@ type HeldServerFrames =
       kind: "project-types";
       frame: ControlFrame;
       frames: SocketMessage[];
+    }
+  | {
+      kind: "acceptance";
+      tid: number;
+      frames: SocketMessage[];
     };
 
 interface DraftRaceProxy {
@@ -91,12 +102,15 @@ interface DraftRaceProxy {
   isCreateAckHeld(correlationId: string): boolean;
   isDeleteAckHeld(tid: number): boolean;
   isProjectTypesResponseHeld(): boolean;
+  isAcceptanceHeld(tid: number): boolean;
   heldProjectTypesResponse(): ControlFrame | null;
   wasServerControlDelivered(type: string, tid?: number): boolean;
   armProjectTypesResponseHold(): void;
+  armAcceptanceHold(tid: number): void;
   armDeleteAckHold(tid: number): void;
   releaseProjectTypesResponse(): void;
   releaseCreateAck(): void;
+  releaseAcceptanceHold(tid: number): void;
   releaseDeleteAck(tid: number): void;
 }
 
@@ -111,7 +125,7 @@ function parseControlFrame(message: SocketMessage): ControlFrame | null {
 }
 
 function controlTargetsTid(frame: ControlFrame, tid: number): boolean {
-  return frame.tid === tid || frame.to_tid === tid;
+  return frame.tid === tid || frame.to_tid === tid || frame.task?.tid === tid;
 }
 
 function isEmptyCreateContent(content: unknown): boolean {
@@ -132,6 +146,7 @@ async function installDraftRaceProxy(page: Page): Promise<DraftRaceProxy> {
   let createCorrelation: string | null = null;
   let heldServerFrames: HeldServerFrames | null = null;
   let armedDeleteTid: number | null = null;
+  let armedAcceptanceTid: number | null = null;
   let projectTypesResponseHoldArmed = false;
   let replayingServerFrames = false;
   let nextObservationOrder = 0;
@@ -142,6 +157,9 @@ async function installDraftRaceProxy(page: Page): Promise<DraftRaceProxy> {
     throw new Error("WebSocket route was not installed");
   };
   let releaseCreationAck = () => {
+    throw new Error("WebSocket route was not installed");
+  };
+  let releaseAcceptanceHold = (_tid: number) => {
     throw new Error("WebSocket route was not installed");
   };
   let releaseDeletionAck: (tid: number) => void = () => {
@@ -210,6 +228,22 @@ async function installDraftRaceProxy(page: Page): Promise<DraftRaceProxy> {
           frames: [message],
         };
         projectTypesResponseHoldArmed = false;
+        return;
+      }
+
+      if (
+        armedAcceptanceTid !== null &&
+        frame?.type === "task_updated" &&
+        frame.task?.tid === armedAcceptanceTid &&
+        frame.task.isProcessing === true
+      ) {
+        const tid = armedAcceptanceTid;
+        armedAcceptanceTid = null;
+        heldServerFrames = {
+          kind: "acceptance",
+          tid,
+          frames: [message],
+        };
         return;
       }
 
@@ -318,6 +352,16 @@ async function installDraftRaceProxy(page: Page): Promise<DraftRaceProxy> {
       heldServerFrames = null;
       replayHeldFrames(frames);
     };
+    releaseAcceptanceHold = (tid: number) => {
+      if (
+        heldServerFrames?.kind !== "acceptance" ||
+        heldServerFrames.tid !== tid
+      )
+        throw new Error("Accepting task_updated was not being held");
+      const { frames } = heldServerFrames;
+      heldServerFrames = null;
+      replayHeldFrames(frames);
+    };
     armDeletionAck = (tid: number) => {
       if (armedDeleteTid !== null || heldServerFrames?.kind === "delete")
         throw new Error(
@@ -367,6 +411,8 @@ async function installDraftRaceProxy(page: Page): Promise<DraftRaceProxy> {
       heldServerFrames?.kind === "delete" && heldServerFrames.tid === tid,
     isProjectTypesResponseHeld: () =>
       heldServerFrames?.kind === "project-types",
+    isAcceptanceHeld: (tid) =>
+      heldServerFrames?.kind === "acceptance" && heldServerFrames.tid === tid,
     heldProjectTypesResponse: () =>
       heldServerFrames?.kind === "project-types"
         ? heldServerFrames.frame
@@ -388,9 +434,15 @@ async function installDraftRaceProxy(page: Page): Promise<DraftRaceProxy> {
         );
       projectTypesResponseHoldArmed = true;
     },
+    armAcceptanceHold: (tid) => {
+      if (armedAcceptanceTid !== null || heldServerFrames !== null)
+        throw new Error("Server frame hold is already armed or active");
+      armedAcceptanceTid = tid;
+    },
     armDeleteAckHold: (tid) => armDeletionAck(tid),
     releaseProjectTypesResponse: () => releaseProjectTypesResponse(),
     releaseCreateAck: () => releaseCreationAck(),
+    releaseAcceptanceHold: (tid) => releaseAcceptanceHold(tid),
     releaseDeleteAck: (tid) => releaseDeletionAck(tid),
   };
 
@@ -1227,6 +1279,16 @@ test("post-tid clear and retype creates a successor while deletion is held", asy
   expect(proxy.taskDeleted.filter((tid) => tid === tidA)).toHaveLength(1);
 });
 
+async function expectSubmittingComposer(page: Page, prompt: string) {
+  await expect(page.locator(".task-type-picker:visible")).toBeVisible();
+  const textarea = page.locator(".input-textarea:visible");
+  await expect(textarea).toHaveValue(prompt);
+  await expect(textarea).toBeDisabled();
+  const submit = page.locator(".btn-send:visible");
+  await expect(submit).toHaveText("Submitting…");
+  await expect(submit).toBeDisabled();
+}
+
 test("submitting during a held empty create delivers one raw message after acknowledgement", async ({
   page,
   agentType,
@@ -1249,9 +1311,6 @@ test("submitting during a held empty create delivers one raw message after ackno
   await expect(
     page.locator(".task-type-row.selected .task-type-name"),
   ).toHaveText("blank");
-  const selectedAgent = await page
-    .locator(".agent-picker:visible")
-    .inputValue();
   const prompt = 'Please reply with "held-create-submit-once"';
   await input.fill(prompt);
   await expectControlledTextarea(page, prompt);
@@ -1266,69 +1325,34 @@ test("submitting during a held empty create delivers one raw message after ackno
       .filter((control) => control.frame.content === prompt),
   ).toHaveLength(0);
 
+  await expectSubmittingComposer(page, prompt);
   proxy.releaseCreateAck();
+  proxy.armAcceptanceHold(tidA);
 
-  const lifecycleTypes = [
-    "request_history",
-    "set_entry_point",
-    "set_agent_name",
-    "set_draft",
-    "message",
-  ];
-  await expect
-    .poll(() =>
-      lifecycleTypes
-        .flatMap((type) =>
-          proxy.controls(type, {
-            tid: tidA,
-            direction: "browser-to-server",
-          }),
-        )
-        .sort((left, right) => left.order - right.order)
-        .map((control) => control.frame.type),
-    )
-    .toEqual(lifecycleTypes);
-  const lifecycleControls = lifecycleTypes
-    .flatMap((type) =>
-      proxy.controls(type, {
-        tid: tidA,
-        direction: "browser-to-server",
-      }),
-    )
-    .sort((left, right) => left.order - right.order);
-  expect(lifecycleControls[1]!.frame.entry_point).toBe("blank");
-  expect(lifecycleControls[2]!.frame.agent_name).toBe(selectedAgent);
-  expect(lifecycleControls[3]!.frame.content).toBe("");
-  expect(contentContainsText(lifecycleControls[4]!.frame.content, prompt)).toBe(
-    true,
-  );
-
-  const rawMessages = proxy
-    .rawMessages()
-    .filter((message) => message.tid === tidA);
+  const messagesForTid = () =>
+    proxy.rawMessages().filter(({ tid }) => tid === tidA);
+  await expect.poll(() => messagesForTid().length).toBe(1);
+  const rawMessages = messagesForTid();
+  const outbound = { tid: tidA, direction: "browser-to-server" } as const;
+  const historyRequests = proxy.controls("request_history", outbound);
+  const entryPointUpdates = proxy.controls("set_entry_point", outbound);
+  expect(historyRequests).toHaveLength(1);
+  expect(entryPointUpdates).toHaveLength(1);
+  expect(entryPointUpdates[0]!.frame.entry_point).toBe("blank");
+  expect(historyRequests[0]!.order).toBeLessThan(rawMessages[0]!.order);
+  expect(entryPointUpdates[0]!.order).toBeLessThan(rawMessages[0]!.order);
+  expect(proxy.controls("set_agent_name", outbound)).toHaveLength(0);
+  expect(proxy.controls("set_draft", outbound)).toHaveLength(0);
   expect(rawMessages).toHaveLength(1);
   expect(rawMessages[0]!.nonce).toBeTruthy();
   expect(rawMessages[0]!.nonce).not.toBe(correlationA);
   expect(contentContainsText(rawMessages[0]!.content, prompt)).toBe(true);
   expect(proxy.createRequests).toHaveLength(1);
-  expect(
-    proxy
-      .controls("request_history", {
-        tid: tidA,
-        direction: "browser-to-server",
-      })
-      .filter((control) => control.frame.tid === tidA),
-  ).toHaveLength(1);
-  expect(
-    proxy
-      .controls("set_draft", { direction: "browser-to-server" })
-      .filter(
-        (control) =>
-          typeof control.frame.content === "string" &&
-          control.frame.content.length > 0,
-      ),
-  ).toHaveLength(0);
-
+  await expect.poll(() => proxy.isAcceptanceHeld(tidA)).toBe(true);
+  await expect(page).toHaveURL(new RegExp(`/task/${tidA}$`));
+  await expectSubmittingComposer(page, prompt);
+  proxy.releaseAcceptanceHold(tidA);
+  await expect(page.locator(".task-type-picker:visible")).toHaveCount(0);
   await expect(
     page.locator(".message.user-message", { hasText: prompt }),
   ).toHaveCount(1);
@@ -1337,18 +1361,85 @@ test("submitting during a held empty create delivers one raw message after ackno
   });
 
   expect(proxy.createRequests).toHaveLength(1);
-  expect(proxy.rawMessages().filter((message) => message.tid === tidA)).toEqual(
-    rawMessages,
-  );
+  expect(messagesForTid()).toEqual(rawMessages);
+  expect(proxy.controls("set_draft", outbound)).toHaveLength(0);
+});
+
+test("submitted present draft never overlaps its user message in the ordinary composer", async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const proxy = await installDraftRaceProxy(page);
+  await enterSession(page);
+  await expect.poll(() => proxy.bootstrapComplete()).toBe(true);
+
+  const prompt = 'Please reply with "no-submission-draft-overlap"';
+  const input = page.locator(".input-textarea:visible");
+  await input.fill(prompt);
+
+  await expect.poll(() => proxy.createRequests.length).toBe(1);
+  const create = proxy.createRequests[0]!;
+  expect(create.content).toEqual([]);
+  const correlationId = requireCorrelation(create, "persisted draft");
+  const tid = await waitForCreatedTid(proxy, correlationId);
+  expect(proxy.isCreateAckHeld(correlationId)).toBe(true);
+
+  proxy.releaseCreateAck();
+  await waitForServerDelivery(proxy, "task_created", tid);
+  await waitForServerDelivery(proxy, "focus_hint", tid);
+  await expectControlledTextarea(page, prompt);
+  await expect
+    .poll(() =>
+      proxy
+        .controls("set_draft", {
+          tid,
+          direction: "browser-to-server",
+        })
+        .some((control) => control.frame.content === prompt),
+    )
+    .toBe(true);
+
+  proxy.armAcceptanceHold(tid);
+  await page.locator(".btn-send:visible").click();
+
+  await expect.poll(() => proxy.isAcceptanceHeld(tid)).toBe(true);
+  await settleDeliveredServerFrame(page);
+  await expectSubmittingComposer(page, prompt);
+  expect(
+    proxy.rawMessages().filter((message) => message.tid === tid),
+  ).toHaveLength(1);
+  const emptyDraftWrites = () =>
+    proxy
+      .controls("set_draft", { tid, direction: "browser-to-server" })
+      .filter(({ frame }) => frame.content === "");
+  expect(emptyDraftWrites()).toHaveLength(0);
   expect(
     proxy
-      .controls("set_draft", { direction: "browser-to-server" })
-      .filter(
-        (control) =>
-          typeof control.frame.content === "string" &&
-          control.frame.content.length > 0,
-      ),
-  ).toHaveLength(0);
+      .controls("draft_updated", { tid, direction: "server-delivered" })
+      .some(({ frame }) => frame.new_draft === ""),
+  ).toBe(true);
+
+  await page.evaluate(() => {
+    const capture = () => {
+      if (document.querySelector(".task-type-picker")) return;
+      const textarea = [
+        ...document.querySelectorAll<HTMLTextAreaElement>(".input-textarea"),
+      ].find((input) => input.getClientRects().length > 0);
+      if (!textarea) return;
+      textarea.dataset.firstOrdinaryValue = textarea.value;
+      observer.disconnect();
+    };
+    const observer = new MutationObserver(capture);
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+  proxy.releaseAcceptanceHold(tid);
+  await expect(page.locator(".task-type-picker:visible")).toHaveCount(0);
+  await expect(input).toHaveAttribute("data-first-ordinary-value", "");
+  await expect(
+    page.locator(".message.user-message:visible", { hasText: prompt }),
+  ).toHaveCount(1);
+  await expect(input).toHaveValue("");
+  expect(emptyDraftWrites()).toHaveLength(0);
 });
 
 test("detached acknowledgement persists the latest controlled form without routing", async ({

@@ -57,6 +57,7 @@ import {
   editorSubmittable,
   type AgentInfo,
   getEditor,
+  isActiveObservation,
   reduceDraft,
   type DraftEffect,
   type DraftEvent,
@@ -485,14 +486,10 @@ export function taskObservationFromEntry(
     typeof entry.agent_name === "string"
   )
     observation.agent = entry.agent_name;
-  if (
-    Object.prototype.hasOwnProperty.call(entry, "status") &&
-    typeof entry.status === "string"
-  )
-    observation.active = entry.status !== "pending";
-  if (entry.alive) observation.active = true;
-  if (entry.isProcessing) observation.processing = true;
-  if (hasKnownMessages) observation.hasMessages = true;
+  if (entry.status !== undefined) observation.status = entry.status;
+  observation.alive = entry.alive;
+  observation.isProcessing = entry.isProcessing;
+  observation.hasMessages = hasKnownMessages;
   return observation;
 }
 
@@ -534,25 +531,6 @@ function projectDraftText(task: TaskState, text: string): TaskState {
   return {
     ...task,
     title: text.trim().split("\n")[0]?.slice(0, 100) || undefined,
-  };
-}
-
-function isAuthoritativeActivity(observation: TaskObservation): boolean {
-  return (
-    observation.active === true ||
-    observation.processing === true ||
-    observation.hasMessages === true
-  );
-}
-
-function activityOnlyObservation(
-  observation: TaskObservation,
-): TaskObservation {
-  return {
-    tid: observation.tid,
-    ...(observation.active ? { active: true } : {}),
-    ...(observation.processing ? { processing: true } : {}),
-    ...(observation.hasMessages ? { hasMessages: true } : {}),
   };
 }
 
@@ -870,6 +848,7 @@ export function useTaskManager(
   );
   const createTokenRef = useRef(0);
   const correlationToEditorRef = useRef(new Map<string, EditorId>());
+  const submissionCorrelationToEditorRef = useRef(new Map<string, EditorId>());
   const controlledOwnerByTidRef = useRef(
     new Map<number, ControlledDraftOwner>(),
   );
@@ -892,11 +871,23 @@ export function useTaskManager(
       const previousOwners = controlledOwnerByTidRef.current;
       const nextOwners = new Map<number, ControlledDraftOwner>();
       correlationToEditorRef.current.clear();
+      submissionCorrelationToEditorRef.current.clear();
       tombstoneTidToEditorRef.current.clear();
       for (const editorId of Object.keys(state.editors) as EditorId[]) {
-        const { remote } = getEditor(state, editorId);
+        const { remote, desired } = getEditor(state, editorId);
         if (remote.kind === "creating") {
           correlationToEditorRef.current.set(remote.correlationId, editorId);
+        }
+        if (desired.kind === "submitting") {
+          const { attempt } = desired;
+          if (attempt.delivery === "atomic-create") {
+            correlationToEditorRef.current.set(attempt.correlationId, editorId);
+          } else if (attempt.phase === "awaiting-acceptance") {
+            submissionCorrelationToEditorRef.current.set(
+              attempt.messageCorrelationId,
+              editorId,
+            );
+          }
         }
         if (remote.kind === "present") {
           const previous = previousOwners.get(remote.tid);
@@ -995,6 +986,27 @@ export function useTaskManager(
     setTasks((previous) => new Map(previous).set(updated.uuid, updated));
   }, []);
 
+  const requestTaskHistory = useCallback((tid: number) => {
+    const task = findByTid(tid);
+    if (!task) throw new Error(`History request requires task ${tid}`);
+    if (requestedHistoryRef.current.has(task.uuid)) return;
+    if (!connRef.current?.requestHistory(tid)) {
+      throw new Error(`History request failed for ${tid}`);
+    }
+    requestedHistoryRef.current.add(task.uuid);
+  }, []);
+
+  const sendMessageAttempt = useCallback(
+    (tid: number, content: ContentBlock[], nonce: string) => {
+      outbox.add({ tid, nonce, content, createdAt: Date.now() });
+      if (outboxReplayedEpochRef.current !== openConnectionEpochRef.current) {
+        outboxAttemptedNoncesRef.current.add(nonce);
+      }
+      connRef.current?.sendMessage(tid, content, nonce);
+    },
+    [],
+  );
+
   const sendRealTask = useCallback(
     (uuid: string, text: string, images?: readonly ImageAttachment[]) => {
       const task = liveStates.get(uuid);
@@ -1005,11 +1017,7 @@ export function useTaskManager(
       const displayContent =
         content as import("./protocol").AssistantContentBlock[];
       const nonce = crypto.randomUUID();
-      outbox.add({ tid: task.tid, nonce, content, createdAt: Date.now() });
-      if (outboxReplayedEpochRef.current !== openConnectionEpochRef.current) {
-        outboxAttemptedNoncesRef.current.add(nonce);
-      }
-      connRef.current?.sendMessage(task.tid, content, nonce);
+      sendMessageAttempt(task.tid, content, nonce);
       const messageId = `opt-${++task.msgIdCounter}`;
       const updated: TaskState = {
         ...task,
@@ -1031,8 +1039,31 @@ export function useTaskManager(
       liveStates.set(uuid, updated);
       setTasks((previous) => new Map(previous).set(uuid, updated));
     },
-    [],
+    [sendMessageAttempt],
   );
+
+  const saveDraft = useCallback((tid: number, draft: string) => {
+    connRef.current?.saveDraft(tid, draft);
+    const task = findByTid(tid);
+    if (!task) return;
+    let updated: TaskState | null = null;
+    if (!draft && task.serverDraft !== undefined) {
+      updated = { ...task, serverDraft: undefined };
+    }
+    if (task.status === "pending" && task.messages.length === 0) {
+      const title = draft.trim().split("\n")[0]?.slice(0, 100) || undefined;
+      if (title !== (updated ?? task).title) {
+        updated = { ...(updated ?? task), title };
+      }
+    }
+    if (!updated) return;
+    liveStates.set(task.uuid, updated);
+    setTasks((previous) => {
+      const next = new Map(previous);
+      next.set(task.uuid, updated);
+      return next;
+    });
+  }, []);
 
   const executeDraftEffects = useCallback(
     (effects: readonly DraftEffect[]) => {
@@ -1157,6 +1188,10 @@ export function useTaskManager(
             connRef.current?.saveDraft(effect.tid, effect.text);
             break;
 
+          case "clear-task-draft":
+            saveDraft(effect.tid, "");
+            break;
+
           case "project-draft":
             projectDraft(effect.tid, effect.form);
             break;
@@ -1175,15 +1210,14 @@ export function useTaskManager(
             break;
           }
 
-          case "send-first-message": {
-            const task = findByTid(effect.tid);
-            if (!task) {
-              throw new Error(`First message requires task ${effect.tid}`);
-            }
-            liveStates.set(task.uuid, { ...task, serverDraft: undefined });
-            sendRealTask(task.uuid, effect.content.text, effect.content.images);
+          case "send-first-message":
+            requestTaskHistory(effect.tid);
+            sendMessageAttempt(
+              effect.tid,
+              buildContentBlocks(effect.content.text, effect.content.images),
+              effect.messageCorrelationId,
+            );
             break;
-          }
 
           default:
             assertNeverDraftEffect(effect);
@@ -1195,7 +1229,9 @@ export function useTaskManager(
       returnFromDeletedDraft,
       ordinaryDraftStore,
       projectDraft,
-      sendRealTask,
+      requestTaskHistory,
+      saveDraft,
+      sendMessageAttempt,
     ],
   );
   executeDraftEffectsRef.current = executeDraftEffects;
@@ -1229,7 +1265,7 @@ export function useTaskManager(
         parentTid,
         relationType,
         "pending",
-        submitting,
+        false,
         false,
         false,
         false,
@@ -1251,26 +1287,16 @@ export function useTaskManager(
     [bindTaskUuid, entryPointFor],
   );
 
-  const requestTaskHistory = useCallback((tid: number) => {
-    const task = findByTid(tid);
-    if (!task) throw new Error(`History request requires task ${tid}`);
-    if (requestedHistoryRef.current.has(task.uuid)) return;
-    if (!connRef.current?.requestHistory(tid)) {
-      throw new Error(`History request failed for ${tid}`);
-    }
-    requestedHistoryRef.current.add(task.uuid);
-  }, []);
-
   const releaseTombstonedActivity = useCallback(
     (
       editorId: EditorId,
       observation: TaskObservation,
     ): readonly DraftEffect[] | null => {
-      if (!isAuthoritativeActivity(observation)) return null;
+      if (!isActiveObservation(observation)) return null;
       const result = applyDraftEvent({
         type: "task-observed",
         editorId,
-        observation: activityOnlyObservation(observation),
+        observation,
       });
       return result.effects;
     },
@@ -1500,6 +1526,43 @@ export function useTaskManager(
     [applyDraftEvent, bindTaskUuid, releaseTombstonedActivity],
   );
 
+  const showServerError = useCallback((message: string, tid?: number) => {
+    console.error("Server error:", message, "tid:", tid);
+    const transition = receiveServerError(liveStates, message, tid);
+    if (transition.tasks !== liveStates) {
+      const task = findByTid(tid!);
+      liveStates.set(task!.uuid, transition.tasks.get(task!.uuid)!);
+      setTasks((prev) => receiveServerError(prev, message, tid).tasks);
+    }
+    setServerError(transition.serverError);
+  }, []);
+
+  const recoverSubmission = useCallback(
+    (editorId: EditorId, tid?: number) => {
+      const { desired, remote } = getEditor(draftStateRef.current, editorId);
+      if (desired.kind !== "submitting") return false;
+      const boundTid = remote.kind === "present" ? remote.tid : undefined;
+      if (tid !== boundTid)
+        throw new Error("Submission rejection has the wrong task ID");
+      const { attempt } = desired;
+      if (
+        attempt.delivery === "send-when-present" &&
+        attempt.phase === "awaiting-acceptance"
+      ) {
+        outbox.remove(attempt.messageCorrelationId);
+      }
+      executeDraftEffects(
+        applyDraftEvent({
+          type: "submission-rejected",
+          editorId,
+          tid,
+        }).effects,
+      );
+      return true;
+    },
+    [applyDraftEvent, executeDraftEffects],
+  );
+
   const handleControlMessage = useCallback(
     (msg: Exclude<ControlMessage, DraftUpdatedMessage>) => {
       const controlledTid =
@@ -1587,8 +1650,10 @@ export function useTaskManager(
           const editorId = correlationId
             ? correlationToEditorRef.current.get(correlationId)
             : undefined;
-          if (editorId && correlationId) {
-            const before = getEditor(draftStateRef.current, editorId);
+          const before = editorId
+            ? getEditor(draftStateRef.current, editorId)
+            : undefined;
+          if (editorId && correlationId && before?.remote.kind === "creating") {
             if (
               before.project.workspace !== workspace ||
               before.project.projectPath !== projectPath
@@ -1609,6 +1674,11 @@ export function useTaskManager(
               editorId,
               correlationId,
               tid,
+              messageCorrelationId:
+                desired.kind === "submitting" &&
+                desired.attempt.phase === "waiting-for-tid"
+                  ? crypto.randomUUID()
+                  : undefined,
               successor:
                 desired.kind === "none" ? undefined : mintCompositionId(),
             });
@@ -1623,7 +1693,11 @@ export function useTaskManager(
                 desired,
               );
             }
-            if (desired.kind === "submitting") requestTaskHistory(tid);
+            if (
+              desired.kind === "submitting" &&
+              desired.attempt.delivery === "atomic-create"
+            )
+              requestTaskHistory(tid);
             executeDraftEffects(result.effects);
             if (desired.kind !== "none" && attachedProjectName) {
               navigate(
@@ -1721,11 +1795,47 @@ export function useTaskManager(
           break;
         }
         case "task_updated": {
+          const { tid, isProcessing, status, error } = msg.task;
+          const previousStatus = findByTid(tid)?.status;
           const result = applyTaskSnapshotEntry(msg.task);
           if (!result) break;
           const { updated, effects } = result;
           setTasks((prev) => new Map(prev).set(updated.uuid, updated));
           executeDraftEffects(effects);
+          const owner = controlledOwnerByTidRef.current.get(tid);
+          if (!owner) break;
+          const { desired } = getEditor(draftStateRef.current, owner.editorId);
+          if (desired.kind === "submitting") {
+            if (isProcessing) {
+              applyDraftEvent({
+                type: "submission-accepted",
+                editorId: owner.editorId,
+                tid,
+              });
+            } else if (
+              status === "failed" &&
+              previousStatus !== "failed" &&
+              recoverSubmission(owner.editorId, tid) &&
+              error
+            ) {
+              showServerError(error, tid);
+            }
+          }
+          break;
+        }
+        case "cydo/submission_rejected": {
+          const { correlation_id, tid, kind, reason } = msg;
+          const editorId =
+            submissionCorrelationToEditorRef.current.get(correlation_id) ??
+            correlationToEditorRef.current.get(correlation_id);
+          if (
+            editorId &&
+            recoverSubmission(editorId, tid) &&
+            kind !== "validation" &&
+            kind !== "native_undo_refused"
+          ) {
+            showServerError(reason, tid);
+          }
           break;
         }
         case "focus_hint": {
@@ -2086,16 +2196,8 @@ export function useTaskManager(
           break;
         }
         case "error": {
-          const errMsg = msg.message;
-          const errTid = msg.tid;
-          console.error("Server error:", errMsg, "tid:", errTid);
-          const transition = receiveServerError(liveStates, errMsg, errTid);
-          if (transition.tasks !== liveStates) {
-            const task = findByTid(errTid!);
-            liveStates.set(task!.uuid, transition.tasks.get(task!.uuid)!);
-            setTasks((prev) => receiveServerError(prev, errMsg, errTid).tasks);
-          }
-          setServerError(transition.serverError);
+          const { message, tid } = msg;
+          showServerError(message, tid);
           break;
         }
       }
@@ -2113,6 +2215,8 @@ export function useTaskManager(
       removeTaskIdentity,
       applyTaskSnapshotEntry,
       requestTaskHistory,
+      recoverSubmission,
+      showServerError,
       isCurrentOpenEpoch,
     ],
   );
@@ -2690,35 +2794,15 @@ export function useTaskManager(
   const submitDraft = useCallback(
     (editorId: EditorId, images: ImageAttachment[]) => {
       const editor = getEditor(draftStateRef.current, editorId);
-      const presentSubmission =
-        editor.remote.kind === "present" ? { tid: editor.remote.tid } : null;
-      const result = applyDraftEvent({
+      dispatchDraftIntent({
         type: "submit",
         editorId,
         images,
+        messageCorrelationId:
+          editor.remote.kind === "present" ? crypto.randomUUID() : undefined,
       });
-      if (presentSubmission) requestTaskHistory(presentSubmission.tid);
-      executeDraftEffects(result.effects);
-      if (presentSubmission) {
-        const projectName = currentDraftRouteProjectName(editor.project, null);
-        if (!projectName) return;
-        navigate(
-          {
-            workspace: editor.project.workspace,
-            project: projectName,
-            tid: String(presentSubmission.tid),
-          },
-          true,
-        );
-      }
     },
-    [
-      applyDraftEvent,
-      currentDraftRouteProjectName,
-      navigate,
-      executeDraftEffects,
-      requestTaskHistory,
-    ],
+    [dispatchDraftIntent],
   );
 
   const send = useCallback(
@@ -2905,29 +2989,6 @@ export function useTaskManager(
 
   const setArchived = useCallback((tid: number, archived: boolean) => {
     connRef.current?.setArchived(tid, archived);
-  }, []);
-
-  const saveDraft = useCallback((tid: number, draft: string) => {
-    connRef.current?.saveDraft(tid, draft);
-    const task = findByTid(tid);
-    if (!task) return;
-    let updated: TaskState | null = null;
-    if (!draft && task.serverDraft !== undefined) {
-      updated = { ...task, serverDraft: undefined };
-    }
-    if (task.status === "pending" && task.messages.length === 0) {
-      const title = draft.trim().split("\n")[0]?.slice(0, 100) || undefined;
-      if (title !== (updated ?? task).title) {
-        updated = { ...(updated ?? task), title };
-      }
-    }
-    if (!updated) return;
-    liveStates.set(task.uuid, updated);
-    setTasks((previous) => {
-      const next = new Map(previous);
-      next.set(task.uuid, updated);
-      return next;
-    });
   }, []);
 
   const sendAskUserResponse = useCallback((tid: number, content: string) => {

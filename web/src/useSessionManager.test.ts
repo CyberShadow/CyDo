@@ -137,6 +137,13 @@ describe("task observation adapter", () => {
       ...fields,
     }) as TaskSnapshotEntry;
 
+  const idleFacts = {
+    tid: 11,
+    alive: false,
+    isProcessing: false,
+    hasMessages: false,
+  };
+
   it("drops own-present null and undefined form facts", () => {
     expect(
       taskObservationFromEntry(
@@ -148,25 +155,54 @@ describe("task observation adapter", () => {
         }),
         false,
       ),
-    ).toEqual({ tid: 11 });
+    ).toEqual(idleFacts);
   });
 
   it("omits absent form facts", () => {
-    expect(taskObservationFromEntry(entry(), false)).toEqual({ tid: 11 });
+    expect(taskObservationFromEntry(entry(), false)).toEqual(idleFacts);
   });
 
   it("preserves explicitly empty form strings", () => {
     expect(
       taskObservationFromEntry(
-        entry({ draft: "", entry_point: "", agent_name: "", status: "" }),
+        entry({
+          draft: "",
+          entry_point: "",
+          agent_name: "",
+          status: "pending",
+        }),
         false,
       ),
     ).toEqual({
-      tid: 11,
+      ...idleFacts,
       text: "",
       entryPoint: "",
       agent: "",
-      active: true,
+      status: "pending",
+    });
+  });
+});
+
+describe("task observation activity facts", () => {
+  it("preserves an alive failed task with messages and no processing", () => {
+    expect(
+      taskObservationFromEntry(
+        {
+          tid: 11,
+          child_count: 0,
+          alive: true,
+          resumable: false,
+          isProcessing: false,
+          status: "failed",
+        },
+        true,
+      ),
+    ).toEqual({
+      tid: 11,
+      alive: true,
+      isProcessing: false,
+      status: "failed",
+      hasMessages: true,
     });
   });
 });
