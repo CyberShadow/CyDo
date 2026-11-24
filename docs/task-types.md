@@ -169,7 +169,8 @@ By default, `offered_to: interactive` gives interactive sessions access.
 `offered_to: all` includes sub-tasks as well. A session can request other
 singletons, and its own type is excluded. Singleton types are interactive and
 keep their sessions open. CyDo starts them through system entry points that
-are hidden on the new-task page.
+are hidden on the new-task page. CyDo does not flag a singleton for attention
+when its turn ends.
 
 CyDo routes each request to the newest unarchived singleton task in the
 caller's project and workspace, starting one if needed. The caller waits

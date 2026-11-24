@@ -3231,32 +3231,41 @@ class App
 		persistence.setLastActive(tid, tasks[tid].lastActive);
 	}
 
+	private bool isSingletonTask(const TaskData* td)
+	{
+		return td.parentTid <= 0 && td.entryPoint.length > 0
+			&& taskTypeCatalog.singletonsForProject(td.projectPath).byName(td.entryPoint) !is null;
+	}
+
 	private void onTaskTurnCompletedAlive(int tid)
 	{
 		if (tid !in tasks)
 			return;
 		auto td = &tasks[tid];
-		td.needsAttention = true;
-		persistence.setNeedsAttention(tid, true);
-		if (td.resultText.length > 0)
-			td.notificationBody = truncateTitle(td.resultText, 200);
-		else
+		if (!isSingletonTask(td))
 		{
-			// Only the text waits for history. It belongs to the notification
-			// this turn raises, on the history lineage the turn ran on.
-			td.notificationBody = "";
-			auto lineage = td.history.generation;
-			bool announced;
-			historyPipeline.whenHistoryLoaded(tid, () {
-				auto current = tid in tasks;
-				if (current is null || current.history.generation != lineage
-					|| !current.needsAttention || current.notificationBody.length > 0)
-					return;
-				current.notificationBody = extractLastAssistantText(tid);
-				if (announced)
-					broadcastTaskUpdate(tid);
-			});
-			announced = true;
+			td.needsAttention = true;
+			persistence.setNeedsAttention(tid, true);
+			if (td.resultText.length > 0)
+				td.notificationBody = truncateTitle(td.resultText, 200);
+			else
+			{
+				// Only the text waits for history. It belongs to the notification
+				// this turn raises, on the history lineage the turn ran on.
+				td.notificationBody = "";
+				auto lineage = td.history.generation;
+				bool announced;
+				historyPipeline.whenHistoryLoaded(tid, () {
+					auto current = tid in tasks;
+					if (current is null || current.history.generation != lineage
+						|| !current.needsAttention || current.notificationBody.length > 0)
+						return;
+					current.notificationBody = extractLastAssistantText(tid);
+					if (announced)
+						broadcastTaskUpdate(tid);
+				});
+				announced = true;
+			}
 		}
 		touchAndPersistLastActive(tid);
 		if (td.status != TaskStatus.alive)
@@ -7881,6 +7890,47 @@ unittest
 	drainSubmissionNextTicks();
 	assert(td.notificationBody == "last words");
 	assert(fixture.base.publicationOrder[updates .. $] == ["task_update"]);
+}
+
+// A configured singleton finishes its turn without raising a notification.
+unittest
+{
+	auto root = buildPath(tempDir(), "cydo-app-singleton-turn");
+	if (exists(root))
+		rmdirRecurse(root);
+	scope(exit) rmdirRecurse(root);
+	mkdirRecurse(buildPath(root, "prompts"));
+	write(buildPath(root, "prompts", "start.md"), "{{task_description}}\n");
+	auto definitions = buildPath(root, "task-types.yaml");
+	write(definitions,
+		"task_types:\n"
+		~ "  test:\n"
+		~ "    model_class: large\n"
+		~ "singletons:\n"
+		~ "  turn_test_singleton:\n"
+		~ "    task_type: test\n"
+		~ "    title: Turn test singleton\n"
+		~ "    prompt_template: prompts/start.md\n");
+
+	auto fixture = new DriverHistoryTurnFixture;
+	scope(exit) fixture.base.socket.disconnect("test complete", DisconnectType.requested);
+	auto app = fixture.base.app;
+	app.taskTypeCatalog = new TaskTypeCatalog(root, definitions, (string name) => true);
+	auto td = fixture.td;
+	td.projectPath = root;
+	td.entryPoint = "turn_test_singleton";
+	td.resultText = "Singleton finished";
+	auto lastActive = td.lastActive;
+
+	app.onTaskTurnCompletedAlive(fixture.base.tid);
+
+	assert(td.status == TaskStatus.alive);
+	assert(td.lastActive > lastActive);
+	assert(!td.needsAttention);
+	assert(td.notificationBody.length == 0);
+	auto row = app.persistence.loadTasks()[0];
+	assert(row.lastActive == td.lastActive);
+	assert(!row.needsAttention);
 }
 
 // The session exits while the text is being read: the stale read and its
