@@ -1,10 +1,13 @@
 /** @vitest-environment jsdom */
 
 import { describe, expect, it } from "vitest";
+import { render } from "preact";
+import { act } from "preact/test-utils";
 import renderToString from "preact-render-to-string";
 import { MessageList } from "./MessageList";
 import { DevModeContext } from "../devMode";
-import type { DisplayMessage } from "../types";
+import { makeTaskState, type DisplayMessage, type TaskState } from "../types";
+import { reduceMessage } from "../sessionReducer";
 import type { AgnosticEvent } from "../protocol";
 
 describe("MessageList parse-error rendering", () => {
@@ -926,4 +929,103 @@ describe("MessageList turn results", () => {
   it("keeps the generic headline for unnamed failures", () => {
     expect(renderResult({})).toContain("Session Failed");
   });
+});
+
+describe("MessageList approval reconciliation", () => {
+  it.each([
+    { scenario: "Claude replay", streaming: false, replay: true },
+    {
+      scenario: "Claude replay that moves the row",
+      streaming: true,
+      replay: true,
+    },
+    { scenario: "live nonce echo", streaming: false, replay: false },
+  ])(
+    "keeps an opened approval expanded after $scenario",
+    async ({ streaming, replay }) => {
+      const label = "Approve and retry";
+      const permission =
+        'Permission granted for this exact command only, as one whole string: "echo AUTO_MODE_FLAG blocked".';
+      const content = [
+        {
+          type: "text" as const,
+          text: `[SYSTEM: ${label}]\n\n${permission}\n\n[/SYSTEM]`,
+        },
+      ];
+      const assistant: DisplayMessage = {
+        id: "streaming-assistant",
+        type: "assistant",
+        content: [],
+        streaming: true,
+      };
+      const pending: TaskState = {
+        ...makeTaskState(1),
+        msgIdCounter: 1,
+        messages: [
+          ...(streaming ? [assistant] : []),
+          {
+            id: "pending-1",
+            type: "user",
+            content,
+            cydoMeta: { label },
+            nonce: replay ? undefined : "n1",
+            pending: true,
+            isProvisional: true,
+            ackState: 3,
+          },
+        ],
+      };
+      const root = document.createElement("div");
+      const show = (state: TaskState) =>
+        act(() => {
+          render(
+            <MessageList
+              taskTid={1}
+              messages={state.messages}
+              replacementEvents={state.replacementEvents}
+              blocks={state.blocks}
+              isProcessing={false}
+              bandStatus=""
+            />,
+            root,
+          );
+        });
+      const expanded = () => root.querySelector(".system-user-expanded");
+
+      try {
+        await show(pending);
+        await act(() => {
+          root
+            .querySelector<HTMLElement>(".system-user-message.pending")!
+            .click();
+        });
+        expect(expanded()?.textContent ?? "").toContain(permission);
+
+        const before = expanded();
+        const echo = {
+          type: "item/started" as const,
+          item_id: "native-user",
+          item_type: "user_message",
+          content,
+          ...(replay ? { is_replay: true } : { correlation_id: "n1" }),
+          uuid: "native-approval",
+          meta: { label },
+        };
+        const echoed = reduceMessage(pending, echo, 20);
+        expect(echoed.messages[0]).toMatchObject({
+          uuid: "native-approval",
+          seq: 20,
+        });
+        if (streaming) expect(echoed.messages[1]).toBe(assistant);
+        await show(echoed);
+
+        expect(expanded()?.textContent ?? "").toContain(permission);
+        expect(expanded()).toBe(before);
+      } finally {
+        await act(() => {
+          render(null, root);
+        });
+      }
+    },
+  );
 });

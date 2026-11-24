@@ -1058,8 +1058,35 @@ function reduceItemStartedUserMessage(
     }
   }
 
+  let reconciled = displacedPlaceholder;
+  let filtered = state.messages;
+  // Match by nonce when provided, leaving unrelated placeholders alone.
+  // A replay already displaced its placeholder above and must not consume
+  // a second one.
+  if (!event.pending && !event.is_replay) {
+    const matchIdx = state.messages.findIndex(
+      (m) =>
+        isPendingUserMsg(m) &&
+        !m.uuid &&
+        (eventNonce ? m.nonce === eventNonce : hasSameContent(m)),
+    );
+    if (matchIdx >= 0) {
+      reconciled = state.messages[matchIdx];
+      filtered = state.messages.filter((_, i) => i !== matchIdx);
+    } else if (!eventNonce) {
+      const removed = state.messages.filter(
+        isReplayDisposableProvisionalUserMsg,
+      );
+      if (removed.length === 1) reconciled = removed[0];
+      filtered = state.messages.filter(
+        (m) => !isReplayDisposableProvisionalUserMsg(m),
+      );
+    }
+  }
+
+  // The echo inherits the render identity of the single row it reconciles.
+  const id = reconciled?.id ?? `user-echo-${++state.msgIdCounter}`;
   if (event.pending) {
-    const id = `user-echo-${++state.msgIdCounter}`;
     const echoMsg: DisplayMessage = {
       id,
       type: "user" as const,
@@ -1085,7 +1112,6 @@ function reduceItemStartedUserMessage(
     return { ...state, messages };
   }
 
-  const id = `user-echo-${++state.msgIdCounter}`;
   const echoMsg: DisplayMessage = {
     id,
     type: "user" as const,
@@ -1117,28 +1143,6 @@ function reduceItemStartedUserMessage(
     echoMsg.echoPending = true;
   }
 
-  // Match the placeholder by nonce. If the event carries a nonce and a
-  // pending message with that nonce exists, replace it. Otherwise append
-  // a fresh ack-1 message without disturbing other pending placeholders.
-  // A replay echo already displaced its placeholder above — it must not
-  // consume a second same-content placeholder here.
-  const matchIdx = event.is_replay
-    ? -1
-    : state.messages.findIndex(
-        (m) =>
-          isPendingUserMsg(m) &&
-          !m.uuid &&
-          (eventNonce ? m.nonce === eventNonce : hasSameContent(m)),
-      );
-
-  const filtered =
-    matchIdx >= 0
-      ? state.messages.filter((_, i) => i !== matchIdx)
-      : eventNonce || event.is_replay
-        ? state.messages
-        : state.messages.filter(
-            (m) => !isReplayDisposableProvisionalUserMsg(m),
-          );
   const messages = event.is_meta
     ? [...filtered, echoMsg]
     : insertBeforeStreaming(filtered, echoMsg);

@@ -637,6 +637,7 @@ describe("live user echo reconciliation", () => {
   function expectCanonicalReplayUser(state: TaskState) {
     expect(userMessages(state)).toEqual([
       expect.objectContaining({
+        id: "opt-user",
         content: [{ type: "text", text: prompt }],
         uuid: nativeUuid,
         seq: replaySeq,
@@ -683,6 +684,74 @@ describe("live user echo reconciliation", () => {
     expectConfirmedUser(state);
     expectCanonicalReplayUser(state);
   });
+
+  it("keeps the displaced row's id when the replay itself is pending", () => {
+    const state = makeUnconfirmedState();
+    const echoed = reduceMessage(
+      state,
+      { ...replayUserEvent, pending: true },
+      replaySeq,
+    );
+    expect(echoed.messages).toHaveLength(1);
+    expect(echoed.messages[0]).toMatchObject({
+      id: "opt-user",
+      pending: true,
+      uuid: nativeUuid,
+      seq: replaySeq,
+    });
+  });
+
+  it("allocates a fresh id when no placeholder matches the echo", () => {
+    const state = makeUnconfirmedState();
+    const placeholder = state.messages[0];
+    const echoed = reduceMessage(
+      state,
+      asEvent({
+        ...replayUserEvent,
+        is_replay: false,
+        correlation_id: "another-client",
+      }),
+      replaySeq,
+    );
+    expect(echoed.messages).toHaveLength(2);
+    expect(echoed.messages[0]).toBe(placeholder);
+    expect(echoed.messages[1]?.id).toBe("user-echo-2");
+  });
+
+  it.each([
+    { scenario: "one removed row", otherContent: undefined, id: "opt-user" },
+    {
+      scenario: "multiple removed rows",
+      otherContent: "other",
+      id: "user-echo-2",
+    },
+  ])(
+    "uses $id in the nonce-less fallback with $scenario",
+    ({ otherContent, id }) => {
+      const state = makeUnconfirmedState();
+      const first = { ...state.messages[0]!, nonce: undefined };
+      const messages = [first];
+      if (otherContent !== undefined) {
+        messages.push({
+          ...first,
+          id: "opt-other",
+          content: [{ type: "text", text: otherContent }],
+        });
+      }
+      const content = [{ type: "text" as const, text: "different content" }];
+      const echoed = reduceMessage(
+        { ...state, messages },
+        { ...replayUserEvent, is_replay: false, content },
+        replaySeq,
+      );
+      expect(echoed.messages).toHaveLength(1);
+      expect(echoed.messages[0]).toMatchObject({
+        id,
+        uuid: nativeUuid,
+        content,
+      });
+    },
+  );
 
   it("ends provisional identity after a steering confirmation without a replay", () => {
     let state: TaskState = makeUnconfirmedState();
@@ -823,6 +892,7 @@ describe("live user echo reconciliation", () => {
         correlation_id: nonce,
       }),
     );
+    expect(echoed.messages[0]?.id).toBe("pending");
     const afterAck = reduceAgentAck(echoed, nonce);
     expect(afterAck).toBe(echoed);
     expect(afterAck.messages[0]).not.toHaveProperty("ackState");
