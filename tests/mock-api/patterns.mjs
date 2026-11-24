@@ -323,6 +323,14 @@ export function matchPattern(userText) {
     };
   }
 
+  match = userText.match(/call create task ([^|]+)\|(.*)/is);
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__CreateTask",
+      input: { title: match[1].trim(), prompt: match[2].trim(), entry_point: "agentic" },
+    };
+
   // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
   // Checked before "call N tasks" so "call task X call 2 tasks Y Z" nests correctly.
   match = userText.match(/call task (\S+) (.*)/is);

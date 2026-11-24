@@ -70,6 +70,7 @@ task_types:
     model_class: large
     read_only: true
     output_type: []
+    creatable_entry_points: { agentic: {}, blank: {} }
     creatable_tasks:
       research:
         prompt_template: prompts/deep_research.md
