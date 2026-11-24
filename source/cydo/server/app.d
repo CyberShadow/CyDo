@@ -1316,6 +1316,15 @@ class App
 		import ae.utils.json : jsonParse;
 		auto json = jsonParse!WsMessage(text);
 
+		auto task = json.tid in tasks;
+		if (task !is null && task.status == TaskStatus.importable
+			&& json.type != "request_history" && json.type != "promote_task")
+		{
+			ws.send(Data(toJson(ErrorMessage("error",
+				"Import this session before using task commands", json.tid)).representation));
+			return;
+		}
+
 		switch (json.type)
 		{
 			case "create_task":       handleCreateTaskMsg(ws, json); break;
@@ -7462,6 +7471,11 @@ version (unittest) private final class CodexOfferFixture
 		app.historyPipeline = new HistoryEventPipeline(HistoryEventPipelineHost(
 			getTask: (int taskId) => taskId in app.tasks,
 			resolveTaskHistory: &app.resolveTaskHistory,
+			normalizeKnownSystemMessageMeta: (string event, int taskId) => event,
+			sendHistoryOperations: (WebSocketAdapter ws, int taskId) {},
+			sendReplaySupplementalState: (WebSocketAdapter ws, int taskId) {},
+			subscribe: (WebSocketAdapter ws, int taskId) {},
+			onHistorySubscribed: (int taskId) {},
 			injectAgentNameIntoSessionInit: (string event, string agentName) => event,
 			broadcastHistoryOperations: (int taskId) {},
 			loadDriverHistory: (int taskId, HistoryAccess access) {
@@ -7485,6 +7499,54 @@ version (unittest) private final class CodexOfferFixture
 		assert(app.importableScanRecords_.length == 1, "Reconciliation must publish the Codex offer");
 		tid = app.importableScanRecords_.keys[0];
 	}
+}
+
+unittest
+{
+	import std.conv : to;
+
+	auto root = buildPath(tempDir(), "cydo-app-codex-offer-commands");
+	scope(exit) if (exists(root)) rmdirRecurse(root);
+	auto fixture = new CodexOfferFixture(root);
+	auto app = fixture.app;
+	auto task = fixture.tid in app.tasks;
+	auto socket = fixture.base.socket;
+	auto message = WsMessage(tid: fixture.tid, workspace: "local");
+	foreach (command; ["create_task", "message", "resume", "interrupt", "unsend_message",
+		"sigint", "close_stdin", "stop", "dismiss_attention", "fork_task", "undo_task",
+		"edit_message", "edit_raw_event", "set_archived", "set_draft", "delete_task",
+		"ask_user_response", "permission_prompt_response", "approve_retry", "refresh_workspaces",
+		"set_task_type", "set_entry_point", "set_agent_name", "request_task_types"])
+	{
+		message.type = command;
+		foreach (dryRun; command == "undo_task" ? [false, true] : [false])
+		{
+			message.dry_run = dryRun;
+			auto before = socket.sent.length;
+			app.handleWsMessage(socket, toJson(message));
+			assert(socket.sent.length == before + 1, command);
+			auto error = jsonParse!ErrorMessage(socket.sent[$ - 1]);
+			assert(error.type == "error" && error.tid == fixture.tid
+				&& error.message == "Import this session before using task commands", command);
+		}
+	}
+	assert(task.status == TaskStatus.importable && fixture.driverReads == 0);
+
+	app.handleWsMessage(socket, `{"type":"request_history","tid":`
+		~ to!string(fixture.tid) ~ `,"workspace":"local"}`);
+	drainSubmissionNextTicks();
+	assert(fixture.driverReads == 1 && task.history.isLoaded);
+	assert(socket.sent[$ - 1].canFind(`"type":"task_history_end"`));
+	bool readRaw;
+	app.lookupRawSource(fixture.tid, 0, (RawSourceLookupResult result) {
+		assert(result.status == RawSourceLookupStatus.ok && result.raw is null);
+		readRaw = true;
+	});
+	assert(readRaw && fixture.driverReads == 1);
+
+	message.type = "promote_task";
+	app.handleWsMessage(socket, toJson(message));
+	assert(task.status == TaskStatus.completed && task.workspace == "local");
 }
 
 unittest

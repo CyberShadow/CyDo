@@ -337,6 +337,9 @@ isolatedTest("editing the second identical raw line rewrites that physical JSONL
 
     await expect(duplicatePromptText(page)).toHaveCount(2);
 
+    await page.getByRole("button", { name: "Import Session" }).click();
+    await expect(page.locator(".btn-banner-resume")).toBeVisible();
+
     const duplicateValue = await openRawEditorForUserMessage(page, duplicatePrompt);
     const rawLinesBefore = readHistoryFile(historyPath)
       .split("\n")
@@ -444,6 +447,9 @@ isolatedTest("editing replayed steering raw JSON rewrites the earlier enqueue li
     await expect(
       page.locator(".message.assistant-message", { hasText: assistantReply }),
     ).toBeVisible();
+
+    await page.getByRole("button", { name: "Import Session" }).click();
+    await expect(page.locator(".btn-banner-resume")).toBeVisible();
 
     const currentValue = await openRawEditorForUserMessage(page, steeringPrompt);
     expect(currentValue).toContain('"operation": "enqueue"');
