@@ -1048,6 +1048,36 @@ describe("ToolCall numbered shell output", () => {
     expect(block?.querySelector("pre")?.textContent).toBe(stdout);
   });
 
+  it.each(["cat -n x.svg", "nl -ba x.svg"])(
+    "renders direct numbered SVG stdout without a preview for %s",
+    async (command) => {
+      const root = await mountResult(
+        command,
+        makeResult({ toolResult: { stdout: numberedSvg } }),
+      );
+      expect(
+        root.querySelector(".tool-result-container pre")?.textContent,
+      ).toBe(numberedSvg);
+      expectNoPreview(root);
+    },
+  );
+
+  it("renders unclassified numbered SVG stdout without a preview", async () => {
+    const stdout =
+      '     1\t<svg xmlns="http://www.w3.org/2000/svg">\n' +
+      '     2\t  <rect width="10" height="10"/>\n' +
+      "     3\t</svg>\n";
+    const root = await mountResult(
+      "nl -ba x.svg | tail | head -3",
+      makeResult({ toolResult: { stdout } }),
+    );
+    expect(
+      root.querySelector('[data-testid="semantic-shell-output"]'),
+    ).toBeNull();
+    expect(root.querySelector("pre.tool-result")?.textContent).toBe(stdout);
+    expectNoPreview(root);
+  });
+
   it("offers a preview for verbatim SVG", async () => {
     const root = await mountResult(
       "cat x.svg",
@@ -1068,13 +1098,16 @@ describe("ToolCall numbered shell output", () => {
     ).not.toBeNull();
   });
 
-  it("keeps generic rendering for a rejected command", async () => {
+  it("offers an SVG preview through generic rendering for a rejected command", async () => {
     const root = await mountResult(
       "cat README.md | rev",
       makeResult({ toolResult: { stdout: svg } }),
     );
     expect(
       root.querySelector('[data-testid="semantic-shell-output"]'),
+    ).toBeNull();
+    expect(
+      root.querySelector('[data-testid="semantic-shell-read"]'),
     ).toBeNull();
     expect(root.querySelector("pre.tool-result")?.textContent).toBe(svg);
     expect(root.querySelector('[title="Show rendered"]')).not.toBeNull();

@@ -4,7 +4,6 @@ import {
   isMarkdownPath,
   isSvgPath,
   looksLikeSvg,
-  stripCatLineNumbers,
 } from "./fileFormats";
 
 describe("fileFormats", () => {
@@ -20,9 +19,9 @@ describe("fileFormats", () => {
     expect(isSvgPath("icons/logo.png")).toBe(false);
   });
 
-  it("strips cat-style line number prefixes", () => {
+  it("does not infer SVG from numbered content", () => {
     const input = "   1\t<svg>\n   2\t</svg>\n";
-    expect(stripCatLineNumbers(input)).toBe("<svg>\n</svg>\n");
+    expect(detectRenderableFormat(undefined, input)).toBeNull();
   });
 
   it("sniffs svg content", () => {

@@ -32,7 +32,6 @@ import {
   isMarkdownPath,
   isSvgPath,
   looksLikeSvg,
-  stripCatLineNumbers,
 } from "../lib/fileFormats";
 import {
   getApplyPatchFileChanges,
@@ -2846,9 +2845,7 @@ function SmartResultPre({
           {tokens ? renderTokenLines(tokens) : content}
         </ResultPre>
       }
-      renderedView={
-        <SvgPreview content={stripCatLineNumbers(content).trim()} />
-      }
+      renderedView={<SvgPreview content={content} />}
     />
   );
 }

@@ -10,11 +10,6 @@ export function isSvgPath(filePath?: string | null): boolean {
   return /\.svg$/i.test(filePath);
 }
 
-/** Strip cat -n line number prefixes ("    1→" or "    1\t") from text. */
-export function stripCatLineNumbers(text: string): string {
-  return text.replace(/^\s*\d+[\u2192\t]/gm, "");
-}
-
 /**
  * Check if text content looks like a valid SVG document.
  * Used for content-sniffing when no filePath is available.
@@ -36,7 +31,7 @@ export function detectRenderableFormat(
 ): RenderableFormat {
   if (isMarkdownPath(filePath)) return "markdown";
   if (isSvgPath(filePath)) return "svg";
-  if (content && looksLikeSvg(stripCatLineNumbers(content).trim())) {
+  if (content && looksLikeSvg(content)) {
     return "svg";
   }
   return null;
