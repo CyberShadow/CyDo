@@ -1,6 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import {
   rowsLanguage,
+  rowsLanguageMismatch,
   shellOutputView,
   type FileOrigin,
   type OutputSegment,
@@ -180,7 +181,7 @@ type ParsedStage =
   | { kind: "source"; stream: ShellStream }
   | {
       kind: "filter";
-      operand: string | undefined;
+      operands: string[];
       op: StageOp;
     };
 
@@ -201,8 +202,8 @@ function parsePositiveDecimal(text: string): number | undefined {
 function parseCatArgs(
   cmd: SimpleCommand,
   requireFile: boolean,
-): ParseResult<string | undefined> {
-  let filePath: string | undefined;
+): ParseResult<{ operands: string[] }> {
+  const operands: string[] = [];
   let options = true;
   for (const { text, kind } of cmd.args) {
     if (options && text === "--") {
@@ -218,15 +219,12 @@ function parseCatArgs(
         `invalid cat file operand ${JSON.stringify(text)}`,
       );
     }
-    if (filePath !== undefined) {
-      return reject("multiple_paths", `unexpected cat file operand ${text}`);
-    }
-    filePath = text;
+    operands.push(text);
   }
-  if (requireFile && filePath === undefined) {
+  if (requireFile && operands.length === 0) {
     return reject("missing_path", "expected one file path");
   }
-  return { ok: true, value: filePath };
+  return { ok: true, value: { operands } };
 }
 
 function parseLineCountArgs(
@@ -408,8 +406,8 @@ const MAX_NL_WIDTH = 2_147_483_647;
 function parseNlArgs(
   cmd: SimpleCommand,
   requireFile: boolean,
-): ParseResult<{ options: NlOptions; filePath?: string }> {
-  let filePath: string | undefined;
+): ParseResult<{ options: NlOptions; operands: string[] }> {
+  const operands: string[] = [];
   const options: NlOptions = {};
   let parseOptions = true;
 
@@ -426,13 +424,7 @@ function parseNlArgs(
           `invalid nl file operand ${JSON.stringify(arg.text)}`,
         );
       }
-      if (filePath !== undefined) {
-        return reject(
-          "multiple_paths",
-          `unexpected nl file operand ${arg.text}`,
-        );
-      }
-      filePath = arg.text;
+      operands.push(arg.text);
       continue;
     }
 
@@ -480,10 +472,10 @@ function parseNlArgs(
     return reject("unsupported_option", `unsupported nl option ${flag}`);
   }
 
-  if (requireFile && filePath === undefined) {
+  if (requireFile && operands.length === 0) {
     return reject("missing_path", "expected one file path");
   }
-  return { ok: true, value: { options, filePath } };
+  return { ok: true, value: { options, operands } };
 }
 
 function parseRgArgs(
@@ -646,21 +638,21 @@ function parseStage(
   const redirectRejection = rejectRedirectEffect(cmd);
   if (redirectRejection) return redirectRejection;
 
-  function filter(op: StageOp, operand?: string): ParseResult<ParsedStage> {
-    if (first && operand === undefined) {
+  function filter(op: StageOp, operands: string[]): ParseResult<ParsedStage> {
+    if (first && operands.length === 0) {
       return reject("missing_path", "expected one file path");
     }
-    if (!first && operand !== undefined) {
+    if (!first && operands.length !== 0) {
       return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
     }
-    return { ok: true, value: { kind: "filter", operand, op } };
+    return { ok: true, value: { kind: "filter", operands, op } };
   }
 
   switch (name) {
     case "cat": {
       const parsed = parseCatArgs(cmd, first);
       if (!parsed.ok) return parsed;
-      return filter({ kind: "identity" }, parsed.value);
+      return filter({ kind: "identity" }, parsed.value.operands);
     }
     case "head": {
       const parsed = parseHeadArgs(cmd, first);
@@ -668,7 +660,7 @@ function parseStage(
       const { count = 10, filePath } = parsed.value;
       return filter(
         { kind: "slice", range: { type: "head", count } },
-        filePath,
+        filePath === undefined ? [] : [filePath],
       );
     }
     case "tail": {
@@ -677,7 +669,10 @@ function parseStage(
       const { range, filePath } = parsed.value;
       const sliceRange: SliceRange =
         range.type === "all" ? { type: "tail-count", count: 10 } : range;
-      return filter({ kind: "slice", range: sliceRange }, filePath);
+      return filter(
+        { kind: "slice", range: sliceRange },
+        filePath === undefined ? [] : [filePath],
+      );
     }
     case "sed": {
       const parsed = parseSedArgs(cmd, first);
@@ -688,7 +683,7 @@ function parseStage(
           kind: "slice",
           range: { type: "lines", start, end },
         },
-        filePath,
+        filePath === undefined ? [] : [filePath],
       );
     }
     case "nl": {
@@ -696,7 +691,7 @@ function parseStage(
       if (!parsed.ok) return parsed;
       return filter(
         { kind: "number-lines", options: parsed.value.options },
-        parsed.value.filePath,
+        parsed.value.operands,
       );
     }
     case "grep":
@@ -708,7 +703,7 @@ function parseStage(
           kind: "search",
           context: parsed.value.context,
         },
-        parsed.value.filePath,
+        parsed.value.filePath === undefined ? [] : [parsed.value.filePath],
       );
     }
     case "git":
@@ -743,7 +738,7 @@ function parseStage(
       ok: true,
       value: {
         kind: "filter",
-        operand: undefined,
+        operands: [],
         op: { kind: "opaque", commandName: name },
       },
     };
@@ -970,18 +965,34 @@ function buildPipelineStream(
   const first = parseStage(stages[0]!, "first", cdPath);
   if (!first.ok) return first;
   const source = first.value;
-  const opened =
-    source.kind === "source"
-      ? ({ ok: true, value: source.stream } as const)
-      : applyPipelineStage(
-          openFile({
-            kind: "worktree",
-            filePath: resolveAgainstCd(cdPath, source.operand!),
-          }),
-          source.op,
+  let stream: ShellStream;
+  if (source.kind === "source") {
+    stream = source.stream;
+  } else {
+    const rows = openFile({
+      kind: "worktree",
+      filePath: resolveAgainstCd(cdPath, source.operands[0]!),
+    });
+    let input = rows;
+    if (source.operands.length > 1) {
+      const language = rowsLanguage(rows.source);
+      for (let index = 1; index < source.operands.length; index++) {
+        const next = openFile({
+          kind: "worktree",
+          filePath: resolveAgainstCd(cdPath, source.operands[index]!),
+        });
+        const mismatch = rowsLanguageMismatch(
+          language,
+          rowsLanguage(next.source),
         );
-  if (!opened.ok) return opened;
-  let stream = opened.value;
+        if (mismatch) return reject("unsupported_command", mismatch.reason);
+      }
+      input = { ...rows, source: { kind: "unpositioned", language } };
+    }
+    const opened = applyPipelineStage(input, source.op);
+    if (!opened.ok) return opened;
+    stream = opened.value;
+  }
   for (let index = 1; index < stages.length; index++) {
     const parsed = parseStage(stages[index]!, "later", cdPath);
     if (!parsed.ok) return parsed;
@@ -1068,16 +1079,17 @@ function classifyGenericList(
     }
 
     let memberOutput: OutputSegment[];
-    if (member.length === 1 && cmd.name !== "git" && cmd.name !== "diff") {
+    if (
+      member.length === 1 &&
+      !READ_COMMANDS.has(cmd.name ?? "") &&
+      cmd.name !== "git" &&
+      cmd.name !== "diff"
+    ) {
       if (cmd.name === "echo" || cmd.name === "printf" || cmd.name === "wc") {
         const redirectRejection = rejectRedirectEffect(cmd);
         if (redirectRejection) return redirectRejection;
       }
-      const result = classifySimpleCommandAsListMember(
-        cmd,
-        originalCommand,
-        cdPath,
-      );
+      const result = classifyStepListMember(cmd);
       if (!result) {
         return reject(
           "unsupported_command",
@@ -1088,12 +1100,6 @@ function classifyGenericList(
     } else {
       const result = classifyPipeline(member, originalCommand, cdPath);
       if (!result.ok) return result;
-      if (isGitObjectRead(result.value.output[0]!)) {
-        return reject(
-          "unsupported_command",
-          "git object reads cannot be combined with other list output",
-        );
-      }
       if (result.value.output[0]!.kind === "diff") {
         return reject(
           "unsupported_command",
@@ -2090,20 +2096,8 @@ function classifyEchoListMember(cmd: SimpleCommand): OutputSegment[] | null {
   return [{ kind: "literal", text }];
 }
 
-function classifySimpleCommandAsListMember(
-  cmd: SimpleCommand,
-  originalCommand: string,
-  cdPath: string,
-): OutputSegment[] | null {
+function classifyStepListMember(cmd: SimpleCommand): OutputSegment[] | null {
   switch (cmd.name) {
-    case "sed":
-    case "cat":
-    case "head":
-    case "tail":
-    case "nl": {
-      const r = classifyPipeline([cmd], originalCommand, cdPath);
-      return r.ok ? r.value.output : null;
-    }
     case "printf":
       return classifyPrintfListMember(cmd);
     case "wc":

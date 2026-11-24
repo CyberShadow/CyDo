@@ -43,6 +43,24 @@ export function rowsLanguage(source: RowSource): string {
     : source.language;
 }
 
+export function rowsLanguageMismatch(
+  first: string,
+  next: string,
+): { ok: false; reason: string } | null {
+  return first === next
+    ? null
+    : {
+        ok: false,
+        reason: `concatenated rows have different languages: ${first}, ${next}`,
+      };
+}
+
+const rowLabels = {
+  file: "file rows",
+  nl: "nl-numbered rows",
+  grep: "search rows",
+} as const;
+
 export function shellOutputView(
   output: readonly OutputSegment[],
 ): ViewResult<ShellOutputView> {
@@ -89,8 +107,10 @@ export function derivePlan(
   const blocks: OutputBlockPlan[] = [];
   const literalTexts = new Set<string>();
   const shellFormat = { kind: "content", language: "shell-output" } as const;
-  for (const [index, segment] of output.entries()) {
-    const id = String(index);
+  let index = 0;
+  while (index < output.length) {
+    const segment = output[index++]!;
+    const id = String(blocks.length);
     switch (segment.kind) {
       case "literal":
         if (literalTexts.has(segment.text)) return ambiguous;
@@ -117,11 +137,44 @@ export function derivePlan(
         });
         break;
       case "rows": {
-        const next = output[index + 1];
+        const language = rowsLanguage(segment.source);
+        const numbering = segment.numbering;
+        const rowKind = numbering?.kind ?? "file";
+        let next = output[index];
+        const single = next?.kind !== "rows";
+        while (next?.kind === "rows") {
+          const nextKind = next.numbering?.kind ?? "file";
+          if (rowKind !== nextKind) {
+            return {
+              ok: false,
+              reason: `${rowLabels[rowKind]} cannot be concatenated with ${rowLabels[nextKind]}`,
+            };
+          }
+          if (rowKind === "nl") {
+            return {
+              ok: false,
+              reason:
+                "nl-numbered output cannot be concatenated with other nl-numbered output",
+            };
+          }
+          if (rowKind === "grep") {
+            return {
+              ok: false,
+              reason:
+                "search output cannot be concatenated with other search output",
+            };
+          }
+          const mismatch = rowsLanguageMismatch(
+            language,
+            rowsLanguage(next.source),
+          );
+          if (mismatch) return mismatch;
+          next = output[++index];
+        }
         if (next && next.kind !== "literal") return ambiguous;
         const content: OutputFormat = {
           kind: "content",
-          language: rowsLanguage(segment.source),
+          language,
         };
         const location: Extract<
           OutputBlockPlan["location"],
@@ -129,10 +182,9 @@ export function derivePlan(
         > = {
           kind: "from-cursor",
           end: next
-            ? { kind: "before-block", blockId: String(index + 1) }
+            ? { kind: "before-block", blockId: String(blocks.length + 1) }
             : { kind: "end-of-output", requiresComplete: true },
         };
-        const numbering = segment.numbering;
         let format: OutputFormat = content;
         let validator: SpanValidatorId | undefined;
         if (numbering?.kind === "nl") {
@@ -156,7 +208,7 @@ export function derivePlan(
         }
         if (validator) location.validator = validator;
         const block: OutputBlockPlan = { id, format, location };
-        if (!numbering && segment.source.kind === "file") {
+        if (single && !numbering && segment.source.kind === "file") {
           block.document = {
             filePath: segment.source.origin.filePath,
             preview: !next,

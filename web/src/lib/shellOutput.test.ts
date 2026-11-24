@@ -122,10 +122,30 @@ describe("derivePlan", () => {
     expect(blocks([rows("a.md", numbering)])[0]).not.toHaveProperty("document");
   });
 
+  it("combines adjacent same-language rows into one block", () => {
+    expect(blocks([rows(), rows("b.md")])).toEqual([
+      {
+        id: "0",
+        format: { kind: "content", language: "markdown" },
+        location: {
+          kind: "from-cursor",
+          end: { kind: "end-of-output", requiresComplete: true },
+          validator: "non-empty",
+        },
+      },
+    ]);
+  });
+
+  it("rejects adjacent search rows", () => {
+    expect(derivePlan([rows("a.d", grep), rows("b.d", grep)])).toEqual({
+      ok: false,
+      reason: "search output cannot be concatenated with other search output",
+    });
+  });
+
   it.each([
     { description: "empty output", output: [] },
     { description: "rows followed by a summary", output: [rows(), summary] },
-    { description: "adjacent rows", output: [rows(), rows("b.md")] },
     {
       description: "duplicate literals",
       output: [separator, rows(), separator],

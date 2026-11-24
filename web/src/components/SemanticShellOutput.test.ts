@@ -288,6 +288,47 @@ describe("SemanticShellOutput document and numbered rendering", () => {
     expect(html).toContain("&lt;svg");
   });
 
+  it("renders concatenated D files in one source block", async () => {
+    const result = await parseShellSemantic("cat a.d b.d");
+    assert(result.ok && result.value.kind === "output");
+    const view = shellOutputView(result.value.output);
+    assert(view.ok && view.value.kind === "plan");
+
+    const stdout = "module a;\nvoid f() {}\nmodule b;\n";
+    const html = renderSemantic(stdout, view.value.plan);
+    expect(html.match(/data-testid="semantic-shell-block-0"/g)).toHaveLength(1);
+    expect(html).toContain(stdout);
+    expect(html).not.toContain("semantic-shell-raw");
+  });
+
+  it("renders concatenated SVG files in one source block without a preview", async () => {
+    const result = await parseShellSemantic("cat a.svg b.svg");
+    assert(result.ok && result.value.kind === "output");
+    const view = shellOutputView(result.value.output);
+    assert(view.ok && view.value.kind === "plan");
+
+    const stdout = `${SVG_CONTENT}\n${SVG_CONTENT}\n`;
+    const html = renderSemantic(stdout, view.value.plan);
+    expect(html.match(/data-testid="semantic-shell-block-0"/g)).toHaveLength(1);
+    expect(html).not.toContain("semantic-shell-raw");
+    expect(html).not.toContain('alt="SVG preview"');
+    expect(html).toContain("&lt;svg");
+  });
+
+  it("renders concatenated Markdown files as source", async () => {
+    const result = await parseShellSemantic("cat a.md b.md");
+    assert(result.ok && result.value.kind === "output");
+    const view = shellOutputView(result.value.output);
+    assert(view.ok && view.value.kind === "plan");
+
+    const stdout = "# A\n# B\n";
+    const html = renderSemantic(stdout, view.value.plan);
+    expect(html).toContain('data-testid="semantic-shell-block-0"');
+    expect(html).toContain(stdout);
+    expect(html).not.toContain("text-content");
+    expect(html).not.toContain("<h1");
+  });
+
   it("routes head output of an SVG file through file content preview", () => {
     const outputPlan: OutputPlan = {
       version: 1,

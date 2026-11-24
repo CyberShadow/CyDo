@@ -973,6 +973,22 @@ describe("ToolCall semantic shell output", () => {
     ).toBe("int value;\n");
   });
 
+  it("highlights concatenated D files in one shell output block", async () => {
+    const stdout = "module a;\nvoid f() {}\nmodule b;\n";
+    const root = await mountResult(
+      "cat a.d b.d",
+      makeResult({ toolResult: { stdout } }),
+    );
+
+    const block = root.querySelector('[data-testid="semantic-shell-block-0"]');
+    expect(block).not.toBeNull();
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(block?.querySelector("pre span[style*='color']")).not.toBeNull();
+    });
+    expect(block?.querySelector("pre")?.textContent).toBe(stdout);
+  });
+
   function expectNoPreview(root: HTMLElement): void {
     expect(
       root.querySelector(

@@ -47,6 +47,17 @@ function gitRows(
   };
 }
 
+function unpositionedRows(
+  language: string,
+  numbering: NumberingLayer | null = null,
+): RowsSegment {
+  return {
+    kind: "rows",
+    source: { kind: "unpositioned", language },
+    numbering,
+  };
+}
+
 const literal = (text: string): OutputSegment => ({ kind: "literal", text });
 const summaryLine = (): OutputSegment => ({ kind: "summary-line" });
 const diff = (): OutputSegment => ({ kind: "diff" });
@@ -245,7 +256,6 @@ describe("strict shell argv", () => {
     ["nl -w 2e0 f", "2e0"],
     ["nl f -z", "-z"],
     ["cat f -n", "-n"],
-    ["cat f extra", "extra"],
     ["cat -- -", "-"],
     ['cat ""', '""'],
     ["cat f && cd -Z /tmp", "-Z"],
@@ -749,18 +759,8 @@ describe("stream composition", () => {
 });
 
 describe("unpositioned rows", () => {
-  function unpositionedRows(
-    language: string,
-    numbering: NumberingLayer | null = null,
-  ): RowsSegment {
-    return {
-      kind: "rows",
-      source: { kind: "unpositioned", language },
-      numbering,
-    };
-  }
-
   it.each([
+    ["cat f extra", "text"],
     ["tail f.d | head -2", "d"],
     ["cat file.txt | head -5 | tail -2", "text"],
     ["tail f.d | head -5", "d"],
@@ -1054,13 +1054,12 @@ describe("redirect effects", () => {
   });
 
   it("rejects a stdout alias on fd 3 in a cat list member", async () => {
-    // Single-stage cat list members report their generic unsupported-command reason.
     await expect(
       parseShellSemantic("echo done; cat f.d 3>/dev/stdout"),
     ).resolves.toEqual({
       ok: false,
-      code: "unsupported_command",
-      reason: "unsupported command in list: cat",
+      code: "redirection_on_read",
+      reason: "cat output redirection diverts the command output",
     });
   });
 
@@ -1237,18 +1236,6 @@ describe("cd && read (should succeed)", () => {
 });
 
 describe("cd && read (should reject)", () => {
-  it.each([
-    "git show HEAD:f && cat f",
-    "cat f && git show HEAD:f",
-    "git show HEAD:f | sed -n 1,2p && echo done",
-  ])("rejects the git-object read in %s", async (command) => {
-    await expect(parseShellSemantic(command)).resolves.toEqual({
-      ok: false,
-      code: "unsupported_command",
-      reason: "git object reads cannot be combined with other list output",
-    });
-  });
-
   it.each(["git diff && cat f", "cat f && git diff", "diff a b && cat f"])(
     "rejects the diff output in %s",
     async (command) => {
@@ -1259,15 +1246,6 @@ describe("cd && read (should reject)", () => {
       });
     },
   );
-
-  it("rejects a numbered git-object read combined with other list output", async () => {
-    await expect(
-      parseShellSemantic("git show HEAD:f | nl && echo done"),
-    ).resolves.toMatchObject({
-      ok: false,
-      reason: "git object reads cannot be combined with other list output",
-    });
-  });
 
   it("rejects a git-object read under cd", async () => {
     await expect(
@@ -1347,17 +1325,145 @@ describe("cd newline-separated read (should reject)", () => {
   });
 });
 
-describe("structured list output boundaries", () => {
+describe("concatenated rows", () => {
   it.each([
-    "cat a.md\ncat b.md",
-    "cat a.md && cat b.md",
-    "cd . && nl -ba f.svg | sed -n 1,20p && cat empty",
-    "echo same && cat a && echo same",
-  ])("rejects an ambiguous output plan for %s", async (command) => {
+    ["cat a.d b.d", "d", [unpositionedRows("d")]],
+    ["cat -- a.d b.d", "d", [unpositionedRows("d")]],
+    ["cat a.d && cat b.d", "d", [fileRows("a.d"), fileRows("b.d")]],
+    ["cat a.d; cat b.d", "d", [fileRows("a.d"), fileRows("b.d")]],
+    ["cat a.md\ncat b.md", "markdown", [fileRows("a.md"), fileRows("b.md")]],
+    ["cat a.md && cat b.md", "markdown", [fileRows("a.md"), fileRows("b.md")]],
+    ["git show HEAD:f && cat f", "text", [gitRows("f"), fileRows("f")]],
+    ["cat f && git show HEAD:f", "text", [fileRows("f"), gitRows("f")]],
+    ["git show HEAD:a.d && cat b.d", "d", [gitRows("a.d"), fileRows("b.d")]],
+  ] as const)(
+    "%s plans one content block",
+    async (command, language, output) => {
+      const result = await parseShellSemantic(command);
+      assert(result.ok);
+      expect(segmentsOf(result.value)).toEqual(output);
+      expect(plan(result.value)?.blocks).toEqual([
+        {
+          id: "0",
+          format: { kind: "content", language },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+            validator: "non-empty",
+          },
+        },
+      ]);
+    },
+  );
+
+  it.each([
+    ["nl -ba a.d b.d", nl],
+    ["cat a.d b.d | grep -n x", grep],
+  ] as const)("%s numbers unpositioned rows", async (command, numbering) => {
+    const result = await parseShellSemantic(command);
+    assert(result.ok);
+    expect(segmentsOf(result.value)).toEqual([
+      unpositionedRows("d", numbering),
+    ]);
+  });
+
+  it("uses the next block ID for the literal after concatenated rows", async () => {
+    const result = await parseShellSemantic("cat a.d && cat b.d && echo done");
+    assert(result.ok);
+    expect(plan(result.value)?.blocks).toEqual([
+      {
+        id: "0",
+        format: { kind: "content", language: "d" },
+        location: {
+          kind: "from-cursor",
+          end: { kind: "before-block", blockId: "1" },
+          validator: "non-empty",
+        },
+      },
+      {
+        id: "1",
+        format: { kind: "content", language: "shell-output" },
+        location: { kind: "unique-literal", text: "done\n", include: "self" },
+      },
+    ]);
+  });
+
+  it("keeps document metadata on a Git object before a literal", async () => {
+    const result = await parseShellSemantic(
+      "git show HEAD:f | sed -n 1,2p && echo done",
+    );
+    assert(result.ok);
+    expect(segmentsOf(result.value)).toEqual([
+      gitRows("f", { type: "lines", start: 1, end: 2 }),
+      literal("done\n"),
+    ]);
+    expect(plan(result.value)?.blocks[0]?.document).toEqual({
+      filePath: "f",
+      preview: false,
+    });
+  });
+
+  it("accepts numbered Git object rows before a literal", async () => {
+    const result = await parseShellSemantic(
+      "git show HEAD:f | nl && echo done",
+    );
+    assert(result.ok);
+    expect(segmentsOf(result.value)).toEqual([
+      gitRows("f", all, nl),
+      literal("done\n"),
+    ]);
+  });
+
+  it.each([
+    ["cat a.d b.py", "concatenated rows have different languages: d, python"],
+    [
+      "cat a.d && cat b.py",
+      "concatenated rows have different languages: d, python",
+    ],
+    [
+      "cat README.md package.json",
+      "concatenated rows have different languages: markdown, json",
+    ],
+    [
+      "cat a.d | grep -n x && cat b.d",
+      "search rows cannot be concatenated with file rows",
+    ],
+    [
+      "nl -ba a.d && nl -ba b.d",
+      "nl-numbered output cannot be concatenated with other nl-numbered output",
+    ],
+    [
+      "cd . && nl -ba f.svg | sed -n 1,20p && cat empty",
+      "nl-numbered rows cannot be concatenated with file rows",
+    ],
+    [
+      "echo same && cat a && echo same",
+      "shell output steps do not define an unambiguous output plan",
+    ],
+  ])("rejects %s", async (command, reason) => {
     await expect(parseShellSemantic(command)).resolves.toEqual({
       ok: false,
       code: "unsupported_command",
-      reason: "shell output steps do not define an unambiguous output plan",
+      reason,
+    });
+  });
+
+  it("rejects multiple head operands", async () => {
+    await expect(
+      parseShellSemantic("head -n 2 a.d b.d"),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: "multiple_paths",
+    });
+  });
+
+  it("reports the invalid sed range in a list member", async () => {
+    await expect(
+      parseShellSemantic("cat a.d && sed -n 5,1p b.d"),
+    ).resolves.toEqual({
+      ok: false,
+      code: "invalid_range",
+      reason: "sed end line must be >= start line: 5,1p",
     });
   });
 });
@@ -1675,13 +1781,6 @@ describe("rejected forms", () => {
   it('variable: head -n 5 "$FILE" → reject', async () => {
     const r = await parseShellSemantic('head -n 5 "$FILE"');
     expect(r.ok).toBe(false);
-  });
-
-  it("multiple paths: cat README.md package.json → reject (multiple_paths)", async () => {
-    const r = await parseShellSemantic("cat README.md package.json");
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect(r.code).toBe("multiple_paths");
   });
 
   it("redirection on read: cat README.md > out.txt → reject (redirection_on_read)", async () => {
