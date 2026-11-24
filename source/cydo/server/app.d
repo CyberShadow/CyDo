@@ -5469,6 +5469,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	auto message = testBrowserSubmission(fixture.tid, "cancelled browser submission",
 		"history-cancelled-nonce");
 	fixture.app.handleUserMessage(fixture.socket, message);
@@ -5493,6 +5494,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	AgentSession[] sessions = [
 		cast(AgentSession) new CodexSession(null, fixture.tid, SessionConfig.init),
 		new CopilotSession(null, fixture.tid, "copilot-undo", "", "."),
@@ -5532,6 +5534,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	enum nonce = "queued-native-undo-nonce";
 	fixture.app.handleUserMessage(fixture.socket,
 		testBrowserSubmission(fixture.tid, "queued before undo", nonce));
@@ -5574,6 +5577,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	auto missingTid = fixture.tid + 1;
 	assert(missingTid !in fixture.app.tasks);
 	auto message = testBrowserSubmission(missingTid, "message for a missing task",
@@ -5596,6 +5600,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	fixture.app.tasks[fixture.tid].archiving = true;
 	auto message = testBrowserSubmission(fixture.tid, "message during archiving",
 		"task-archiving-nonce");
@@ -5622,7 +5627,9 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	auto bystander = new SubmissionCaptureWebSocket();
+	scope(exit) bystander.disconnect("test complete", DisconnectType.requested);
 	fixture.app.clientHub.add(bystander);
 	fixture.app.clientHub.subscribe(bystander, fixture.tid);
 	fixture.app.tasks[fixture.tid].archiving = true;
@@ -7803,6 +7810,7 @@ unittest
 	import cydo.workflow.history.native_history : DriverHistoryTestAgent;
 
 	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	auto runner = cast(GatedSubmissionRunner) fixture.app.taskSessionRunner;
 	auto agent = new DriverHistoryTestAgent;
 	runner.resolveTaskHistoryOverride = (int tid) => TaskHistoryResolution.access(
@@ -7861,6 +7869,7 @@ version (unittest) private final class DriverHistoryTurnFixture
 unittest
 {
 	auto fixture = new DriverHistoryTurnFixture;
+	scope(exit) fixture.base.socket.disconnect("test complete", DisconnectType.requested);
 	auto td = fixture.td;
 	fixture.base.app.onTaskTurnCompletedAlive(fixture.base.tid);
 	assert(td.status == TaskStatus.alive && td.needsAttention);
@@ -7879,6 +7888,7 @@ unittest
 unittest
 {
 	auto fixture = new DriverHistoryTurnFixture;
+	scope(exit) fixture.base.socket.disconnect("test complete", DisconnectType.requested);
 	auto td = fixture.td;
 	fixture.base.app.onTaskTurnCompletedAlive(fixture.base.tid);
 	assert(fixture.reads.length == 1);
@@ -7904,6 +7914,7 @@ unittest
 	import cydo.workflow.tasks.mutations : TaskMutationService, TaskMutationServiceHost;
 
 	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	auto app = fixture.app;
 	auto agent = new DriverHistoryTestAgent;
 	auto access = HistoryAccess.driverServed(agent,
@@ -8015,6 +8026,7 @@ unittest
 	auto root = buildPath(tempDir(), "cydo-app-codex-offer-commands");
 	scope(exit) if (exists(root)) rmdirRecurse(root);
 	auto fixture = new CodexOfferFixture(root);
+	scope(exit) fixture.base.socket.disconnect("test complete", DisconnectType.requested);
 	auto app = fixture.app;
 	auto task = fixture.tid in app.tasks;
 	auto socket = fixture.base.socket;
@@ -8061,6 +8073,7 @@ unittest
 	auto root = buildPath(tempDir(), "cydo-app-codex-offer-history");
 	scope(exit) if (exists(root)) rmdirRecurse(root);
 	auto fixture = new CodexOfferFixture(root);
+	scope(exit) fixture.base.socket.disconnect("test complete", DisconnectType.requested);
 	auto resolution = fixture.app.resolveTaskHistory(fixture.tid);
 	assert(resolution.kind == TaskHistoryResolutionKind.access);
 	auto access = resolution.requireAccess();
@@ -8077,6 +8090,7 @@ unittest
 	auto root = buildPath(tempDir(), "cydo-app-codex-offer-selected-workspace");
 	scope(exit) if (exists(root)) rmdirRecurse(root);
 	auto fixture = new CodexOfferFixture(root);
+	scope(exit) fixture.base.socket.disconnect("test complete", DisconnectType.requested);
 	auto app = fixture.app;
 	auto task = fixture.tid in app.tasks;
 	auto other = app.config.workspaces[0];
@@ -8097,6 +8111,7 @@ unittest
 	auto root = buildPath(tempDir(), "cydo-app-codex-offer-raw-source");
 	scope(exit) if (exists(root)) rmdirRecurse(root);
 	auto fixture = new CodexOfferFixture(root);
+	scope(exit) fixture.base.socket.disconnect("test complete", DisconnectType.requested);
 	bool answered;
 	fixture.app.lookupRawSource(fixture.tid, 0, (RawSourceLookupResult result) {
 		assert(result.status == RawSourceLookupStatus.historyNotLoaded);
@@ -8110,6 +8125,7 @@ unittest
 	auto root = buildPath(tempDir(), "cydo-app-codex-offer-promotion");
 	scope(exit) if (exists(root)) rmdirRecurse(root);
 	auto fixture = new CodexOfferFixture(root);
+	scope(exit) fixture.base.socket.disconnect("test complete", DisconnectType.requested);
 	auto app = fixture.app;
 	auto td = fixture.tid in app.tasks;
 	assert(!td.history.isLoaded && !td.history.isLoading);
@@ -8134,6 +8150,7 @@ unittest
 	auto root = buildPath(tempDir(), "cydo-app-codex-offer-edits");
 	scope(exit) if (exists(root)) rmdirRecurse(root);
 	auto fixture = new CodexOfferFixture(root);
+	scope(exit) fixture.base.socket.disconnect("test complete", DisconnectType.requested);
 	auto app = fixture.app;
 	size_t editLoads;
 	app.taskMutationService = new TaskMutationService(TaskMutationServiceHost(
