@@ -1125,9 +1125,24 @@ function classifyGenericList(
   };
 }
 
-/**
- * Classify a heredoc AST node — dispatches to cat-write or script-exec.
- */
+function isPlainGitRevision(revision: string): boolean {
+  const ref = revision.split(/[~^]/, 1)[0]!;
+  const ancestry = revision.slice(ref.length);
+  return (
+    ref !== "@" &&
+    !ref.includes("@{") &&
+    !ref.endsWith(".") &&
+    !/[^!-~\u0080-\u{10ffff}]|[:?*[\\]/u.test(ref) &&
+    ref
+      .split("/")
+      .every(
+        (part) =>
+          part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock"),
+      ) &&
+    /^(?:[~^]\d+)*$/u.test(ancestry)
+  );
+}
+
 function classifyGitCommand(
   cmd: SimpleCommand,
   cdPath: string,
@@ -1146,16 +1161,51 @@ function classifyGitCommand(
   }
 
   if (subcommand === "show") {
-    // Check if any value arg (after the subcommand) contains ':' → file content read
     const showArgs = valueArgs.slice(1);
     const colonArg = showArgs.find((a) => a.text.includes(":"));
+    if (colonArg && showArgs.length > 1) {
+      return reject(
+        "multiple_paths",
+        "git show object reads require exactly one object operand",
+      );
+    }
+    const marker = cmd.args.findIndex(
+      (arg) => arg.text === "--" || arg.text === "--end-of-options",
+    );
+    if (
+      (colonArg && (cmd.args.length !== 2 || cmd.args[0]?.text !== "show")) ||
+      (marker !== -1 &&
+        cmd.args.slice(marker + 1).some((arg) => arg.text.includes(":")))
+    ) {
+      return reject(
+        "unsupported_option",
+        "git show object reads do not support options or operand separators",
+      );
+    }
     if (colonArg) {
       const colonIdx = colonArg.text.indexOf(":");
+      const revision = colonArg.text.slice(0, colonIdx);
       const filePath = colonArg.text.slice(colonIdx + 1);
       if (cdPath && (filePath.startsWith("./") || filePath.startsWith("../"))) {
         return reject(
           "unsafe_shell_syntax",
           "cwd-relative git object paths under cd are not supported",
+        );
+      }
+      const validPath =
+        filePath === ""
+          ? revision === "HEAD"
+          : !/^[!(]|[\^*?[]/.test(filePath) &&
+            filePath.split("/").every((part) => part !== "" && part !== ".");
+      if (
+        colonArg.text.includes("..") ||
+        (revision !== "" && !isPlainGitRevision(revision)) ||
+        (revision === "" && /^[0-3]:/.test(filePath)) ||
+        !validPath
+      ) {
+        return reject(
+          "unsupported_command",
+          "unsupported git show object specification",
         );
       }
       return {

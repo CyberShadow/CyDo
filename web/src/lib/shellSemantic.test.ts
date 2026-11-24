@@ -1810,19 +1810,101 @@ describe("diff binary (should succeed as diff)", () => {
   });
 });
 
-describe("git show HEAD:file (should succeed as read)", () => {
-  it("git show HEAD:src/main.ts → read, filePath: src/main.ts", async () => {
-    const r = await parseShellSemantic("git show HEAD:src/main.ts");
-    expect(r.ok).toBe(true);
-    assert(r.ok);
-    expect(segmentsOf(r.value)).toEqual([gitRows("src/main.ts")]);
+describe("git show object reads", () => {
+  it.each([
+    ["HEAD:src/main.ts", "src/main.ts"],
+    ["refs/heads/topic:src/main.ts", "src/main.ts"],
+    ["abc123:README.md", "README.md"],
+    ["HEAD~2^1~3:f.d", "f.d"],
+    ["HEAD^2:x.py", "x.py"],
+    ["refs/heads/topic\u0085branch:f.d", "f.d"],
+    [":f.d", "f.d"],
+    ["HEAD:file:with space.d", "file:with space.d"],
+    ["v1.2-3-gabc123:f.d", "f.d"],
+    ["HEAD:", ""],
+    ["HEAD:-b.d", "-b.d"],
+  ])("reads %s as Git object rows for %j", async (operand, filePath) => {
+    const result = await parseShellSemantic(`git show '${operand}'`);
+    assert(result.ok);
+    expect(segmentsOf(result.value)).toEqual([gitRows(filePath)]);
   });
 
-  it("git show abc123:README.md → read, filePath: README.md", async () => {
-    const r = await parseShellSemantic("git show abc123:README.md");
-    expect(r.ok).toBe(true);
-    assert(r.ok);
-    expect(segmentsOf(r.value)).toEqual([gitRows("README.md")]);
+  it.each([
+    "git show ':/unit3-unique'",
+    "git show ':/unit3-unique' && cat fixture",
+    "git show HEAD..HEAD:f.d",
+    "git show HEAD..HEAD:f.d && cat b.d",
+    "git show :0:Makefile",
+    "git show :0:Makefile && cat Makefile",
+    "git show HEAD...HEAD:f.d",
+    "git show 'HEAD^{tree}:f.d'",
+    "git show 'HEAD^{/unit3-unique}:f.d'",
+    "git show 'HEAD@{1}:f.d'",
+    "git show 'main@{upstream}:f.d'",
+    "git show '^HEAD:f.d'",
+    "git show 'HEAD~:f.d'",
+    "git show 'HEAD^:f.d'",
+    "git show 'HEAD^parent:f.d'",
+    "git show main:",
+    "git show HEAD:/f.d",
+    "git show HEAD:sub/../f.d",
+    "git show HEAD:./f.d",
+    "git show HEAD:sub//f.d",
+    "git show HEAD:sub/./f.d",
+    "git show 'HEAD:sub^!'",
+    "git show 'HEAD:sub^@'",
+    "git show 'HEAD:sub^-1'",
+    "git show 'HEAD:*.d'",
+    "git show 'HEAD:f?.d'",
+    "git show 'HEAD:f[.d'",
+    "git show ':!f.d'",
+    "git show ':(literal)f.d'",
+    "git show HEAD:f.d..HEAD",
+    "git show HEAD:f.d...HEAD",
+    "git show HEAD:f.d..",
+  ])("rejects unsupported object specification in %s", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsupported_command",
+      reason: "unsupported git show object specification",
+    });
+  });
+});
+
+describe("git show with multiple operands including an object path", () => {
+  it.each([
+    "git show HEAD:README.md HEAD:src/main.ts",
+    "git show HEAD~1 HEAD:README.md",
+    "git show HEAD:README.md HEAD~1",
+  ])("%s → reject (multiple_paths)", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "multiple_paths",
+      reason: "git show object reads require exactly one object operand",
+    });
+  });
+});
+
+describe("git show object syntax with options or operand separators", () => {
+  it.each([
+    "git show -- HEAD:tracked.d && cat b.d",
+    "git show --end-of-options HEAD:a.d -dash:b.py && cat b.d",
+    "git show --end-of-options -dash:b.py HEAD:a.d && cat b.d",
+    "git show -- HEAD:tracked.d",
+    "git show --end-of-options HEAD:a.d -dash:b.py",
+    "git show --end-of-options -dash:b.py HEAD:a.d",
+    "git show -- -dash:tracked.d",
+    "git show --end-of-options -dash:b.py",
+    "git show --no-color HEAD:a.d",
+    "git show HEAD:a.d --no-color",
+    "git --no-pager show HEAD:a.d",
+  ])("%s → reject (unsupported_option)", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsupported_option",
+      reason:
+        "git show object reads do not support options or operand separators",
+    });
   });
 });
 
