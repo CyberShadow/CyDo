@@ -745,6 +745,8 @@ class CopilotAgent : Agent
 		return historyRecordIdMatchesLine(line, lineNum, forkId);
 	}
 
+	@property bool supportsJsonlMessageEditing() const { return false; }
+
 	bool historyRecordIdMatchesLine(string line, int lineNum, string forkId)
 	{
 		@JSONPartial

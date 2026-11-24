@@ -131,6 +131,8 @@ test("completed messages are not recreated when new messages arrive", { tag: "@c
           provisional_user: "jsonl",
           agent_turn: "jsonl",
         },
+        edit_message: true,
+        edit_raw_event: true,
       });
     },
   ).toPass({ timeout });

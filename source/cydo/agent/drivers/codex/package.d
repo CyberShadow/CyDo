@@ -869,6 +869,8 @@ class CodexAgent : DriverServedHistoryAgent
 	InterruptedToolCallRepair repairInterruptedToolCall(string[] lines, string toolName,
 		string resultText) { assert(false); }
 	bool forkIdMatchesLine(string line, int lineNum, string forkId) { assert(false); }
+	@property bool supportsJsonlMessageEditing() const { return false; }
+
 	bool historyRecordIdMatchesLine(string line, int lineNum, string recordId) { assert(false); }
 	bool isForkableLine(string line) { assert(false); }
 

@@ -56,7 +56,7 @@ import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 	UnavailableHistoryKind, resolveNativeHistoryContext;
 import cydo.workflow.history.abbrev : extractMessageText;
 import cydo.workflow.history.operations : HistoryOperations, NativeSessionState,
-	selectHistoryOperations;
+	selectHistoryOperations, supportsMessageEditing, supportsRawEventEditing;
 import cydo.runtime.logging : installRobustLogger;
 import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
 	SystemMessageNormalizerHost;
@@ -3976,9 +3976,13 @@ class App
 		return NativeSessionState.dead;
 	}
 
-	private HistoryOperations historyOperationsForTask(int tid, AgentDriver driver)
+	private HistoryOperations historyOperationsForTask(int tid, Agent agent)
 	{
-		return selectHistoryOperations(driver, nativeSessionState(tid), servedHistoryMode(tid));
+		auto operations = selectHistoryOperations(agent.driver,
+			nativeSessionState(tid), servedHistoryMode(tid));
+		operations.edit_message = supportsMessageEditing(agent);
+		operations.edit_raw_event = supportsRawEventEditing(agent);
+		return operations;
 	}
 
 	/// Drivers, the runner and history loads can all signal in one transition.
@@ -3994,7 +3998,7 @@ class App
 				return;
 			auto resolution = resolveTaskHistory(tid);
 			auto operations = resolution.kind == TaskHistoryResolutionKind.access
-				? historyOperationsForTask(tid, resolution.requireAccess().agent.driver)
+				? historyOperationsForTask(tid, resolution.requireAccess().agent)
 				: HistoryOperations.init;
 			clientHub.sendHistoryOperations(tid, operations);
 		});
@@ -8042,7 +8046,7 @@ unittest
 	scope (exit) ws.disconnect("test complete", DisconnectType.requested);
 	app.clientHub.add(ws);
 	app.clientHub.subscribe(ws, tid, Nullable!HistoryOperations(
-		app.historyOperationsForTask(tid, agent.driver)));
+		app.historyOperationsForTask(tid, agent)));
 
 	task.beginConfirmedNativeUndo();
 	app.scheduleHistoryOperations(tid);
@@ -8103,6 +8107,44 @@ unittest
 	assert(!td.history.isLoaded);
 }
 
+unittest
+{
+	import cydo.agent.drivers.copilot : CopilotAgent;
+	import cydo.foundation.testing : drainNextTicksAndDueTimers;
+	import std.file : readText;
+
+	auto path = buildPath(tempDir(), "cydo-app-copilot-edit-message.jsonl");
+	enum original = `{"type": "user.message", "id": "user-id", "data": {"content": "original"}}` ~ "\n";
+	write(path, original);
+	scope(exit) remove(path);
+
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	auto app = fixture.app;
+	auto agent = new CopilotAgent;
+	auto access = HistoryAccess(agent,
+		NativeHistoryProfile(agent.driver, tempDir()), "copilot-session", path);
+	app.tasks[fixture.tid].agentSessionId = access.sessionId;
+	app.taskMutationService = new TaskMutationService(TaskMutationServiceHost(
+		getTask: (int tid) => tid in app.tasks,
+		taskAlive: (int tid) => false,
+		resolveTaskHistory: (int tid) => TaskHistoryResolution.access(access),
+		invalidateJsonlLineage: (int tid) {
+			assert(0, "A refused edit must not invalidate Copilot history");
+		},
+	));
+
+	auto repliesBefore = fixture.socket.sent.length;
+	app.handleEditMessage(fixture.socket, WsMessage(
+		tid: fixture.tid, anchor: "user-id", content: JSONFragment(toJson("replacement"))));
+	assert(fixture.socket.sent.length == repliesBefore + 1, "Expected an edit refusal");
+	auto reply = jsonParse!ErrorMessage(fixture.socket.sent[$ - 1]);
+	assert(reply.type == "error" && reply.tid == fixture.tid
+		&& reply.message == "Editing messages is not supported for this agent");
+	assert(readText(path) == original, "A refused edit must leave Copilot history intact");
+	drainNextTicksAndDueTimers();
+}
+
 version (unittest) private final class CodexOfferFixture
 {
 	enum sessionId = "01a1feae-9e4c-7d83-a43c-dbd595e0221d";
@@ -8151,7 +8193,7 @@ version (unittest) private final class CodexOfferFixture
 			getTask: (int taskId) => taskId in app.tasks,
 			resolveTaskHistory: &app.resolveTaskHistory,
 			normalizeKnownSystemMessageMeta: (string event, int taskId) => event,
-			historyOperations: (int taskId, AgentDriver driver) => HistoryOperations.init,
+			historyOperations: (int taskId, Agent agent) => HistoryOperations.init,
 			sendReplaySupplementalState: (WebSocketAdapter ws, int taskId) {},
 			subscribe: (WebSocketAdapter ws, int taskId, Nullable!HistoryOperations) {},
 			onHistorySubscribed: (int taskId) {},

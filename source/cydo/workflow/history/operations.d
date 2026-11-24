@@ -1,9 +1,11 @@
 module cydo.workflow.history.operations;
 
 import ae.utils.json : JSONOptional, JSONPartial;
+import cydo.agent.contract : Agent;
 import cydo.agent.drivers.codex.history : CodexHistoryMode;
 import cydo.protocol : HistoryBoundary, HistoryBoundaryKind;
 import cydo.runtime.config : AgentDriver;
+import cydo.workflow.history.native_history : HistoryAccess;
 
 enum HistoryOperation { fork, undo }
 enum HistoryOperationMechanism { none, jsonl, codex_native, claude_native }
@@ -25,6 +27,18 @@ struct HistoryOperations
 {
 	HistoryOperationKinds fork;
 	HistoryOperationKinds undo;
+	@JSONOptional bool edit_message;
+	@JSONOptional bool edit_raw_event;
+}
+
+bool supportsMessageEditing(Agent agent)
+{
+	return agent.supportsJsonlMessageEditing && supportsRawEventEditing(agent);
+}
+
+bool supportsRawEventEditing(Agent agent)
+{
+	return HistoryAccess.driverServingHistory(agent) is null;
 }
 
 /// `historyMode` is what the driver said of the history it served, 0 when it
@@ -193,4 +207,23 @@ unittest
 	assert(!allowsFileRevert(boundary));
 	boundary.checkpoint_uuid = "checkpoint";
 	assert(allowsFileRevert(boundary));
+}
+
+unittest
+{
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.copilot : CopilotAgent;
+
+	auto claude = new ClaudeCodeAgent();
+	assert(supportsMessageEditing(claude));
+	assert(supportsRawEventEditing(claude));
+
+	auto copilot = new CopilotAgent();
+	assert(!supportsMessageEditing(copilot));
+	assert(supportsRawEventEditing(copilot));
+
+	auto codex = new CodexAgent();
+	assert(!supportsMessageEditing(codex));
+	assert(!supportsRawEventEditing(codex));
 }

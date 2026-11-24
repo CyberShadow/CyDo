@@ -875,6 +875,8 @@ class ClaudeCodeAgent : Agent
 		return !boundary.isNull && boundary.get.anchor == forkId;
 	}
 
+	@property bool supportsJsonlMessageEditing() const { return true; }
+
 	bool historyRecordIdMatchesLine(string line, int lineNum, string recordId)
 	{
 		import std.format : format;

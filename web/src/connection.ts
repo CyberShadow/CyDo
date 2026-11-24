@@ -8,10 +8,15 @@ function isHistoryOperationsMessage(raw: Record<string, unknown>): boolean {
     raw.history_operations === null
   )
     return false;
+  const operations = raw.history_operations as Record<string, unknown>;
+  const { edit_message, edit_raw_event } = operations;
+  if (
+    (edit_message !== undefined && typeof edit_message !== "boolean") ||
+    (edit_raw_event !== undefined && typeof edit_raw_event !== "boolean")
+  )
+    return false;
   return ["fork", "undo"].every((operation) => {
-    const kinds = (raw.history_operations as Record<string, unknown>)[
-      operation
-    ];
+    const kinds = operations[operation];
     return (
       typeof kinds === "object" &&
       kinds !== null &&

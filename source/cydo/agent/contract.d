@@ -202,6 +202,9 @@ interface Agent
 	/// Used by truncation/fork logic to find the cut point.
 	bool forkIdMatchesLine(string line, int lineNum, string forkId);
 
+	/// Whether the JSONL message editor can rewrite this driver's user records.
+	@property bool supportsJsonlMessageEditing() const;
+
 	/// Match the persisted record targeted by a message edit.
 	bool historyRecordIdMatchesLine(string line, int lineNum, string recordId);
 

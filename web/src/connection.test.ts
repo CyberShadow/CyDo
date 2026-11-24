@@ -509,6 +509,51 @@ describe("Connection client behavior", () => {
     expect(errors[0]).toContain("Failed to parse WebSocket message");
   });
 
+  it.each(["edit_message", "edit_raw_event"])(
+    "requires %s to be a boolean when present",
+    (field) => {
+      const conn = new Connection();
+      const controls = vi.fn();
+      const errors = vi.fn();
+      conn.onControlMessage = controls;
+      conn.onClientError = errors;
+      conn.connect();
+      const socket = MockWebSocket.instances[0]!;
+      const message = {
+        type: "history_operations",
+        tid: 1,
+        history_operations: { fork: {}, undo: {} },
+      };
+      for (const value of [undefined, true, false]) {
+        const policy = {
+          ...message,
+          history_operations: {
+            ...message.history_operations,
+            ...(value === undefined ? {} : { [field]: value }),
+          },
+        };
+        socket.emitMessage(JSON.stringify(policy));
+        expect(controls).toHaveBeenLastCalledWith(policy);
+      }
+      expect(errors).not.toHaveBeenCalled();
+      controls.mockClear();
+
+      for (const value of ["true", 1, null]) {
+        socket.emitMessage(
+          JSON.stringify({
+            ...message,
+            history_operations: {
+              ...message.history_operations,
+              [field]: value,
+            },
+          }),
+        );
+      }
+      expect(errors).toHaveBeenCalledTimes(3);
+      expect(controls).not.toHaveBeenCalled();
+    },
+  );
+
   it("routes replacements separately from ordinary task events", () => {
     const conn = new Connection();
     const ordinary = vi.fn();

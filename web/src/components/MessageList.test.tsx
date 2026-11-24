@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render } from "preact";
 import { act } from "preact/test-utils";
 import renderToString from "preact-render-to-string";
@@ -9,6 +9,76 @@ import { DevModeContext } from "../devMode";
 import { makeTaskState, type DisplayMessage, type TaskState } from "../types";
 import { reduceMessage } from "../sessionReducer";
 import type { AgnosticEvent } from "../protocol";
+
+describe("MessageList history editing", () => {
+  it.each([{ edit_message: true }, { edit_raw_event: true }])(
+    "gates edit controls independently for %j",
+    async (editing) => {
+      const root = document.createElement("div");
+      const rawEvent = { type: "user", rawText: "original history entry" };
+      const fetchRaw = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(Response.json(rawEvent));
+      try {
+        await act(() => {
+          render(
+            <MessageList
+              taskTid={1}
+              messages={[
+                {
+                  id: "user",
+                  type: "user",
+                  uuid: "user-uuid",
+                  seq: 7,
+                  content: [{ type: "text", text: "hello" }],
+                  rawSource: { type: "item/started" },
+                },
+              ]}
+              historyOperations={{ fork: {}, undo: {}, ...editing }}
+              replacementEvents={new Map()}
+              blocks={new Map()}
+              isProcessing={false}
+              bandStatus=""
+              onEditMessage={() => {}}
+              onEditRawEvent={() => {}}
+            />,
+            root,
+          );
+        });
+        expect
+          .soft(root.querySelector('[title="Edit message"]') !== null)
+          .toBe(editing.edit_message === true);
+
+        await act(() => {
+          root
+            .querySelector<HTMLButtonElement>('[title="View source"]')!
+            .click();
+        });
+        await act(() => {
+          root.querySelector<HTMLElement>(".source-event-header")!.click();
+        });
+        await act(() => {
+          [...root.querySelectorAll("button")]
+            .find((button) => button.textContent === "Raw")!
+            .click();
+        });
+        await vi.waitFor(() => {
+          expect(root.querySelector(".source-view pre")?.textContent).toContain(
+            rawEvent.rawText,
+          );
+        });
+        expect(root.querySelector('[title="Edit raw event"]') !== null).toBe(
+          editing.edit_raw_event === true,
+        );
+      } finally {
+        await act(() => {
+          render(null, root);
+        });
+        fetchRaw.mockRestore();
+      }
+    },
+  );
+});
 
 describe("MessageList parse-error rendering", () => {
   it("gives a multipart user message one wrapper and action/source owner", () => {
@@ -703,6 +773,7 @@ describe("MessageList task diagnostics", () => {
         messages={[diagnostic]}
         blocks={new Map()}
         replacementEvents={new Map()}
+        historyOperations={{ fork: {}, undo: {}, edit_message: true }}
         isProcessing={false}
         bandStatus=""
         onEditMessage={() => {}}
@@ -803,6 +874,7 @@ describe("MessageList task diagnostics", () => {
         messages={[nudge]}
         blocks={new Map()}
         replacementEvents={new Map()}
+        historyOperations={{ fork: {}, undo: {}, edit_message: true }}
         isProcessing={false}
         bandStatus=""
         onEditMessage={() => {}}

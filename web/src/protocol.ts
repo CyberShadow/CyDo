@@ -330,6 +330,8 @@ export interface HistoryOperationKinds {
 export interface HistoryOperations {
   fork: HistoryOperationKinds;
   undo: HistoryOperationKinds;
+  edit_message?: boolean;
+  edit_raw_event?: boolean;
 }
 export interface HistoryOperationsMessage {
   type: "history_operations";

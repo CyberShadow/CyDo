@@ -59,8 +59,10 @@ it("keeps raw inspection but hides history mutations on import offers", () => {
       ],
     ]),
     historyOperations: {
-      fork: { first_user: "codex_native" },
-      undo: { first_user: "codex_native" },
+      fork: { first_user: "jsonl" },
+      undo: { first_user: "jsonl" },
+      edit_message: true,
+      edit_raw_event: true,
     },
   };
   const imported = renderSession(null, { ...state, status: "completed" });

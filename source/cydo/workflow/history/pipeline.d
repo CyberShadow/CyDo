@@ -61,7 +61,7 @@ struct HistoryEventPipelineHost
 	string delegate(string subject, string body) makeTaskDiagnosticEventJson;
 	void delegate(int tid, Data data) sendToSubscribed;
 	void delegate(WebSocketAdapter ws, int tid, Nullable!HistoryOperations operations) subscribe;
-	HistoryOperations delegate(int tid, AgentDriver driver) historyOperations;
+	HistoryOperations delegate(int tid, Agent agent) historyOperations;
 	void delegate(int tid) broadcastHistoryOperations;
 	void delegate(int tid, size_t seq, string event, string raw, int sourceLine,
 		LocalUserProvenance localUserProvenance)
@@ -570,7 +570,7 @@ class HistoryEventPipeline
 		auto resolution = host_.resolveTaskHistory(tid);
 		if (resolution.kind == TaskHistoryResolutionKind.access)
 		{
-			operations = host_.historyOperations(tid, resolution.requireAccess().agent.driver);
+			operations = host_.historyOperations(tid, resolution.requireAccess().agent);
 			ws.send(Data(toJson(HistoryOperationsMessage(
 				"history_operations", tid, operations.get)).representation));
 		}
@@ -1312,7 +1312,7 @@ unittest
 	host.makeTaskDiagnosticEventJson = (string subject, string body) => "";
 	host.sendToSubscribed = (int t, Data d) {};
 	host.subscribe = (WebSocketAdapter ws, int t, Nullable!HistoryOperations) {};
-	host.historyOperations = (int t, AgentDriver driver) => HistoryOperations.init;
+	host.historyOperations = (int t, Agent agent) => HistoryOperations.init;
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};
@@ -1441,7 +1441,7 @@ unittest
 	host.makeTaskDiagnosticEventJson = (string subject, string body) => "";
 	host.sendToSubscribed = (int t, Data d) {};
 	host.subscribe = (WebSocketAdapter ws, int t, Nullable!HistoryOperations) {};
-	host.historyOperations = (int t, AgentDriver driver) => HistoryOperations.init;
+	host.historyOperations = (int t, Agent agent) => HistoryOperations.init;
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};
@@ -1694,7 +1694,7 @@ unittest
 	};
 	host.sendToSubscribed = (int t, Data data) { sent ~= data; };
 	host.subscribe = (WebSocketAdapter ws, int t, Nullable!HistoryOperations) {};
-	host.historyOperations = (int t, AgentDriver driver) => HistoryOperations.init;
+	host.historyOperations = (int t, Agent agent) => HistoryOperations.init;
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};
@@ -1912,7 +1912,7 @@ unittest
 	host.makeTaskDiagnosticEventJson = (string subject, string body) => "";
 	host.sendToSubscribed = (int t, Data d) {};
 	host.subscribe = (WebSocketAdapter ws, int t, Nullable!HistoryOperations) {};
-	host.historyOperations = (int t, AgentDriver driver) => HistoryOperations.init;
+	host.historyOperations = (int t, Agent agent) => HistoryOperations.init;
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};

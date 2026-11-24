@@ -1046,23 +1046,25 @@ export function MessageList({
         : undefined,
     [onApproveRetry, taskTid],
   );
+  const canEditMessage = historyOperations?.edit_message;
+  const canEditRawEvent = historyOperations?.edit_raw_event;
   const handleEditMessage = useMemo(
     () =>
-      onEditMessage
+      canEditMessage && onEditMessage
         ? (uuid: string, content: string) => {
             onEditMessage(taskTid, uuid, content);
           }
         : undefined,
-    [onEditMessage, taskTid],
+    [canEditMessage, onEditMessage, taskTid],
   );
   const handleEditRawEvent = useMemo(
     () =>
-      onEditRawEvent
+      canEditRawEvent && onEditRawEvent
         ? (seq: number, content: string) => {
             onEditRawEvent(taskTid, seq, content);
           }
         : undefined,
-    [onEditRawEvent, taskTid],
+    [canEditRawEvent, onEditRawEvent, taskTid],
   );
 
   // On session switch, scroll to bottom (scrollTop 0 = bottom in column-reverse).

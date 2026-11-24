@@ -29,7 +29,7 @@ import cydo.protocol : HistoryBoundary, HistoryBoundaryKind, ContentBlock, extra
 import cydo.workflow.history.jsonl_edit : replaceUserMessageContent;
 import cydo.workflow.history.operations : NativeSessionState, HistoryOperation,
 	HistoryBoundaryEvent, HistoryOperationMechanism, allowsFileRevert, allowsOperation, operationMechanism,
-	selectHistoryOperations;
+	selectHistoryOperations, supportsMessageEditing, supportsRawEventEditing;
 import cydo.workflow.history.jsonl_store : countLinesAfterForkId,
 	editJsonlMessage, forkTask, HistoryForkDestination, spliceJsonlByLine,
 	truncateJsonl;
@@ -390,7 +390,7 @@ public:
 		if (!requireHistoryAccess(MutationReplySocket((Data data) => ws.send(data)), tid,
 			"Message UUID not found in history", access))
 			return;
-		if (access.isDriverServed)
+		if (!supportsMessageEditing(access.agent))
 		{
 			ws.send(Data(toJson(ErrorMessage("error",
 				"Editing messages is not supported for this agent", tid)).representation));
@@ -462,7 +462,7 @@ public:
 		if (!requireHistoryAccess(MutationReplySocket((Data data) => ws.send(data)), tid,
 			"Raw event not found in JSONL file", access))
 			return;
-		if (access.isDriverServed)
+		if (!supportsRawEventEditing(access.agent))
 		{
 			ws.send(Data(toJson(ErrorMessage("error",
 				"Editing events is not supported for this agent", tid)).representation));
