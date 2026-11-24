@@ -17,6 +17,15 @@ struct TaskResult
 	string status = "success";
 }
 
+struct CreatedTaskResult
+{
+	int tid;
+	string workspace;
+	string project_path;
+	string entry_point;
+	string status; // "draft" or "started"
+}
+
 struct McpContentItem
 {
 	string type;

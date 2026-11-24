@@ -3194,7 +3194,10 @@ string buildConfigOverride(int tid, SessionConfig config)
 unittest
 {
 	SessionConfig config;
-	config.toolPlaceholders = ["singletons": "- integrate: Integrate changes."];
+	config.toolPlaceholders = [
+		"singletons": "- integrate: Integrate changes.",
+		"creatable_entry_points": "- agentic: Orchestrated session",
+	];
 	auto overrides = jsonParse!(JSONFragment[string])(buildConfigOverride(31, config));
 	auto server = jsonParse!McpServerConfig(overrides["mcp_servers.cydo"].json);
 	assert(server.required);

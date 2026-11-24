@@ -4,7 +4,7 @@ import ae.utils.json : JSONFragment, jsonParse, toJson;
 
 import cydo.domain.task_types.definition : TaskTypeConfig, TaskTypeDef, UserEntryPointDef,
 	ContinuationDef, CreatableTaskDef, WorktreeMode,
-	formatCompactCreatableTaskTypeToolSummary,
+	formatCompactCreatableTaskTypeToolSummary, formatCompactCreatableEntryPointToolSummary,
 	formatCompactHandoffToolSummary, formatCompactSwitchModeToolSummary,
 	formatCompactSingletonToolSummary, isInteractive, singletonsOfferedTo;
 import cydo.mcp.binding : SchemaObj, ToolDef, ToolsList, buildToolsListJson;
@@ -49,6 +49,7 @@ CydoSessionTools buildCydoSessionTools(
 	auto creatableTaskTypes = formatCompactCreatableTaskTypeToolSummary(types, typeName);
 	auto switchModes = formatCompactSwitchModeToolSummary(types, typeName);
 	auto handoffs = formatCompactHandoffToolSummary(types, typeName);
+	auto creatableEntryPoints = formatCompactCreatableEntryPointToolSummary(types, entryPoints, typeName);
 
 	string[] includeTools;
 	if (options.includeBash)
@@ -69,12 +70,15 @@ CydoSessionTools buildCydoSessionTools(
 		includeTools ~= "Answer";
 	if (singletons.length > 0)
 		includeTools ~= "Request";
+	if (creatableEntryPoints.length > 0)
+		includeTools ~= "CreateTask";
 
 	return CydoSessionTools([
 		"creatable_task_types": creatableTaskTypes,
 		"switchmodes": switchModes,
 		"handoffs": handoffs,
 		"singletons": singletons,
+		"creatable_entry_points": creatableEntryPoints,
 	], includeTools);
 }
 
@@ -160,6 +164,43 @@ unittest
 	assert(requests[0].taskType == "conversation");
 	assert(requests[0].actualChars > maxChars);
 	assert(requests[0].maxChars == maxChars);
+}
+
+unittest
+{
+	import std.algorithm : canFind, filter;
+	import std.array : array, replicate;
+	import cydo.domain.task_types.definition : CreatableEntryPointDef;
+
+	auto types = [TaskTypeDef(name: "caller"), TaskTypeDef(name: "target")];
+	auto entries = [
+		UserEntryPointDef("agentic", "target", "Orchestrated session"),
+		UserEntryPointDef("isolated", "target", "i".replicate(100)),
+		UserEntryPointDef("direct", "target", "d".replicate(100)),
+		UserEntryPointDef("blank", "target", "b".replicate(100)),
+	];
+	auto before = buildRenderedCydoToolsList(types, entries, "caller", "");
+	assert(!before.tools.canFind!(tool => tool.name == "CreateTask"));
+	foreach (ref entry; entries)
+		types[0].creatable_entry_points ~= CreatableEntryPointDef(entry.name);
+
+	auto after = buildRenderedCydoToolsList(types, entries, "caller", "");
+	auto offered = after.tools.filter!(tool => tool.name == "CreateTask").array;
+	assert(offered.length == 1);
+	auto tool = offered[0];
+	foreach (text; [
+		"Use this only when the user, or the project's instructions, tell you to create tasks.",
+		"- Triaging a list of bugs and creating a task for each",
+		"- Opening a task for an unrelated bug you noticed while working on another task",
+		"- Fanning out standalone follow-up improvements once a base feature has landed",
+		"Set `start` only when explicitly instructed",
+		"You can start tasks only in your own workspace",
+		"Available entry points:\n\n- agentic: Orchestrated session",
+	])
+		assert(tool.description.canFind(text), text);
+	assert(tool.inputSchema.required == ["prompt"]);
+	assert(tool.inputSchema.properties["start"].type == "boolean");
+	assert(checkRenderedCydoToolDescriptionViolations(types, entries, "caller", "").length == 0);
 }
 
 private size_t countCodePoints(string text)

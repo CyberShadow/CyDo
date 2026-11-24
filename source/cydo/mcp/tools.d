@@ -64,6 +64,20 @@ enum string unsandboxedCommandToolDescription =
 enum string requestToolDescription =
 	"Send a request to a singleton. Results follow the same delivery rules as Ask.\n\nAvailable singletons:\n\n";
 
+enum string createTaskToolDescription =
+	"Create a new top-level CyDo task for the user. It is not your sub-task: "
+	~ "you do not wait for it or receive its result, and it records you as its creator.\n\n"
+	~ "Use this only when the user, or the project's instructions, tell you to create tasks. For example:\n"
+	~ "- Triaging a list of bugs and creating a task for each\n"
+	~ "- Opening a task for an unrelated bug you noticed while working on another task\n"
+	~ "- Fanning out standalone follow-up improvements once a base feature has landed\n\n"
+	~ "By default the task is a draft. It appears in the user's task list with `prompt` as its unsent first message, "
+	~ "for the user to review, edit and send. Set `start` only when explicitly instructed to start the task. "
+	~ "It then begins right away with `prompt` as its first message. "
+	~ "You can start tasks only in your own workspace; elsewhere, create a draft.\n\n"
+	~ "The new task does not see this conversation, so make `prompt` self-contained. "
+	~ "The result contains the new task's `tid`.";
+
 /// Specification for a single sub-task.
 struct TaskSpec
 {
@@ -202,6 +216,21 @@ interface CydoTools
 	    @Description("Name of the singleton to ask") string to,
 	    @Description("The request to send") string message
 	);
+
+	@Description(createTaskToolDescription ~ "\n\nAvailable entry points:\n\n{{creatable_entry_points}}")
+	@McpName("CreateTask")
+	McpResult createUserTask(
+		@Description("The task's request, self-contained: the draft text, or the first message if started")
+		string prompt,
+		@Description("Short title for the task list. Omit to derive it from the prompt")
+		string title = "",
+		@Description("Entry point to create the task at, from the list above. Defaults to the target workspace's default entry point")
+		string entry_point = "",
+		@Description("Absolute path of the project to create the task in. Defaults to your current project")
+		string project = "",
+		@Description("Start the task immediately instead of leaving it as a draft. Only when explicitly instructed")
+		bool start = false
+	);
 }
 
 import ae.utils.promise : Promise;
@@ -238,6 +267,8 @@ interface ToolsBackend
 	Promise!McpResult handleAsk(string callerTid, string message, int targetTid);
 	Promise!McpResult handleAnswer(string callerTid, int qid, string message);
 	Promise!McpResult handleRequest(string callerTid, string target, string message);
+	Promise!McpResult handleCreateUserTask(string callerTid, string prompt, string title,
+		string entryPoint, string project, bool start);
 }
 
 /// Tool implementation — constructed per MCP call with the calling App and task ID.
@@ -382,6 +413,13 @@ class CydoToolsImpl : CydoTools
 		import ae.utils.promise.await : await;
 		return app.handleRequest(callerTid, to, message).await();
 	}
+
+	McpResult createUserTask(string prompt, string title, string entry_point,
+		string project, bool start)
+	{
+		import ae.utils.promise.await : await;
+		return app.handleCreateUserTask(callerTid, prompt, title, entry_point, project, start).await();
+	}
 }
 
 unittest
@@ -450,6 +488,12 @@ unittest
 		}
 
 		Promise!McpResult handleRequest(string callerTid, string target, string message)
+		{
+			assert(0, "unexpected call");
+		}
+
+		Promise!McpResult handleCreateUserTask(string callerTid, string prompt, string title,
+			string entryPoint, string project, bool start)
 		{
 			assert(0, "unexpected call");
 		}

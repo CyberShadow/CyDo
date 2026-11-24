@@ -32,6 +32,7 @@ import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule,
 	NativeProfileSupportRequirement, ProcessLaunch, ResolvedSandbox;
 import cydo.runtime.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	effectiveEnvValue, executableMountPaths, resolveExecutablePath;
+import cydo.foundation.text.ecmascript : trimEcmaScript;
 import cydo.foundation.text.title : truncateTitle;
 
 /// Agent descriptor for Claude Code CLI.
@@ -3752,7 +3753,10 @@ unittest
 			rmdirRecurse(root);
 	auto profile = NativeHistoryProfile(AgentDriver.claude,
 		buildPath(root, "supplied-profile"));
-	auto placeholders = ["singletons": "- integrate: Integrate changes."];
+	auto placeholders = [
+		"singletons": "- integrate: Integrate changes.",
+		"creatable_entry_points": "- agentic: Orchestrated session",
+	];
 	auto configPath = generateMcpConfig(42, profile, placeholders);
 	assert(configPath == buildPath(profile.root, "mcp-configs", "cydo-42.json"));
 	assert(exists(configPath));
@@ -4650,10 +4654,7 @@ private string synthesizeCommandOutput(string text)
 	}
 	output.put(unprinted);
 
-	// ECMAScript trim includes BOM and excludes NEL.
-	enum whitespace = r"[\x09-\x0d\x20\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]";
-	enum trim = ctRegex!("^" ~ whitespace ~ "+|" ~ whitespace ~ "+$");
-	return output.data.replaceAll(trim, "");
+	return trimEcmaScript(output.data);
 }
 
 private string commandOutput(string text)

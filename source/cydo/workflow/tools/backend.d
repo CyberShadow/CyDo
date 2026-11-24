@@ -19,20 +19,22 @@ import cydo.domain.policy.permissions : PermissionDecision, PermissionEscalation
 	PermissionSettings, ToolCallDecision, ToolCallRuling, evaluatePermissionPolicy,
 	makePermissionAllowJson, makePermissionDenyJson;
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, DjinjaTemplate, TaskTypeDef,
-	UserEntryPointDef, SingletonDef, WorktreeMode, byName, isInteractive, singletonsOfferedTo,
+	UserEntryPointDef, SingletonDef, WorktreeMode, byName, creatableEntryPointsOf, isInteractive, singletonsOfferedTo,
 	loadProjectMemory, renderContinuationPrompt, renderPrompt, resolveAgent,
 	substituteVars;
 import cydo.domain.storage.persistence : PersistedBatch, QuestionRecord, QuestionState;
 import cydo.domain.tasks.model;
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
+import cydo.foundation.platform.path : canonicalProjectPath;
 import cydo.foundation.system.known_messages : KnownSystemMessageKind,
 	followUpFromParentSubject, handoffSubject, modeSwitchSubject,
 	questionFromTaskSubject, subTaskWaitingForAnswerSubject,
 	systemMessageSubject, taskPromptSubject, wrapKnownSystemMessage;
 import cydo.foundation.system.framing : prependTaskFraming;
+import cydo.foundation.text.ecmascript : trimEcmaScript;
 import cydo.foundation.text.title : truncateTitle;
 import cydo.mcp : McpResult, ToolCallCancellation;
-import cydo.mcp.payloads : TaskResult;
+import cydo.mcp.payloads : CreatedTaskResult, TaskResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend,
 	ValidatedTask;
 import cydo.protocol : AnswerResult, BatchResultEnvelope, ContentBlock, QuestionResult, decomposeToolName;
@@ -53,6 +55,16 @@ final class AgentSubmissionRejected : Exception
 	{
 		super(cause.msg, __FILE__, __LINE__, cause);
 	}
+}
+
+struct UserTaskSpec
+{
+	string workspace;
+	string projectPath;
+	string entryPoint;
+	string title;
+	string draft;
+	int creatorTid;
 }
 
 struct WorkflowToolsHost
@@ -110,6 +122,10 @@ struct WorkflowToolsHost
 	bool delegate(int tid) taskAlive;
 	/// Find or start the named singleton.
 	Promise!int delegate(int callerTid, string name) singletonForTask;
+	string[] delegate(string projectPath) workspacesWithProject;
+	string delegate(string workspace) defaultEntryPoint;
+	int delegate(UserTaskSpec spec) createUserTask;
+	Promise!void delegate(int tid, string prompt) startUserTask;
 	SingletonDef[] delegate(string projectPath) singletonsForProject;
 	string delegate(const TaskData* td) effectiveCwd;
 	bool delegate(int aTid, int bTid) tasksShareWorkspace;
@@ -1094,6 +1110,82 @@ public:
 		return host_.singletonForTask(callerTid, target).then(
 			(int targetTid) => handleAsk(callerTidStr, request, targetTid),
 			(Exception e) => resolve(McpResult(e.msg, true)));
+	}
+
+	Promise!McpResult handleCreateUserTask(string callerTidStr, string prompt, string title,
+		string entryPoint, string project, bool start)
+	{
+		import std.algorithm : canFind, map;
+		import std.array : join;
+		import std.conv : to;
+		import std.path : isAbsolute;
+
+		int callerTid;
+		try
+			callerTid = to!int(callerTidStr);
+		catch (Exception)
+			return resolve(McpResult("Invalid calling task ID", true));
+		auto caller = host_.getTask(callerTid);
+		if (caller is null)
+			return resolve(McpResult("Task not found", true));
+		if (trimEcmaScript(prompt).length == 0)
+			return resolve(McpResult("prompt must not be empty", true));
+
+		auto projectPath = caller.projectPath;
+		auto workspace = caller.workspace;
+		if (project.length > 0)
+		{
+			if (!project.isAbsolute)
+				return resolve(McpResult("project must be an absolute path: " ~ project, true));
+			try
+				projectPath = canonicalProjectPath(project);
+			catch (Exception)
+				return resolve(McpResult("Project path must be an existing directory: " ~ project, true));
+
+			auto names = host_.workspacesWithProject(projectPath);
+			if (names.length == 0)
+				return resolve(McpResult(projectPath ~ " is not a known CyDo project. "
+					~ "Pass a project's main checkout path, or omit `project` for your current project", true));
+			if (!names.canFind(caller.workspace))
+			{
+				if (names.length != 1)
+					return resolve(McpResult(projectPath ~ " belongs to several workspaces ("
+						~ names.join(", ") ~ "), none of them yours", true));
+				workspace = names[0];
+			}
+		}
+
+		auto name = entryPoint.length ? entryPoint : host_.defaultEntryPoint(workspace);
+		auto offered = creatableEntryPointsOf(host_.taskTypesForProject(caller.projectPath),
+			host_.entryPointsForProject(caller.projectPath), caller.taskType);
+		auto available = offered.map!(entry => entry.edge.name);
+		if (!name.length || !available.canFind(name))
+		{
+			auto valid = offered.length ? available.join(", ") : "(none)";
+			if (!name.length)
+				return resolve(McpResult("Workspace '" ~ workspace
+					~ "' has no default entry point; pass entry_point. Available: " ~ valid, true));
+			return resolve(McpResult("Entry point '" ~ name
+				~ "' is not available to this task. Available: " ~ valid, true));
+		}
+
+		auto target = host_.entryPointsForProject(projectPath).byName(name);
+		if (target is null || target.system)
+			return resolve(McpResult("Entry point '" ~ name ~ "' does not exist in project " ~ projectPath, true));
+		if (start && workspace != caller.workspace)
+			return resolve(McpResult("Cannot start a task in workspace '" ~ workspace
+				~ "': tasks can be started only in your own workspace ('" ~ caller.workspace
+				~ "'). Create it as a draft instead (omit `start`).", true));
+
+		auto tid = host_.createUserTask(UserTaskSpec(workspace, projectPath, name, title,
+			start ? "" : prompt, callerTid));
+		if (!start)
+			return resolve(McpResult.structured(toJson(CreatedTaskResult(tid, workspace,
+				projectPath, name, "draft"))));
+		return host_.startUserTask(tid, prompt).then(
+			() => McpResult.structured(toJson(CreatedTaskResult(tid, workspace, projectPath, name, "started"))),
+			(Exception failure) => McpResult(format!"Task %d was created but could not start: %s"(
+				tid, failure.msg), true));
 	}
 
 	/// Decide a tool call the agent of `tid` asks about after the policy's
@@ -2665,6 +2757,13 @@ version (unittest)
 		Persistence persistence;
 		TaskTypeDef[] taskTypes;
 		SingletonDef[] singletons;
+		UserEntryPointDef[][string] entryPointsByProject;
+		string[][string] projectWorkspaces;
+		string[string] defaultEntryPoints;
+		UserTaskSpec[] createdUserTasks;
+		int[] startedUserTids;
+		string[] startedUserPrompts;
+		Promise!void userTaskStartGate;
 		size_t singletonForTaskCalls;
 		int waitingToActiveTransitions;
 		int activeToWaitingTransitions;
@@ -2726,6 +2825,16 @@ version (unittest)
 			reactivationGate = new Promise!void;
 		}
 
+		void offerUserEntryPoint()
+		{
+			taskTypes[0].creatable_entry_points = [CreatableEntryPointDef("review")];
+			entryPointsByProject[tasks[1].projectPath] = [
+				UserEntryPointDef("review", "child", "Review"),
+				UserEntryPointDef("other", "child", "Other"),
+			];
+			defaultEntryPoints["local"] = "review";
+		}
+
 		WorkflowToolsBackend makeBackend()
 		{
 			return new WorkflowToolsBackend(WorkflowToolsHost(
@@ -2747,7 +2856,19 @@ version (unittest)
 				persistNeedsAttention: (int tid, bool needsAttention) {},
 				persistLastActive: (int tid, long lastActive) {},
 				taskTypesForProject: (string projectPath) => taskTypes,
-				entryPointsForProject: (string projectPath) => cast(UserEntryPointDef[]) null,
+				entryPointsForProject: (string projectPath) => entryPointsByProject.get(projectPath, null),
+				workspacesWithProject: (string projectPath) => projectWorkspaces.get(projectPath, null),
+				defaultEntryPoint: (string workspace) => defaultEntryPoints.get(workspace, ""),
+				createUserTask: (UserTaskSpec spec) {
+					createdUserTasks ~= spec;
+					return nextTid++;
+				},
+				startUserTask: (int tid, string prompt) {
+					assert(userTaskStartGate !is null, "Unexpected startUserTask call");
+					startedUserTids ~= tid;
+					startedUserPrompts ~= prompt;
+					return userTaskStartGate;
+				},
 				singletonsForProject: (string projectPath) => singletons,
 				promptSearchPath: (string projectPath) => cast(string[]) null,
 				treeReadOnlyForProject: (string projectPath) => cast(bool[string]) null,
@@ -2877,6 +2998,152 @@ version (unittest)
 				generateTitle: (int tid, string prompt) {},
 			));
 		}
+	}
+}
+
+version (unittest) import cydo.domain.task_types.definition : CreatableEntryPointDef;
+
+version (unittest) private McpResult awaitCreateTaskResult(Promise!McpResult pending)
+{
+	McpResult[] results;
+	pending.then((McpResult result) { results ~= result; }).ignoreResult();
+	drainPromiseNextTicks();
+	assert(results.length == 1);
+	return results[0];
+}
+
+unittest
+{
+	import std.file : exists, tempDir;
+	import std.path : buildPath;
+
+	auto f = new BatchInvariantFixture;
+	f.offerUserEntryPoint();
+	auto backend = f.makeBackend();
+	auto project = canonicalProjectPath(tempDir());
+	auto missing = buildPath(project, "cydo-create-task-nonexistent-project");
+	assert(!exists(missing));
+
+	void assertRejected(string expected, string prompt = "Review this",
+		string entryPoint = "", string target = "", bool start = false)
+	{
+		auto result = awaitCreateTaskResult(
+			backend.handleCreateUserTask("1", prompt, "", entryPoint, target, start));
+		assert(result.isError && result.text == expected, result.text);
+		assert(f.createdUserTasks.length == 0 && f.startedUserTids.length == 0);
+	}
+
+	assertRejected("prompt must not be empty", " \t\n");
+	assertRejected("prompt must not be empty", "\uFEFF");
+	assertRejected("prompt must not be empty", "\u00A0");
+	assertRejected("Entry point 'other' is not available to this task. Available: review",
+		"Review this", "other");
+	f.defaultEntryPoints["local"] = "";
+	assertRejected("Workspace 'local' has no default entry point; pass entry_point. Available: review");
+	f.defaultEntryPoints["local"] = "other";
+	assertRejected("Entry point 'other' is not available to this task. Available: review");
+	assertRejected("project must be an absolute path: relative", "Review this", "review", "relative");
+	assertRejected("Project path must be an existing directory: " ~ missing,
+		"Review this", "review", missing);
+	assertRejected(project ~ " is not a known CyDo project. "
+		~ "Pass a project's main checkout path, or omit `project` for your current project",
+		"Review this", "review", project);
+	f.projectWorkspaces[project] = ["remote", "shared"];
+	assertRejected(project ~ " belongs to several workspaces (remote, shared), none of them yours",
+		"Review this", "review", project);
+	f.projectWorkspaces[project] = ["remote"];
+	auto unavailable = "Entry point 'review' does not exist in project " ~ project;
+	assertRejected(unavailable, "Review this", "review", project);
+	f.entryPointsByProject[project] = [UserEntryPointDef("review", "child", "Review",
+		"", WorktreeMode.inherit, true)];
+	assertRejected(unavailable, "Review this", "review", project);
+	f.entryPointsByProject[project][0].system = false;
+	assertRejected("Cannot start a task in workspace 'remote': tasks can be started only in your own workspace "
+		~ "('local'). Create it as a draft instead (omit `start`).", "Review this", "review", project, true);
+}
+
+version (unittest) private void assertCreatedTaskResult(McpResult result, int tid,
+	string workspace, string project, string status)
+{
+	import std.json : parseJSON;
+
+	assert(!result.isError && result.structuredContent);
+	assert(result.text == result.structuredContent.json);
+	auto payload = parseJSON(result.text);
+	assert(payload["tid"].integer == tid);
+	assert(payload["workspace"].str == workspace);
+	assert(payload["project_path"].str == project);
+	assert(payload["entry_point"].str == "review");
+	assert(payload["status"].str == status);
+}
+
+unittest
+{
+	import std.file : tempDir;
+	import std.path : buildPath;
+
+	auto f = new BatchInvariantFixture;
+	f.offerUserEntryPoint();
+	auto backend = f.makeBackend();
+	enum prompt = "\uFEFF  Review this  \u00A0";
+	enum title = "Review";
+	auto project = canonicalProjectPath(tempDir());
+
+	void assertDraft(string target, string workspace, string expectedProject)
+	{
+		auto tid = f.nextTid;
+		auto countBefore = f.createdUserTasks.length;
+		auto result = awaitCreateTaskResult(
+			backend.handleCreateUserTask("1", prompt, title, "", target, false));
+		assert(f.createdUserTasks.length == countBefore + 1);
+		assert(f.createdUserTasks[$ - 1] == UserTaskSpec(
+			workspace, expectedProject, "review", title, prompt, 1));
+		assert(f.startedUserTids.length == 0);
+		assertCreatedTaskResult(result, tid, workspace, expectedProject, "draft");
+	}
+
+	assertDraft("", "local", f.tasks[1].projectPath);
+	f.entryPointsByProject[project] = [UserEntryPointDef("review", "child", "Review")];
+	f.projectWorkspaces[project] = ["remote", "local"];
+	assertDraft(buildPath(tempDir(), "."), "local", project);
+	f.projectWorkspaces[project] = ["remote"];
+	f.defaultEntryPoints["remote"] = "review";
+	f.defaultEntryPoints["local"] = "other";
+	assertDraft(project, "remote", project);
+}
+
+unittest
+{
+	import std.conv : to;
+
+	foreach (fail; [false, true])
+	{
+		auto f = new BatchInvariantFixture;
+		f.offerUserEntryPoint();
+		f.userTaskStartGate = new Promise!void;
+		auto tid = f.nextTid;
+		enum prompt = "Review this";
+		auto pending = f.makeBackend().handleCreateUserTask("1", prompt, "", "review", "", true);
+		McpResult[] results;
+		pending.then((McpResult result) { results ~= result; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(results.length == 0);
+		assert(f.createdUserTasks == [UserTaskSpec("local", f.tasks[1].projectPath,
+			"review", "", "", 1)]);
+		assert(f.startedUserTids == [tid] && f.startedUserPrompts == [prompt]);
+
+		if (fail)
+			f.userTaskStartGate.reject(new Exception("boom"));
+		else
+			f.userTaskStartGate.fulfill();
+		drainPromiseNextTicks();
+		assert(results.length == 1);
+		if (fail)
+			assert(results[0].isError && results[0].text
+				== "Task " ~ tid.to!string ~ " was created but could not start: boom");
+		else
+			assertCreatedTaskResult(results[0], tid, "local", f.tasks[1].projectPath, "started");
+		assert(f.createdUserTasks.length == 1 && f.startedUserTids == [tid]);
 	}
 }
 

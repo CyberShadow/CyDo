@@ -40,7 +40,8 @@ import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule,
 import cydo.runtime.launch.sandbox : cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
 import cydo.mcp : McpResult, ToolCallCancellation;
-import cydo.mcp.tools : answerToolDescription, askToolDescription, handoffToolDescription,
+import cydo.mcp.tools : answerToolDescription, askToolDescription, createTaskToolDescription,
+	handoffToolDescription,
 	requestToolDescription, taskToolDescription, unsandboxedCommandToolDescription;
 import cydo.foundation.text.title : truncateTitle;
 
@@ -3314,6 +3315,12 @@ string buildToolDefinitions(SessionConfig config)
 			unsandboxedCommandToolDescription,
 			JSONFragment(`{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"},"timeout":{"type":"integer"}},"required":["command","cwd","timeout"]}`),
 			true);
+	if (config.includeTools.canFind("CreateTask"))
+		tools ~= ToolDefinition("cydo-CreateTask",
+			createTaskToolDescription ~ "\n\nAvailable entry points:\n\n"
+				~ config.toolPlaceholders["creatable_entry_points"],
+			JSONFragment(`{"type":"object","properties":{"prompt":{"type":"string"},"title":{"type":"string"},"entry_point":{"type":"string"},"project":{"type":"string"},"start":{"type":"boolean"}},"required":["prompt"]}`),
+			true);
 	return toJson(tools);
 }
 
@@ -3326,6 +3333,7 @@ unittest
 	auto defaultTools = jsonParse!(ToolDefinition[])(buildToolDefinitions(config));
 	assert(!defaultTools.canFind!(tool => tool.name == "cydo-Request"));
 	assert(!defaultTools.canFind!(tool => tool.name == "cydo-UnsandboxedCommand"));
+	assert(!defaultTools.canFind!(tool => tool.name == "cydo-CreateTask"));
 
 	config.includeTools = ["UnsandboxedCommand", "Request"];
 	config.toolPlaceholders = ["singletons": "- integrate: Integrate changes."];
@@ -3366,6 +3374,17 @@ unittest
 	assert(tools[5].description == askToolDescription);
 	assert(tools[6].description == answerToolDescription);
 	assert(tools[$ - 1].description == unsandboxedCommandToolDescription);
+
+	config.includeTools ~= "CreateTask";
+	config.toolPlaceholders["creatable_entry_points"] = "- agentic: Orchestrated session";
+	auto withCreate = jsonParse!(ToolDefinition[])(buildToolDefinitions(config));
+	assert(withCreate.length == tools.length + 1);
+	auto create = withCreate[$ - 1];
+	assert(create.name == "cydo-CreateTask");
+	assert(create.skipPermission);
+	assert(create.parameters.json == `{"type":"object","properties":{"prompt":{"type":"string"},"title":{"type":"string"},"entry_point":{"type":"string"},"project":{"type":"string"},"start":{"type":"boolean"}},"required":["prompt"]}`);
+	assert(create.description == createTaskToolDescription
+		~ "\n\nAvailable entry points:\n\n- agentic: Orchestrated session");
 }
 
 /// Build JSON params string for session.create.
@@ -3502,7 +3521,10 @@ unittest
 			rmdirRecurse(root);
 	auto profile = NativeHistoryProfile(AgentDriver.copilot,
 		buildPath(root, "supplied-profile"));
-	auto placeholders = ["singletons": "- integrate: Integrate changes."];
+	auto placeholders = [
+		"singletons": "- integrate: Integrate changes.",
+		"creatable_entry_points": "- agentic: Orchestrated session",
+	];
 	auto configPath = generateCopilotMcpConfig(43, profile, placeholders);
 	assert(configPath == buildPath(profile.root, "mcp-configs", "cydo-43.json"));
 	assert(exists(configPath));

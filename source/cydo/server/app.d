@@ -62,7 +62,7 @@ import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
 	SystemMessageNormalizerHost;
 import cydo.workflow.tasks.derived_text : DerivedTextJobs, DerivedTextJobsHost;
 import cydo.workflow.tasks.mutations : TaskMutationService, TaskMutationServiceHost;
-import cydo.workflow.tools.backend : AgentSubmissionRejected, WorkflowToolsBackend, WorkflowToolsHost;
+import cydo.workflow.tools.backend : AgentSubmissionRejected, UserTaskSpec, WorkflowToolsBackend, WorkflowToolsHost;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
@@ -606,6 +606,10 @@ class App
 			},
 			taskAlive: &taskAlive,
 			singletonForTask: &singletonForTask,
+			workspacesWithProject: &workspacesWithProject,
+			defaultEntryPoint: &defaultTaskType,
+			createUserTask: &createUserTask,
+			startUserTask: &startUserTask,
 			singletonsForProject: &taskTypeCatalog.singletonsForProject,
 			effectiveCwd: &taskPathResolver.effectiveCwd,
 			tasksShareWorkspace: (int aTid, int bTid) {
@@ -1433,6 +1437,16 @@ class App
 		}
 	}
 
+	private string[] workspacesWithProject(string projectPath)
+	{
+		import std.algorithm : sort;
+		import std.array : array;
+
+		bool[string] names;
+		discoveredWorkspacesForProjectPath(projectPath, names);
+		return names.keys.sort.array;
+	}
+
 	private bool tasksShareWorkspace(ref TaskData a, ref TaskData b)
 	{
 		if (a.workspace.length > 0 && b.workspace.length > 0)
@@ -1654,6 +1668,31 @@ class App
 		return tid;
 	}
 
+	private int createUserTask(UserTaskSpec spec)
+	{
+		auto ep = taskTypeCatalog.getEntryPointsForProject(spec.projectPath).byName(spec.entryPoint);
+		assert(ep !is null && !ep.system, "CreateTask target must be a user entry point");
+
+		auto tid = createEntryPointTask(spec.workspace, spec.projectPath,
+			defaultAgentName(spec.workspace), ep);
+		auto task = &tasks[tid];
+		task.title = spec.title;
+		task.creatorTid = spec.creatorTid;
+		task.draft = spec.draft;
+		persistence.setTitle(tid, spec.title);
+		persistence.setCreatorTid(tid, spec.creatorTid);
+		persistence.setDraft(tid, spec.draft);
+		clientHub.broadcast(toJson(TaskCreatedMessage("task_created", tid, spec.workspace,
+			spec.projectPath, 0, "")));
+		broadcastTaskUpdate(tid);
+		return tid;
+	}
+
+	private Promise!void startUserTask(int tid, string prompt)
+	{
+		return submitInitialMessage(tid, [ContentBlock("text", prompt)], MessageSource.harness);
+	}
+
 	/// Find the newest available singleton in the caller's project and workspace.
 	/// If none exists, start one and wait until it accepts its first message.
 	private Promise!int singletonForTask(int callerTid, string name)
@@ -1701,6 +1740,38 @@ class App
 	/// wrapped in the prompt of the task's entry point. Record any failure
 	/// on the task before propagating it to the caller.
 	private Promise!void submitInitialMessage(int tid, ContentBlock[] blocks, MessageSource source)
+	{
+		Promise!void submission;
+		try
+			submission = prepareAndSubmitInitialMessage(tid, blocks, source);
+		catch (Exception e)
+			submission = reject!void(e);
+
+		return submission.except((Exception e) {
+			auto failed = tid in tasks;
+			assert(failed !is null,
+				"Initial message submission task disappeared");
+			// TaskSessionRunner already owns a failed launch and its diagnostic.
+			if (failed.status == TaskStatus.failed)
+				throw e;
+			assert(failed.status == TaskStatus.pending || failed.status == TaskStatus.active,
+				"Initial message submission failed outside a pending or active task");
+			failed.error = e.msg;
+			failed.resultText = e.msg;
+			persistence.setResultText(tid, failed.resultText);
+			transitionTask(tid, failed.status, TaskStatus.failed,
+				TaskNotificationChange.preserve);
+			auto translated = historyPipeline.appendTaskDiagnostic(tid,
+				"Failed to submit initial message", e.msg);
+			broadcastAppendedTaskEvent(tid, translated);
+			workflowTools.recordChildTerminal(tid);
+			broadcastTaskUpdate(tid);
+			throw e;
+		});
+	}
+
+	private Promise!void prepareAndSubmitInitialMessage(int tid, ContentBlock[] blocks,
+		MessageSource source)
 	{
 		auto td = &tasks[tid];
 		auto taskTypes = taskTypeCatalog.getTaskTypesForProject(td.projectPath);
@@ -1754,26 +1825,6 @@ class App
 		return tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
 			return sendTaskMessage(tid, messageToSend, msgContent, msgMeta,
 				null, true, &commitAcceptedInitialSubmission, source);
-		}).except((Exception e) {
-			auto failed = tid in tasks;
-			assert(failed !is null,
-				"Initial message submission task disappeared");
-			// TaskSessionRunner already owns a failed launch and its diagnostic.
-			if (failed.status == TaskStatus.failed)
-				throw e;
-			assert(failed.status == TaskStatus.active,
-				"Initial message submission failed outside an active task");
-			failed.error = e.msg;
-			failed.resultText = e.msg;
-			persistence.setResultText(tid, failed.resultText);
-			transitionTask(tid, TaskStatus.active, TaskStatus.failed,
-				TaskNotificationChange.preserve);
-			auto translated = historyPipeline.appendTaskDiagnostic(tid,
-				"Failed to submit initial message", e.msg);
-			broadcastAppendedTaskEvent(tid, translated);
-			workflowTools.recordChildTerminal(tid);
-			broadcastTaskUpdate(tid);
-			throw e;
 		});
 	}
 
@@ -4365,6 +4416,7 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 	string[] correlations;
 	string[] nativeSubmissionUuids;
 	ContentBlock[][] contents;
+	MessageSource[] sources;
 	size_t sendCalls;
 	private void delegate(TranslatedEvent) outputHandler_;
 	private void delegate(string) nativeSessionStartedHandler_;
@@ -4380,6 +4432,7 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 		correlations ~= correlationId;
 		nativeSubmissionUuids ~= nativeSubmissionUuid;
 		contents ~= content.dup;
+		sources ~= source;
 		auto gate = new Promise!AgentSubmissionReceipt;
 		gates ~= gate;
 		return gate;
@@ -5620,7 +5673,7 @@ unittest
 
 	auto defs = buildPath(root, "defs");
 	mkdirRecurse(buildPath(defs, "prompts"));
-	write(buildPath(defs, "prompts", "start.md"), "{{task_description}}\n");
+	write(buildPath(defs, "prompts", "start.md"), "Review request: {{task_description}}\n");
 	write(buildPath(defs, "task-types.yaml"),
 		"user_entry_points:\n"
 		~ "  isolated:\n"
@@ -5631,6 +5684,7 @@ unittest
 		~ "task_types:\n"
 		~ "  direct_test:\n"
 		~ "    model_class: large\n"
+		~ "    creatable_entry_points: { isolated: {} }\n"
 		~ "singletons:\n"
 		~ "  internal:\n"
 		~ "    task_type: direct_test\n"
@@ -6114,6 +6168,121 @@ unittest
 		testBrowserSubmission(normalTid, "normal launch failure", normalLaunchNonce));
 	assertLaunchRejected(normalTid, normalLaunchNonce);
 	assert(normalLaunchNonce !in fixture.app.tasks[normalTid].inFlightUiNonceGeneration);
+
+	fixture.app.taskSessionRunner = runner;
+	fixture.app.config.default_agent = "test";
+	fixture.app.config.workspaces[0].default_agent = "claude";
+	fixture.app.tasks[fixture.tid].agentName = "test";
+
+	void assertUserTaskDraft()
+	{
+		fixture.socket.sent = null;
+		auto sendCount = fixture.session.sendCalls;
+		launchSawAssignedWorktree = false;
+		auto spec = UserTaskSpec("create", projectPath, "isolated", "Review draft",
+			"Please review the changes", fixture.tid);
+		auto workspaceAgent = fixture.app.defaultAgentName(spec.workspace);
+		assert(workspaceAgent != fixture.app.tasks[spec.creatorTid].agentName);
+		assert(workspaceAgent != fixture.app.defaultAgentName(""));
+		auto tid = fixture.app.createUserTask(spec);
+		drainSubmissionNextTicks();
+
+		auto task = &fixture.app.tasks[tid];
+		assert(task.status == TaskStatus.pending && task.entryPoint == spec.entryPoint);
+		assert(task.agentName == "claude"
+			&& task.agentName == workspaceAgent);
+		assert(task.title == spec.title && task.creatorTid == spec.creatorTid
+			&& task.draft == spec.draft);
+		auto row = rowFor(tid);
+		assert(row.status == TaskStatus.pending && row.entryPoint == spec.entryPoint
+			&& row.agentName == task.agentName && row.title == spec.title
+			&& row.creatorTid == spec.creatorTid && row.draft == spec.draft);
+		assert(!launchSawAssignedWorktree && !fixture.app.taskAlive(tid)
+			&& fixture.session.sendCalls == sendCount);
+
+		assert(fixture.socket.sent.length == 2);
+		auto created = parseJSON(fixture.socket.sent[0]);
+		assert(created["type"].str == "task_created" && created["tid"].integer == tid);
+		auto updated = parseJSON(fixture.socket.sent[1]);
+		assert(updated["type"].str == "task_updated");
+		auto snapshot = updated["task"];
+		assert(snapshot["tid"].integer == tid && snapshot["draft"].str == spec.draft
+			&& snapshot["creator_tid"].integer == spec.creatorTid);
+	}
+
+	void assertUserTaskStart(string title)
+	{
+		import cydo.foundation.system.framing : ParsedSystemFraming, tryParseSystemFraming;
+		import std.string : strip;
+
+		enum prompt = "Review the changes and document all findings, including the full reproduction steps and suggested fixes.";
+		auto tid = fixture.app.createUserTask(
+			UserTaskSpec("create", projectPath, "isolated", title, "", fixture.tid));
+		auto sendIndex = fixture.session.sendCalls;
+		bool finished;
+		fixture.app.startUserTask(tid, prompt).then(() { finished = true; }).ignoreResult();
+		drainSubmissionNextTicks();
+
+		assert(fixture.session.sendCalls == sendIndex + 1 && !finished);
+		auto blocks = fixture.session.contents[sendIndex];
+		assert(blocks.length == 1 && blocks[0].type == "text");
+		ParsedSystemFraming framing;
+		assert(tryParseSystemFraming("SYSTEM", blocks[0].text, framing));
+		assert(framing.subject == sessionStartSubject("isolated"));
+		assert(framing.body.strip == "Review request: " ~ prompt);
+		assert(fixture.session.sources[sendIndex] == MessageSource.harness);
+
+		fixture.session.accept(sendIndex, AgentSubmissionReceipt.appServerAccepted);
+		drainSubmissionNextTicks();
+		assert(finished && fixture.session.sendCalls == sendIndex + 1);
+		auto expectedTitle = title.length ? title : truncateTitle(prompt, 80);
+		assert(fixture.app.tasks[tid].title == expectedTitle && rowFor(tid).title == expectedTitle);
+	}
+
+	assertUserTaskDraft();
+	assertUserTaskStart("Keep this title");
+	assertUserTaskStart("");
+
+	// An unborn repository cannot supply the HEAD required by git worktree add.
+	auto unbornProject = buildPath(root, "unborn");
+	mkdirRecurse(unbornProject);
+	auto gitInit = execute(["git", "-C", unbornProject, "init", "-q"]);
+	assert(gitInit.status == 0, gitInit.output);
+
+	auto caller = &fixture.app.tasks[fixture.tid];
+	caller.workspace = "create";
+	caller.projectPath = unbornProject;
+	caller.taskType = "direct_test";
+	fixture.app.workflowTools = new WorkflowToolsBackend(WorkflowToolsHost(
+		getTask: (int tid) => tid in fixture.app.tasks,
+		taskTypesForProject: &fixture.app.taskTypeCatalog.getTaskTypesForProject,
+		entryPointsForProject: &fixture.app.taskTypeCatalog.getEntryPointsForProject,
+		createUserTask: &fixture.app.createUserTask,
+		startUserTask: &fixture.app.startUserTask,
+	));
+	auto previousTid = latestTid();
+	auto sendsBeforePreparationFailure = fixture.session.sendCalls;
+	McpResult[] toolResults;
+	fixture.app.dispatchTool("CreateTask", format!"%d"(fixture.tid),
+		JSONFragment(`{"prompt":"Review the project","entry_point":"isolated","start":true}`),
+		new ToolCallCancellation)
+		.then((McpResult result) { toolResults ~= result; }).ignoreResult();
+	drainSubmissionNextTicks();
+	auto failedTid = latestTid();
+	assert(failedTid > previousTid);
+	auto failedRow = rowFor(failedTid);
+	assert(failedRow.status == TaskStatus.failed);
+	assert(failedRow.resultText.canFind("Failed to create required worktree"));
+	assert(toolResults.length == 1 && toolResults[0].isError
+		&& toolResults[0].text == format!"Task %d was created but could not start: %s"(
+			failedTid, failedRow.resultText));
+	auto failedTask = &fixture.app.tasks[failedTid];
+	assert(failedTask.history.length == 1);
+	auto diagnostic = failedTask.history.lastEventContents();
+	assert(diagnostic.canFind(`"subject":"Failed to submit initial message"`)
+		&& diagnostic.canFind("Failed to create required worktree"));
+	assert(fixture.session.sendCalls == sendsBeforePreparationFailure
+		&& !fixture.app.taskAlive(failedTid));
 }
 
 // Regression: a rejected initial Codex turn/start can settle before a later

@@ -139,12 +139,14 @@ void runDumpContext(TaskTypeConfig config, string[] promptDirs, string typeName,
 unittest
 {
 	import std.algorithm : filter;
+	import cydo.domain.task_types.definition : CreatableEntryPointDef;
 	import std.array : array;
 	import std.algorithm.searching : canFind;
 
 	TaskTypeDef review;
 	review.name = "review";
 	review.agent_description = "Review the implementation.";
+	review.creatable_entry_points = [CreatableEntryPointDef("review")];
 	review.creatable_tasks = [CreatableTaskDef("implement", "implement", WorktreeMode.inherit, "", "", "Implement the requested change.")];
 	review.continuations = [
 		"finish": ContinuationDef("finish", false, true, WorktreeMode.inherit, "", "Wrap up in the same session."),
@@ -184,5 +186,5 @@ unittest
 
 	auto toolNames = actual.tools.map!(tool => tool.name).array;
 	assert(toolNames == ["Bash", "Task", "SwitchMode", "Handoff",
-		"AskUserQuestion", "Ask", "Answer", "Request"]);
+		"AskUserQuestion", "Ask", "Answer", "Request", "CreateTask"]);
 }
