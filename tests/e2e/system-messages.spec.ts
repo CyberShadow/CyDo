@@ -99,6 +99,8 @@ test("task prompt system message keeps task type label after reload", { tag: "@n
     relation_type?: string;
   }> = [];
 
+  const returnFocusSources = new Set<number>();
+
   page.on("websocket", (ws) => {
     ws.on("framereceived", (event) => {
       try {
@@ -108,6 +110,8 @@ test("task prompt system message keeps task type label after reload", { tag: "@n
             tid: data.tid,
             relation_type: data.relation_type,
           });
+        } else if (data.type === "focus_hint" && data.to_tid === 1) {
+          returnFocusSources.add(data.from_tid);
         }
       } catch {
         /* ignore non-JSON frames */
@@ -125,6 +129,16 @@ test("task prompt system message keeps task type label after reload", { tag: "@n
       null;
     expect(childTid).not.toBeNull();
   }).toPass();
+
+  // Wait for batch delivery so its return hint cannot undo the child click.
+  await expect.poll(() => returnFocusSources.has(childTid!)).toBe(true);
+  await expect(page.locator('.sidebar-item[data-tid="1"]')).toHaveClass(
+    /\bactive\b/,
+  );
+
+  // The parent's reply to the batch result renders after the return hint,
+  // even if the parent was still selected before the launch hint applied.
+  await expect(assistantText(page, /^Done\.$/)).toBeVisible();
 
   await page.locator(`.sidebar-item[data-tid="${childTid}"]`).waitFor({
     state: "visible",
