@@ -184,6 +184,8 @@ struct Persistence
 
 			// Migration 25: rescan Codex and Copilot sessions hidden by stale metadata.
 			"DELETE FROM session_meta_cache WHERE driver IN ('codex', 'copilot');",
+			// Migration 26: creator of an independent user task.
+			"ALTER TABLE tasks ADD COLUMN creator_tid INTEGER NOT NULL DEFAULT 0;",
 		]);
 
 		// In CI, disable durability to speed up tests. This trades crash-safety
@@ -344,6 +346,11 @@ struct Persistence
 		db.stmt!"UPDATE tasks SET yield_gates_nagged = ? WHERE tid = ?".exec(nagged.bits, tid);
 	}
 
+	void setCreatorTid(int tid, int creatorTid)
+	{
+		db.stmt!"UPDATE tasks SET creator_tid = ? WHERE tid = ?".exec(creatorTid, tid);
+	}
+
 	struct TaskRow
 	{
 		int tid;
@@ -367,6 +374,7 @@ struct Persistence
 		string entryPoint;
 		bool needsAttention;
 		NaggedYieldGates naggedYieldGates;
+		int creatorTid;
 	}
 
 	TaskRow[] loadTasks()
@@ -375,11 +383,11 @@ struct Persistence
 		foreach (int tid, string agentSessionId, string description, string taskType,
 			int parentTid, string relationType, string workspace, string projectPath,
 			int worktreeTid, string taskStartHead, string title, string status, string agentName, int archived, string draft,
-			string resultText, long createdAt, long lastActive, string entryPoint, int needsAttention, long yieldGatesNagged;
-			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'blank'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(task_start_head,''), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0), COALESCE(entry_point,''), COALESCE(needs_attention,0), yield_gates_nagged FROM tasks".iterate())
+			string resultText, long createdAt, long lastActive, string entryPoint, int needsAttention, long yieldGatesNagged, int creatorTid;
+			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'blank'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(task_start_head,''), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0), COALESCE(entry_point,''), COALESCE(needs_attention,0), yield_gates_nagged, creator_tid FROM tasks".iterate())
 		{
 			// tasks.agent_type stores the configured agent name from config.agents.
-			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, taskStartHead, title, status, agentName, archived != 0, draft, resultText, createdAt, lastActive, entryPoint, needsAttention != 0, NaggedYieldGates.fromStored(yieldGatesNagged));
+			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, taskStartHead, title, status, agentName, archived != 0, draft, resultText, createdAt, lastActive, entryPoint, needsAttention != 0, NaggedYieldGates.fromStored(yieldGatesNagged), creatorTid);
 		}
 		return result;
 	}
@@ -692,7 +700,7 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 26);
+	assert(userVersion == 27);
 
 	auto rows = persistence.loadTasks();
 	assert(rows.length == 1);
@@ -728,7 +736,7 @@ unittest
 		"relation_type", "workspace", "project_path", "title", "status",
 		"worktree_path", "has_worktree", "agent_type", "archived", "draft",
 		"result_text", "created_at", "last_active", "worktree_tid", "entry_point",
-		"needs_attention", "task_start_head", "yield_gates_nagged",
+		"needs_attention", "task_start_head", "yield_gates_nagged", "creator_tid",
 	]);
 
 	persistence.upsertSessionMetaCache("claude", "/profiles/one", "same-id", 1,
@@ -800,7 +808,7 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 26);
+	assert(userVersion == 27);
 
 	auto rows = persistence.loadSessionMetaCache();
 	assert(rows == [Persistence.CacheRow("other", "/profiles/one", "same-id", 2,
@@ -824,6 +832,7 @@ unittest
 			"('copilot', '/profiles/one', 'same-id', 2, '/workspace', 'Stale Copilot title', 0), " ~
 			"('claude', '/profiles/one', 'same-id', 3, '/workspace', 'Claude session', 1);"
 		);
+		legacy.db.db.exec("ALTER TABLE tasks DROP COLUMN creator_tid;");
 		legacy.db.db.exec("PRAGMA user_version = 25;");
 	}
 
@@ -831,7 +840,7 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 26);
+	assert(userVersion == 27);
 	assert(persistence.loadSessionMetaCache() ==
 		[Persistence.CacheRow("claude", "/profiles/one", "same-id", 3, "/workspace", "Claude session", true)]);
 }
@@ -853,6 +862,7 @@ unittest
 		auto old = Persistence(path);
 		old.createTask("workspace", "project");
 		old.db.db.exec("ALTER TABLE tasks DROP COLUMN yield_gates_nagged;");
+		old.db.db.exec("ALTER TABLE tasks DROP COLUMN creator_tid;");
 		old.db.db.exec("DROP TABLE questions;");
 		old.db.db.exec("ALTER TABLE task_deps DROP COLUMN batch_id;");
 		old.db.db.exec("ALTER TABLE task_deps DROP COLUMN ordinal;");
@@ -899,6 +909,39 @@ unittest
 	foreach (int ordinal; persistence.db.stmt!"SELECT ordinal FROM task_deps ORDER BY child_tid".iterate())
 		ordinals ~= ordinal;
 	assert(ordinals == [0, 1]);
+}
+
+unittest
+{
+	import std.file : exists, remove, tempDir;
+	import std.path : buildPath;
+	import std.uuid : randomUUID;
+
+	auto dbPath = buildPath(tempDir(), "cydo-task-creator-" ~ randomUUID().toString ~ ".sqlite");
+	scope (exit)
+		if (exists(dbPath))
+			remove(dbPath);
+
+	int tid;
+	{
+		auto legacy = Persistence(dbPath);
+		tid = legacy.createTask("workspace", "project");
+		legacy.db.db.exec("ALTER TABLE tasks DROP COLUMN creator_tid;");
+		legacy.db.db.exec("PRAGMA user_version = 26;");
+	}
+
+	auto persistence = Persistence(dbPath);
+	int userVersion;
+	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
+		userVersion = value;
+	assert(userVersion == 27);
+
+	auto rows = persistence.loadTasks();
+	assert(rows.length == 1 && rows[0].tid == tid && rows[0].creatorTid == 0);
+	persistence.setCreatorTid(tid, 7);
+	auto reopenedRows = Persistence(dbPath).loadTasks();
+	assert(reopenedRows.length == 1 && reopenedRows[0].tid == tid
+		&& reopenedRows[0].creatorTid == 7);
 }
 
 unittest

@@ -1002,6 +1002,7 @@ class App
 			td.agentName = row.agentName;
 			td.parentTid = row.parentTid;
 			td.relationType = row.relationType;
+			td.creatorTid = row.creatorTid;
 			td.worktreeTid = row.worktreeTid;
 			td.taskStartHead = row.taskStartHead;
 			td.title = row.title;

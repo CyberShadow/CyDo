@@ -210,6 +210,7 @@ export interface TaskListEntry {
   parent_tid?: number;
   child_count: number;
   relation_type?: string;
+  creator_tid?: number;
   status?: TaskStatus;
   task_type?: string;
   entry_point?: string;

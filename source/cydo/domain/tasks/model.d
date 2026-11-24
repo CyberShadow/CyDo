@@ -582,6 +582,7 @@ struct TaskData
 	string agentName = "claude";
 	int parentTid;
 	string relationType;
+	int creatorTid;
 	string workspace;
 	string projectPath;
 	int worktreeTid;  // 0 = no worktree; own tid = owns worktree; other tid = shares worktree
@@ -1223,6 +1224,7 @@ struct TaskListEntry
 	int parent_tid;
 	@JSONName("child_count") size_t childCount;
 	string relation_type;
+	int creator_tid;
 	string status;
 	string task_type;
 	string entry_point;
