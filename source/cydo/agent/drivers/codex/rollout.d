@@ -450,8 +450,76 @@ string[] translateRolloutResponseItem(string line, int lineNum, string forkId = 
 {
 	auto evidence = parseRolloutLineEvidence(line, lineNum);
 	if (evidence.probe.isUserMessage)
-		return translateCodexUserItem(evidence.user, forkId, forceMeta);
+		return translateRolloutUserItem(line, evidence.user, forkId, forceMeta);
 	return translateNonUserRolloutResponseItem(line, lineNum, forkId);
+}
+
+/// Translate a user-role response_item whose content has been decoded.
+/// Content kinds are validated only for content CyDo recognizes.
+package string[] translateRolloutUserItem(string line, const CodexUserItem user,
+	string forkId, bool forceMeta)
+{
+	auto metaKinds = user.kind == CodexUserItemKind.unrecognized ? null : rolloutMetaKinds(line);
+	return translateCodexUserItem(user, forkId, forceMeta, metaKinds);
+}
+
+/// The distinct harness-injected content kinds of a non-assistant rollout
+/// message: Codex's `content_item_kinds` without `user.text`, in order of first
+/// appearance. Null for an untagged message or malformed kinds. Throws when
+/// well-formed kinds do not describe the raw content items.
+private string[] rolloutMetaKinds(string line)
+{
+	import std.algorithm : all, any;
+	import std.array : join;
+	import std.exception : enforce;
+	import std.json : JSONType, parseJSON;
+
+	@JSONPartial
+	static struct Passthrough
+	{
+		@JSONOptional JSONFragment content_item_kinds;
+	}
+
+	@JSONPartial
+	static struct Probe
+	{
+		@JSONPartial
+		static struct Payload
+		{
+			@JSONOptional JSONFragment content;
+			@JSONOptional JSONFragment internal_chat_message_metadata_passthrough;
+		}
+		Payload payload;
+	}
+
+	auto payload = jsonParse!Probe(line).payload;
+	auto metadata = payload.internal_chat_message_metadata_passthrough;
+	if (metadata.json is null || metadata.json[0] != '{')
+		return null;
+	auto kindsFragment = jsonParse!Passthrough(metadata.json).content_item_kinds;
+	if (kindsFragment.json is null)
+		return null;
+
+	// Codex deserializes content_item_kinds with DefaultOnError, so a value that
+	// is not an array of strings is the same as an absent one (see
+	// validMessageMetadata). Only well-formed kinds are validated below.
+	auto value = parseJSON(kindsFragment.json);
+	if (value.type != JSONType.array || value.array.any!(item => item.type != JSONType.string))
+		return null;
+	string[] kinds;
+	foreach (ref item; value.array)
+		kinds ~= item.str;
+
+	auto itemCount = payload.content.json is null ? 0 : jsonParse!(JSONFragment[])(payload.content.json).length;
+	enforce(kinds.length == itemCount, "Codex rollout message has " ~ kinds.length.to!string
+		~ " content kinds for " ~ itemCount.to!string ~ " content items");
+	enforce(!kinds.canFind("user.text") || kinds.all!(kind => kind == "user.text"),
+		"Codex rollout message mixes user.text with other content kinds: " ~ kinds.join(", "));
+	string[] metaKinds;
+	foreach (kind; kinds)
+		if (kind != "user.text" && !metaKinds.canFind(kind))
+			metaKinds ~= kind;
+	return metaKinds;
 }
 
 package string[] translateNonUserRolloutResponseItem(string line, int lineNum, string forkId)
@@ -497,7 +565,8 @@ package string[] translateNonUserRolloutResponseItem(string line, int lineNum, s
 	string[] results;
 	if (ptype == "message")
 		results = translateRolloutMessage(probe.payload.role,
-			probe.payload.content.json !is null ? probe.payload.content.json : "[]", forkId);
+			probe.payload.content.json !is null ? probe.payload.content.json : "[]", forkId,
+			probe.payload.role == "assistant" ? null : rolloutMetaKinds(line));
 	else if (ptype == "local_shell_call")
 		results = translateRolloutToolUse(probe.payload.call_id, "local_shell_call",
 			extractCommandInput(probe.payload.action));
@@ -616,7 +685,10 @@ package string[] translateNonUserRolloutResponseItem(string line, int lineNum, s
 }
 
 /// Translate a message response_item payload → item/started [+ item/completed].
-private string[] translateRolloutMessage(string role, string contentJson, string forkId = null)
+/// A developer or system message is always meta; `metaKinds` are its badges.
+/// Assistant messages ignore them.
+private string[] translateRolloutMessage(string role, string contentJson, string forkId = null,
+	string[] metaKinds = null)
 {
 	if (role == "assistant")
 	{
@@ -688,12 +760,17 @@ private string[] translateRolloutMessage(string role, string contentJson, string
 		ev.item_type = "user_message";
 		ev.content = contentBlocks.length ? contentBlocks : [ContentBlock("text")];
 		ev.is_meta = true;
+		ev.meta_kinds = metaKinds;
 		ev.uuid = forkId;
 		return [toJson(ev)];
 	}
 }
 
-package string[] translateCodexUserItem(const CodexUserItem user, string forkId, bool forceMeta)
+/// Translate a decoded user message. A message is meta when it is not a prompt,
+/// precedes the first turn, or carries harness `metaKinds`, which Codex's
+/// content kinds can only add to and never remove.
+package string[] translateCodexUserItem(const CodexUserItem user, string forkId, bool forceMeta,
+	string[] metaKinds = null)
 {
 	import std.algorithm : findSplit, startsWith;
 
@@ -705,7 +782,9 @@ package string[] translateCodexUserItem(const CodexUserItem user, string forkId,
 	ItemStartedEvent ev;
 	ev.item_id = "codex-user-hist";
 	ev.item_type = "user_message";
-	ev.is_meta = forceMeta || (!user.isPrompt && !isCodexSessionStartPrompt(user.message()));
+	ev.is_meta = forceMeta || metaKinds.length > 0
+		|| (!user.isPrompt && !isCodexSessionStartPrompt(user.message()));
+	ev.meta_kinds = metaKinds;
 	ev.uuid = forkId;
 	foreach (ref input; user.inputs)
 	{
@@ -837,6 +916,144 @@ unittest
 	assert(jsonParse!AgentUnrecognizedEvent(translateUser(unknown)[0]).type == "agent/unrecognized");
 	auto evidence = parseRolloutLineEvidence(userLine(unknown), 0);
 	assert(evidence.user.kind == CodexUserItemKind.unrecognized);
+}
+
+version (unittest)
+{
+	private string messageRecord(string role, string content, string metadata = null)
+	{
+		return `{"type":"response_item","payload":{"type":"message","role":` ~ toJson(role)
+			~ `,"content":` ~ content ~ metadata ~ `}}`;
+	}
+
+	private string kindsMetadata(string kinds)
+	{
+		return `,"internal_chat_message_metadata_passthrough":{"content_item_kinds":`
+			~ kinds ~ `}`;
+	}
+
+	private auto translatedUser(string record, bool forceMeta = false)
+	{
+		import cydo.protocol : ItemStartedEvent;
+
+		auto events = translateRolloutResponseItem(record, 1, null, forceMeta);
+		assert(events.length == 1);
+		auto event = jsonParse!ItemStartedEvent(events[0]);
+		assert(event.type == "item/started" && event.item_type == "user_message");
+		return event;
+	}
+}
+
+// Kinds identify context even when the first text block has no known framing.
+unittest
+{
+	enum content = `[{"type":"input_text","text":"plugins"},`
+		~ `{"type":"input_text","text":"instructions"},`
+		~ `{"type":"input_text","text":"environment"}]`;
+	string[] kinds = ["plugins.recommendations", "agents_md.instructions",
+		"environments.environment_context"];
+	auto tagged = translatedUser(messageRecord("user", content, kindsMetadata(toJson(kinds))));
+	assert(tagged.is_meta && tagged.meta_kinds == kinds && tagged.content.length == 3);
+
+	auto untagged = translatedUser(messageRecord("user", content));
+	assert(!untagged.is_meta && untagged.meta_kinds.length == 0);
+	assert(untagged.content == tagged.content);
+
+	auto repeated = translatedUser(messageRecord("user", content,
+		kindsMetadata(`["environments.environment_context","agents_md.instructions","environments.environment_context"]`)));
+	assert(repeated.meta_kinds == ["environments.environment_context", "agents_md.instructions"]);
+}
+
+// user.text preserves the existing prompt-framing rules.
+unittest
+{
+	foreach (prompt, isMeta; [
+		"Run the tests": false,
+		"[SYSTEM: something]": true,
+		"[SYSTEM: Session start: test]\n\nRun the tests\n\n[/SYSTEM]": false,
+	])
+	{
+		auto content = `[{"type":"input_text","text":` ~ toJson(prompt) ~ `}]`;
+		auto event = translatedUser(messageRecord("user", content, kindsMetadata(`["user.text"]`)));
+		assert(event.is_meta == isMeta, prompt);
+		assert(event.meta_kinds.length == 0, prompt);
+	}
+}
+
+// Roles and pre-turn replay can also mark a message as meta.
+unittest
+{
+	enum content = `[{"type":"input_text","text":"Some instructions"}]`;
+	auto developer = translatedUser(messageRecord("developer", content,
+		kindsMetadata(`["permissions.instructions"]`)));
+	assert(developer.is_meta && developer.meta_kinds == ["permissions.instructions"]);
+
+	auto environment = translatedUser(messageRecord("user", content,
+		kindsMetadata(`["environments.environment_context"]`)), true);
+	assert(environment.is_meta && environment.meta_kinds == ["environments.environment_context"]);
+
+	auto user = translatedUser(messageRecord("user", content, kindsMetadata(`["user.text"]`)), true);
+	assert(user.is_meta && user.meta_kinds.length == 0);
+}
+
+// Older rollouts can include a turn id without content kinds.
+unittest
+{
+	enum content = `[{"type":"input_text","text":"Run the tests"}]`;
+	auto untagged = translateRolloutResponseItem(messageRecord("user", content), 1);
+	auto turnOnly = translateRolloutResponseItem(messageRecord("user", content,
+		`,"internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"}`), 1);
+	assert(untagged.length == 1 && turnOnly == untagged);
+}
+
+// Validation counts raw items and propagates provenance errors to the reader.
+unittest
+{
+	import std.exception : collectException;
+
+	enum content = `[{"type":"input_text","text":"first"},`
+		~ `{"type":"input_image","image_url":"data:image/png;base64,AA=="},`
+		~ `{"type":"input_text","text":"last"}]`;
+	auto image = translatedUser(messageRecord("user", content,
+		kindsMetadata(`["user.text","user.text","user.text"]`)));
+	assert(!image.is_meta && image.meta_kinds.length == 0);
+	assert(image.content.length == 3);
+	assert(image.content[0].text == "first" && image.content[1].type == "image"
+		&& image.content[2].text == "last");
+
+	foreach (kinds, expected; [
+		`["user.text","user.text"]`: "2 content kinds for 3 content items",
+		`["user.text","environments.environment_context","user.text"]`:
+			"mixes user.text with other content kinds",
+	])
+	{
+		auto failure = collectException(translateRolloutResponseItem(
+			messageRecord("user", content, kindsMetadata(kinds)), 1));
+		assert(failure !is null && failure.msg.canFind(expected));
+	}
+}
+
+// Kinds that are not an array of strings are ignored, as Codex does.
+unittest
+{
+	enum content = `[{"type":"input_text","text":"one"}]`;
+	auto untagged = translateRolloutResponseItem(messageRecord("user", content), 1);
+	foreach (kinds; [`[1]`, `[null]`, `["user.text",1]`, `null`, `1`, `{}`, `"user.text"`])
+	{
+		auto ignored = translateRolloutResponseItem(
+			messageRecord("user", content, kindsMetadata(kinds)), 1);
+		assert(ignored == untagged, kinds);
+	}
+}
+
+// Assistant content does not use the passthrough.
+unittest
+{
+	enum content = `[{"type":"output_text","text":"Done"}]`;
+	auto untagged = translateRolloutResponseItem(messageRecord("assistant", content), 1);
+	auto tagged = translateRolloutResponseItem(messageRecord("assistant", content,
+		kindsMetadata(`["a","b"]`)), 1);
+	assert(untagged.length > 0 && tagged == untagged);
 }
 
 /// Translate a tool_use response_item → item/started + item/completed.

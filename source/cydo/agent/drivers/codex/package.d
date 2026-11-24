@@ -828,7 +828,7 @@ class CodexAgent : DriverServedHistoryAgent
 			// Lines before task_started are system context injected by Codex — mark as meta.
 			bool forceMeta = !seenTaskStarted;
 			auto results = probe.isUserMessage
-				? translateCodexUserItem(evidence.user, forkId, forceMeta)
+				? translateRolloutUserItem(line, evidence.user, forkId, forceMeta)
 				: translateNonUserRolloutResponseItem(line, evidence.lineNumber, forkId);
 			TranslatedEvent[] evs;
 			foreach (r; results)

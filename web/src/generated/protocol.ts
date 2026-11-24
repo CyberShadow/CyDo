@@ -229,6 +229,7 @@ export interface ItemStartedEvent {
   is_replay?: boolean;
   is_synthetic?: boolean;
   is_meta?: boolean;
+  meta_kinds?: string[];
   is_steering?: boolean;
   pending?: boolean;
   uuid?: string;

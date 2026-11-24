@@ -662,3 +662,93 @@ unittest
 	assert(unknown.length == 1 && unknown[0].canFind(
 		"unknown Codex response_item payload type: future_codex_payload"));
 }
+
+version (unittest)
+{
+	private string taggedLegacyUser(string content, string kinds)
+	{
+		return legacyRollout ~ "\n"
+			~ "{\"timestamp\":\"2026-03-27T07:32:23.000Z\",\"type\":\"response_item\","
+			~ "\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":" ~ content
+			~ ",\"internal_chat_message_metadata_passthrough\":{\"content_item_kinds\":" ~ kinds ~ "}}}";
+	}
+}
+
+// Replayed context retains its kinds through the user event round trip.
+unittest
+{
+	enum content = "[{\"type\":\"input_text\",\"text\":\"<recommended_plugins>plugins</recommended_plugins>\"},"
+		~ "{\"type\":\"input_text\",\"text\":\"# AGENTS.md instructions for /x\\n<INSTRUCTIONS>instructions</INSTRUCTIONS>\"},"
+		~ "{\"type\":\"input_text\",\"text\":\"<environment_context>environment</environment_context>\"}]";
+	string[] kinds = ["plugins.recommendations", "agents_md.instructions",
+		"environments.environment_context"];
+	auto base = decodeLegacy(legacyRollout);
+	auto events = decodeLegacy(taggedLegacyUser(content, toJson(kinds)));
+	assert(events.length == base.length + 1);
+	auto appended = jsonParse!ItemStartedEvent(events[$ - 1].translated);
+	assert(appended.type == "item/started" && appended.item_type == "user_message");
+	assert(appended.is_meta && appended.meta_kinds == kinds);
+	assert(boundariesOf(events) == boundariesOf(base));
+}
+
+// Kinds that contradict the content reject the history read even after valid turns were decoded.
+unittest
+{
+	import std.algorithm : canFind;
+
+	enum first = `{"type":"input_text","text":"first"}`;
+	enum last = `{"type":"input_text","text":"last"}`;
+	enum oneItem = "[" ~ first ~ "]";
+	enum twoItems = "[" ~ first ~ "," ~ last ~ "]";
+	auto legacy = ThreadMetadata("01a1feae-9e4c-7d83-a43c-dbd595e0221d", "legacy",
+		"/profile/sessions/rollout.jsonl", "/workspace", "0.144.1", "model", "openai",
+		"reply");
+
+	void assertReadFailure(string content, string kinds, string expected)
+	{
+		auto server = new FakeAppServer;
+		server.results = [toJson(ThreadMetadataResult(legacy))];
+		string path;
+		auto read = readWith(server, null, taggedLegacyUser(content, kinds), &path);
+		assert(path == legacy.path && server.calls.length == 1);
+		assert(read.failure !is null && read.failure.canFind(expected), read.failure);
+	}
+
+	assertReadFailure(twoItems, `["user.text","environments.environment_context"]`,
+		"mixes user.text with other content kinds");
+	assertReadFailure(twoItems, `["user.text"]`, "1 content kinds for 2 content items");
+}
+
+// A replayed mode-switch prompt still gets CyDo's own display metadata.
+unittest
+{
+	import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
+		SystemMessageNormalizerHost;
+
+	@JSONPartial static struct Normalized
+	{
+		static struct Meta { string label; }
+		Meta meta;
+		@JSONOptional string[] meta_kinds;
+	}
+
+	enum prompt = "[SYSTEM: Mode switch: plan_mode -> execute]\n\nContinue the task.\n\n[/SYSTEM]";
+	auto content = "[{\"type\":\"input_text\",\"text\":" ~ toJson(prompt) ~ "}]";
+	auto normalizer = new SystemMessageNormalizer(SystemMessageNormalizerHost(
+		systemKeyword: () => "SYSTEM"));
+	foreach (kinds, expected; [
+		"[\"user.text\"]": cast(string[]) null,
+		"[\"agents_md.instructions\"]": ["agents_md.instructions"],
+	])
+	{
+		auto events = decodeLegacy(taggedLegacyUser(content, kinds));
+		auto translated = events[$ - 1].translated;
+		auto user = jsonParse!ItemStartedEvent(translated);
+		assert(user.is_meta && user.meta_kinds == expected);
+		assert(user.content.length == 1 && user.content[0].text == prompt);
+
+		auto normalized = jsonParse!Normalized(normalizer.normalizeKnownSystemMessageMeta(translated));
+		assert(normalized.meta.label == "Mode switch: execute");
+		assert(normalized.meta_kinds == expected);
+	}
+}

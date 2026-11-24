@@ -346,6 +346,7 @@ struct ItemStartedEvent
 	@JSONOptional bool is_replay;
 	@JSONOptional bool is_synthetic;
 	@JSONOptional bool is_meta;
+	@JSONOptional string[] meta_kinds;
 	@JSONOptional bool is_steering;
 	@JSONOptional bool pending;
 	@JSONOptional string uuid;
