@@ -237,6 +237,7 @@ workspaces: {}
 #     worktree_links: [AGENTS.md]
 #     sandbox:
 #       isolate_filesystem: true
+#       unsandboxed_command_execution: no
 #       isolate_processes: true
 #       isolate_environment: true
 #       paths:
@@ -264,6 +265,22 @@ workspaces: {}
 ## ---------------------------------------------------------------------------
 ## Sandbox fields
 ## ---------------------------------------------------------------------------
+
+## unsandboxed_command_execution
+## Purpose: Offers a task a tool that runs a host shell command outside the sandbox.
+## Accepted values: no omits the tool. ask requires approval for each call.
+##   yes runs calls without approval.
+## Default: The task type's verdict (ask for interactive types, no for sub-agents).
+##   An agent entry can override the shared sandbox, and a workspace can
+##   override both. Djinja can use task_type, interactive, and default
+##   (the task type's rendered verdict).
+##   The sandbox and this setting guard against accidental host damage.
+##   They do not form a trust boundary against a malicious agent. yes suits
+##   trusted local setups and task types that routinely need host tooling,
+##   where prompts would only cause approval fatigue; keep ask or no for
+##   untrusted repositories or prompts, or on a shared machine.
+# sandbox:
+#   unsandboxed_command_execution: no
 
 ## isolate_filesystem
 ## Purpose: Restricts filesystem access to sandbox mounts.
@@ -409,6 +426,7 @@ workspaces: {}
 ## cydo-init: complete-example begin
 # sandbox:
 #   isolate_filesystem: true
+#   unsandboxed_command_execution: no
 #   isolate_processes: true
 #   isolate_environment: true
 #   paths:
@@ -663,6 +681,7 @@ workspaces: {}
 #     display_name: Custom Codex
 #     sandbox:
 #       isolate_filesystem: true
+#       unsandboxed_command_execution: no
 #       isolate_processes: true
 #       isolate_environment: true
 #       paths:

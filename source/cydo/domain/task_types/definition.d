@@ -5,6 +5,8 @@
 module cydo.domain.task_types.definition;
 
 import configy.attributes : Key, Optional;
+import cydo.domain.policy.unsandboxed_command : defaultUnsandboxedCommandExecutionExpr,
+	evaluateUnsandboxedCommandExecution;
 
 import std.algorithm : canFind, filter, map, reverse, sort;
 import std.array : array, join;
@@ -141,6 +143,7 @@ struct TaskTypeDef
 	@Optional bool read_only;
 	@Optional OutputType[] output_type;
 	@Optional bool allow_native_subagents;
+	string unsandboxed_command_execution = defaultUnsandboxedCommandExecutionExpr;
 
 	// Flow control
 	@Optional @Key("name") CreatableTaskDef[] creatable_tasks;
@@ -870,9 +873,16 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 		return errs;
 	}
 
+	auto interactiveTypes = interactiveTypeSet(types, entryPoints);
 	bool hasSteward = false;
 	foreach (ref def; types)
 	{
+		try
+			evaluateUnsandboxedCommandExecution(def.unsandboxed_command_execution,
+				format("task type '%s'", def.name), def.name, (def.name in interactiveTypes) !is null);
+		catch (Exception e)
+			errors ~= e.msg;
+
 		if (def.steward)
 			hasSteward = true;
 
@@ -1011,10 +1021,9 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 
 	// Interactive types must have empty output_type (they produce no structured output)
 	{
-		auto interactive = interactiveTypeSet(types, entryPoints);
 		foreach (ref def; types)
 		{
-			if (def.name in interactive && def.output_type.length > 0)
+			if (def.name in interactiveTypes && def.output_type.length > 0)
 				errors ~= format("%s: interactive type should have output_type: [] but has [%s]",
 					def.name, def.output_type.map!(o => cast(string) o).join(", "));
 		}
@@ -1025,12 +1034,11 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 	// because a Handoff would complete the interactive task and orphan
 	// the user's session.
 	{
-		auto interactive = interactiveTypeSet(types, entryPoints);
 
 		// Check that interactive types only have keep_context continuations
 		foreach (ref def; types)
 		{
-			if (def.name !in interactive)
+			if (def.name !in interactiveTypes)
 				continue;
 			foreach (cname, ref cont; def.continuations)
 			{
@@ -2320,4 +2328,11 @@ unittest
 		assert(e.msg.canFind(buildPath(tmp, "system_prompts", "master.md")), e.msg);
 	}
 	assert(threw);
+}
+
+unittest
+{
+	auto def = TaskTypeDef(name: "worker", unsandboxed_command_execution: "maybe");
+	auto errors = validateTaskTypes([def], [], [], &isKnownTestAgent);
+	assert(errors.canFind!(e => e.canFind("task type 'worker': unsandboxed_command_execution")));
 }

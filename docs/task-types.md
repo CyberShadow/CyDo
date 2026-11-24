@@ -212,6 +212,28 @@ spawning a non-tree-read-only sub-task on a worktree that already has an alive
 writer is rejected with an error. Fork edges are always safe (they create an
 isolated worktree).
 
+## Unsandboxed Commands
+
+Set `unsandboxed_command_execution` to control the `UnsandboxedCommand` tool,
+which runs a command in the user's shell on the host, outside the sandbox:
+
+- `no` omits the tool, and calls are rejected.
+- `ask` offers it, and the user must approve each call.
+- `yes` offers it, and calls run without approval.
+
+The field accepts a Djinja expression with `task_type` and `interactive`. It
+defaults to `ask` for interactive task types and `no` for sub-agents. Operator
+config can override it in the shared, agent, and workspace sandbox settings, in
+that order; there the expression also sees `default`, the task type's verdict.
+
+The sandbox and this verdict guard against accidental host damage, such as an
+agent deleting the wrong directory. They do not form a trust boundary against
+a malicious agent. `yes` therefore makes sense on a trusted local setup, for
+task types that routinely need host tooling the sandbox blocks (nix builds,
+system package queries, talking to local services), where per-call prompts
+would only cause approval fatigue. Keep `ask` or `no` when working on untrusted
+repositories or prompts, or on a shared machine.
+
 ## Project Memory
 
 Every task type with `memory: true` has the contents of `MEMORY.md`

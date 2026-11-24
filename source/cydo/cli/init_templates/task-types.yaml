@@ -600,6 +600,7 @@ task_types: {}
 #     model_class: large
 #     read_only: true
 #     output_type: []
+#     unsandboxed_command_execution: no
 #     allow_native_subagents: false
 #     creatable_tasks:
 #       delegated_review:

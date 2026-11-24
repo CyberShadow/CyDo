@@ -17,6 +17,37 @@ struct GitIdentityConfig
 	string email;
 }
 
+/// Whether a task is offered the host command tool, and whether each call
+/// needs the user's approval.
+///
+/// The sandbox and this verdict guard against accidental host damage. They
+/// do not form a trust boundary against a malicious agent, so `yes` (run
+/// without asking) is a legitimate operator choice: it suits trusted local
+/// setups and task types that routinely need host tooling, where per-call
+/// prompts would only cause approval fatigue.
+enum UnsandboxedCommandExecution
+{
+	no,  /// the tool is not offered, and calls are rejected
+	yes, /// the tool is offered, and calls run without approval
+	ask, /// the tool is offered, and each call needs the user's approval
+}
+
+UnsandboxedCommandExecution parseUnsandboxedCommandExecution(string value, string source)
+{
+	import std.format : format;
+
+	switch (value)
+	{
+		case "no":  return UnsandboxedCommandExecution.no;
+		case "yes": return UnsandboxedCommandExecution.yes;
+		case "ask": return UnsandboxedCommandExecution.ask;
+		default:
+			throw new Exception(format(
+				"%s: unsandboxed_command_execution received %s; expected no, yes or ask",
+				source, value));
+	}
+}
+
 struct SandboxConfig
 {
 	@Optional SetInfo!bool isolate_filesystem;
@@ -25,6 +56,9 @@ struct SandboxConfig
 	@Optional PathMode[string] paths;
 	@Optional string[string] env;
 	@Optional GitIdentityConfig git;
+	/// "no", "yes", "ask", or a Djinja expression using task_type, interactive,
+	/// and default (the task type's rendered verdict).
+	@Optional SetInfo!string unsandboxed_command_execution;
 }
 
 enum AgentDriver { claude, codex, copilot }
@@ -80,10 +114,9 @@ struct ModelSpec
 	}
 }
 
-/// How tool calls are decided. Only the Claude driver consults it (Codex
-/// and Copilot run with their approvals off), so an agent entry of another
-/// driver may not set it. Layered like `sandbox`: global, then the agent
-/// entry, then the workspace; a field a later layer sets replaces it.
+/// Claude consults policy and auto_mode. CyDo also uses prompt_timeout
+/// for its own prompts on every driver. Layered like `sandbox`: global,
+/// then agent, then workspace.
 struct PermissionsConfig
 {
 	/// "allow", "deny", "ask", "auto", or a Djinja expression rendering one
@@ -98,12 +131,6 @@ struct PermissionsConfig
 	/// call; 0 = indefinitely. Unset = 120, matching Claude Code's own
 	/// prompts.
 	@Optional SetInfo!uint prompt_timeout;
-
-	/// Whether this layer sets anything.
-	bool anySet() const
-	{
-		return policy.set || auto_mode.set || prompt_timeout.set;
-	}
 }
 
 struct AgentConfig
@@ -165,13 +192,18 @@ struct CydoConfig
 		import std.format : format;
 		if (disk_cleanup_threshold_bytes <= 0)
 			throw new Exception("disk_cleanup_threshold_bytes must be positive");
+		validateSandbox(sandbox, "sandbox");
+		foreach (ref ws; workspaces)
+			validateSandbox(ws.sandbox, format("workspaces['%s'].sandbox", ws.name));
 		foreach (name, ref ac; agents)
 		{
+			validateSandbox(ac.sandbox, format("agents['%s'].sandbox", name));
 			auto driver = effectiveDriver(name, ac);
 			// An unresolvable driver is resolveConfig's error to report.
 			if (driver.isNull)
 				continue;
-			if (driver.get != AgentDriver.claude && ac.permissions.anySet)
+			if (driver.get != AgentDriver.claude
+				&& (ac.permissions.policy.set || ac.permissions.auto_mode.set))
 				throw new Exception(format(
 					"agents['%s'].permissions: the %s driver does not consult a permission policy",
 					name, driver.get));
@@ -184,6 +216,27 @@ struct CydoConfig
 						name, modelClass, driver.get));
 		}
 	}
+}
+
+private void validateSandbox(const ref SandboxConfig sandbox, string source)
+{
+	import djinja.djinja : loadData;
+	import std.algorithm : canFind;
+
+	if (!sandbox.unsandboxed_command_execution.set)
+		return;
+
+	auto value = sandbox.unsandboxed_command_execution.value;
+	if (!value.canFind("{{"))
+	{
+		parseUnsandboxedCommandExecution(value, source);
+		return;
+	}
+
+	try
+		loadData(value);
+	catch (Exception e)
+		throw new Exception(source ~ ": unsandboxed_command_execution: " ~ e.msg, e);
 }
 
 CydoConfig loadConfig()
@@ -544,4 +597,52 @@ version (unittest)
 		assertThrown!Exception(parseYamlConfigString!CydoConfig(workspacesYAML
 			~ "disk_cleanup_threshold_bytes: 9223372036854775808\n", "/dev/null"));
 	}
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+	import std.exception : collectException;
+	import std.format : format;
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	foreach (layer; [
+		["workspaces: {}\nsandbox: {unsandboxed_command_execution: %s}\n", "sandbox"],
+		["workspaces: {}\nagents: {codex: {sandbox: {unsandboxed_command_execution: %s}}}\n",
+			"agents['codex'].sandbox"],
+		["workspaces: {local: {root: /tmp, sandbox: {unsandboxed_command_execution: %s}}}\n",
+			"workspaces['local'].sandbox"],
+	])
+	{
+		foreach (valid; ["no", "yes", "ask"])
+		{
+			auto cfg = parseYamlConfigString!CydoConfig(format(layer[0], valid), "config.yaml");
+			switch (layer[1])
+			{
+				case "sandbox":
+					assert(cfg.sandbox.unsandboxed_command_execution.value == valid);
+					break;
+				case "agents['codex'].sandbox":
+					assert(cfg.agents["codex"].sandbox.unsandboxed_command_execution.value == valid);
+					break;
+				default:
+					assert(cfg.workspaces[0].sandbox.unsandboxed_command_execution.value == valid);
+					break;
+			}
+		}
+		foreach (invalid; ["on", "maybe", "'{{ \"a\" if }}'"])
+		{
+			auto error = collectException(parseYamlConfigString!CydoConfig(
+				format(layer[0], invalid), "config.yaml"));
+			assert(error && error.toString().canFind(layer[1])
+				&& error.toString().canFind("unsandboxed_command_execution"));
+		}
+	}
+
+	auto settings = parseYamlConfigString!CydoConfig(
+		"workspaces: {}\nagents: {codex: {permissions: {prompt_timeout: 30}}}\n",
+		"config.yaml");
+	assert(settings.agents["codex"].permissions.prompt_timeout.value == 30);
+	assert(collectException(parseYamlConfigString!CydoConfig(
+		"workspaces: {}\nagents: {codex: {permissions: {policy: ask}}}\n", "config.yaml")));
 }

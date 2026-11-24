@@ -1,6 +1,7 @@
 module cydo.agent.resolver;
 
 import std.conv : to;
+import configy.attributes : SetInfo;
 
 import cydo.agent.contract : Agent;
 import cydo.agent.drivers.registry : agentRegistry;
@@ -90,6 +91,35 @@ PermissionSettings resolvePermissionSettings(ref CydoConfig config,
 	}
 	result.promptTimeout = promptTimeout.seconds;
 	return result;
+}
+
+SetInfo!string resolveUnsandboxedCommandExecution(ref CydoConfig config,
+	string agentName, string workspaceName, out string source)
+{
+	auto result = config.sandbox.unsandboxed_command_execution;
+	source = "sandbox";
+	auto agentVerdict = resolveConfiguredAgent(config, agentName)
+		.config.sandbox.unsandboxed_command_execution;
+	if (agentVerdict.set)
+	{
+		result = agentVerdict;
+		source = "agents['" ~ agentName ~ "'].sandbox";
+	}
+	if (workspaceName.length == 0)
+		return result;
+
+	foreach (ref workspace; config.workspaces)
+		if (workspace.name == workspaceName)
+		{
+			if (workspace.sandbox.unsandboxed_command_execution.set)
+			{
+				source = "workspaces['" ~ workspaceName ~ "'].sandbox";
+				return workspace.sandbox.unsandboxed_command_execution;
+			}
+			return result;
+		}
+	throw new Exception("Unsandboxed command settings for a deleted or unknown workspace: "
+		~ workspaceName);
 }
 
 string effectiveDefaultAgentName(ref CydoConfig config, string workspaceName = "")
@@ -212,4 +242,28 @@ unittest
 	import std.exception : assertThrown;
 	assertThrown!Exception(resolvePermissionSettings(config, "claude", "missing"));
 	assertThrown!Exception(resolvePermissionSettings(config, "missing", "work"));
+}
+
+unittest
+{
+	import cydo.runtime.config : WorkspaceConfig;
+	import std.exception : assertThrown;
+
+	CydoConfig config;
+	AgentConfig agent;
+	agent.driver = SetInfo!AgentDriver(AgentDriver.codex);
+	config.agents["codex"] = agent;
+	config.workspaces = [WorkspaceConfig("local", "/tmp")];
+	string source;
+	assert(!resolveUnsandboxedCommandExecution(config, "codex", "local", source).set);
+	config.sandbox.unsandboxed_command_execution = SetInfo!string("ask");
+	assert(resolveUnsandboxedCommandExecution(config, "codex", "local", source).value == "ask");
+	assert(source == "sandbox");
+	config.agents["codex"].sandbox.unsandboxed_command_execution = SetInfo!string("no");
+	assert(resolveUnsandboxedCommandExecution(config, "codex", "local", source).value == "no");
+	assert(source == "agents['codex'].sandbox");
+	config.workspaces[0].sandbox.unsandboxed_command_execution = SetInfo!string("ask");
+	assert(resolveUnsandboxedCommandExecution(config, "codex", "local", source).value == "ask");
+	assert(source == "workspaces['local'].sandbox");
+	assertThrown!Exception(resolveUnsandboxedCommandExecution(config, "codex", "missing", source));
 }
