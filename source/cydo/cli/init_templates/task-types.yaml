@@ -311,6 +311,33 @@ task_types: {}
 #       quick_research:
 #         prompt_template: prompts/quick_research.md
 
+## creatable_entry_points
+## Purpose: Offers top-level user tasks through CreateTask.
+## Type: Mapping from user entry point names to edges.
+## Default: Empty.
+# task_types:
+#   research_console:
+#     creatable_entry_points:
+#       start_research: {}
+
+## Entry-point edge fields
+##
+## enabled
+## Purpose: Controls whether this edge is available.
+## Type: Boolean.
+## Default: True.
+##
+## description
+## Purpose: Overrides the entry point's description in CreateTask.
+## Type: String.
+## Default: The entry point's description.
+# task_types:
+#   research_console:
+#     creatable_entry_points:
+#       start_research:
+#         enabled: true
+#         description: Open a research task.
+
 ## continuations
 ## Purpose: Defines named mode switches or handoffs.
 ## Type: Mapping of transition names to edges.
@@ -524,6 +551,10 @@ task_types: {}
 #   research_console:
 #     agent_description: Explore research questions interactively.
 #     output_type: []
+#     creatable_entry_points:
+#       start_research:
+#         enabled: true
+#         description: Open a research task.
 #     creatable_tasks:
 #       coordinator:
 #         prompt_template: prompts/quick_research.md
@@ -608,6 +639,8 @@ task_types: {}
 #         worktree: inherit
 #         prompt_template: prompts/review.md
 #         description: Request an additional review.
+#     creatable_entry_points:
+#       start_research: { description: Open a research task. }
 #     continuations:
 #       after_quality_review:
 #         task_type: review

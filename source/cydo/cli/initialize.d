@@ -2,7 +2,7 @@ module cydo.cli.initialize;
 
 import ae.sys.file : openFile;
 import cydo.cli.init_detection : DetectedWorkspace, detectInitWorkspaces;
-import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef,
+import cydo.domain.task_types.definition : ContinuationDef, CreatableEntryPointDef, CreatableTaskDef,
 	OutputType, SingletonAudience, SingletonDef, TaskTypeDef, TaskTypesFile,
 	UserEntryPointDef, WorktreeMode,
 	byName, loadTaskTypes;
@@ -385,6 +385,8 @@ unittest
 		["name", "result_note"]);
 	assertKeys!CreatableTaskDef(at(root, ["task_types", "research_console", "creatable_tasks", "test"]),
 		["name", "task_type", "description"]);
+	assertKeys!CreatableEntryPointDef(
+		at(root, ["task_types", "research_console", "creatable_entry_points", "start_research"]), ["name"]);
 	assertKeys!ContinuationDef(at(root, ["task_types", "coordinator", "continuations", "after_research"]));
 	assertKeys!ContinuationDef(at(root, ["task_types", "coordinator", "on_yield"]));
 	assertKeys!UserEntryPointDef(at(root, ["user_entry_points", "start_research"]), ["name"]);

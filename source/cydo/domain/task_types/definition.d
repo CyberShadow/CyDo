@@ -109,6 +109,13 @@ struct CreatableTaskDef
 	}
 }
 
+struct CreatableEntryPointDef
+{
+	string name; // entry point name from the YAML mapping key
+	@Optional string description;
+	@Optional bool enabled = true;
+}
+
 struct UserEntryPointDef
 {
 	string name; // from YAML mapping key
@@ -147,6 +154,7 @@ struct TaskTypeDef
 
 	// Flow control
 	@Optional @Key("name") CreatableTaskDef[] creatable_tasks;
+	@Optional @Key("name") CreatableEntryPointDef[] creatable_entry_points;
 	@Optional ContinuationDef[string] continuations;
 	@Optional ContinuationDef on_yield; // auto-continuation on clean exit
 
@@ -208,6 +216,15 @@ inout(TaskTypeDef)* byName(inout TaskTypeDef[] types, string name)
 
 /// Look up a creatable task def by name.
 inout(CreatableTaskDef)* byName(inout CreatableTaskDef[] defs, string name)
+{
+	foreach (ref d; defs)
+		if (d.name == name)
+			return &d;
+	return null;
+}
+
+/// Look up a creatable entry point def by name.
+inout(CreatableEntryPointDef)* byName(inout CreatableEntryPointDef[] defs, string name)
 {
 	foreach (ref d; defs)
 		if (d.name == name)
@@ -309,6 +326,62 @@ string formatCompactSingletonToolSummary(SingletonDef[] singletons)
 {
 	return singletons.map!(s => "- " ~ s.name ~ ": "
 		~ (s.description.length ? s.description.lineSplitter.front : "")).join("\n");
+}
+
+struct CreatableEntryPoint
+{
+	CreatableEntryPointDef edge;
+	UserEntryPointDef target;
+}
+
+unittest
+{
+	TaskTypeDef caller;
+	caller.name = "caller";
+	caller.creatable_entry_points = [
+		CreatableEntryPointDef("a"),
+		CreatableEntryPointDef("missing"),
+		CreatableEntryPointDef("internal"),
+		CreatableEntryPointDef("b", "X\nMore about X"),
+	];
+	TaskTypeDef worker;
+	worker.name = "worker";
+	auto types = [caller, worker];
+	auto entryPoints = [
+		UserEntryPointDef("b", "worker", "Start B"),
+		UserEntryPointDef("internal", "worker", "Internal", "", WorktreeMode.inherit, true),
+		UserEntryPointDef("a", "worker", "Start A\nMore about A"),
+	];
+
+	auto view = creatableEntryPointsOf(types, entryPoints, "caller");
+	assert(view.map!(entry => entry.edge.name).array == ["a", "b"]);
+	assert(view.map!(entry => entry.target.name).array == ["a", "b"]);
+	assert(formatCompactCreatableEntryPointToolSummary(types, entryPoints, "caller") == "- a: Start A\n- b: X");
+	assert(formatCompactCreatableEntryPointToolSummary(types, entryPoints, "worker") is null);
+}
+
+/// Return the type's edges to existing, non-system entry points.
+CreatableEntryPoint[] creatableEntryPointsOf(TaskTypeDef[] types,
+	UserEntryPointDef[] entryPoints, string typeName)
+{
+	CreatableEntryPoint[] result;
+	if (auto type = types.byName(typeName))
+		foreach (ref edge; type.creatable_entry_points)
+		{
+			auto target = entryPoints.byName(edge.name);
+			if (target !is null && !target.system)
+				result ~= CreatableEntryPoint(edge, *target);
+		}
+	return result;
+}
+
+string formatCompactCreatableEntryPointToolSummary(TaskTypeDef[] types,
+	UserEntryPointDef[] entryPoints, string typeName)
+{
+	return creatableEntryPointsOf(types, entryPoints, typeName).map!((entry) {
+		auto description = entry.edge.description.length ? entry.edge.description : entry.target.description;
+		return "- " ~ entry.edge.name ~ ": " ~ (description.length ? description.lineSplitter.front : "");
+	}).join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -599,6 +672,81 @@ unittest
 
 unittest
 {
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+
+	auto basePath = buildPath(tempDir, "cydo-test-creatable-entry-points.yaml");
+	auto overlayPath = buildPath(tempDir, "cydo-test-creatable-entry-points-overlay.yaml");
+	write(basePath, q"YAML
+task_types:
+  caller:
+    creatable_entry_points:
+      a:
+      b: {description: X}
+      disabled_edge: {enabled: false}
+  worker: {}
+user_entry_points:
+  a: {task_type: worker, description: Start A}
+  b: {task_type: worker, description: Start B}
+  disabled_edge: {task_type: worker, description: Start disabled edge target}
+YAML");
+	scope(exit) remove(basePath);
+	auto config = loadTaskTypes(basePath);
+	assert(config.types.byName("caller").creatable_entry_points.map!(edge => edge.name).array == ["a", "b"]);
+	assert(config.entryPoints.byName("disabled_edge") !is null);
+	assert(formatCompactCreatableEntryPointToolSummary(config.types, config.entryPoints, "caller")
+		== "- a: Start A\n- b: X");
+
+	write(overlayPath, "task_types:\n  caller:\n    creatable_entry_points:\n      b: {enabled: false}\n");
+	scope(exit) remove(overlayPath);
+	config = loadTaskTypes(basePath, overlayPath);
+	assert(config.types.byName("caller").creatable_entry_points.map!(edge => edge.name).array == ["a"]);
+	assert(config.entryPoints.byName("b") !is null);
+
+	write(overlayPath, "user_entry_points:\n  a: {enabled: false}\n");
+	config = loadTaskTypes(basePath, overlayPath);
+	assert(config.types.byName("caller").creatable_entry_points.map!(edge => edge.name).array == ["b"]);
+
+	write(overlayPath, "task_types:\n  worker: {enabled: false}\n");
+	config = loadTaskTypes(basePath, overlayPath);
+	assert(config.types.byName("caller").creatable_entry_points.length == 0);
+}
+
+unittest
+{
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+
+	auto path = buildPath(tempDir, "cydo-test-creatable-entry-points-validation.yaml");
+	write(path, q"YAML
+task_types:
+  caller:
+    creatable_entry_points:
+      missing: {}
+      background: {}
+      internal: {}
+  worker: {}
+user_entry_points:
+  internal: {task_type: worker, description: Internal entry point, system: true, prompt_template: internal.md}
+singletons:
+  background:
+    task_type: worker
+    prompt_template: background.md
+    title: Background
+    description: Background task
+YAML");
+	scope(exit) remove(path);
+	auto config = loadTaskTypes(path);
+	auto errors = validateTaskTypes(config.types, config.entryPoints, config.singletons, _ => true);
+	assert(errors == [
+		"caller: creatable_entry_points 'missing' references unknown entry point",
+		"caller: creatable_entry_points 'background' targets system entry point",
+		"caller: creatable_entry_points 'internal' targets system entry point",
+	], errors.to!string);
+}
+
+unittest
+{
 	import configy.exceptions : ConfigException;
 	import std.exception : assertThrown;
 	import std.file : remove, tempDir, write;
@@ -614,6 +762,7 @@ unittest
 		"  parent:\n    on_yield:\n      " ~ invalidTarget,
 		"user_entry_points:\n  start_worker:\n    description: Start worker\n    " ~ invalidTarget,
 		"  parent:\n    creatable_tasks:\n      worker: []\n",
+		"  parent:\n    creatable_entry_points:\n      start_worker:\n        bogus: 1\n",
 		"  parent:\n    continuations:\n      worker: []\n",
 		"  parent:\n    on_yield: []\n",
 		"user_entry_points:\n  worker: []\n",
@@ -744,23 +893,30 @@ private void removeDisabled(ref TaskTypesFile file, Node root)
 		return (target in disabledTypes) is null;
 	}
 
+	bool[string] removedEntryPoints;
+	foreach (ref entryPoint; file.user_entry_points)
+	{
+		enforce(entryPoint.enabled || entryPoint.name != "blank",
+			atYamlNode(root["user_entry_points"]["blank"]["enabled"], "The blank entry point cannot be disabled"));
+		if (!entryPoint.enabled || !available(entryPoint.resolvedType))
+			removedEntryPoints[entryPoint.name] = true;
+	}
+	file.user_entry_points = file.user_entry_points
+		.filter!(entryPoint => (entryPoint.name in removedEntryPoints) is null).array;
+
 	file.task_types = file.task_types.filter!(type => type.enabled).array;
 	foreach (ref type; file.task_types)
 	{
 		type.creatable_tasks = type.creatable_tasks
 			.filter!(edge => edge.enabled && available(edge.resolvedType)).array;
+		type.creatable_entry_points = type.creatable_entry_points
+			.filter!(edge => edge.enabled && (edge.name in removedEntryPoints) is null).array;
 		foreach (name, continuation; type.continuations.dup)
 			if (!continuation.enabled || !available(continuation.task_type))
 				type.continuations.remove(name);
 		if (!type.on_yield.enabled || !available(type.on_yield.task_type))
 			type.on_yield = ContinuationDef.init;
 	}
-
-	foreach (ref entryPoint; file.user_entry_points)
-		enforce(entryPoint.enabled || entryPoint.name != "blank",
-			atYamlNode(root["user_entry_points"]["blank"]["enabled"], "The blank entry point cannot be disabled"));
-	file.user_entry_points = file.user_entry_points
-		.filter!(entryPoint => entryPoint.enabled && available(entryPoint.resolvedType)).array;
 }
 
 unittest // Preserve the text of a task-type entry point description.
@@ -896,6 +1052,17 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 				errors ~= format("%s: creatable_tasks '%s' references unknown type '%s'",
 					def.name, edge.name, edge.resolvedType);
 			checkTemplateFile(format("%s: creatable_tasks '%s'", def.name, edge.name), edge.prompt_template);
+		}
+
+		foreach (ref edge; def.creatable_entry_points)
+		{
+			auto target = entryPoints.byName(edge.name);
+			if (target is null)
+				errors ~= format("%s: creatable_entry_points '%s' references unknown entry point",
+					def.name, edge.name);
+			else if (target.system)
+				errors ~= format("%s: creatable_entry_points '%s' targets system entry point",
+					def.name, edge.name);
 		}
 
 		// Check continuation references

@@ -81,7 +81,8 @@ when they are used.
 
 ### Disabling definitions
 
-Task types, `creatable_tasks` entries, `continuations` entries,
+Task types, `creatable_tasks` entries, `creatable_entry_points` entries,
+`continuations` entries,
 `on_yield`, and `user_entry_points` entries support a boolean `enabled`
 field that defaults to `true`. Set it to `false` in an overlay to remove
 the entry. A higher layer can set it back to `true` to restore the
@@ -185,6 +186,23 @@ A singleton can receive questions while blocked in a CyDo tool call. Long
 work should run in sub-tasks or background commands so it can keep receiving
 requests. The integrator follows the project's instructions for checking and
 landing work.
+
+## Creating user tasks
+
+A task type can list named user entry points under
+`creatable_entry_points`. Each edge can override the entry point's
+description in the CreateTask tool. Disabling an entry point also
+removes edges that target it. CyDo ships with only the `agentic` entry
+point offered to the `conversation` type.
+
+CreateTask creates an independent top-level task. It defaults to a
+draft in the caller's project. If the call omits the entry point, the
+target workspace's configured default must match an allowed edge by
+name. The target workspace also supplies the default agent. The tool
+can start a task immediately only in the caller's workspace.
+
+CyDo records the creator in `creator_tid` and links to that task from
+the created task's header.
 
 ## Read-Only Mode
 
