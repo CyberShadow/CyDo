@@ -149,7 +149,7 @@ task_types:
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path and its branch are included."
       bug:
         prompt_template: prompts/bug.md
         result_note: "Read the output file for the full investigation report."
@@ -223,7 +223,7 @@ task_types:
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path and its branch are included."
     continuations:
       back:
         task_type: conversation
@@ -272,11 +272,11 @@ task_types:
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path and its branch are included."
       reproduce:
         worktree: fork
         prompt_template: prompts/reproduce.md
-        result_note: "Read the output file for findings. The worktree path contains the failing test."
+        result_note: "Read the output file for findings. The worktree (path and branch included) contains the failing test."
     continuations:
       needs_plan:
         task_type: plan_mode
@@ -320,7 +320,7 @@ task_types:
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path and its branch are included."
       bug:
         prompt_template: prompts/bug.md
         result_note: "Read the output file for the full investigation report."
@@ -351,7 +351,7 @@ task_types:
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path and its branch are included."
       bug:
         prompt_template: prompts/bug.md
         result_note: "Read the output file for the full investigation report."
@@ -400,7 +400,7 @@ task_types:
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path and its branch are included."
 
   quick_research:
     icon: quick-research
@@ -447,7 +447,7 @@ task_types:
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path and its branch are included."
 
   bug:
     icon: bug
@@ -475,7 +475,7 @@ task_types:
       reproduce:
         worktree: fork
         prompt_template: prompts/reproduce.md
-        result_note: "Read the output file for findings. The worktree path contains the failing test."
+        result_note: "Read the output file for findings. The worktree (path and branch included) contains the failing test."
 
   reproduce:
     icon: reproduce
@@ -521,7 +521,7 @@ task_types:
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path and its branch are included."
       quick_research:
         prompt_template: prompts/quick_research.md
         result_note: "Read the output file for findings."
@@ -571,7 +571,7 @@ task_types:
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path and its branch are included."
       test:
         prompt_template: prompts/test.md
         result_note: "Read the output file for test results."
@@ -631,7 +631,7 @@ task_types:
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path and its branch are included."
       quick_research:
         prompt_template: prompts/quick_research.md
         result_note: "Read the output file for findings."
@@ -673,7 +673,7 @@ task_types:
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path and its branch are included."
 
   implement:
     icon: implement

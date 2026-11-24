@@ -2,6 +2,7 @@ module cydo.workflow.tasks.subtask_delivery;
 
 import std.array : join;
 import std.conv : to;
+import std.exception : enforce;
 import std.file : exists;
 import std.logger : warningf;
 import std.process : execute;
@@ -14,6 +15,7 @@ import cydo.domain.tasks.model : TaskData, TaskStatus;
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
 import cydo.foundation.system.known_messages : KnownSystemMessageKind;
 import cydo.mcp.payloads : TaskResult;
+import cydo.workflow.workspace.worktree : worktreeBranchName, worktreeBranchTip;
 
 package(cydo):
 
@@ -123,21 +125,43 @@ private:
 		auto tdOut = host_.outputPath(td);
 		bool hasOutput = tdOut.length > 0 && exists(tdOut);
 		bool hasWorktree = td.hasWorktree;
+		auto worktree = hasWorktree ? host_.worktreePath(td) : null;
+		string branch;
+		if (hasWorktree)
+		{
+			auto branchTip = worktreeBranchTip(td.repoPath, td.worktreeTid);
+			if (branchTip !is null)
+			{
+				branch = worktreeBranchName(td.worktreeTid);
+				if (exists(worktree))
+				{
+					auto head = execute(["git", "-C", worktree, "rev-parse", "--verify", "--quiet", "HEAD"]);
+					enforce(head.status == 0 || head.status == 1,
+						"Failed to resolve worktree HEAD for task " ~ to!string(tid) ~ ": " ~ head.output.strip);
+					if (head.status != 0 || head.output.strip != branchTip)
+						branch = null;
+				}
+			}
+		}
 		bool isFailed = td.status == "failed";
 		auto summary = td.resultText;
 		auto talkNote = " Use mcp__cydo__Ask(question, " ~ to!string(tid) ~ ") to ask follow-up questions.";
 		string note;
 		if (hasOutput && hasWorktree)
-			note = "Read the output file for full findings. The worktree path is included for adopting changes." ~ talkNote;
+			note = "Read the output file for full findings. The worktree path is included for adopting changes"
+				~ (branch is null ? "." : "; its work is on branch `" ~ branch ~ "`.")
+				~ talkNote;
 		else if (hasOutput)
 			note = "Read the output file for full findings." ~ talkNote;
 		else if (hasWorktree)
-			note = "The worktree contains the implementation." ~ talkNote;
+			note = "The worktree contains the implementation"
+				~ (branch is null ? "." : ", on branch `" ~ branch ~ "`.")
+				~ talkNote;
 
 		auto result = TaskResult(
 			summary: summary,
 			output_file: hasOutput ? tdOut : null,
-			worktree: hasWorktree ? host_.worktreePath(td) : null,
+			worktree: worktree,
 			note: note.length > 0 ? note : td.resultNote,
 			error: isFailed ? summary : null,
 			status: isFailed ? "error" : "success",
@@ -154,7 +178,7 @@ private:
 			}
 			else
 			{
-				auto logResult = execute(["git", "-C", host_.worktreePath(td),
+				auto logResult = execute(["git", "-C", worktree,
 					"log", "--format=%H", td.taskStartHead ~ "..HEAD"]);
 				assert(logResult.status == 0,
 					"Failed to collect commits for task " ~ to!string(tid)
@@ -163,7 +187,8 @@ private:
 				if (logResult.output.strip.length > 0)
 					result.commits = logResult.output.strip.splitLines;
 				if (result.commits.length > 0)
-					note = "Cherry-pick commits from the worktree: git cherry-pick "
+					note = (branch is null ? "Cherry-pick commits from the worktree: git cherry-pick "
+						: "The commits are on branch `" ~ branch ~ "` in the worktree. To cherry-pick them: git cherry-pick ")
 						~ result.commits.retro.join(" ") ~ talkNote;
 			}
 			result.note = note.length > 0 ? note : td.resultNote;
@@ -202,7 +227,6 @@ private:
 
 unittest
 {
-	import std.algorithm.searching : canFind;
 	import std.file : exists, mkdirRecurse, remove, rmdirRecurse, tempDir, write;
 	import std.path : buildPath;
 	import std.process : execute;
@@ -252,21 +276,86 @@ unittest
 	));
 
 	auto result = delivery.buildTaskResult(2);
+	auto cherryPick = "git cherry-pick " ~ firstCommit ~ " " ~ secondCommit;
+	auto talkNote = " Use mcp__cydo__Ask(question, 2) to ask follow-up questions.";
 	assert(result.commits == [secondCommit, firstCommit]);
-	assert(result.note.canFind("git cherry-pick " ~ firstCommit ~ " " ~ secondCommit));
+	assert(result.note == "Cherry-pick commits from the worktree: " ~ cherryPick ~ talkNote);
+
+	auto branch = execute(["git", "-C", repo, "branch", "cydo/2"]);
+	assert(branch.status == 0, branch.output);
+	result = delivery.buildTaskResult(2);
+	assert(result.commits == [secondCommit, firstCommit]);
+	assert(result.note == "The commits are on branch `cydo/2` in the worktree. To cherry-pick them: "
+		~ cherryPick ~ talkNote);
+
+	auto detach = execute(["git", "-C", repo, "switch", "--detach"]);
+	assert(detach.status == 0, detach.output);
+	auto commit = execute(["git", "-C", repo, "commit", "--allow-empty", "-qm", "detached work"]);
+	assert(commit.status == 0, commit.output);
+	auto detachedCommit = execute(["git", "-C", repo, "rev-parse", "HEAD"]).output.strip;
+
+	result = delivery.buildTaskResult(2);
+	assert(result.commits == [detachedCommit, secondCommit, firstCommit]);
+	assert(result.note == "Cherry-pick commits from the worktree: "
+		~ cherryPick ~ " " ~ detachedCommit ~ talkNote);
+}
+
+unittest
+{
+	import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir, write;
+	import std.path : buildPath;
+
+	auto repo = buildPath(tempDir(), "cydo-subtask-delivery-report");
+	if (exists(repo))
+		rmdirRecurse(repo);
+	mkdirRecurse(repo);
+	scope(exit) rmdirRecurse(repo);
+
+	auto init = execute(["git", "-C", repo, "init", "-q"]);
+	assert(init.status == 0, init.output);
+	auto commit = execute(["git", "-C", repo, "-c", "user.name=Test",
+		"-c", "user.email=test@test", "commit", "--allow-empty", "-qm", "base"]);
+	assert(commit.status == 0, commit.output);
+	auto output = buildPath(repo, "report.md");
+	write(output, "findings");
+
+	auto task = TaskData(2, "local", repo);
+	task.taskType = "report";
+	task.worktreeTid = 2;
+	auto delivery = new SubtaskResultDelivery(SubtaskResultDeliveryHost(
+		getTask: (int tid) => tid == task.tid ? &task : null,
+		outputPath: (const TaskData* td) => output,
+		worktreePath: (const TaskData* td) => repo,
+		taskProducesCommitOutput: (string projectPath, string taskType) => false,
+	));
+
+	auto note = "Read the output file for full findings. The worktree path is included for adopting changes";
+	auto talkNote = " Use mcp__cydo__Ask(question, 2) to ask follow-up questions.";
+	assert(delivery.buildTaskResult(2).note == note ~ "." ~ talkNote);
+
+	auto branch = execute(["git", "-C", repo, "branch", "cydo/2"]);
+	assert(branch.status == 0, branch.output);
+	assert(delivery.buildTaskResult(2).note == note ~ "; its work is on branch `cydo/2`." ~ talkNote);
 }
 
 unittest
 {
 	import std.algorithm.searching : canFind;
-	import std.file : remove, write;
+	import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir, write;
 	import std.path : buildPath;
 
-	auto output = buildPath("/tmp", "cydo-legacy-subtask-output.md");
+	auto repo = buildPath(tempDir(), "cydo-legacy-subtask");
+	if (exists(repo))
+		rmdirRecurse(repo);
+	mkdirRecurse(repo);
+	scope(exit) rmdirRecurse(repo);
+	auto init = execute(["git", "-C", repo, "init", "-q"]);
+	assert(init.status == 0, init.output);
+
+	auto output = buildPath(repo, "output.md");
 	write(output, "legacy output");
-	scope(exit) remove(output);
 	TaskData[int] tasks;
-	tasks[2] = TaskData(2, "local", "/tmp/cydo-legacy-subtask");
+	tasks[2] = TaskData(2, "local", repo);
 	tasks[2].taskType = "implementation";
 	tasks[2].worktreeTid = 2;
 	tasks[2].resultText = "legacy summary";
@@ -279,7 +368,7 @@ unittest
 			return td is null ? null : td;
 		},
 		outputPath: (const TaskData* td) => output,
-		worktreePath: (const TaskData* td) => "/tmp/cydo-legacy-subtask",
+		worktreePath: (const TaskData* td) => repo,
 		taskProducesCommitOutput: (string projectPath, string taskType) => true,
 	));
 
@@ -289,5 +378,5 @@ unittest
 	assert(!result.note.canFind("git cherry-pick"));
 	assert(result.summary == "legacy summary");
 	assert(result.output_file == output);
-	assert(result.worktree == "/tmp/cydo-legacy-subtask");
+	assert(result.worktree == repo);
 }
