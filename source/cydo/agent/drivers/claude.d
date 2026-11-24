@@ -291,7 +291,6 @@ class ClaudeCodeAgent : Agent
 		}
 		catch (Exception e)
 		{ tracef("readSessionMeta(%s): error: %s", session.sessionId, e.msg); }
-		meta.hasMessages = meta.title.length > 0;
 		return meta;
 	}
 

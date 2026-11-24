@@ -327,7 +327,6 @@ class CopilotAgent : Agent
 			import std.logger : tracef;
 			tracef("readSessionMeta(copilot, %s): error: %s", session.sessionId, e.msg);
 		}
-		meta.hasMessages = meta.title.length > 0;
 		return meta;
 	}
 

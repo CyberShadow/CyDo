@@ -893,10 +893,20 @@ class CodexAgent : DriverServedHistoryAgent
 
 	SessionMeta readSessionMeta(const ref DiscoveredSession session)
 	{
-		import std.algorithm : canFind;
 		import std.stdio : File;
+
+		import cydo.agent.drivers.codex.ledger : parseRolloutLineEvidence;
+
 		if (session.exactHistoryPath.length == 0)
 			return SessionMeta.init;
+
+		@JSONPartial
+		static struct SessionMetaProbe
+		{
+			@JSONPartial
+			static struct Payload { string cwd; }
+			Payload payload;
+		}
 
 		SessionMeta meta;
 		try
@@ -905,66 +915,107 @@ class CodexAgent : DriverServedHistoryAgent
 			auto f = File(session.exactHistoryPath, "r");
 			foreach (line; f.byLine)
 			{
-				if (lineCount++ > 50)
-					break;
-				string lineStr = cast(string) line.idup;
-				// Extract cwd from session_meta line
-				if (meta.projectPath.length == 0 && lineStr.canFind(`"type":"session_meta"`))
+				auto lineStr = line.idup;
+				auto evidence = parseRolloutLineEvidence(lineStr, ++lineCount);
+				if (meta.projectPath.length == 0 && evidence.probe.isSessionMeta)
 				{
-					@JSONPartial
-					static struct SessionMetaProbe
-					{
-						@JSONPartial
-						static struct Payload { string cwd; }
-						Payload payload;
-					}
 					try
-					{
-						auto probe = jsonParse!SessionMetaProbe(lineStr);
-						if (probe.payload.cwd.length > 0)
-							meta.projectPath = probe.payload.cwd;
-					}
+						meta.projectPath = jsonParse!SessionMetaProbe(lineStr).payload.cwd;
 					catch (Exception) {}
 				}
-				// Extract title from first user response_item
-				if (meta.title.length == 0 && lineStr.canFind(`"type":"response_item"`)
-					&& lineStr.canFind(`"role":"user"`))
-				{
-					@JSONPartial
-					static struct RiProbe
-					{
-						@JSONPartial
-						static struct Payload
-						{
-							string role;
-							@JSONPartial
-							static struct ContentItem { string type; string text; }
-							ContentItem[] content;
-						}
-						Payload payload;
-					}
-					try
-					{
-						auto probe = jsonParse!RiProbe(lineStr);
-						if (probe.payload.role == "user")
-						{
-							string text;
-							foreach (ref ci; probe.payload.content)
-								if (ci.type == "input_text" || ci.type == "text")
-									text ~= ci.text;
-							if (text.length > 0)
-								meta.title = truncateTitle(text, 80);
-						}
-					}
-					catch (Exception) {}
-				}
-				if (meta.title.length > 0 && meta.projectPath.length > 0)
+				if (!meta.hasMessages && evidence.user.isTurnBoundary)
+					meta.title = truncateTitle(evidence.user.preview(), 80);
+				if (meta.hasMessages && meta.projectPath.length > 0)
 					break;
 			}
 		}
 		catch (Exception e)
 		{ tracef("readSessionMeta(codex, %s): error: %s", session.sessionId, e.msg); }
 		return meta;
+	}
+
+	unittest
+	{
+		import std.array : join;
+		import std.file : exists, remove, tempDir, write;
+		import std.path : buildPath;
+		import std.range : repeat;
+		import std.uuid : randomUUID;
+
+		auto path = buildPath(tempDir(), "cydo-codex-session-meta-" ~ randomUUID().toString ~ ".jsonl");
+		scope (exit)
+			if (exists(path))
+				remove(path);
+		auto session = DiscoveredSession("019fd6d2-f60f-7850-8924-e3566e56f9e6", 0, path);
+		auto agent = new CodexAgent();
+
+		enum header = `{"timestamp":"2026-08-06T11:26:17.667Z","type":"session_meta","payload":{"id":"019fd6d2-f60f-7850-8924-e3566e56f9e6","cwd":"/workspace"}}
+`;
+		enum context = `{"timestamp":"2026-08-06T11:26:17.668Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /workspace\n\n<INSTRUCTIONS>\nUse Nix.\n</INSTRUCTIONS>"},{"type":"input_text","text":"<environment_context>\n  <cwd>/workspace</cwd>\n</environment_context>"}]}}
+`;
+		write(path, header ~ context);
+		auto meta = agent.readSessionMeta(session);
+		assert(meta.title == "");
+		assert(!meta.hasMessages);
+		assert(meta.projectPath == "/workspace");
+
+		enum prompt = `{"timestamp":"2026-08-06T11:26:17.670Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Add a regression test."}]}}
+`;
+		foreach (contextCount; [1, 55])
+		{
+			write(path, header ~ context.repeat(contextCount).join ~ prompt);
+			meta = agent.readSessionMeta(session);
+			assert(meta.title == "Add a regression test.");
+			assert(meta.hasMessages);
+			assert(meta.projectPath == "/workspace");
+		}
+
+		enum imagePrompt = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<image name=[Image #1] path=\"/workspace/diagram.png\">"},{"type":"input_image","image_url":"data:image/png;base64,AA=="},{"type":"input_text","text":"</image>"},{"type":"output_text","text":"ignored"},{"type":"input_text","text":"Explain this diagram."}]}}
+`;
+		write(path, header ~ imagePrompt);
+		meta = agent.readSessionMeta(session);
+		assert(meta.title == "Explain this diagram.");
+		assert(meta.hasMessages);
+
+		enum imageOnly = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AA=="}]}}
+`;
+		write(path, header ~ imageOnly ~ prompt);
+		meta = agent.readSessionMeta(session);
+		assert(meta.title == "[Image]" && meta.hasMessages);
+
+		enum systemPrompt = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"[SYSTEM: Task prompt: x]\n\nbody\n\n[/SYSTEM]"}]}}
+`;
+		write(path, header ~ systemPrompt ~ prompt);
+		meta = agent.readSessionMeta(session);
+		assert(meta.title == "[SYSTEM: Task prompt: x] body [/SYSTEM]" && meta.hasMessages);
+
+		foreach (part; [
+			`{"type":"input_image","file_id":"image","detail":42}`,
+			`{"type":"input_audio","file_id":42}`,
+			`{"type":"output_text","text":"output","annotations":{}}`,
+			`{"type":"output_text","text":"output","logprobs":42}`,
+		])
+		{
+			auto malformed = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Invalid prompt."},`
+				~ part ~ "]}}\n";
+			write(path, header ~ malformed ~ prompt);
+			assert(agent.readSessionMeta(session).title == "Add a regression test.");
+		}
+
+		import cydo.agent.drivers.codex.history_fixtures : nativeUserSchemaCases, nativeUserSchemaLine;
+
+		foreach (fixture; nativeUserSchemaCases)
+		{
+			auto response = nativeUserSchemaLine(fixture);
+			write(path, header ~ response ~ "\n" ~ prompt);
+			assert(agent.readSessionMeta(session).title
+				== (fixture.title is null ? "Add a regression test." : fixture.title), response);
+		}
+
+		enum outputOnly = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"output_text","text":"ignored"}]}}
+`;
+		write(path, header ~ outputOnly ~ prompt);
+		assert(agent.readSessionMeta(session).title == "Add a regression test.");
 	}
 
 	private string prepareIsolatedOneShotHome(ProcessLaunch launch)

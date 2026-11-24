@@ -49,9 +49,11 @@ struct DiscoveredSession
 /// Metadata extracted by reading session content.
 struct SessionMeta
 {
-	string title;       /// First user message text (truncated)
+	string title;       /// First user message title. Every user message needs a non-empty
+	                    /// title, such as "[Image]" for an image-only prompt.
 	string projectPath; /// Starting working directory as recorded in the session content
-	bool hasMessages;   /// Whether the session contains any user messages
+	/// Whether a user message was found during metadata extraction.
+	bool hasMessages() const { return title.length > 0; }
 }
 
 enum PersistedHistoryBoundaryKind
