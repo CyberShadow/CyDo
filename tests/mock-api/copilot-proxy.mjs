@@ -24,6 +24,11 @@ function nextChatId() {
 }
 
 let callIdCounter = 0;
+let connectionCounter = 0;
+
+function logConn(id, message) {
+  console.log(`[copilot-proxy] ${new Date().toISOString()} +${performance.now().toFixed(1)}ms #${id} ${message}`);
+}
 
 function sendJson(socket, statusCode, statusText, body) {
   const bodyStr = JSON.stringify(body);
@@ -303,8 +308,8 @@ function handleMcpReadonly(socket, body) {
   }
 }
 
-function handleDecryptedRequest(socket, host, method, path, body) {
-  console.log(`[copilot-proxy] ${host} ${method} ${path}`);
+function handleDecryptedRequest(id, socket, host, method, path, body) {
+  logConn(id, `${host} ${method} ${path}`);
 
   if (host === "api.github.com") {
     if (method === "GET" && path.startsWith("/copilot_internal/user")) {
@@ -382,9 +387,14 @@ const server = createServer();
 
 server.on("connect", (req, clientSocket, head) => {
   const host = req.url.split(":")[0];
-  console.log(`[copilot-proxy] CONNECT ${req.url}`);
+  const id = ++connectionCounter;
+  const start = performance.now();
+  const elapsed = () => `${(performance.now() - start).toFixed(1)}ms`;
+  logConn(id, `CONNECT ${req.url} head=${head.length} bytes`);
 
-  clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+  clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n", () => {
+    logConn(id, "200 written");
+  });
 
   const tlsSocket = new TLSSocket(clientSocket, {
     isServer: true,
@@ -400,17 +410,34 @@ server.on("connect", (req, clientSocket, head) => {
 
   let reqBuf = Buffer.alloc(0);
 
+  let handshakeComplete = false;
+  tlsSocket.once("secure", () => {
+    handshakeComplete = true;
+    logConn(id, `TLS handshake done elapsed=${elapsed()}`);
+  });
+
+  tlsSocket.once("data", (chunk) => {
+    logConn(id, `first decrypted data bytes=${chunk.length} elapsed=${elapsed()}`);
+  });
   tlsSocket.on("data", (chunk) => {
     reqBuf = Buffer.concat([reqBuf, chunk]);
     let parsed;
     while ((parsed = parseHttpRequest(reqBuf))) {
       reqBuf = reqBuf.slice(parsed.end);
-      handleDecryptedRequest(tlsSocket, host, parsed.method, parsed.path, parsed.body);
+      handleDecryptedRequest(id, tlsSocket, host, parsed.method, parsed.path, parsed.body);
     }
   });
 
   tlsSocket.on("error", (err) => {
-    console.error(`[copilot-proxy] TLS error for ${host}:`, err.message);
+    logConn(id, `TLS error code=${err.code} message=${err.message} elapsed=${elapsed()}`);
+  });
+
+  tlsSocket.on("end", () => {
+    logConn(id, `end handshake=${handshakeComplete} elapsed=${elapsed()}`);
+  });
+
+  clientSocket.on("close", (hadError) => {
+    logConn(id, `close hadError=${hadError} handshake=${handshakeComplete} elapsed=${elapsed()}`);
   });
 });
 

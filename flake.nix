@@ -808,6 +808,19 @@ EOF
 
               node $src/mock-api/copilot-proxy.mjs &
               COPILOT_PROXY_PID=$!
+              (
+                while true; do
+                  printf '%s' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+                  for resource in cpu io memory; do
+                    while IFS= read -r sample; do
+                      printf ' %s %s' "$resource" "$sample"
+                    done < "/proc/pressure/$resource"
+                  done
+                  printf '\n'
+                  sleep 1
+                done
+              ) > /tmp/host-pressure.log &
+              HOST_PRESSURE_PID=$!
               for i in $(seq 1 30); do
                 if curl -s http://127.0.0.1:9001/ >/dev/null 2>&1; then break; fi
                 sleep 0.5
@@ -870,6 +883,8 @@ EOF
               wait $MOCK_PID 2>/dev/null || true
 
               ${lib.optionalString (agentType == "copilot") ''
+              kill $HOST_PRESSURE_PID 2>/dev/null || true
+              wait $HOST_PRESSURE_PID 2>/dev/null || true
               if [ -n "''${COPILOT_PROXY_PID:-}" ]; then
                 kill $COPILOT_PROXY_PID 2>/dev/null || true
                 wait $COPILOT_PROXY_PID 2>/dev/null || true
@@ -878,6 +893,16 @@ EOF
 
               if [ "''${TEST_RESULT:-0}" != "0" ]; then
                 echo "Tests failed with exit code ''${TEST_RESULT}"
+                ${lib.optionalString (agentType == "copilot") ''
+                echo "=== Host pressure ==="
+                cat /tmp/host-pressure.log
+                echo "=== Copilot CLI process logs ==="
+                for log in "$COPILOT_HOME"/logs/process-*.log; do
+                  [ -f "$log" ] || continue
+                  echo "=== $log ==="
+                  cat "$log"
+                done
+                ''}
                 exit 1
               fi
             '';
