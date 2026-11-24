@@ -834,6 +834,18 @@ export function matchPattern(userText) {
   match = userText.match(/run background command (.+)/i);
   if (match) return { type: "background_shell", command: match[1].trim() };
 
+  match = userText.match(/run unsandboxed command (.+)/i);
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__UnsandboxedCommand",
+      input: {
+        command: match[1].trim(),
+        cwd: "/tmp/cydo-test-workspace",
+        timeout: 60,
+      },
+    };
+
   // "run command with timeout <N> <cmd>" — Bash tool call with timeout_ms
   match = userText.match(/run command with timeout (\d+) (.+)/i);
   if (match)
