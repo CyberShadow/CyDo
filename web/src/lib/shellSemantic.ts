@@ -851,13 +851,6 @@ function applySlice(
   return { ok: true, value: fromInterval({ start, end }) };
 }
 
-function rangeStartsAtLine1(range: ReadRange): boolean {
-  return (
-    range.type === "all" ||
-    (range.type !== "tail-count" && toInterval(range).start === 1)
-  );
-}
-
 function applyStage(
   stream: ShellStream,
   op: StageOp,
@@ -889,13 +882,6 @@ function applyStage(
         return reject(
           "unsafe_shell_syntax",
           "nested nl numbering is not supported",
-        );
-      }
-      const startsAtLine1 = rangeStartsAtLine1(stream.source.range);
-      if (!startsAtLine1) {
-        return reject(
-          "unsafe_shell_syntax",
-          "nl numbering of a sliced range would not match file line numbers",
         );
       }
       return {

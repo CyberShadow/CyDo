@@ -490,16 +490,35 @@ describe("pipe reads (should succeed as Read)", () => {
     });
   });
 
-  it("sed -n '260,640p' src/main.rs | nl -ba → reject (numbering after range is ambiguous)", async () => {
-    const r = await parseShellSemantic(
+  it.each([
+    [
       "sed -n '260,640p' src/main.rs | nl -ba",
-    );
-    expect(r).toMatchObject({
-      ok: false,
-      reason:
-        "nl numbering of a sliced range would not match file line numbers",
-    });
-  });
+      "src/main.rs",
+      { type: "lines", start: 260, end: 640 },
+      "rust",
+    ],
+    [
+      "sed -n 10,20p f.d | nl",
+      "f.d",
+      { type: "lines", start: 10, end: 20 },
+      "d",
+    ],
+    ["tail -n +3 f.d | nl -ba", "f.d", { type: "tail", startLine: 3 }, "d"],
+  ] as const)(
+    "%s preserves the file range and plans an nl gutter",
+    async (command, filePath, range, language) => {
+      const r = await parseShellSemantic(command);
+      expect(r.ok).toBe(true);
+      assert(r.ok);
+      expect(segmentsOf(r.value)).toEqual([fileRows(filePath, range, nl)]);
+      expect(plan(r.value)?.blocks[0]?.format).toEqual({
+        kind: "nl-line-number-prefixed",
+        width: 6,
+        separator: "\t",
+        format: { kind: "content", language },
+      });
+    },
+  );
 
   it("cat file.txt | wc -l → reject (opaque transform over file-read)", async () => {
     const r = await parseShellSemantic("cat file.txt | wc -l");
@@ -654,10 +673,6 @@ describe("stream composition", () => {
     [
       "tail -n 9 f.d | head -n 2",
       "slicing the output of a last-lines slice depends on the file length",
-    ],
-    [
-      "sed -n 10,20p f.d | nl",
-      "nl numbering of a sliced range would not match file line numbers",
     ],
     ["nl f.d | nl", "nested nl numbering is not supported"],
     ["nl f.d | grep -n x", "search over nl-numbered output is not supported"],

@@ -368,6 +368,18 @@ describe("SemanticShellOutput document and numbered rendering", () => {
     expect(html).toContain("&lt;svg");
   });
 
+  it("renders two line prefixes when nl numbers a sed range", async () => {
+    const result = await parseShellSemantic("sed -n 10,20p x.d | nl");
+    assert(result.ok && result.value.kind === "output");
+    const view = shellOutputView(result.value.output);
+    assert(view.ok && view.value.kind === "plan");
+
+    const html = renderSemantic("     1\tint x;\n     2\t}\n", view.value.plan);
+    expect(
+      html.match(/<span data-testid="semantic-shell-line-prefix"/g),
+    ).toHaveLength(2);
+  });
+
   it.each(["sed -n 1,20p", "head -n 1"])(
     "keeps a numbered git-object SVG out of file preview after %s",
     async (slice) => {
