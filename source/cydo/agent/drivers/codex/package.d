@@ -829,7 +829,7 @@ class CodexAgent : DriverServedHistoryAgent
 			bool forceMeta = !seenTaskStarted;
 			auto results = probe.isUserMessage
 				? translateCodexUserItem(evidence.user, forkId, forceMeta)
-				: translateNonUserRolloutResponseItem(line, forkId);
+				: translateNonUserRolloutResponseItem(line, evidence.lineNumber, forkId);
 			TranslatedEvent[] evs;
 			foreach (r; results)
 				evs ~= TranslatedEvent(r, line, ts);

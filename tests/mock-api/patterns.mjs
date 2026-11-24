@@ -20,6 +20,17 @@ export function matchPattern(userText) {
     return { type: "text", text: "usage-headers-7d" };
   }
 
+  if (/codex reasoning summary fixture/i.test(userText)) {
+    return {
+      type: "text",
+      text: "reasoning-summary-fixture-done",
+      reasoningSummary: [
+        "**Planning detailed gate reporting**",
+        "**Evaluating test execution via Nix flake**",
+      ],
+    };
+  }
+
   if (/narration fixture/i.test(userText)) {
     return {
       type: "narration",

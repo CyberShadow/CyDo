@@ -478,16 +478,65 @@ function oaiSseEvent(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-function oaiStreamTextResponse(res, text, totalTokensOverride) {
+async function oaiStreamTextResponse(
+  res,
+  text,
+  totalTokensOverride,
+  reasoningSummary,
+) {
   const respId = nextRespId();
   const msgId = nextMsgId();
   oaiSseEvent(res, "response.created", {
     type: "response.created",
     response: { id: respId },
   });
+  if (reasoningSummary) {
+    const item = {
+      type: "reasoning",
+      id: "rs_summary_fixture",
+      summary: [],
+      content: [],
+    };
+    oaiSseEvent(res, "response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: 0,
+      item,
+    });
+    for (const [summary_index, text] of reasoningSummary.entries()) {
+      const part = { item_id: item.id, output_index: 0, summary_index };
+      oaiSseEvent(res, "response.reasoning_summary_part.added", {
+        type: "response.reasoning_summary_part.added",
+        ...part,
+        part: { type: "summary_text", text: "" },
+      });
+      for (const delta of [text.slice(0, 10), text.slice(10)]) {
+        oaiSseEvent(res, "response.reasoning_summary_text.delta", {
+          type: "response.reasoning_summary_text.delta",
+          ...part,
+          delta,
+        });
+      }
+      oaiSseEvent(res, "response.reasoning_summary_text.done", {
+        type: "response.reasoning_summary_text.done",
+        ...part,
+        text,
+      });
+    }
+    // Give the browser a chance to assert on the streamed deltas.
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    oaiSseEvent(res, "response.output_item.done", {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        ...item,
+        summary: reasoningSummary.map((text) => ({ type: "summary_text", text })),
+      },
+    });
+  }
+  const outputIndex = reasoningSummary ? 1 : 0;
   oaiSseEvent(res, "response.output_item.added", {
     type: "response.output_item.added",
-    output_index: 0,
+    output_index: outputIndex,
     item: {
       type: "message",
       role: "assistant",
@@ -501,7 +550,7 @@ function oaiStreamTextResponse(res, text, totalTokensOverride) {
   });
   oaiSseEvent(res, "response.output_item.done", {
     type: "response.output_item.done",
-    output_index: 0,
+    output_index: outputIndex,
     item: {
       type: "message",
       role: "assistant",
@@ -1076,7 +1125,12 @@ function handleResponses(req, res) {
       });
       // Do NOT call res.end() — connection stays open until the process is killed.
     } else if (intent.type === "text") {
-      oaiStreamTextResponse(res, intent.text, intent.totalTokens);
+      oaiStreamTextResponse(
+        res,
+        intent.text,
+        intent.totalTokens,
+        intent.reasoningSummary,
+      );
     } else if (intent.type === "quick_yield_shell") {
       oaiStreamFunctionCallResponse(res, "exec_command", {
         cmd: intent.command,

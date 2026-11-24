@@ -113,21 +113,19 @@ ItemStartedEvent itemStartedEvent(ThreadItem item)
 }
 
 /// The text of a completed reasoning item: its raw content when Codex has it,
-/// else its summary. Each is an array of strings, joined as their deltas are.
+/// else its summary. Each summary entry is a separate Markdown paragraph.
 private string reasoningText(ThreadItem item)
 {
-	static string joined(SO parts)
+	static string joined(SO parts, string separator)
 	{
 		if (parts.type != SO.Type.array)
 			return null; // the schema allows either array to be absent
-		string result;
-		foreach (part; jsonParse!(string[])(toJson(parts)))
-			result ~= part;
-		return result;
+		import std.array : join;
+		return jsonParse!(string[])(toJson(parts)).join(separator);
 	}
 
-	auto content = joined(item.content);
-	return content.length > 0 ? content : joined(item.summary);
+	auto content = joined(item.content, "");
+	return content.length > 0 ? content : joined(item.summary, "\n\n");
 }
 
 /// The events of a completed content item: item/completed and, for a tool
@@ -1061,7 +1059,7 @@ unittest
 	}
 
 	// Schema-derived variations of the captured items.
-	assert(completedText(`["first part","second part"]`, `[]`) == "first partsecond part");
+	assert(completedText(`["first part","second part"]`, `[]`) == "first part\n\nsecond part");
 	assert(completedText(`["summary"]`, `["raw ","reasoning"]`) == "raw reasoning");
 	assert(completedText(`[]`, `[]`) is null);
 

@@ -245,6 +245,15 @@ struct DeltaParams
 }
 
 @RPCFlatten @JSONPartial
+struct ReasoningSummaryPartAddedParams
+{
+	string threadId;
+	string itemId;
+	string turnId;
+	long summaryIndex;
+}
+
+@RPCFlatten @JSONPartial
 struct TerminalInteractionParams
 {
 	string threadId;

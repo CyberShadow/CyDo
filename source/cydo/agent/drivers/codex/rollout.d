@@ -2,7 +2,8 @@
 module cydo.agent.drivers.codex.rollout;
 
 import std.conv : to;
-import std.algorithm : canFind;
+import std.algorithm : canFind, filter, map;
+import std.array : join;
 import std.logger : tracef;
 import std.typecons : Nullable;
 
@@ -444,15 +445,16 @@ unittest
 }
 
 /// Translate a response_item rollout line → item-based protocol events.
-string[] translateRolloutResponseItem(string line, string forkId = null, bool forceMeta = false)
+string[] translateRolloutResponseItem(string line, int lineNum, string forkId = null,
+	bool forceMeta = false)
 {
-	auto evidence = parseRolloutLineEvidence(line, 0);
+	auto evidence = parseRolloutLineEvidence(line, lineNum);
 	if (evidence.probe.isUserMessage)
 		return translateCodexUserItem(evidence.user, forkId, forceMeta);
-	return translateNonUserRolloutResponseItem(line, forkId);
+	return translateNonUserRolloutResponseItem(line, lineNum, forkId);
 }
 
-package string[] translateNonUserRolloutResponseItem(string line, string forkId)
+package string[] translateNonUserRolloutResponseItem(string line, int lineNum, string forkId)
 {
 	@JSONPartial
 	static struct Probe
@@ -600,9 +602,8 @@ package string[] translateNonUserRolloutResponseItem(string line, string forkId)
 			results = [r];
 	}
 	else if (ptype == "reasoning")
-		results = translateRolloutReasoning(
-			probe.payload.summary.json !is null ? probe.payload.summary.json : "[]",
-			probe.payload.content.json);
+		results = translateRolloutReasoning("codex-reasoning:" ~ to!string(lineNum),
+			probe.payload.summary.json, probe.payload.content.json);
 	else if (ptype == "ghost_snapshot" || ptype == "additional_tools")
 		return [];
 	else
@@ -761,7 +762,7 @@ unittest
 
 	string[] translateUser(string content, string forkId = null)
 	{
-		return translateRolloutResponseItem(userLine(content), forkId);
+		return translateRolloutResponseItem(userLine(content), 1, forkId);
 	}
 
 	auto multipart = translateUser(
@@ -981,7 +982,7 @@ unittest
 	auto callId = "call_exec_history";
 	auto script = "const result = await tools.exec_command({ cmd: \"pwd\" });\ntext(result.output);";
 	auto call = translateRolloutResponseItem(
-		`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_exec_history","name":"exec","input":` ~ toJson(script) ~ `}}`);
+		`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_exec_history","name":"exec","input":` ~ toJson(script) ~ `}}`, 1);
 	assert(call.length == 3);
 	auto toolUse = jsonParse!ToolUse(call[0]);
 	assert(toolUse.type == "item/started");
@@ -996,7 +997,7 @@ unittest
 	auto blockScript = `{ const result = await tools.exec_command({ cmd: "pwd" }); }`;
 	auto blockCall = translateRolloutResponseItem(
 		`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_exec_block","name":"exec","input":`
-		~ toJson(blockScript) ~ `}}`);
+		~ toJson(blockScript) ~ `}}`, 1);
 	assert(blockCall.length == 3);
 	auto blockToolUse = jsonParse!ToolUse(blockCall[0]);
 	assert(jsonParse!(string[string])(blockToolUse.input.json)["input"] == blockScript);
@@ -1006,7 +1007,7 @@ unittest
 	auto waitArguments = `{"cell_id":"cell_123","yield_time_ms":1000,"max_tokens":2000}`;
 	auto waitCall = translateRolloutResponseItem(
 		`{"type":"response_item","payload":{"type":"function_call","call_id":"call_wait_history","name":"wait","arguments":`
-		~ toJson(waitArguments) ~ `}}`);
+		~ toJson(waitArguments) ~ `}}`, 1);
 	assert(waitCall.length == 3);
 	auto waitToolUse = jsonParse!ToolUse(waitCall[0]);
 	assert(waitToolUse.type == "item/started");
@@ -1020,7 +1021,7 @@ unittest
 	assert(waitCompleted.item_id == waitCallId);
 
 	auto waitResult = translateRolloutResponseItem(
-		`{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_wait_history","output":"Command finished."}}`);
+		`{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_wait_history","output":"Command finished."}}`, 1);
 	assert(waitResult.length == 1);
 	auto waitToolResult = jsonParse!ToolResult(waitResult[0]);
 	assert(waitToolResult.item_id == waitCallId);
@@ -1029,7 +1030,7 @@ unittest
 	assert(waitBlocks[0].text == "Command finished.");
 
 	auto result = translateRolloutResponseItem(
-		`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_exec_history","output":[{"type":"input_text","text":"first "},{"type":"input_text","text":"second"}]}}`);
+		`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_exec_history","output":[{"type":"input_text","text":"first "},{"type":"input_text","text":"second"}]}}`, 1);
 	assert(result.length == 1);
 	auto toolResult = jsonParse!ToolResult(result[0]);
 	assert(toolResult.type == "item/result");
@@ -1040,25 +1041,25 @@ unittest
 	assert(blocks[0].text == "first second");
 
 	auto unrecognizedContent = translateRolloutResponseItem(
-		`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_exec_history","output":[{"type":"image","text":"x"}]}}`);
+		`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_exec_history","output":[{"type":"image","text":"x"}]}}`, 1);
 	assert(unrecognizedContent.length == 1);
 	assert(unrecognizedContent[0].canFind(`"type":"agent/unrecognized"`));
 
 	auto unrecognizedPayload = translateRolloutResponseItem(
-		`{"type":"response_item","payload":{"type":"future_codex_payload"}}`);
+		`{"type":"response_item","payload":{"type":"future_codex_payload"}}`, 1);
 	assert(unrecognizedPayload.length == 1);
 	assert(unrecognizedPayload[0].canFind(`"type":"agent/unrecognized"`));
 
 	auto additionalTools = translateRolloutResponseItem(
-		`{"timestamp":"2026-11-21T18:54:07.856Z","ordinal":21,"type":"response_item","payload":{"type":"additional_tools","id":"at_01a1ff75-6bef-7eb2-b03d-96588d1d8762","role":"developer","tools":[{"type":"namespace","name":"mcp__cydo","description":"Tools in the mcp__cydo namespace.","tools":[{"type":"function","name":"SwitchMode","description":"Switch this task to a different mode within the same session.\n\nThe current conversation context is preserved, you will receive new instructions, and the available tool set may change. Detailed mode guidance lives in the session instructions.\n\n**This is a terminal action.** After calling mcp__cydo__SwitchMode, yield your turn immediately — do not call any other tools or generate further output. The mode has not switched yet; you will receive new instructions when your session resumes.\n\nAvailable modes:\n\n- back\n\nRefer to the session instructions for when to use each.","strict":false,"parameters":{"type":"object","properties":{"continuation":{"type":"string","description":"The mode to switch to (e.g., 'done', 'implement', 'decompose')"}},"required":["continuation"]}}]}]},"metadata":{"history_sequence":11,"sampled_through_sequence":7,"client_authored":false,"model_search_state":"unused"}}`);
+		`{"timestamp":"2026-11-21T18:54:07.856Z","ordinal":21,"type":"response_item","payload":{"type":"additional_tools","id":"at_01a1ff75-6bef-7eb2-b03d-96588d1d8762","role":"developer","tools":[{"type":"namespace","name":"mcp__cydo","description":"Tools in the mcp__cydo namespace.","tools":[{"type":"function","name":"SwitchMode","description":"Switch this task to a different mode within the same session.\n\nThe current conversation context is preserved, you will receive new instructions, and the available tool set may change. Detailed mode guidance lives in the session instructions.\n\n**This is a terminal action.** After calling mcp__cydo__SwitchMode, yield your turn immediately — do not call any other tools or generate further output. The mode has not switched yet; you will receive new instructions when your session resumes.\n\nAvailable modes:\n\n- back\n\nRefer to the session instructions for when to use each.","strict":false,"parameters":{"type":"object","properties":{"continuation":{"type":"string","description":"The mode to switch to (e.g., 'done', 'implement', 'decompose')"}},"required":["continuation"]}}]}]},"metadata":{"history_sequence":11,"sampled_through_sequence":7,"client_authored":false,"model_search_state":"unused"}}`, 1);
 	assert(additionalTools.length == 0);
 
 	auto ignoredPayload = translateRolloutResponseItem(
-		`{"type":"response_item","payload":{"type":"ghost_snapshot"}}`);
+		`{"type":"response_item","payload":{"type":"ghost_snapshot"}}`, 1);
 	assert(ignoredPayload.length == 0);
 
 	auto classicOutput = translateRolloutResponseItem(
-		`{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_classic","output":"Output:\n{\"ok\":true}"}}`);
+		`{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_classic","output":"Output:\n{\"ok\":true}"}}`, 1);
 	assert(classicOutput.length == 1);
 	auto classicResult = jsonParse!ToolResult(classicOutput[0]);
 	auto classicBlocks = jsonParse!(TextBlock[])(classicResult.content.json);
@@ -1066,9 +1067,8 @@ unittest
 }
 
 /// Translate a reasoning response_item → item/started (thinking) + item/completed.
-string[] translateRolloutReasoning(string summaryJson, string contentJson)
+private string[] translateRolloutReasoning(string itemId, string summaryJson, string contentJson)
 {
-	// Extract text from summary array: [{ text: "..." }, ...]
 	string thinkingText;
 	if (contentJson !is null && contentJson.length > 2)
 	{
@@ -1089,9 +1089,7 @@ string[] translateRolloutReasoning(string summaryJson, string contentJson)
 		try
 		{
 			auto items = jsonParse!(SummaryItem[])(summaryJson);
-			foreach (ref item; items)
-				if (item.text.length > 0)
-					thinkingText ~= item.text;
+			thinkingText = items.map!(item => item.text).filter!(text => text.length > 0).join("\n\n");
 		}
 		catch (Exception e) { tracef("translateRolloutReasoning: parse error: %s", e.msg); }
 	}
@@ -1102,15 +1100,42 @@ string[] translateRolloutReasoning(string summaryJson, string contentJson)
 	import cydo.protocol : ItemCompletedEvent, ItemStartedEvent;
 
 	ItemStartedEvent startEv;
-	startEv.item_id = "codex-reasoning";
+	startEv.item_id = itemId;
 	startEv.item_type = "thinking";
 	startEv.text = thinkingText;
 
 	ItemCompletedEvent compEv;
-	compEv.item_id = "codex-reasoning";
+	compEv.item_id = itemId;
 	compEv.text = thinkingText;
 
 	return [toJson(startEv), toJson(compEv)];
+}
+
+unittest
+{
+	import cydo.protocol : ItemCompletedEvent, ItemStartedEvent;
+
+	enum summary = `[{"type":"summary_text","text":"first"},{"type":"summary_text","text":"second"}]`;
+	enum response = `{"type":"response_item","payload":{"type":"reasoning","summary":` ~ summary;
+
+	auto summaryEvents = translateRolloutResponseItem(response ~ `,"content":[]}}`, 10);
+	assert(summaryEvents.length == 2);
+	auto summaryStart = jsonParse!ItemStartedEvent(summaryEvents[0]);
+	auto summaryDone = jsonParse!ItemCompletedEvent(summaryEvents[1]);
+	assert(summaryStart.item_type == "thinking");
+	assert(summaryStart.text == "first\n\nsecond");
+	assert(summaryDone.text == summaryStart.text);
+	assert(summaryDone.item_id == summaryStart.item_id);
+
+	auto rawEvents = translateRolloutResponseItem(response
+		~ `,"content":[{"type":"reasoning_text","text":"raw "},{"type":"reasoning_text","text":"text"}]}}`, 11);
+	assert(rawEvents.length == 2);
+	auto rawStart = jsonParse!ItemStartedEvent(rawEvents[0]);
+	auto rawDone = jsonParse!ItemCompletedEvent(rawEvents[1]);
+	assert(rawStart.item_id != summaryStart.item_id);
+	assert(rawDone.item_id == rawStart.item_id);
+	assert(rawStart.text == "raw text");
+	assert(rawDone.text == rawStart.text);
 }
 
 /// Translate an event_msg rollout line → turn/result (for task_complete).

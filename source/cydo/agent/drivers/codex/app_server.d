@@ -54,7 +54,7 @@ package interface ICodexServer
 	Promise!void itemReasoningSummaryTextDelta(DeltaParams params);
 
 	@RPCName("item/reasoning/summaryPartAdded")
-	Promise!void itemReasoningSummaryPartAdded(IgnoredParams params);
+	Promise!void itemReasoningSummaryPartAdded(ReasoningSummaryPartAddedParams params);
 
 	@RPCName("item/commandExecution/outputDelta")
 	Promise!void itemCommandExecutionOutputDelta(DeltaParams params);
@@ -397,7 +397,17 @@ package class CodexServerRouter : ICodexServer
 		return resolve();
 	}
 
-	Promise!void itemReasoningSummaryPartAdded(IgnoredParams) { return resolve(); }
+	Promise!void itemReasoningSummaryPartAdded(ReasoningSummaryPartAddedParams params)
+	{
+		if (params.summaryIndex > 0)
+		{
+			auto raw = buildRawNotification("item/reasoning/summaryPartAdded", toJson(params));
+			auto delta = DeltaParams(params.threadId, params.itemId, params.turnId, "\n\n");
+			routeToSession(params.threadId,
+				(session) => session.handleDelta(delta, "thinking_delta", raw));
+		}
+		return resolve();
+	}
 	Promise!void turnDiffUpdated(TurnDiffUpdatedParams params) { return resolve(); }
 
 	Promise!void threadTokenUsageUpdated(TokenUsageUpdatedParams params)
