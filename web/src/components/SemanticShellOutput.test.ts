@@ -55,6 +55,17 @@ function renderSemantic(
   );
 }
 
+it("falls back when a literal overlaps the final numbered row", async () => {
+  const result = await parseShellSemantic("cat -n b.py && printf 'aa'");
+  assert(result.ok && result.value.kind === "output");
+  const view = shellOutputView(result.value.output);
+  assert(view.ok && view.value.kind === "plan");
+
+  const stdout = "     1\taaa";
+  expect(hasSemanticShellOutput(stdout, view.value.plan)).toBe(false);
+  expect(renderSemantic(stdout, view.value.plan)).toBe("");
+});
+
 describe("SemanticShellOutput renderable readback rendering", () => {
   it("renders complete from-cursor+end-of-output svg readback as preview with source toggle", () => {
     const stdout = '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n';

@@ -169,7 +169,7 @@ function clampSpan(span: Span, total: number): Span | null {
 function resolveUniqueLiteral(stdout: string, text: string): Span | null {
   const first = stdout.indexOf(text);
   if (first < 0) return null;
-  const second = stdout.indexOf(text, first + text.length);
+  const second = stdout.indexOf(text, first + 1);
   if (second >= 0) return null;
   return { start: first, end: first + text.length };
 }
