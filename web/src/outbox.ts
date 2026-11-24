@@ -9,6 +9,7 @@ export interface OutboxEntry {
   nonce: string;
   content: unknown;
   createdAt: number;
+  recoveredDraft?: string;
 }
 
 type Listener = () => void;
@@ -36,26 +37,64 @@ function notify(): void {
   for (const fn of listeners) fn();
 }
 
+function removeMatching(matches: (entry: OutboxEntry) => boolean): void {
+  const entries = read();
+  const remaining = entries.filter((entry) => !matches(entry));
+  if (remaining.length === entries.length) return;
+  write(remaining);
+  notify();
+}
+
 export const outbox = {
   all(): OutboxEntry[] {
     return read();
   },
 
   add(entry: OutboxEntry): void {
-    const entries = read().filter((e) => e.nonce !== entry.nonce);
+    const entries = read().filter(
+      (e) =>
+        e.nonce !== entry.nonce &&
+        !(
+          e.tid === entry.tid &&
+          e.recoveredDraft !== undefined &&
+          entry.recoveredDraft !== undefined
+        ),
+    );
     entries.push(entry);
     write(entries);
     notify();
   },
 
   remove(nonce: string): void {
-    const entries = read().filter((e) => e.nonce !== nonce);
+    const entries = read().filter((entry) => entry.nonce !== nonce);
     write(entries);
     notify();
   },
 
-  removeForTask(tid: number): void {
-    const entries = read().filter((e) => e.tid !== tid);
+  acceptSend(tid: number, nonce: string): void {
+    removeMatching(
+      (entry) =>
+        entry.tid === tid &&
+        entry.nonce === nonce &&
+        entry.recoveredDraft === undefined,
+    );
+  },
+
+  acknowledgeDraft(tid: number, nonce: string): void {
+    removeMatching(
+      (entry) =>
+        entry.tid === tid &&
+        entry.nonce === nonce &&
+        entry.recoveredDraft !== undefined,
+    );
+  },
+
+  removeForTask(tid: number, keepRecoveredDraft = false): void {
+    const entries = read().filter(
+      (entry) =>
+        entry.tid !== tid ||
+        (keepRecoveredDraft && entry.recoveredDraft !== undefined),
+    );
     write(entries);
     notify();
   },

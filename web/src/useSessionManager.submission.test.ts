@@ -27,6 +27,8 @@ const testState = vi.hoisted(() => {
       all: vi.fn(),
       add: vi.fn(),
       remove: vi.fn(),
+      acceptSend: vi.fn(),
+      acknowledgeDraft: vi.fn(),
       removeForTask: vi.fn(),
       byTid: vi.fn(),
     },
@@ -114,7 +116,13 @@ const testState = vi.hoisted(() => {
   state.outbox.all.mockImplementation(() => [...state.outboxEntries]);
   state.outbox.add.mockImplementation((entry: OutboxEntry) => {
     state.outboxEntries = state.outboxEntries.filter(
-      (candidate) => candidate.nonce !== entry.nonce,
+      (candidate) =>
+        candidate.nonce !== entry.nonce &&
+        !(
+          candidate.tid === entry.tid &&
+          candidate.recoveredDraft !== undefined &&
+          entry.recoveredDraft !== undefined
+        ),
     );
     state.outboxEntries.push(entry);
   });
@@ -123,11 +131,33 @@ const testState = vi.hoisted(() => {
       (entry) => entry.nonce !== nonce,
     );
   });
-  state.outbox.removeForTask.mockImplementation((tid: number) => {
+  state.outbox.acceptSend.mockImplementation((tid: number, nonce: string) => {
     state.outboxEntries = state.outboxEntries.filter(
-      (entry) => entry.tid !== tid,
+      (entry) =>
+        entry.tid !== tid ||
+        entry.nonce !== nonce ||
+        entry.recoveredDraft !== undefined,
     );
   });
+  state.outbox.acknowledgeDraft.mockImplementation(
+    (tid: number, nonce: string) => {
+      state.outboxEntries = state.outboxEntries.filter(
+        (entry) =>
+          entry.tid !== tid ||
+          entry.nonce !== nonce ||
+          entry.recoveredDraft === undefined,
+      );
+    },
+  );
+  state.outbox.removeForTask.mockImplementation(
+    (tid: number, keepRecoveredDraft = false) => {
+      state.outboxEntries = state.outboxEntries.filter(
+        (entry) =>
+          entry.tid !== tid ||
+          (keepRecoveredDraft && entry.recoveredDraft !== undefined),
+      );
+    },
+  );
   state.outbox.byTid.mockImplementation((tid: number) =>
     state.outboxEntries.filter((entry) => entry.tid === tid),
   );
@@ -3923,6 +3953,218 @@ describe("submission acknowledgement routing", () => {
     expect(opened.text).toBe("persisted draft B");
   });
 
+  it.each([
+    "delivery_failed",
+    "history_cancelled",
+    "native_undo_refused",
+    "task_archiving",
+    "task_unavailable",
+  ] as const)("handles ordinary %s with no composer mounted", async (kind) => {
+    await renderManager();
+    const connection = testState.connection!;
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: { ...activeSnapshot(901), draft: "stored draft" },
+      } satisfies ControlMessage);
+      const task = manager!.getByTid(901)!;
+      manager!.send(task.uuid, "retry this message");
+      manager!.send(task.uuid, "outcome still unknown");
+    });
+    const [rejected, pending] = testState.outboxEntries;
+    const rejection = {
+      type: "cydo/submission_rejected",
+      correlation_id: rejected!.nonce,
+      tid: 901,
+      kind,
+      reason: "submission rejected",
+    } satisfies ControlMessage;
+
+    await act(() => {
+      connection.onControlMessage?.(rejection);
+      connection.onControlMessage?.(rejection);
+    });
+
+    expect(testState.outboxEntries).toContainEqual(pending);
+    const task = manager!.getByTid(901)!;
+    expect(task.messages.map((message) => message.nonce)).toEqual([
+      pending!.nonce,
+    ]);
+    expect(manager!.serverError).toEqual({
+      message: rejection.reason,
+      tid: 901,
+    });
+    if (kind === "task_unavailable") {
+      expect(connection.saveDraft).not.toHaveBeenCalled();
+      expect(testState.outboxEntries).toEqual([pending]);
+      expect(manager!.ordinaryDraftStore.read(task.uuid)).toBeUndefined();
+    } else {
+      const draft = "stored draft\n\nretry this message";
+      expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+        901,
+        draft,
+        rejected!.nonce,
+      );
+      expect(manager!.ordinaryDraftStore.read(task.uuid)).toBe(draft);
+      expect(testState.outboxEntries).toEqual([
+        pending,
+        { ...rejected, content: [], recoveredDraft: draft },
+      ]);
+      await act(() => {
+        connection.onControlMessage?.({
+          type: "draft_updated",
+          tid: 901,
+          old_draft: "stored draft",
+          new_draft: draft,
+          correlation_id: rejected!.nonce,
+        });
+      });
+      expect(testState.outboxEntries).toEqual([pending]);
+    }
+  });
+
+  it("merges with the current ordinary draft and keeps an existing rejection diagnostic", async () => {
+    await renderManager();
+    const connection = testState.connection!;
+    const draftListener = vi.fn();
+    const reason = "no active turn to steer";
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: { ...activeSnapshot(901), draft: "old server draft" },
+      } satisfies ControlMessage);
+      const task = manager!.getByTid(901)!;
+      manager!.ordinaryDraftStore.ensure(task.uuid, "current ordinary draft");
+      manager!.ordinaryDraftStore.register(task.uuid, draftListener);
+      manager!.send(task.uuid, "retry this message");
+      connection.onTaskMessage?.(901, {
+        type: "cydo/task_diagnostic",
+        severity: "error",
+        subject: "Failed to submit message",
+        body: reason,
+      });
+      connection.onControlMessage?.({
+        type: "cydo/submission_rejected",
+        correlation_id: testState.outboxEntries[0]!.nonce,
+        tid: 901,
+        kind: "delivery_failed",
+        reason,
+      } satisfies ControlMessage);
+    });
+
+    const draft = "current ordinary draft\n\nretry this message";
+    expect(draftListener.mock.calls).toEqual([
+      ["current ordinary draft"],
+      [draft],
+    ]);
+    expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+      901,
+      draft,
+      expect.any(String),
+    );
+    expect(manager!.getByTid(901)!.messages).toMatchObject([
+      {
+        type: "diagnostic",
+        diagnostic: { subject: "Failed to submit message" },
+      },
+    ]);
+    expect(manager!.serverError).toBeNull();
+  });
+
+  it.each(["accepted", "rejected"] as const)(
+    "settles a message %s just before disconnect without replaying it",
+    async (outcome) => {
+      await renderManager();
+      const connection = testState.connection!;
+      const snapshot = () => {
+        connection.onControlMessage?.(workspaceCatalog());
+        connection.onControlMessage?.({
+          type: "tasks_list",
+          complete: true,
+          tasks: [activeSnapshot(901)],
+        });
+      };
+      await act(snapshot);
+      const text = "follow-up at disconnect";
+      await act(() => {
+        manager!.send(manager!.getByTid(901)!.uuid, text);
+      });
+      const nonce = testState.outboxEntries[0]!.nonce;
+      connection.sendMessage.mockClear();
+
+      // The first save is lost. No draft receipt or server draft arrives.
+      connection.saveDraft.mockImplementationOnce(() => false);
+      testState.hidden = false;
+      await act(() => {
+        if (outcome === "rejected") {
+          rejectSubmission(nonce, 901);
+        } else {
+          connection.onUnconfirmedUserMessage?.(
+            901,
+            {
+              type: "item/started",
+              item_type: "user_message",
+              item_id: "accepted-message",
+            },
+            nonce,
+          );
+          expect(testState.outboxEntries).toEqual([]);
+          expect(testState.animationFrames.size).toBe(1);
+        }
+        connection.onStatusChange?.(false);
+      });
+
+      expect(testState.outboxEntries).toMatchObject(
+        outcome === "rejected" ? [{ nonce, recoveredDraft: text }] : [],
+      );
+      testState.hidden = true;
+      await act(() => {
+        connection.onStatusChange?.(true);
+        snapshot();
+      });
+
+      expect(connection.sendMessage).not.toHaveBeenCalled();
+      if (outcome === "accepted") return;
+
+      const task = manager!.getByTid(901)!;
+      expect(manager!.ordinaryDraftStore.read(task.uuid)).toBe(text);
+      expect(connection.saveDraft.mock.calls).toEqual([
+        [901, text, nonce],
+        [901, text, nonce],
+      ]);
+
+      const edited = text + " edited";
+      await act(() => {
+        manager!.saveDraft(901, edited);
+      });
+      const replacement = testState.outboxEntries[0]!;
+      expect(replacement.nonce).not.toBe(nonce);
+      expect(replacement.recoveredDraft).toBe(edited);
+
+      await act(() => {
+        connection.onControlMessage?.({
+          type: "draft_updated",
+          tid: 901,
+          old_draft: "",
+          new_draft: text,
+          correlation_id: nonce,
+        });
+      });
+      expect(testState.outboxEntries).toEqual([replacement]);
+
+      await act(() => {
+        connection.onControlMessage?.({
+          type: "draft_updated",
+          tid: 901,
+          old_draft: text,
+          new_draft: edited,
+          correlation_id: replacement.nonce,
+        });
+      });
+      expect(testState.outboxEntries).toEqual([]);
+    },
+  );
+
   it("removes outbox entries when deleting an ordinary task", async () => {
     await renderManager();
     await act(() => {
@@ -4147,6 +4389,28 @@ describe("submission acknowledgement routing", () => {
       903,
       [{ type: "text", text: "replay after reset" }],
       "survive-reconnect",
+    );
+
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "cydo/submission_rejected",
+        tid: 903,
+        correlation_id: "survive-reconnect",
+        kind: "delivery_failed",
+        reason: "rejected on new connection",
+      } satisfies ControlMessage);
+    });
+    expect(testState.outboxEntries).toMatchObject([
+      { nonce: "survive-reconnect", recoveredDraft: "replay after reset" },
+    ]);
+    expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+      903,
+      "replay after reset",
+      "survive-reconnect",
+    );
+    const task = manager!.getByTid(903)!;
+    expect(manager!.ordinaryDraftStore.read(task.uuid)).toBe(
+      "replay after reset",
     );
   });
 

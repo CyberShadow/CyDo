@@ -108,7 +108,7 @@ describe("OrdinaryDraftStore", () => {
     store.write("task", "C");
     store.applyRemote("task", { old_draft: "C", new_draft: "D" });
 
-    expect(second).toHaveBeenCalledExactlyOnceWith("D");
+    expect(second.mock.calls).toEqual([["C"], ["D"]]);
   });
 
   it("clears all entries", () => {

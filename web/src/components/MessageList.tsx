@@ -1004,7 +1004,9 @@ export function MessageList({
       messages.filter((m) => m.nonce).map((m) => m.nonce!),
     );
     const extras = pending
-      .filter((e) => !existingNonces.has(e.nonce))
+      .filter(
+        (e) => e.recoveredDraft === undefined && !existingNonces.has(e.nonce),
+      )
       .map(makeOutboxPlaceholder);
     return extras.length === 0 ? messages : [...messages, ...extras];
   }, [messages, taskTid, outboxTick]);

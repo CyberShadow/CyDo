@@ -38,10 +38,14 @@ import { makeTaskState } from "./types";
 import {
   reduceAgentAck,
   reduceMessage,
+  rejectOrdinarySubmission,
   replaceHistoryBoundary,
 } from "./sessionReducer";
 import { outbox } from "./outbox";
-import { canonicalUserTextFromDisplayMessage } from "./userText";
+import {
+  canonicalUserTextFromContentAndMeta,
+  canonicalUserTextFromDisplayMessage,
+} from "./userText";
 import {
   beginTaskHistoryReplay,
   excludeReloadDraftUuid,
@@ -1049,7 +1053,19 @@ export function useTaskManager(
   );
 
   const saveDraft = useCallback((tid: number, draft: string) => {
-    connRef.current?.saveDraft(tid, draft);
+    const recovery = outbox
+      .byTid(tid)
+      .find((entry) => entry.recoveredDraft !== undefined);
+    if (recovery) {
+      const entry =
+        recovery.recoveredDraft === draft
+          ? recovery
+          : { ...recovery, nonce: crypto.randomUUID(), recoveredDraft: draft };
+      if (entry !== recovery) outbox.add(entry);
+      connRef.current?.saveDraft(tid, draft, entry.nonce);
+    } else {
+      connRef.current?.saveDraft(tid, draft);
+    }
     const task = findByTid(tid);
     if (!task) return;
     let updated: TaskState | null = null;
@@ -1345,7 +1361,6 @@ export function useTaskManager(
       // to ackState=3 (backend acked). Otherwise insert a fresh ackState=3 bubble.
       let messages = prev.messages;
       if (correlationId) {
-        outbox.remove(correlationId);
         const idx = messages.findIndex(
           (m) => m.type === "user" && m.nonce === correlationId,
         );
@@ -1830,18 +1845,72 @@ export function useTaskManager(
           break;
         }
         case "cydo/submission_rejected": {
+          // Only the live submission receipt recovers a draft. History
+          // diagnostics are display events and never settle the outbox.
           const { correlation_id, tid, kind, reason } = msg;
           const editorId =
             submissionCorrelationToEditorRef.current.get(correlation_id) ??
             correlationToEditorRef.current.get(correlation_id);
-          if (
-            editorId &&
-            recoverSubmission(editorId, tid) &&
-            kind !== "validation" &&
-            kind !== "native_undo_refused"
-          ) {
-            showServerError(reason, tid);
+          if (editorId) {
+            if (
+              recoverSubmission(editorId, tid) &&
+              kind !== "validation" &&
+              kind !== "native_undo_refused"
+            ) {
+              showServerError(reason, tid);
+            }
+            break;
           }
+          if (tid === undefined) break;
+          const entry = outbox
+            .byTid(tid)
+            .find(
+              ({ nonce, recoveredDraft }) =>
+                nonce === correlation_id && recoveredDraft === undefined,
+            );
+          // A history reload may already have retired the entry and taken
+          // ownership of restoring the displaced text.
+          if (!entry) break;
+          const task = findByTid(tid);
+          let recovered = false;
+          if (task) {
+            const updated = rejectOrdinarySubmission(task, correlation_id);
+            liveStates.set(task.uuid, updated);
+            setTasks((previous) => new Map(previous).set(task.uuid, updated));
+
+            if (kind !== "task_unavailable") {
+              const text = canonicalUserTextFromContentAndMeta(
+                entry.content as ContentBlock[],
+              );
+              if (text) {
+                const current = ordinaryDraftStore.ensure(
+                  task.uuid,
+                  task.serverDraft ?? "",
+                );
+                const draft = current ? `${current}\n\n${text}` : text;
+                // Replace the replayable entry before attempting the network write.
+                outbox.add({ ...entry, content: [], recoveredDraft: draft });
+                ordinaryDraftStore.write(task.uuid, draft);
+                saveDraft(tid, draft);
+                recovered = true;
+              }
+            }
+          }
+          if (!recovered) outbox.remove(correlation_id);
+          if (!task) break;
+          const hasDiagnostic =
+            task.messages.some(
+              (message) =>
+                message.diagnostic?.subject === "Failed to submit message" &&
+                canonicalUserTextFromDisplayMessage(message) === reason,
+            ) ||
+            [...task.blocks.values()].some(
+              (block) =>
+                block.type === "diagnostic" &&
+                block.subject === "Failed to submit message" &&
+                block.text === reason,
+            );
+          if (!hasDiagnostic) showServerError(reason, tid);
           break;
         }
         case "focus_hint": {
@@ -1870,7 +1939,7 @@ export function useTaskManager(
           if (tombstoneTidToEditorRef.current.has(tid)) break;
           const t = findByTid(tid);
           if (!t) break;
-          outbox.removeForTask(tid);
+          outbox.removeForTask(tid, true);
           requestedHistoryRef.current.delete(t.uuid);
 
           const isEdit = msg.reason === "edit";
@@ -2226,6 +2295,8 @@ export function useTaskManager(
       applyTaskSnapshotEntry,
       requestTaskHistory,
       recoverSubmission,
+      ordinaryDraftStore,
+      saveDraft,
       showServerError,
       isCurrentOpenEpoch,
     ],
@@ -2488,11 +2559,16 @@ export function useTaskManager(
       }
     };
 
-    const enqueue = (item: BufferedPayload) => {
+    const enqueue = (item: BufferedPayload, settleOutbox = false) => {
       const epoch = openConnectionEpochRef.current;
       if (!isCurrentOpenEpoch(epoch)) return;
       buffer.push({ ...item, epoch });
-      scheduleFlush();
+      if (settleOutbox) {
+        // Preserve wire order, including task snapshots and diagnostics ahead
+        // of the receipt, without leaving it in a batch a disconnect can drop.
+        cancelPendingFlush();
+        flush();
+      } else scheduleFlush();
     };
 
     conn.onTaskMessage = (tid, msg, seq, ts) => {
@@ -2504,6 +2580,9 @@ export function useTaskManager(
       enqueue({ kind: "historyBoundary", tid, msg, seq });
     };
     conn.onUnconfirmedUserMessage = (tid, msg, correlationId) => {
+      // Settle delivery immediately while keeping history replay batched.
+      if (correlationId && isCurrentOpenEpoch(openConnectionEpochRef.current))
+        outbox.acceptSend(tid, correlationId);
       enqueue({ kind: "unconfirmed", tid, msg, correlationId });
     };
     conn.onAgentAck = (tid, nonce) => {
@@ -2511,6 +2590,10 @@ export function useTaskManager(
     };
     conn.onControlMessage = (msg) => {
       if (msg.type === "draft_updated") {
+        if (msg.correlation_id) {
+          outbox.acknowledgeDraft(msg.tid, msg.correlation_id);
+          return;
+        }
         const owner = controlledOwnerByTidRef.current.get(msg.tid);
         enqueue({
           kind: "draftUpdated",
@@ -2521,7 +2604,12 @@ export function useTaskManager(
         });
         return;
       }
-      enqueue({ kind: "control", msg });
+      enqueue(
+        { kind: "control", msg },
+        msg.type === "cydo/submission_rejected" ||
+          ((msg.type === "task_deleted" || msg.type === "task_reload") &&
+            outbox.byTid(msg.tid).length > 0),
+      );
     };
     conn.onClientError = (message) => {
       addToastRef.current("error", message);
@@ -2619,6 +2707,13 @@ export function useTaskManager(
         dropped++;
         continue;
       }
+      if (entry.recoveredDraft !== undefined) {
+        const task = findByTid(entry.tid)!;
+        ordinaryDraftStore.ensure(task.uuid, task.serverDraft ?? "");
+        ordinaryDraftStore.write(task.uuid, entry.recoveredDraft);
+        saveDraft(entry.tid, entry.recoveredDraft);
+        continue;
+      }
       if (outboxAttemptedNoncesRef.current.has(entry.nonce)) continue;
       outboxAttemptedNoncesRef.current.add(entry.nonce);
       connRef.current?.sendMessage(
@@ -2639,6 +2734,8 @@ export function useTaskManager(
     tasksListEpoch,
     renderedConnectionEpoch,
     isCurrentOpenEpoch,
+    ordinaryDraftStore,
+    saveDraft,
   ]);
 
   const routeDraftProject = useMemo(

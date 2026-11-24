@@ -1218,6 +1218,23 @@ export function reduceUserMessageConsumed(
   };
 }
 
+export function rejectOrdinarySubmission(
+  task: SessionState,
+  nonce: string,
+): SessionState {
+  return {
+    ...task,
+    messages: task.messages.filter(
+      (message) =>
+        !(
+          message.type === "user" &&
+          message.isProvisional &&
+          message.nonce === nonce
+        ),
+    ),
+  };
+}
+
 export function reduceAgentAck(s: SessionState, nonce: string): SessionState {
   const idx = s.messages.findIndex(
     (m) =>

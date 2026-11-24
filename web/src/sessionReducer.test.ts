@@ -4,6 +4,7 @@ import {
   reduceAgentAck,
   reduceCydoTaskSpawned,
   replaceHistoryBoundary,
+  rejectOrdinarySubmission,
 } from "./sessionReducer";
 import { makeTaskState, TaskState } from "./types";
 import bashEditDiff from "./testFixtures/claude-bash-edit-diff.json";
@@ -996,6 +997,38 @@ describe("user echo meta kinds", () => {
 
     expect(next.messages).toHaveLength(1);
     expect(next.messages[0]?.metaKinds).toBeUndefined();
+  });
+});
+
+describe("rejectOrdinarySubmission", () => {
+  it("removes only the provisional user message with the rejected nonce", () => {
+    const rejected = {
+      id: "rejected",
+      type: "user" as const,
+      content: [{ type: "text" as const, text: "same text" }],
+      nonce: "rejected-nonce",
+      isProvisional: true,
+      pending: true,
+    };
+    const confirmed = {
+      ...rejected,
+      id: "confirmed",
+      isProvisional: false,
+      pending: false,
+    };
+    const otherPending = {
+      ...rejected,
+      id: "other-pending",
+      nonce: "other-nonce",
+    };
+    const task = {
+      ...makeState(),
+      messages: [confirmed, rejected, otherPending],
+    };
+
+    const next = rejectOrdinarySubmission(task, "rejected-nonce");
+
+    expect(next.messages).toEqual([confirmed, otherPending]);
   });
 });
 

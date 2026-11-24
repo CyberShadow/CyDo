@@ -786,7 +786,9 @@ EOF
               rm -f "$MOCK_ANTHROPIC_CAPTURE"
               ${lib.optionalString (
                 lib.hasPrefix "e2e/model-effort-reaches-api.spec.ts:" testMatch
-                || (agentType == "codex" && lib.hasPrefix "e2e/continuation.spec.ts:" testMatch)
+                || (agentType == "codex" && (
+                  lib.hasPrefix "e2e/continuation.spec.ts:" testMatch
+                  || lib.hasPrefix "e2e/resume.spec.ts:" testMatch))
               ) ''
               export MOCK_OPENAI_CAPTURE=/tmp/mock-openai-requests.ndjson
               rm -f "$MOCK_OPENAI_CAPTURE"

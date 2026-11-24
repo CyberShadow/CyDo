@@ -293,6 +293,7 @@ function createTitleSwitchOverlapFixture() {
 }
 
 const titleSwitchOverlapFixture = createTitleSwitchOverlapFixture();
+let rejectedSteerCarrier;
 
 // Stream a message whose first block is a complete Ask tool_use while a
 // second Bash tool_use block keeps trickling input_json_delta for several
@@ -1022,6 +1023,24 @@ function handleResponses(req, res) {
       Connection: "keep-alive",
     });
 
+    if (
+      intentText?.startsWith("[SYSTEM: Session start:") &&
+      intentText.includes("hold turn for rejected steer")
+    ) {
+      if (rejectedSteerCarrier)
+        throw new Error("The mock already holds a steer carrier response");
+      rejectedSteerCarrier = res;
+      res.once("close", () => {
+        if (rejectedSteerCarrier === res) rejectedSteerCarrier = undefined;
+      });
+      return;
+    }
+
+    if (intentText === "rejected steer follow-up") {
+      oaiStreamTextResponse(res, "manual steer retry reached model");
+      return;
+    }
+
     // If input contains tool output, check for multi-command flow before
     // defaulting to "Done."
     if (isToolOutput) {
@@ -1738,6 +1757,17 @@ const server = createServer((req, res) => {
   if (url.pathname === "/api/hello" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("ok");
+    return;
+  }
+
+  if (
+    url.pathname === "/api/release-rejected-steer-carrier" &&
+    req.method === "POST"
+  ) {
+    const carrier = rejectedSteerCarrier;
+    rejectedSteerCarrier = undefined;
+    res.writeHead(carrier ? 204 : 409).end();
+    if (carrier) oaiStreamTextResponse(carrier, "original steer turn completed");
     return;
   }
 

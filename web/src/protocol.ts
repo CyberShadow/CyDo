@@ -392,6 +392,7 @@ export interface DraftUpdatedMessage {
   tid: number;
   old_draft: string;
   new_draft: string;
+  correlation_id?: string;
 }
 export interface ServerStatusMessage {
   type: "server_status";

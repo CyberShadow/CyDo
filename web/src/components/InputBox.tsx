@@ -362,11 +362,13 @@ function OrdinaryInputBox({
   onEscape,
   suggestions,
 }: OrdinaryProps) {
-  const initialText = ordinaryDraftStore.ensure(sessionId, serverDraft ?? "");
-  const [text, setText] = useState(initialText);
+  const [text, setText] = useState(
+    () => ordinaryDraftStore.read(sessionId) ?? serverDraft ?? "",
+  );
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = inputRef ?? internalRef;
   const textRef = useRef(text);
+  const draftActive = useRef(false);
 
   const applyText = useCallback((next: string) => {
     textRef.current = next;
@@ -376,14 +378,8 @@ function OrdinaryInputBox({
   const writeText = useCallback(
     (next: string) => {
       ordinaryDraftStore.write(sessionId, next);
-      applyText(next);
     },
-    [applyText, ordinaryDraftStore, sessionId],
-  );
-
-  useLayoutEffect(
-    () => ordinaryDraftStore.register(sessionId, applyText),
-    [applyText, ordinaryDraftStore, sessionId],
+    [ordinaryDraftStore, sessionId],
   );
 
   const {
@@ -399,41 +395,53 @@ function OrdinaryInputBox({
   const saveDraftDebounced = useMemo(
     () =>
       debounce(() => {
-        const draft = ordinaryDraftStore.read(sessionId);
-        if (draft !== undefined) onSaveDraft?.(draft);
+        if (draftActive.current) onSaveDraft?.(textRef.current);
       }, 500),
     [onSaveDraft, ordinaryDraftStore, sessionId],
   );
   const previousOnSaveDraft = useRef(onSaveDraft);
 
-  useEffect(() => {
-    const previous = previousOnSaveDraft.current;
-    previousOnSaveDraft.current = onSaveDraft;
-    if (!previous && onSaveDraft && textRef.current) {
-      onSaveDraft(textRef.current);
-    }
-  }, [onSaveDraft]);
-
-  useEffect(() => {
-    const initial = ordinaryDraftStore.read(sessionId);
-    if (initial === undefined)
-      throw new Error(`Missing ordinary draft: ${sessionId}`);
-    applyText(initial);
-    if (initial) saveDraftDebounced();
-  }, [sessionId]);
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     const flushDraft = () => {
       saveDraftDebounced.flush();
     };
-    window.addEventListener("pagehide", flushDraft);
-    return () => {
+    const invalidate = () => {
+      draftActive.current = false;
+      saveDraftDebounced.cancel();
       window.removeEventListener("pagehide", flushDraft);
-      saveDraftDebounced.flush();
     };
-  }, [saveDraftDebounced]);
+    ordinaryDraftStore.ensure(sessionId, serverDraft ?? "");
+    const unregister = ordinaryDraftStore.register(
+      sessionId,
+      applyText,
+      invalidate,
+    );
+    draftActive.current = true;
+    window.addEventListener("pagehide", flushDraft);
+
+    const previous = previousOnSaveDraft.current;
+    previousOnSaveDraft.current = onSaveDraft;
+    if (textRef.current) {
+      if (!previous && onSaveDraft) onSaveDraft(textRef.current);
+      else saveDraftDebounced();
+    }
+
+    return () => {
+      flushDraft();
+      invalidate();
+      unregister();
+    };
+    // The snapshot seeds a new owner. Remote updates reach the registered listener.
+  }, [
+    applyText,
+    onSaveDraft,
+    ordinaryDraftStore,
+    saveDraftDebounced,
+    sessionId,
+  ]);
 
   const handleChange = (next: string) => {
+    if (!draftActive.current) return;
     writeText(next);
     saveDraftDebounced();
   };
@@ -490,7 +498,7 @@ function OrdinaryInputBox({
   }, [text]);
 
   useEffect(() => {
-    if (!inputDraft) return;
+    if (!inputDraft || !draftActive.current) return;
     const next = applyRecoveredInputDraft(inputDraft, textRef.current);
     if (next !== textRef.current) {
       writeText(next);
@@ -499,6 +507,7 @@ function OrdinaryInputBox({
   }, [inputDraft, onInputDraftConsumed, sessionId]);
 
   const send = () => {
+    if (!draftActive.current) return;
     const trimmed = text.trim();
     if (!trimmed && images.length === 0) return;
     writeText("");

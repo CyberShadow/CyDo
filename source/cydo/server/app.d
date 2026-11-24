@@ -2320,6 +2320,9 @@ class App
 		// not history-subscription-only state.
 		auto data = Data(toJson(DraftUpdatedMessage("draft_updated", tid, oldDraft, draft)).representation);
 		clientHub.broadcastExcept(senderWs, data);
+		if (json.correlation_id.length > 0)
+			clientHub.sendTo(senderWs, Data(toJson(DraftUpdatedMessage(
+				"draft_updated", tid, oldDraft, draft, json.correlation_id)).representation));
 	}
 
 	private void handleDeleteTaskMsg(WsMessage json)
@@ -5276,6 +5279,14 @@ unittest
 	assert(fixture.socket.sent.length == 1
 		&& fixture.socket.sent[0].canFind(`"old_draft":""`)
 		&& fixture.socket.sent[0].canFind(`"new_draft":"first draft"`));
+	setDraft.content = JSONFragment(toJson("recovered draft"));
+	setDraft.correlation_id = "draft-write";
+	fixture.app.handleSetDraftMsg(draftSender, setDraft);
+	assert(draftSender.sent.length == 1
+		&& draftSender.sent[0].canFind(`"correlation_id":"draft-write"`)
+		&& draftSender.sent[0].canFind(`"new_draft":"recovered draft"`));
+	assert(fixture.socket.sent.length == 2
+		&& !fixture.socket.sent[1].canFind("draft-write"));
 	fixture.socket.sent = null;
 	fixture.publicationOrder = null;
 	td.status = TaskStatus.waiting;

@@ -153,6 +153,38 @@ describe("ordinary draft scalar delivery", () => {
     container.remove();
   });
 
+  it("invalidates a composer reset after layout but before passive effects", () => {
+    vi.useFakeTimers();
+    const saveDraft = vi.fn();
+    try {
+      actBeforePaint(
+        () => {
+          render(
+            ordinaryInput(store, sent, {
+              serverDraft: "draft before disconnect",
+              onSaveDraft: saveDraft,
+            }),
+            container,
+          );
+          // Connection reset clears the store before Preact commits the unmount.
+          store.clear();
+        },
+        () => {
+          expect(store.read(SESSION)).toBeUndefined();
+        },
+      );
+      actSync(() => {
+        store.ensure(SESSION, "new connection's draft");
+        window.dispatchEvent(new Event("pagehide"));
+        vi.runAllTimers();
+      });
+      expect(saveDraft).not.toHaveBeenCalled();
+      expect(store.read(SESSION)).toBe("new connection's draft");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("applies same-frame A to B to C transitions in order", () => {
     actBeforePaint(
       () => {

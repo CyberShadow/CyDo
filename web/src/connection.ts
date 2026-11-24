@@ -416,8 +416,15 @@ export class Connection {
     );
   }
 
-  saveDraft(tid: number, draft: string) {
-    this.send(JSON.stringify({ type: "set_draft", tid, content: draft }));
+  saveDraft(tid: number, draft: string, correlation_id?: string) {
+    this.send(
+      JSON.stringify({
+        type: "set_draft",
+        tid,
+        content: draft,
+        correlation_id,
+      }),
+    );
   }
 
   deleteTask(tid: number) {

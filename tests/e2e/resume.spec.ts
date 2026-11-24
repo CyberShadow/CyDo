@@ -8,7 +8,15 @@ import { test as base, expect } from "@playwright/test";
 import { spawn, execSync, execFileSync } from "child_process";
 import type { ChildProcess } from "child_process";
 import type { Locator, Page } from "@playwright/test";
-import { mkdirSync, rmSync, symlinkSync, cpSync, writeFileSync } from "fs";
+import {
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  cpSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from "fs";
 import { assistantText, enterSession, killBackend, sendMessage } from "./fixtures";
 
 // ---------------------------------------------------------------------------
@@ -86,8 +94,12 @@ function spawnBackend(
   });
 }
 
-const test = base.extend<{ restartableBackend: RestartableBackend }>({
-  restartableBackend: async ({}, use, testInfo) => {
+const test = base.extend<{
+  restartableBackend: RestartableBackend;
+  relaySteer: boolean;
+}>({
+  relaySteer: [false, { option: true }],
+  restartableBackend: async ({ relaySteer }, use, testInfo) => {
     const workDir = "/tmp/cydo-restart";
     const workerHome = `${workDir}/home`;
 
@@ -99,6 +111,23 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
       "/tmp/playwright-home/.config/cydo/config.yaml",
       `${workerHome}/.config/cydo/config.yaml`,
     );
+
+    if (relaySteer) {
+      const relay = `${workDir}/codex-steer-relay.mjs`;
+      const realCodexBin = execFileSync("sh", ["-lc", "command -v codex"], {
+        encoding: "utf8",
+      }).trim();
+      writeFileSync(
+        relay,
+        `#!${process.execPath}\n${readFileSync("codex-steer-relay.mjs", "utf8")}`,
+        { mode: 0o755 },
+      );
+      writeFileSync(
+        `${workerHome}/.config/cydo/config.yaml`,
+        `\nagents:\n  codex:\n    sandbox:\n      env:\n        CYDO_CODEX_BIN: ${relay}\n        CYDO_REAL_CODEX_BIN: ${realCodexBin}\n`,
+        { flag: "a" },
+      );
+    }
 
     const claudeConfigDir = `${workerHome}/.claude`;
     mkdirSync(claudeConfigDir, { recursive: true });
@@ -973,3 +1002,88 @@ test("resumed waiting parent can create a sub-task after batch delivery", { tag:
       .getByText("respawn-child-done", { exact: true }),
   ).toBeVisible();
 });
+
+const rejectedSteerTest = test.extend({ relaySteer: true });
+
+rejectedSteerTest(
+  "restores the composer and waits for a manual resend after reload",
+  { tag: "@codex-only" },
+  async ({ page }) => {
+    const carrier = "hold turn for rejected steer";
+    const followUp = "rejected steer follow-up";
+    const capture = process.env.MOCK_OPENAI_CAPTURE;
+    if (!capture) throw new Error("MOCK_OPENAI_CAPTURE is unset");
+    const captured = () =>
+      existsSync(capture)
+        ? readFileSync(capture, "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as { userText: string | null })
+        : [];
+    const deliveries = () =>
+      captured().filter(({ userText }) => userText === followUp).length;
+    const outbound: string[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framesent", ({ payload }) => {
+        const frame = JSON.parse(payload.toString());
+        if (
+          frame.type === "message" &&
+          JSON.stringify(frame.content).includes(followUp)
+        ) {
+          outbound.push(frame.correlation_id);
+        }
+      });
+    });
+
+    await page.goto("/");
+    await page.locator('button[title="New task"]').first().click();
+    await sendMessage(page, carrier);
+    await expect
+      .poll(
+        () =>
+          captured().some(
+            ({ userText }) =>
+              userText?.startsWith("[SYSTEM: Session start:") &&
+              userText.includes(carrier),
+          ),
+        { timeout: 15_000 },
+      )
+      .toBe(true);
+    await sendMessage(page, followUp);
+
+    const composer = page.locator(".input-textarea:visible").first();
+    const transcript = page.locator(".message-list:visible").first();
+    const submitted = transcript.getByText(followUp, { exact: true });
+    const reply = transcript.getByText("manual steer retry reached model", {
+      exact: true,
+    });
+    await expect(
+      transcript.getByText("no active turn to steer", { exact: true }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(composer).toHaveValue(followUp);
+    await expect(submitted).toHaveCount(0);
+    expect(outbound).toHaveLength(1);
+
+    await page.reload();
+    await expect(
+      transcript.getByText("original steer turn completed", { exact: true }),
+    ).toBeVisible();
+    await expect(composer).toHaveValue(followUp);
+    await expect(submitted).toHaveCount(0);
+    expect(deliveries()).toBe(0);
+    expect(outbound).toHaveLength(1);
+
+    await composer.press("Enter");
+    await expect(reply).toBeVisible();
+    await expect(submitted).toHaveCount(1);
+    expect(deliveries()).toBe(1);
+    expect(outbound).toHaveLength(2);
+    expect(outbound[1]).not.toBe(outbound[0]);
+
+    await page.reload();
+    await expect(reply).toBeVisible();
+    await expect(composer).toHaveValue("");
+    expect(deliveries()).toBe(1);
+    expect(outbound).toHaveLength(2);
+  },
+);

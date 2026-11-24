@@ -1410,6 +1410,7 @@ struct DraftUpdatedMessage
 	int tid;
 	string old_draft;
 	string new_draft;
+	@JSONOptional string correlation_id;
 }
 
 struct TaskDeletedMessage

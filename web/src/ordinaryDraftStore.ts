@@ -12,7 +12,11 @@ export interface OrdinaryDraftStore {
   read(taskUuid: string): string | undefined;
   write(taskUuid: string, text: string): void;
   applyRemote(taskUuid: string, update: OrdinaryDraftUpdate): boolean;
-  register(taskUuid: string, listener: OrdinaryDraftListener): () => void;
+  register(
+    taskUuid: string,
+    listener: OrdinaryDraftListener,
+    onRetire?: () => void,
+  ): () => void;
   retire(taskUuid: string): void;
   clear(): void;
 }
@@ -20,6 +24,7 @@ export interface OrdinaryDraftStore {
 type Entry = {
   text: string;
   listener: OrdinaryDraftListener | null;
+  onRetire?: () => void;
 };
 
 export function createOrdinaryDraftStore(): OrdinaryDraftStore {
@@ -44,7 +49,9 @@ export function createOrdinaryDraftStore(): OrdinaryDraftStore {
     },
 
     write(taskUuid, text) {
-      entryFor(taskUuid).text = text;
+      const entry = entryFor(taskUuid);
+      entry.text = text;
+      entry.listener?.(text);
     },
 
     applyRemote(taskUuid, { old_draft, new_draft }) {
@@ -59,24 +66,31 @@ export function createOrdinaryDraftStore(): OrdinaryDraftStore {
       return true;
     },
 
-    register(taskUuid, listener) {
+    register(taskUuid, listener, onRetire) {
       const entry = entryFor(taskUuid);
       if (entry.listener)
         throw new Error(`Ordinary draft already has a listener: ${taskUuid}`);
       entry.listener = listener;
+      entry.onRetire = onRetire;
       listener(entry.text);
       return () => {
-        if (entries.get(taskUuid) === entry && entry.listener === listener)
+        if (entries.get(taskUuid) === entry && entry.listener === listener) {
           entry.listener = null;
+          entry.onRetire = undefined;
+        }
       };
     },
 
     retire(taskUuid) {
+      const entry = entries.get(taskUuid);
       entries.delete(taskUuid);
+      entry?.onRetire?.();
     },
 
     clear() {
+      const retired = [...entries.values()];
       entries.clear();
+      for (const entry of retired) entry.onRetire?.();
     },
   };
 }
