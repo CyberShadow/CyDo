@@ -315,22 +315,6 @@ async function expectDraftPropagation(
     .toBe(true);
 }
 
-function pendingTaskFlush(
-  observer: PageObserver,
-  tid: number,
-  since: number,
-): readonly ObservedControl[] {
-  return observer
-    .outbound(undefined, { since })
-    .filter(
-      (control) =>
-        control.frame.tid === tid &&
-        (control.frame.type === "set_entry_point" ||
-          control.frame.type === "set_agent_name" ||
-          control.frame.type === "set_draft"),
-    );
-}
-
 async function observeLoadingTaskInsertion(page: Page): Promise<void> {
   await page.evaluate(() => {
     const testWindow = window as Window & {
@@ -472,7 +456,7 @@ test("a pending draft sender adopts a later peer update", async ({
   await contextB.close();
 });
 
-test("a pristine adopted draft accepts peer text and configuration", async ({
+test("a pristine persisted editor accepts peer text and configuration", async ({
   page,
   browser,
   baseURL,
@@ -542,7 +526,7 @@ test("a pristine adopted draft accepts peer text and configuration", async ({
   await expect(page.locator(`.sidebar-item[data-tid="${tid}"]`)).toHaveCount(0);
 });
 
-test("a diverged adopted draft retains local fields until its held write wins", async ({
+test("a diverged persisted editor retains local fields until its held write wins", async ({
   page,
   browser,
   baseURL,
@@ -760,13 +744,13 @@ test("a diverged adopted draft retains local fields until its held write wins", 
   await expect(page.locator(`.sidebar-item[data-tid="${tid}"]`)).toHaveCount(0);
 });
 
-test("stable persisted drafts switch A to B and back without lifecycle RPCs", async ({
+test("persisted editors keep delayed writes scoped to their tids across A/B/A routing", async ({
   page,
   browser,
   baseURL,
   agentType,
 }) => {
-  const observer1 = installPassiveObserver(page);
+  const observer1 = await installOutboundHoldingObserver(page);
   const context2 = await browser.newContext({ baseURL });
   const page2 = await context2.newPage();
   const observer2 = installPassiveObserver(page2);
@@ -788,21 +772,22 @@ test("stable persisted drafts switch A to B and back without lifecycle RPCs", as
   expect(new Set([baselineEntryPoint, "blank", "isolated"]).size).toBe(3);
 
   const textA = "switch persisted A baseline";
-  const tidA = await createPersistedDraft(page, observer1, textA);
+  const seedPage = await browser.newPage({ baseURL });
+  const seedObserver = installPassiveObserver(seedPage);
+  await enterSession(seedPage);
+  const tidA = await createPersistedDraft(seedPage, seedObserver, textA);
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${tidA}"] .sidebar-label`),
+  ).toHaveText(textA);
+  await seedPage.close();
   await page2.locator(".task-type-row", { hasText: "blank" }).click();
   await page2.locator(".agent-picker:visible").selectOption(agentB);
   const textB = "switch persisted B baseline";
   const tidB = await createPersistedDraft(page2, observer2, textB);
   expect(tidB).not.toBe(tidA);
-  await expect(page2.locator(`.sidebar-item[data-tid="${tidA}"]`)).toHaveCount(
-    1,
-  );
   await expect(
-    page2.locator(`.sidebar-item[data-tid="${tidA}"] .sidebar-label`),
+    page.locator(`.sidebar-item[data-tid="${tidA}"] .sidebar-label`),
   ).toHaveText(textA);
-  await expect(page.locator(`.sidebar-item[data-tid="${tidB}"]`)).toHaveCount(
-    1,
-  );
   await expect(
     page.locator(`.sidebar-item[data-tid="${tidB}"] .sidebar-label`),
   ).toHaveText(textB);
@@ -818,156 +803,74 @@ test("stable persisted drafts switch A to B and back without lifecycle RPCs", as
     )
     .toBe(true);
 
-  const latestA = "switch persisted A latest local text";
-  const entryPointAStart = observer1.mark();
-  await page.locator(".task-type-row", { hasText: "isolated" }).click();
-  await expect
-    .poll(() =>
-      observer1
-        .outbound("set_entry_point", { tid: tidA, since: entryPointAStart })
-        .some((control) => control.frame.entry_point === "isolated"),
-    )
-    .toBe(true);
-  const editAStart = observer1.mark();
-  const peerEditAStart = observer2.mark();
+  const latestA = "persisted A latest local text";
+  const latestB = "persisted B latest local text";
+  await selectPersistedDraft(page, tidA);
+  await expectControlledForm(page, textA, baselineEntryPoint, agentALatest);
+  const clockStart = new Date();
+  await page.clock.install({ time: clockStart });
+  await page.clock.pauseAt(new Date(clockStart.getTime() + 60_000));
+  const since = observer1.armOutgoingMutationHold();
+  await observeLoadingTaskInsertion(page);
+
+  const navigateFromEditor = async (tid: number) => {
+    const row = page.locator(`.sidebar-item[data-tid="${tid}"]`);
+    // The browser focuses the link before a click. Exercise that blur while
+    // the clock is paused, then follow the link without advancing the timer.
+    await row.focus();
+    await row.evaluate((element: HTMLElement) => {
+      element.click();
+    });
+    await expect(page).toHaveURL(new RegExp(`/task/${tid}(?:/|$)`));
+  };
+  const writes = () =>
+    observer1
+      .outbound("set_draft", { since })
+      .map(({ frame }) => [frame.tid, frame.content]);
+
   await page.locator(".input-textarea:visible").fill(latestA);
-  await expect
-    .poll(() => {
-      const localDraftSent = observer1
-        .outbound("set_draft", { tid: tidA, since: editAStart })
-        .some((control) => control.frame.content === latestA);
-      const peerDraftArrived = observer2
-        .inbound("draft_updated", { tid: tidA, since: peerEditAStart })
-        .some((control) => control.frame.new_draft === latestA);
-      return localDraftSent && peerDraftArrived;
-    })
-    .toBe(true);
-  await expectControlledForm(page, latestA, "isolated", agentALatest);
-
-  const bRow = page.locator(`.sidebar-item[data-tid="${tidB}"]`);
-  await expect(page.locator(".input-textarea:visible")).toBeFocused();
-  const preFocusBStart = observer1.mark();
-  await bRow.focus();
-  await expect(bRow).toBeFocused();
-  await expect
-    .poll(() =>
-      observer1
-        .outbound("set_draft", { tid: tidA, since: preFocusBStart })
-        .map((control) => control.frame.content),
-    )
-    .toEqual([latestA]);
-  await observeLoadingTaskInsertion(page);
-  const switchToBStart = observer1.mark();
-  await bRow.click();
+  await navigateFromEditor(tidB);
   await expectControlledForm(page, textB, "blank", agentB);
-  await expect(page).toHaveURL(new RegExp(`/task/${tidB}(?:/|$)`));
-  await expect(page.locator(`.sidebar-item[data-tid="${tidA}"]`)).toHaveCount(
-    1,
-  );
-  await expect(page.locator(`.sidebar-item[data-tid="${tidB}"]`)).toHaveCount(
-    1,
-  );
-  await expect
-    .poll(() =>
-      pendingTaskFlush(observer1, tidA, switchToBStart).map(
-        (control) => control.frame.type,
-      ),
-    )
-    .toEqual(["set_entry_point", "set_agent_name", "set_draft"]);
-  expect(pendingTaskFlush(observer1, tidA, switchToBStart)).toEqual([
-    expect.objectContaining({
-      frame: expect.objectContaining({
-        type: "set_entry_point",
-        entry_point: "isolated",
-      }),
-    }),
-    expect.objectContaining({
-      frame: expect.objectContaining({
-        type: "set_agent_name",
-        agent_name: agentALatest,
-      }),
-    }),
-    expect.objectContaining({
-      frame: expect.objectContaining({
-        type: "set_draft",
-        content: latestA,
-      }),
-    }),
-  ]);
-  expect(
-    observer1
-      .outbound(undefined, { since: switchToBStart })
-      .filter(
-        (control) =>
-          control.frame.type === "create_task" ||
-          control.frame.type === "delete_task",
-      ),
-  ).toEqual([]);
-  expect(await loadingTaskWasInserted(page)).toBe(false);
-  await expect(
-    page.locator(".session-empty:visible", { hasText: "Loading task" }),
-  ).toHaveCount(0);
+  await page.clock.runFor(499);
+  expect(writes()).toEqual([]);
+  await page.clock.runFor(1);
+  await expect.poll(writes).toEqual([[tidA, latestA]]);
 
-  const aRow = page.locator(`.sidebar-item[data-tid="${tidA}"]`);
-  await expect(page.locator(".input-textarea:visible")).toBeFocused();
-  const preFocusAStart = observer1.mark();
-  await aRow.focus();
-  await expect(aRow).toBeFocused();
-  await expect
-    .poll(() =>
-      observer1
-        .outbound("set_draft", { tid: tidB, since: preFocusAStart })
-        .map((control) => control.frame.content),
-    )
-    .toEqual([textB]);
-  await observeLoadingTaskInsertion(page);
-  const switchToAStart = observer1.mark();
-  await aRow.click();
-  await expectControlledForm(page, latestA, "isolated", agentALatest);
-  await expect(page).toHaveURL(new RegExp(`/task/${tidA}(?:/|$)`));
-  await expect(page.locator(`.sidebar-item[data-tid="${tidA}"]`)).toHaveCount(
-    1,
-  );
-  await expect(page.locator(`.sidebar-item[data-tid="${tidB}"]`)).toHaveCount(
-    1,
-  );
-  await expect
-    .poll(() =>
-      pendingTaskFlush(observer1, tidB, switchToAStart).map(
-        (control) => control.frame.type,
-      ),
-    )
-    .toEqual(["set_entry_point", "set_agent_name", "set_draft"]);
-  expect(pendingTaskFlush(observer1, tidB, switchToAStart)).toEqual([
-    expect.objectContaining({
-      frame: expect.objectContaining({
-        type: "set_entry_point",
-        entry_point: "blank",
-      }),
-    }),
-    expect.objectContaining({
-      frame: expect.objectContaining({
-        type: "set_agent_name",
-        agent_name: agentB,
-      }),
-    }),
-    expect.objectContaining({
-      frame: expect.objectContaining({ type: "set_draft", content: textB }),
-    }),
+  await page.locator(".input-textarea:visible").fill(latestB);
+  await navigateFromEditor(tidA);
+  await expectControlledForm(page, latestA, baselineEntryPoint, agentALatest);
+  await page.clock.runFor(499);
+  expect(writes()).toEqual([[tidA, latestA]]);
+  await page.clock.runFor(1);
+  await expect.poll(writes).toEqual([
+    [tidA, latestA],
+    [tidB, latestB],
   ]);
-  expect(
-    observer1
-      .outbound(undefined, { since: switchToAStart })
-      .filter(
-        (control) =>
-          control.frame.type === "create_task" ||
-          control.frame.type === "delete_task",
-      ),
-  ).toEqual([]);
+  expect(observer1.forwarded("set_draft", { since })).toEqual([]);
   expect(await loadingTaskWasInserted(page)).toBe(false);
-  await expect(
-    page.locator(".session-empty:visible", { hasText: "Loading task" }),
-  ).toHaveCount(0);
+  await page.clock.resume();
+
+  observer1.releaseOutgoingHold();
+  await expect
+    .poll(() =>
+      observer2
+        .inbound("draft_updated", { tid: tidA })
+        .some(({ frame }) => frame.new_draft === latestA),
+    )
+    .toBe(true);
+  await expectControlledForm(page2, latestB, "blank", agentB);
+  expect(writes()).toEqual([
+    [tidA, latestA],
+    [tidB, latestB],
+  ]);
+  for (const type of [
+    "create_task",
+    "delete_task",
+    "set_entry_point",
+    "set_agent_name",
+  ]) {
+    expect(observer1.outbound(type, { since })).toEqual([]);
+  }
 
   await page2.locator(".input-textarea:visible").fill("");
   await expect(page2.locator(`.sidebar-item[data-tid="${tidB}"]`)).toHaveCount(

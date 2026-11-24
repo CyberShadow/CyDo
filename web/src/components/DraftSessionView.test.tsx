@@ -23,6 +23,10 @@ vi.hoisted(() => {
   }));
 });
 
+import {
+  createControlledImageStore,
+  retireControlledImage,
+} from "../controlledImageStore";
 import { DraftSessionView } from "./SessionView";
 
 const entryPoints = [
@@ -103,10 +107,15 @@ describe("DraftSessionView draft availability", () => {
   const roots = ownedRoots();
   let container: HTMLDivElement;
 
-  const mount = (draftView: DraftView) => {
+  const mount = (
+    draftView: DraftView,
+    imageStore?: ReturnType<typeof createControlledImageStore>,
+  ) => {
     roots.render(
       <DraftSessionView
+        key={draftView.viewKey}
         draftView={draftView}
+        imageStore={imageStore}
         connected={true}
         tasksLoading={false}
         entryPoints={entryPoints}
@@ -147,6 +156,70 @@ describe("DraftSessionView draft availability", () => {
     container = roots.create();
   });
 
+  it("discards a pending image read from the retired editor after clear", async () => {
+    const reader = mockImageReader();
+    const store = createControlledImageStore();
+    const editorId = "composition:discarded";
+    const successor: DraftViewSnapshot = {
+      kind: "resolved",
+      editorId: "composition:successor",
+      viewKey: "composition:successor",
+      workspace: "workspace",
+      projectName: "project",
+      projectPath: "/project",
+      remoteTid: null,
+      text: "",
+      entryPoint: "implement",
+      agent: "codex",
+      lifecycle: "idle",
+      disabled: false,
+      metadataReady: true,
+      submitReady: true,
+      composerResetToken: 0,
+      onTextChange: vi.fn(),
+      onEntryPointChange: vi.fn(),
+      onAgentChange: vi.fn(),
+      onSubmit: vi.fn(),
+    };
+    try {
+      mount(
+        { ...successor, editorId, viewKey: editorId, text: "discard" },
+        store,
+      );
+      await actStep(() => {
+        pasteImage(controls().textarea);
+        reader.complete();
+        pasteImage(controls().textarea);
+      });
+      const entry = store.entries.get(editorId)!;
+      expect(entry.images).toHaveLength(1);
+      mount(successor, store);
+      await actStep(() => {
+        reader.complete();
+      });
+      expect(entry.images).toHaveLength(2);
+      mount(
+        { ...successor, editorId, viewKey: editorId, text: "discard" },
+        store,
+      );
+      expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
+      await actStep(() => pasteImage(controls().textarea));
+      await act(() => {
+        retireControlledImage(store, editorId);
+      });
+      mount(successor, store);
+      await actStep(() => {
+        reader.complete();
+      });
+      expect(store.entries.has(editorId)).toBe(false);
+      expect(entry.images).toEqual([]);
+      expect(store.entries.get(successor.editorId)?.images).toEqual([]);
+      expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
+    } finally {
+      reader.restore();
+    }
+  });
+
   it("rejects pasted attachments while route metadata is unresolved", async () => {
     const imageReader = mockImageReader();
     const draftView: UnresolvedDraftView = {
@@ -162,6 +235,7 @@ describe("DraftSessionView draft availability", () => {
       lifecycle: "idle",
       disabled: true,
       metadataReady: false,
+      submitReady: false,
       composerResetToken: 0,
     };
 
@@ -187,8 +261,8 @@ describe("DraftSessionView draft availability", () => {
     const onSubmit = vi.fn();
     const draftView = {
       kind: "resolved",
-      projectKey: "workspace\0/project",
-      viewKey: "workspace\0/project",
+      editorId: "composition:test" as const,
+      viewKey: "composition:test",
       workspace: "workspace",
       projectName: "project",
       projectPath: "/project",
@@ -199,11 +273,11 @@ describe("DraftSessionView draft availability", () => {
       lifecycle: "idle",
       disabled: false,
       metadataReady: false,
+      submitReady: false,
       composerResetToken: 0,
       onTextChange,
       onEntryPointChange,
       onAgentChange,
-      onBlur: vi.fn(),
       onSubmit,
     } satisfies DraftViewSnapshot;
 
@@ -234,13 +308,56 @@ describe("DraftSessionView draft availability", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("keeps the picker enabled and Submit disabled for an unlisted entry point", async () => {
+    const onEntryPointChange = vi.fn();
+    const onTextChange = vi.fn();
+    const onSubmit = vi.fn();
+    mount({
+      kind: "resolved",
+      editorId: "task:95",
+      viewKey: "task:95",
+      workspace: "workspace",
+      projectName: "project",
+      projectPath: "/project",
+      remoteTid: 95,
+      text: "still editable",
+      entryPoint: "unlisted",
+      agent: "codex",
+      lifecycle: "present",
+      disabled: false,
+      metadataReady: true,
+      submitReady: false,
+      composerResetToken: 0,
+      onTextChange,
+      onEntryPointChange,
+      onAgentChange: vi.fn(),
+      onSubmit,
+    });
+    const { taskTypeButtons, agentPicker, textarea, send } = controls();
+    expect(container.querySelector(".task-type-row.selected")).toBeNull();
+    expect(taskTypeButtons.every((button) => !button.disabled)).toBe(true);
+    expect(agentPicker.disabled).toBe(false);
+    expect(textarea.disabled).toBe(false);
+    expect(send.disabled).toBe(true);
+    await actStep(() => {
+      textarea.value = "next edit";
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.blur();
+      send.click();
+      taskTypeButtons[0]!.click();
+    });
+    expect(onTextChange).toHaveBeenCalledExactlyOnceWith("next edit");
+    expect(onEntryPointChange).toHaveBeenCalledExactlyOnceWith("implement");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("rejects dropped attachments while a resolved draft is submitting", async () => {
     const imageReader = mockImageReader();
     const onEntryPointChange = vi.fn();
     const draftView = {
       kind: "resolved",
-      projectKey: "workspace\\0/project",
-      viewKey: "workspace\\0/project",
+      editorId: "composition:test" as const,
+      viewKey: "composition:test",
       workspace: "workspace",
       projectName: "project",
       projectPath: "/project",
@@ -251,11 +368,11 @@ describe("DraftSessionView draft availability", () => {
       lifecycle: "submitting",
       disabled: true,
       metadataReady: true,
+      submitReady: true,
       composerResetToken: 0,
       onTextChange: vi.fn(),
       onEntryPointChange,
       onAgentChange: vi.fn(),
-      onBlur: vi.fn(),
       onSubmit: vi.fn(),
     } satisfies DraftViewSnapshot;
 

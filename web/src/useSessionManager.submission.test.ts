@@ -1,6 +1,11 @@
+import { DRAFT_SAVE_DELAY_MS } from "./draftReconciler";
 import { h, render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createControlledImageStore,
+  type ControlledImageStore,
+} from "./controlledImageStore";
 import type { OutboxEntry } from "./outbox";
 import type { AgnosticEvent, ControlMessage } from "./protocol";
 import type {
@@ -12,6 +17,8 @@ import type {
 const testState = vi.hoisted(() => {
   const state = {
     uuid: "submission-uuid",
+    issuedUuids: new Set<string>(),
+    nextUuid: 0,
     hidden: true,
     animationFrames: new Map<number, (timestamp: number) => void>(),
     nextAnimationFrame: 0,
@@ -39,6 +46,7 @@ const testState = vi.hoisted(() => {
             ts?: number,
           ) => void)
         | null;
+      onHistoryBoundaryReplaced: ((...args: unknown[]) => void) | null;
       onAgentAck: ((tid: number, nonce: string) => void) | null;
       onControlMessage: ((message: ControlMessage) => void) | null;
       onStatusChange: ((connected: boolean) => void) | null;
@@ -52,8 +60,34 @@ const testState = vi.hoisted(() => {
       setAgentName: ReturnType<typeof vi.fn>;
     } | null,
   };
+  // The browser location changes synchronously; the router's render may lag.
+  const renderedRoute = state.route;
+  let navigatedPath: string | null = null;
+  state.route = new Proxy(renderedRoute, {
+    set(target, key, value) {
+      navigatedPath = null;
+      return Reflect.set(target, key, value);
+    },
+  });
+  const renderedPath = () => {
+    const { workspace, project, tid } = renderedRoute;
+    const scope = `/${workspace}/${project}`;
+    return tid === null ? scope : `${scope}/task/${tid}`;
+  };
+  vi.stubGlobal("location", {
+    get pathname() {
+      return navigatedPath ?? renderedPath();
+    },
+  });
   vi.stubGlobal("CSS", { supports: () => false });
-  vi.stubGlobal("crypto", { randomUUID: () => state.uuid });
+  vi.stubGlobal("crypto", {
+    randomUUID: () => {
+      if (state.issuedUuids.has(state.uuid))
+        return `generated-${++state.nextUuid}`;
+      state.issuedUuids.add(state.uuid);
+      return state.uuid;
+    },
+  });
   vi.stubGlobal("document", {
     get hidden() {
       return state.hidden;
@@ -94,21 +128,18 @@ const testState = vi.hoisted(() => {
   state.outbox.byTid.mockImplementation((tid: number) =>
     state.outboxEntries.filter((entry) => entry.tid === tid),
   );
-  return state;
+  return Object.assign(state, {
+    renderedPath,
+    navigateBrowser: (path: string) => {
+      navigatedPath = path;
+    },
+  });
 });
 
 vi.mock("preact-iso", () => ({
-  useLocation: () => ({ route: testState.navigate }),
-  useRoute: () => ({
-    params: {
-      workspace: testState.route.workspace,
-      project: testState.route.project,
-      ...(testState.route.tid === null ? {} : { tid: testState.route.tid }),
-    },
-    path:
-      testState.route.tid === null
-        ? `/${testState.route.workspace}/${testState.route.project}`
-        : `/${testState.route.workspace}/${testState.route.project}/task/${testState.route.tid}`,
+  useLocation: () => ({
+    route: testState.navigate,
+    path: testState.renderedPath(),
   }),
 }));
 
@@ -151,9 +182,28 @@ import { useTaskManager } from "./useSessionManager";
 
 let manager: TaskManager | null = null;
 let root: Element;
+let imageStore: ControlledImageStore;
+
+function seedEditorImage(editorId: string) {
+  const entry = {
+    resetToken: 0,
+    generation: 0,
+    images: [
+      {
+        id: "image",
+        dataURL: "data:image/png;base64,aQ==",
+        base64: "aQ==",
+        mediaType: "image/png",
+      },
+    ],
+    listeners: new Set<() => void>(),
+  };
+  imageStore.entries.set(editorId, entry);
+  return entry;
+}
 
 function ManagerProbe() {
-  manager = useTaskManager(testState.addToast);
+  manager = useTaskManager(testState.addToast, imageStore);
   return null;
 }
 
@@ -382,12 +432,13 @@ async function prepareEditableDraft(): Promise<DraftViewSnapshot> {
   return attached;
 }
 
-async function prepareCreatingDraft(): Promise<void> {
+async function prepareCreatingDraft(): Promise<string> {
   await bootstrapProject();
   const draftView = (await renderManager()).draftView;
   if (!draftView || draftView.kind !== "resolved") {
     throw new Error("Project root draft view did not resolve");
   }
+  const correlationId = draftView.editorId.slice("composition:".length);
   await act(() => {
     draftView.onTextChange("editing create before acknowledgement");
   });
@@ -398,33 +449,10 @@ async function prepareCreatingDraft(): Promise<void> {
       "entry",
       undefined,
       "agent",
-      "submission-uuid",
+      correlationId,
     );
   });
-}
-
-async function prepareRetainedReplacementDraft(): Promise<DraftViewSnapshot> {
-  const attached = await prepareEditableDraft();
-  testState.uuid = "replacement-uuid";
-  await act(() => {
-    attached.onTextChange("");
-    attached.onTextChange("replacement draft B");
-  });
-  expect(testState.connection!.deleteTask).toHaveBeenCalledWith(71);
-  return attached;
-}
-
-async function submitAtomicReplacement(
-  attached: DraftViewSnapshot,
-): Promise<void> {
-  testState.uuid = "atomic-b-uuid";
-  await act(() => {
-    attached.onTextChange("");
-    attached.onTextChange("atomic submission B");
-    attached.onSubmit("atomic submission B", []);
-  });
-  expect(testState.connection!.deleteTask).toHaveBeenCalledWith(71);
-  expect(testState.connection!.createTask).toHaveBeenCalledTimes(1);
+  return correlationId;
 }
 
 function activeSnapshot(tid: number): TaskSnapshotEntry {
@@ -492,7 +520,7 @@ async function seedOrdinaryTask(
   return { connection, task };
 }
 
-async function preparePreCatalogPersistedDraft(
+async function seedPreCatalogPersistedDraft(
   snapshot: TaskSnapshotEntry,
 ): Promise<DraftViewSnapshot> {
   testState.route.tid = String(snapshot.tid);
@@ -510,20 +538,19 @@ async function preparePreCatalogPersistedDraft(
     } satisfies ControlMessage);
     testState.uuid = "submission-uuid";
   });
-  const draftView = (await renderManager()).draftView;
-  if (!draftView || draftView.kind !== "resolved") {
-    throw new Error("Pre-catalog persisted draft did not attach");
-  }
-  return draftView;
+  const view = (await renderManager()).draftView;
+  if (!view || view.kind !== "resolved")
+    throw new Error("Expected persisted editor before the catalog arrives");
+  return view;
 }
 
-function acknowledgeSubmission(tid: number) {
+function acknowledgeSubmission(tid: number, correlationId = "submission-uuid") {
   testState.connection!.onControlMessage?.({
     type: "task_created",
     tid,
     workspace: "source",
     project_path: "/source-project",
-    correlation_id: "submission-uuid",
+    correlation_id: correlationId,
   } satisfies ControlMessage);
 }
 
@@ -533,16 +560,21 @@ describe("submission acknowledgement routing", () => {
     testState.route.project = "project";
     testState.route.tid = null;
     testState.uuid = "submission-uuid";
+    testState.issuedUuids.clear();
+    testState.nextUuid = 0;
     testState.hidden = true;
     testState.animationFrames.clear();
     testState.nextAnimationFrame = 0;
     testState.connection = null;
-    testState.navigate.mockReset();
+    testState.navigate
+      .mockReset()
+      .mockImplementation(testState.navigateBrowser);
     testState.addToast.mockReset();
     testState.outboxEntries = [];
     for (const method of Object.values(testState.outbox)) method.mockClear();
     manager = null;
     root = createRoot();
+    imageStore = createControlledImageStore();
   });
 
   afterEach(async () => {
@@ -552,6 +584,41 @@ describe("submission acknowledgement routing", () => {
     vi.useRealTimers();
     testState.hidden = true;
     testState.animationFrames.clear();
+  });
+
+  it("allocates one composition UUID on New Task before typing", async () => {
+    const allocateUuid = vi.spyOn(crypto, "randomUUID");
+    try {
+      await bootstrapProject();
+      const initial = (await renderManager()).draftView;
+      expect(initial).toMatchObject({
+        editorId: "composition:submission-uuid",
+        viewKey: "composition:submission-uuid",
+        disabled: false,
+        text: "",
+      });
+      expect((await renderManager()).draftView?.viewKey).toBe(initial?.viewKey);
+      expect(allocateUuid).toHaveBeenCalledTimes(1);
+      expect(testState.connection!.createTask).not.toHaveBeenCalled();
+    } finally {
+      allocateUuid.mockRestore();
+    }
+  });
+
+  it("retires a composition cleared before its creation timer", async () => {
+    await bootstrapProject();
+    const initial = (await renderManager()).draftView;
+    if (initial?.kind !== "resolved") throw new Error("Missing editor");
+
+    await act(() => {
+      initial.onTextChange("discard before the create timer");
+      initial.onTextChange("");
+    });
+    const successor = (await renderManager()).draftView;
+    expect(successor).toMatchObject({ text: "", remoteTid: null });
+    expect(successor?.viewKey).not.toBe(initial.viewKey);
+    expect(testState.connection!.createTask).not.toHaveBeenCalled();
+    expect(testState.connection!.saveDraft).not.toHaveBeenCalled();
   });
 
   it("keeps project catalog lookups bounded while typing a new-task draft", async () => {
@@ -963,7 +1030,7 @@ describe("submission acknowledgement routing", () => {
     expect(commitRouteWithoutPassiveEffects().activeWorkspace).toBe("other");
     testState.navigate.mockClear();
 
-    // The route render has committed, but its passive attachment effect is
+    // The route render has committed, but its route attachment effect is
     // deliberately still pending when the held acknowledgement arrives.
     acknowledgeSubmission(63);
 
@@ -979,7 +1046,7 @@ describe("submission acknowledgement routing", () => {
     expect(commitRouteWithoutPassiveEffects().activeWorkspace).toBe("other");
     testState.navigate.mockClear();
 
-    // This acknowledgement emits draft-ready synchronously, before the route
+    // This acknowledgement promotes the editor synchronously, before the route
     // attachment effect for the other project has had a chance to run.
     testState.connection!.onControlMessage?.({
       type: "task_created",
@@ -994,7 +1061,7 @@ describe("submission acknowledgement routing", () => {
     expect(testState.navigate).not.toHaveBeenCalled();
   });
 
-  it("keeps an owned draft view through numeric acknowledgement before its passive attachment effect", async () => {
+  it("keeps an owned draft view through numeric acknowledgement before its route attachment effect", async () => {
     await prepareCreatingDraft();
     const rootDraft = (await renderManager()).draftView;
     if (!rootDraft || rootDraft.kind !== "resolved") {
@@ -1022,12 +1089,19 @@ describe("submission acknowledgement routing", () => {
       throw new Error("Owned numeric draft view did not resolve synchronously");
     }
     expect(promoted).toMatchObject({
-      projectKey: "source\0/source-project",
-      viewKey: "source\0/source-project",
+      viewKey: "composition:submission-uuid",
       remoteTid: 65,
       lifecycle: "present",
       composerResetToken,
     });
+    testState.route.tid = null;
+    const successor = (await renderManager()).draftView;
+    expect(successor).toMatchObject({
+      text: "",
+      remoteTid: null,
+      disabled: false,
+    });
+    expect(successor?.viewKey).not.toBe(promoted.viewKey);
   });
 
   it("returns an attached deleted draft to its project root", async () => {
@@ -1057,57 +1131,37 @@ describe("submission acknowledgement routing", () => {
     expect(testState.navigate).toHaveBeenCalledWith("/source/project", true);
   });
 
-  it("resets composer ownership immediately for a local clear only once", async () => {
+  it("selects a blank successor immediately when a promoted draft is cleared", async () => {
     const attached = await prepareEditableDraft();
-    const initialToken = attached.composerResetToken;
-
     await act(() => {
       attached.onTextChange("");
     });
-    const clearing = (await renderManager()).draftView;
-    if (!clearing || clearing.kind !== "resolved") {
-      throw new Error("Clearing draft view did not remain resolved");
-    }
-    expect(clearing).toMatchObject({
-      lifecycle: "deleting",
+    testState.route.tid = null;
+    const successor = (await renderManager()).draftView;
+    if (successor?.kind !== "resolved") throw new Error("Missing successor");
+    expect(successor.viewKey).not.toBe(attached.viewKey);
+    expect(successor).toMatchObject({
+      remoteTid: null,
       text: "",
-      composerResetToken: initialToken + 1,
+      disabled: false,
     });
-
-    testState.uuid = "replacement-before-ack-uuid";
     await act(() => {
-      clearing.onTextChange("");
-      clearing.onTextChange("replacement B before acknowledgement");
+      successor.onTextChange("replacement B");
     });
-    const replacement = (await renderManager()).draftView;
-    if (!replacement || replacement.kind !== "resolved") {
-      throw new Error("Replacement draft view did not remain resolved");
-    }
-    expect(replacement).toMatchObject({
-      text: "replacement B before acknowledgement",
-      composerResetToken: initialToken + 1,
+    await vi.waitFor(() => {
+      expect(testState.connection!.createTask).toHaveBeenCalledTimes(2);
     });
-
-    await act(() => {
+    expect(testState.connection!.deleteTask.mock.calls).toEqual([[71]]);
+    await act(() =>
       testState.connection!.onControlMessage?.({
         type: "task_deleted",
         tid: 71,
-      } satisfies ControlMessage);
-    });
-    testState.route.tid = null;
-    const afterDeletion = (await renderManager()).draftView;
-    if (!afterDeletion || afterDeletion.kind !== "resolved") {
-      throw new Error("Replacement draft did not return to the project root");
-    }
-    const postReleaseToken = afterDeletion.composerResetToken;
-    expect(postReleaseToken).toBe(initialToken + 1);
-
-    await act(() => {
-      afterDeletion.onTextChange("replacement B after acknowledgement");
-    });
+      }),
+    );
     expect((await renderManager()).draftView).toMatchObject({
-      text: "replacement B after acknowledgement",
-      composerResetToken: postReleaseToken,
+      viewKey: successor.viewKey,
+      remoteTid: null,
+      text: "replacement B",
     });
   });
 
@@ -1179,92 +1233,6 @@ describe("submission acknowledgement routing", () => {
     expect(task?.title).toBe("ordinary local draft");
   });
 
-  it.each(["task_updated", "tasks_list"] as const)(
-    "retains replacement B ownership through authoritative %s activity",
-    async (source) => {
-      await prepareRetainedReplacementDraft();
-      const deleting = await renderManager();
-      expect(deleting.getByTid(71)).toBeUndefined();
-      expect(
-        [...deleting.tasks.values()].filter((task) => task.tid === 71),
-      ).toHaveLength(0);
-      testState.route.tid = null;
-      const replacement = (await renderManager()).draftView;
-      if (!replacement || replacement.kind !== "resolved") {
-        throw new Error("Replacement draft did not attach to the project root");
-      }
-      const composerResetToken = replacement.composerResetToken;
-      const connection = testState.connection!;
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      connection.createTask.mockImplementationOnce(() => {
-        expect(manager!.getByTid(71)).toMatchObject({
-          tid: 71,
-          alive: true,
-          isProcessing: true,
-          status: "active",
-        });
-      });
-
-      await act(() => {
-        if (source === "task_updated") {
-          connection.onControlMessage?.({
-            type: "task_updated",
-            task: activeSnapshot(71),
-          } satisfies ControlMessage);
-        } else {
-          connection.onControlMessage?.({
-            type: "tasks_list",
-            complete: true,
-            tasks: [activeSnapshot(71)],
-          } satisfies ControlMessage);
-        }
-      });
-
-      const afterHandoffManager = await renderManager();
-      const afterHandoff = afterHandoffManager.draftView;
-      if (!afterHandoff || afterHandoff.kind !== "resolved") {
-        throw new Error("Replacement draft did not survive tombstone handoff");
-      }
-      expect(afterHandoffManager.getByTid(71)).toMatchObject({
-        tid: 71,
-        alive: true,
-        isProcessing: true,
-        status: "active",
-      });
-      expect(afterHandoff).toMatchObject({
-        projectKey: "source\0/source-project",
-        text: "replacement draft B",
-        composerResetToken,
-        disabled: false,
-      });
-      await act(() => {
-        afterHandoff.onSubmit("replacement draft B", [
-          {
-            id: "replacement-image",
-            dataURL: "data:image/png;base64,cmVwbGFjZW1lbnQ=",
-            base64: "cmVwbGFjZW1lbnQ=",
-            mediaType: "image/png",
-          },
-        ]);
-      });
-      expect(connection.createTask).toHaveBeenLastCalledWith(
-        "source",
-        "/source-project",
-        "entry",
-        [
-          { type: "text", text: "replacement draft B" },
-          {
-            type: "image",
-            data: "cmVwbGFjZW1lbnQ=",
-            media_type: "image/png",
-          },
-        ],
-        "agent",
-        "replacement-uuid",
-      );
-    },
-  );
-
   it("consumes a tombstoned expected focus hint before later generic routing", async () => {
     await bootstrapProject();
     const initial = (await renderManager()).draftView;
@@ -1293,14 +1261,17 @@ describe("submission acknowledgement routing", () => {
     testState.uuid = "replacement-uuid";
     await act(() => {
       creating.onTextChange("");
-      creating.onTextChange("replacement draft B");
     });
     const replacement = (await renderManager()).draftView;
     if (!replacement || replacement.kind !== "resolved") {
       throw new Error("Replacement B draft view did not resolve");
     }
+    await act(() => {
+      replacement.onTextChange("replacement draft B");
+      vi.advanceTimersByTime(16);
+    });
     const composerResetToken = replacement.composerResetToken;
-    expect(replacement).toMatchObject({
+    expect((await renderManager()).draftView).toMatchObject({
       lifecycle: "creating",
       text: "replacement draft B",
     });
@@ -1325,8 +1296,8 @@ describe("submission acknowledgement routing", () => {
       [...manager!.tasks.values()].filter((task) => task.tid === tidA),
     ).toHaveLength(0);
     expect((await renderManager()).draftView).toMatchObject({
-      lifecycle: "deleting",
-      remoteTid: tidA,
+      lifecycle: "creating",
+      remoteTid: null,
       text: "replacement draft B",
       composerResetToken,
     });
@@ -1376,7 +1347,7 @@ describe("submission acknowledgement routing", () => {
     expect(testState.navigate).toHaveBeenCalledWith("/source/project/task/74");
   });
 
-  it("keeps an initialized slot editable while workspace metadata is temporarily absent", async () => {
+  it("keeps an initialized editor editable while workspace metadata is temporarily absent", async () => {
     await bootstrapProject();
     const initial = (await renderManager()).draftView;
     if (!initial || initial.kind !== "resolved") {
@@ -1410,11 +1381,10 @@ describe("submission acknowledgement routing", () => {
 
     const unavailable = (await renderManager()).draftView;
     if (!unavailable || unavailable.kind !== "resolved") {
-      throw new Error("Cached project slot did not remain resolved");
+      throw new Error("Cached project editor did not remain resolved");
     }
     expect(unavailable).toMatchObject({
-      projectKey: "source\0/source-project",
-      viewKey: "source\0/source-project",
+      viewKey: "composition:submission-uuid",
       text: "retain this draft through metadata loss",
       entryPoint: "entry",
       agent: "agent",
@@ -1446,11 +1416,10 @@ describe("submission acknowledgement routing", () => {
 
     const restored = (await renderManager()).draftView;
     if (!restored || restored.kind !== "resolved") {
-      throw new Error("Cached project slot did not restore");
+      throw new Error("Cached project editor did not restore");
     }
     expect(restored).toMatchObject({
-      projectKey: "source\0/source-project",
-      viewKey: "source\0/source-project",
+      viewKey: "composition:submission-uuid",
       text: "must not create while metadata is unavailable",
       entryPoint: "entry",
       agent: "agent",
@@ -1460,7 +1429,479 @@ describe("submission acknowledgement routing", () => {
     });
   });
 
-  it("detaches a cached slot from unrelated numeric routes during metadata loss", async () => {
+  it("applies the first catalog to a pending editor whose workspace temporarily omits its project", async () => {
+    const view = await seedPreCatalogPersistedDraft(
+      persistedSnapshot(95, "snapshot"),
+    );
+    const connection = testState.connection!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(() => {
+      view.onTextChange("pending local text");
+      connection.onControlMessage?.({
+        type: "workspaces_list",
+        workspaces: [{ name: "source", projects: [] }],
+      });
+    });
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "task:95",
+      text: "pending local text",
+      metadataReady: false,
+    });
+    await act(() => {
+      connection.onControlMessage?.(catalogWithoutEntry);
+    });
+    const controlled = await renderManager();
+    expect(controlled.draftView).toMatchObject({
+      editorId: "task:95",
+      text: "pending local text",
+      metadataReady: false,
+      submitReady: false,
+    });
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+    const next = controlled.draftView as DraftViewSnapshot;
+    await act(() => {
+      next.onTextChange("next local edit");
+      vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+    });
+    expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+      95,
+      "next local edit",
+    );
+  });
+
+  async function omitCurrentProject() {
+    await act(() => {
+      testState.connection!.onControlMessage?.({
+        type: "workspaces_list",
+        workspaces: [{ name: "source", projects: [] }],
+      });
+    });
+    return (await renderManager()).draftView;
+  }
+
+  function publishRouteProjects(projects: { name: string; path: string }[]) {
+    testState.connection!.onControlMessage?.({
+      type: "workspaces_list",
+      workspaces: [{ name: "source", projects }],
+    });
+  }
+
+  function acknowledgeRouteProbe(correlation: string) {
+    acknowledgeSubmission(95, correlation);
+    testState.connection!.onControlMessage?.({
+      type: "focus_hint",
+      from_tid: 0,
+      to_tid: 95,
+    });
+  }
+
+  it.each([
+    ["omission first", true],
+    ["ack first", true],
+    ["omission first", false],
+    ["ack first", false],
+  ] as const)(
+    "navigates across %s (same drain: %s)",
+    async (order, sameDrain) => {
+      const correlation = await prepareCreatingDraft();
+      testState.hidden = false;
+      const omit = () => {
+        publishRouteProjects([]);
+      };
+      const ack = () => {
+        acknowledgeRouteProbe(correlation);
+      };
+      const [first, second] =
+        order === "omission first" ? [omit, ack] : [ack, omit];
+      first();
+      if (!sameDrain) await flushAnimationFrames();
+      second();
+      await flushAnimationFrames();
+
+      expect(testState.navigate).toHaveBeenCalledExactlyOnceWith(
+        "/source/project/task/95",
+        true,
+      );
+      testState.route.tid = "95";
+      expect((await renderManager()).draftView).toMatchObject({
+        editorId: `composition:${correlation}`,
+        remoteTid: 95,
+        text: "editing create before acknowledgement",
+      });
+    },
+  );
+
+  it("keeps the in-flight composition across omission and a new name for the canonical path", async () => {
+    const correlation = await prepareCreatingDraft();
+    await omitCurrentProject();
+    await act(() => {
+      publishRouteProjects([{ name: "renamed", path: "/source-project" }]);
+    });
+    testState.route.project = "renamed";
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: `composition:${correlation}`,
+    });
+    await act(() => {
+      acknowledgeRouteProbe(correlation);
+    });
+    expect(testState.navigate).toHaveBeenCalledExactlyOnceWith(
+      "/source/renamed/task/95",
+      true,
+    );
+  });
+
+  it("does not focus an omitted project's ack after moving to another route", async () => {
+    const correlation = await prepareCreatingDraft();
+    await omitCurrentProject();
+    testState.route.project = "other-project";
+    await renderManager();
+    await act(() => {
+      acknowledgeRouteProbe(correlation);
+    });
+    expect(testState.navigate).not.toHaveBeenCalled();
+    expect((await renderManager()).getByTid(95)?.projectPath).toBe(
+      "/source-project",
+    );
+  });
+
+  it("does not infer a canonical path on a cold route whose first workspace list omits it", async () => {
+    testState.route.tid = "95";
+    await renderManager();
+    await act(() => {
+      publishRouteProjects([]);
+      testState.connection!.onControlMessage?.(
+        tasksList([persistedSnapshot(95, "snapshot")]),
+      );
+    });
+    expect((await renderManager()).draftView).toBeNull();
+    expect(testState.navigate).not.toHaveBeenCalled();
+    await act(() => {
+      publishRouteProjects([{ name: "project", path: "/source-project" }]);
+    });
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "task:95",
+      text: "snapshot",
+    });
+  });
+
+  it.each([true, false])(
+    "does not navigate an old-path ack after the slug is reassigned (same drain: %s)",
+    async (sameDrain) => {
+      const correlation = await prepareCreatingDraft();
+      await omitCurrentProject();
+      testState.hidden = false;
+      publishRouteProjects([
+        { name: "renamed", path: "/source-project" },
+        { name: "project", path: "/different-project" },
+      ]);
+      if (!sameDrain) await flushAnimationFrames();
+      acknowledgeRouteProbe(correlation);
+      await flushAnimationFrames();
+      expect((await renderManager()).getByTid(95)?.projectPath).toBe(
+        "/source-project",
+      );
+      expect(testState.navigate).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([true, false])(
+    "routes peer deletion to the original project after slug reassignment (same drain: %s)",
+    async (sameDrain) => {
+      await seedPreCatalogPersistedDraft(persistedSnapshot(95, "snapshot"));
+      await omitCurrentProject();
+      testState.hidden = false;
+      publishRouteProjects([
+        { name: "renamed", path: "/source-project" },
+        { name: "project", path: "/different-project" },
+      ]);
+      if (!sameDrain) {
+        await flushAnimationFrames();
+        // Separate ordinary numeric URL correction from routing by task_deleted.
+        expect(testState.navigate).toHaveBeenCalledExactlyOnceWith(
+          "/source/renamed/task/95",
+          true,
+        );
+        testState.navigate.mockClear();
+      }
+      testState.connection!.onControlMessage?.({
+        type: "task_deleted",
+        tid: 95,
+      });
+      await flushAnimationFrames();
+      expect((await renderManager()).getByTid(95)).toBeUndefined();
+      expect(testState.navigate).toHaveBeenCalledExactlyOnceWith(
+        "/source/renamed",
+        true,
+      );
+      expect(testState.navigate).not.toHaveBeenCalledWith(
+        "/source/project",
+        true,
+      );
+    },
+  );
+
+  it("retains the reassigned slug when the next workspace frame omits it", async () => {
+    const correlation = await prepareCreatingDraft();
+    testState.hidden = false;
+    publishRouteProjects([{ name: "project", path: "/different-project" }]);
+    publishRouteProjects([]);
+    acknowledgeRouteProbe(correlation);
+    await flushAnimationFrames();
+
+    const current = await renderManager();
+    expect(current.getByTid(95)?.projectPath).toBe("/source-project");
+    expect(current.draftView).toMatchObject({
+      projectPath: "/different-project",
+      remoteTid: null,
+    });
+    expect(testState.navigate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the navigated route when the previous route renders again before the router commits", async () => {
+    const correlation = await prepareCreatingDraft();
+    acknowledgeRouteProbe(correlation);
+    expect(testState.navigate).toHaveBeenCalledExactlyOnceWith(
+      "/source/project/task/95",
+      true,
+    );
+
+    // Model a previous-route render while the router's update is pending.
+    commitRouteWithoutPassiveEffects();
+    testState.connection!.onControlMessage?.({
+      type: "task_deleted",
+      tid: 95,
+    });
+    expect(testState.navigate.mock.calls).toEqual([
+      ["/source/project/task/95", true],
+      ["/source/project", true],
+    ]);
+  });
+
+  it.each([false, true])(
+    "returns to New Task when promotion and deletion share a drain (omission: %s)",
+    async (omitted) => {
+      const correlation = await prepareCreatingDraft();
+      if (omitted) await omitCurrentProject();
+      testState.hidden = false;
+      acknowledgeRouteProbe(correlation);
+      testState.connection!.onControlMessage?.({
+        type: "task_deleted",
+        tid: 95,
+      });
+      await flushAnimationFrames();
+      expect(testState.navigate.mock.calls).toEqual([
+        ["/source/project/task/95", true],
+        ["/source/project", true],
+      ]);
+      const current = await renderManager();
+      expect(current.getByTid(95)).toBeUndefined();
+      expect(current.draftView).toMatchObject({ text: "", remoteTid: null });
+      expect(current.draftView?.viewKey).not.toBe(`composition:${correlation}`);
+    },
+  );
+
+  it.each([false, true])(
+    "verifier: returns to the canonical project after promotion, slug reassignment, and deletion (same drain: %s)",
+    async (sameDrain) => {
+      const correlation = await prepareCreatingDraft();
+      testState.hidden = false;
+      acknowledgeRouteProbe(correlation);
+      publishRouteProjects([
+        { name: "renamed", path: "/source-project" },
+        { name: "project", path: "/different-project" },
+      ]);
+      if (!sameDrain) {
+        await flushAnimationFrames();
+        // Reflect the canonical route committed by the real router.
+        testState.route.project = "renamed";
+        testState.route.tid = "95";
+        await renderManager();
+      }
+      testState.connection!.onControlMessage?.({
+        type: "task_deleted",
+        tid: 95,
+      });
+      await flushAnimationFrames();
+      expect((await renderManager()).getByTid(95)).toBeUndefined();
+      expect(testState.navigate.mock.calls.at(-1)).toEqual([
+        "/source/renamed",
+        true,
+      ]);
+    },
+  );
+
+  it.each(["root", "sidebar"] as const)(
+    "verifier: uses the last UI navigation before draining promotion and focus controls (%s)",
+    async (destination) => {
+      const correlation = await prepareCreatingDraft();
+      testState.connection!.onControlMessage?.({
+        type: "task_updated",
+        task: activeSnapshot(71),
+      });
+      testState.hidden = false;
+      acknowledgeRouteProbe(correlation);
+      publishRouteProjects([{ name: "project", path: "/source-project" }]);
+      const select = () => {
+        manager!.setActiveTaskId("71");
+      };
+      const newTask = () => {
+        manager!.navigateToProject("source", "project");
+      };
+      await act(async () => {
+        if (destination === "root") {
+          select();
+          newTask();
+        } else {
+          newTask();
+          select();
+        }
+        testState.navigate.mockClear();
+        await flushAnimationFrames();
+      });
+      if (destination === "root") {
+        expect(testState.navigate).toHaveBeenCalledExactlyOnceWith(
+          "/source/project/task/95",
+          true,
+        );
+      } else {
+        expect(testState.navigate).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(["back", "forward"] as const)(
+    "verifier: handles browser %s before queued acknowledgements and deletes",
+    async (direction) => {
+      const correlation = await prepareCreatingDraft();
+      const connection = testState.connection!;
+      await act(() => {
+        connection.onControlMessage?.({
+          type: "task_updated",
+          task: activeSnapshot(71),
+        });
+      });
+      testState.route.tid = direction === "back" ? "71" : null;
+      await renderManager();
+      testState.hidden = false;
+      acknowledgeRouteProbe(correlation);
+      publishRouteProjects([]);
+      connection.onControlMessage?.({ type: "task_deleted", tid: 95 });
+      testState.navigateBrowser(
+        direction === "back" ? "/source/project" : "/source/project/task/71",
+      );
+      await flushAnimationFrames();
+      expect(testState.navigate.mock.calls).toEqual(
+        direction === "back"
+          ? [
+              ["/source/project/task/95", true],
+              ["/source/project", true],
+            ]
+          : [],
+      );
+      expect(manager!.getByTid(95)).toBeUndefined();
+    },
+  );
+
+  it("verifier: chained focus hints target the same-drain reload", async () => {
+    await bootstrapProject();
+    const connection = testState.connection!;
+    await act(() => {
+      for (const tid of [71, 72]) {
+        connection.onControlMessage?.({
+          type: "task_updated",
+          task: activeSnapshot(tid),
+        });
+      }
+    });
+    testState.hidden = false;
+    connection.onControlMessage?.({
+      type: "focus_hint",
+      from_tid: 0,
+      to_tid: 71,
+    });
+    connection.onControlMessage?.({
+      type: "focus_hint",
+      from_tid: 71,
+      to_tid: 72,
+    });
+    connection.onControlMessage?.({
+      type: "task_reload",
+      tid: 72,
+      reason: "edit",
+    });
+    await flushAnimationFrames();
+    expect(testState.navigate.mock.calls).toEqual([
+      ["/source/project/task/71"],
+      ["/source/project/task/72"],
+    ]);
+    expect(connection.requestHistory).toHaveBeenCalledExactlyOnceWith(72);
+  });
+
+  it("routes an attached promotion while the workspace omits its project", async () => {
+    await prepareCreatingDraft();
+    const attached = await omitCurrentProject();
+    expect(attached).toMatchObject({ viewKey: "composition:submission-uuid" });
+
+    await act(() => {
+      const connection = testState.connection!;
+      connection.onControlMessage?.({
+        type: "task_created",
+        tid: 95,
+        workspace: "source",
+        project_path: "/source-project",
+        correlation_id: "submission-uuid",
+      });
+      connection.onControlMessage?.({
+        type: "focus_hint",
+        from_tid: 0,
+        to_tid: 95,
+      });
+    });
+    expect(testState.navigate).toHaveBeenCalledExactlyOnceWith(
+      "/source/project/task/95",
+      true,
+    );
+
+    testState.route.tid = "95";
+    expect((await renderManager()).draftView).toMatchObject({
+      viewKey: attached?.viewKey,
+      text: attached?.text,
+      remoteTid: 95,
+    });
+  });
+
+  it.each(["clear", "peer deletion"])(
+    "returns to blank New Task on %s while the workspace omits its project",
+    async (action) => {
+      await seedPreCatalogPersistedDraft(persistedSnapshot(95, "snapshot"));
+      const attached = await omitCurrentProject();
+      expect(attached).toMatchObject({ editorId: "task:95", text: "snapshot" });
+      const connection = testState.connection!;
+      await act(() => {
+        if (action === "clear") {
+          (attached as DraftViewSnapshot).onTextChange("");
+        } else {
+          connection.onControlMessage?.({ type: "task_deleted", tid: 95 });
+        }
+      });
+      if (action === "clear") {
+        expect(connection.deleteTask).toHaveBeenCalledExactlyOnceWith(95);
+      } else {
+        expect(connection.deleteTask).not.toHaveBeenCalled();
+      }
+      expect(testState.navigate).toHaveBeenCalledExactlyOnceWith(
+        "/source/project",
+        true,
+      );
+      testState.route.tid = null;
+      expect((await renderManager()).draftView).toMatchObject({
+        text: "",
+        remoteTid: null,
+      });
+    },
+  );
+
+  it("keeps a cached composition separate from numeric routes during metadata loss", async () => {
     await bootstrapProject();
     const initial = (await renderManager()).draftView;
     if (!initial || initial.kind !== "resolved") {
@@ -1516,7 +1957,11 @@ describe("submission acknowledgement routing", () => {
       } satisfies ControlMessage);
     });
     const pendingTaskRoute = await renderManager();
-    expect(pendingTaskRoute.draftView).toBeNull();
+    expect(pendingTaskRoute.draftView).toMatchObject({
+      editorId: "task:72",
+      text: "unowned pending B",
+      metadataReady: false,
+    });
     expect(pendingTaskRoute.getByTid(72)).toMatchObject({
       status: "pending",
       serverDraft: "unowned pending B",
@@ -1528,8 +1973,7 @@ describe("submission acknowledgement routing", () => {
       throw new Error("Cached project root draft view did not restore");
     }
     expect(restored).toMatchObject({
-      projectKey: "source\0/source-project",
-      viewKey: "source\0/source-project",
+      viewKey: "composition:submission-uuid",
       text: "retain A while visiting unrelated routes",
       entryPoint: "entry",
       agent: "agent",
@@ -1544,105 +1988,63 @@ describe("submission acknowledgement routing", () => {
     expect(connection.saveDraft).not.toHaveBeenCalled();
   });
 
-  it("settles a stable persisted switch before passive route attachment", async () => {
+  it("routes independently between persisted editors and saves each exact tid", async () => {
     await bootstrapProject();
     const connection = testState.connection!;
     await act(() => {
-      connection.onControlMessage?.({
-        type: "project_task_types_list",
-        project_path: "/source-project",
-        entry_points: [
-          {
-            name: "entry",
-            task_type: "blank",
-            description: "",
-            model_class: "",
-            read_only: false,
-          },
-          {
-            name: "entry-b",
-            task_type: "blank-b",
-            description: "",
-            model_class: "",
-            read_only: false,
-          },
-        ],
-        type_info: [],
-      } satisfies ControlMessage);
-      testState.uuid = "persisted-a-uuid";
-      connection.onControlMessage?.({
-        type: "task_updated",
-        task: persistedSnapshot(91, "persisted A"),
-      } satisfies ControlMessage);
-      testState.uuid = "persisted-b-uuid";
-      connection.onControlMessage?.({
-        type: "task_updated",
-        task: {
-          ...persistedSnapshot(92, "persisted B"),
-          task_type: "blank-b",
-          entry_point: "entry-b",
-          agent_name: "agent-b",
-        },
-      } satisfies ControlMessage);
-      testState.uuid = "submission-uuid";
+      connection.onControlMessage?.(
+        tasksList([
+          persistedSnapshot(91, "persisted A"),
+          persistedSnapshot(92, "persisted B"),
+        ]),
+      );
+    });
+    testState.route.tid = "91";
+    const a = (await renderManager()).draftView;
+    if (a?.kind !== "resolved") throw new Error("A did not open");
+    expect(a).toMatchObject({
+      editorId: "task:91",
+      viewKey: "task:91",
+      text: "persisted A",
     });
 
-    testState.route.tid = "91";
-    const attachedA = (await renderManager()).draftView;
-    if (!attachedA || attachedA.kind !== "resolved") {
-      throw new Error("Persisted A did not attach to its numeric route");
-    }
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    await act(() => {
-      attachedA.onTextChange("persisted A with local edits");
-    });
-    const editedA = (await renderManager()).draftView;
-    if (!editedA || editedA.kind !== "resolved") {
-      throw new Error("Edited persisted A did not remain resolved");
-    }
-    const composerResetToken = editedA.composerResetToken;
-    connection.createTask.mockClear();
-    connection.deleteTask.mockClear();
+    connection.saveDraft.mockClear();
     connection.setEntryPoint.mockClear();
     connection.setAgentName.mockClear();
-    connection.saveDraft.mockClear();
-
+    await act(() => {
+      a.onTextChange("local A");
+    });
     testState.route.tid = "92";
-    const beforePassive = commitRouteWithoutPassiveEffects().draftView;
-    if (!beforePassive || beforePassive.kind !== "resolved") {
-      throw new Error("Persisted B did not settle before passive attachment");
-    }
-    expect(beforePassive).toMatchObject({
-      projectKey: "source\0/source-project",
-      viewKey: "source\0/source-project",
-      remoteTid: 91,
-      text: "persisted A with local edits",
-      entryPoint: "entry",
-      agent: "agent",
-      composerResetToken,
+    const b = (await renderManager()).draftView;
+    if (b?.kind !== "resolved") throw new Error("B did not open");
+    expect(b).toMatchObject({
+      editorId: "task:92",
+      viewKey: "task:92",
+      text: "persisted B",
+    });
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+
+    await act(() => {
+      b.onTextChange("local B");
+    });
+    testState.route.tid = "91";
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "task:91",
+      text: "local A",
+    });
+    await vi.waitFor(() => {
+      expect(connection.saveDraft.mock.calls).toEqual([
+        [91, "local A"],
+        [92, "local B"],
+      ]);
     });
     expect(connection.createTask).not.toHaveBeenCalled();
     expect(connection.deleteTask).not.toHaveBeenCalled();
-
-    const afterPassive = (await renderManager()).draftView;
-    expect(afterPassive).toMatchObject({
-      kind: "resolved",
-      projectKey: "source\0/source-project",
-      remoteTid: 92,
-      text: "persisted B",
-      entryPoint: "entry-b",
-      agent: "agent-b",
-      composerResetToken: composerResetToken + 1,
-    });
-    expect(connection.setEntryPoint).toHaveBeenCalledWith(91, "entry");
-    expect(connection.setAgentName).toHaveBeenCalledWith(91, "agent");
-    expect(connection.saveDraft).toHaveBeenCalledWith(
-      91,
-      "persisted A with local edits",
-    );
+    expect(connection.setEntryPoint).not.toHaveBeenCalled();
+    expect(connection.setAgentName).not.toHaveBeenCalled();
   });
 
-  it("waits for passive slot initialization before adopting a reset numeric draft", async () => {
+  it("opens the reset numeric draft from a fresh snapshot", async () => {
     await renderManager();
     const connection = testState.connection!;
     testState.route.tid = "91";
@@ -1663,12 +2065,11 @@ describe("submission acknowledgement routing", () => {
       testState.uuid = "submission-uuid";
     });
 
-    const adopted = (await renderManager()).draftView;
-    if (!adopted || adopted.kind !== "resolved") {
-      throw new Error("Passive initialization did not adopt the numeric draft");
+    const opened = (await renderManager()).draftView;
+    if (!opened || opened.kind !== "resolved") {
+      throw new Error("Fresh snapshot did not open the numeric draft");
     }
-    expect(adopted).toMatchObject({
-      projectKey: "source\0/source-project",
+    expect(opened).toMatchObject({
       remoteTid: 91,
       text: "reloaded persisted draft",
       entryPoint: "entry",
@@ -1676,37 +2077,6 @@ describe("submission acknowledgement routing", () => {
     });
     expect(connection.createTask).not.toHaveBeenCalled();
     expect(connection.deleteTask).not.toHaveBeenCalled();
-  });
-
-  it("projects active A before atomically creating submitting B after a tombstone handoff", async () => {
-    const attached = await prepareEditableDraft();
-    await submitAtomicReplacement(attached);
-    const connection = testState.connection!;
-    connection.createTask.mockImplementationOnce(() => {
-      expect(manager!.getByTid(71)).toMatchObject({
-        tid: 71,
-        alive: true,
-        isProcessing: true,
-        status: "active",
-      });
-    });
-
-    await act(() => {
-      connection.onControlMessage?.({
-        type: "tasks_list",
-        complete: true,
-        tasks: [activeSnapshot(71)],
-      } satisfies ControlMessage);
-    });
-
-    expect(connection.createTask).toHaveBeenLastCalledWith(
-      "source",
-      "/source-project",
-      "entry",
-      [{ type: "text", text: "atomic submission B" }],
-      "agent",
-      "atomic-b-uuid",
-    );
   });
 
   it("reduces a present owned task message before its controller handoff effect", async () => {
@@ -1807,7 +2177,6 @@ describe("submission acknowledgement routing", () => {
       throw new Error("Canonical project draft did not initialize");
     }
     expect(waitingForMetadata).toMatchObject({
-      projectKey: "source\0/source-project",
       text: "",
       entryPoint: "",
       agent: "",
@@ -1853,7 +2222,7 @@ describe("submission acknowledgement routing", () => {
     });
   });
 
-  it("keeps a canonical draft's metadata gate closed until passive resolution", async () => {
+  it("resolves a typed canonical draft in the catalog handler", async () => {
     await renderManager();
     const connection = testState.connection!;
     await act(() => {
@@ -1874,35 +2243,18 @@ describe("submission acknowledgement routing", () => {
       metadataReady: false,
     });
 
-    const text = "type before passive metadata resolution";
+    const text = "type before catalog metadata resolution";
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await act(() => {
       waitingForMetadata.onTextChange(text);
     });
 
     connection.onControlMessage?.(projectTaskTypes("project-entry", "blank"));
-    const beforePassive = commitRouteWithoutPassiveEffects().draftView;
-    if (!beforePassive || beforePassive.kind !== "resolved") {
-      throw new Error(
-        "Canonical project draft did not commit before metadata resolution",
-      );
-    }
-    expect(beforePassive).toMatchObject({
-      text,
-      entryPoint: "",
-      agent: "",
-      disabled: false,
-      metadataReady: false,
-    });
-
-    beforePassive.onSubmit(text, []);
-    expect(connection.createTask).not.toHaveBeenCalled();
-
-    await act(() => {});
-    const resolved = (await renderManager()).draftView;
+    const resolved = commitRouteWithoutPassiveEffects().draftView;
     if (!resolved || resolved.kind !== "resolved") {
       throw new Error("Canonical project draft did not resolve metadata");
     }
+    expect(connection.createTask).not.toHaveBeenCalled();
     expect(resolved).toMatchObject({
       text,
       entryPoint: "project-entry",
@@ -1925,58 +2277,51 @@ describe("submission acknowledgement routing", () => {
     );
   });
 
-  it("projects a pre-catalog persisted edit from its snapshot task type", async () => {
-    const draftView = await preparePreCatalogPersistedDraft({
+  it("edits and saves a known numeric draft before its picker catalog arrives", async () => {
+    const view = await seedPreCatalogPersistedDraft({
       ...persistedSnapshot(91, "persisted before catalog"),
       task_type: "snapshot-type",
     });
-    const connection = testState.connection!;
-
-    expect(draftView.metadataReady).toBe(false);
-    await act(() => {
-      draftView.onTextChange("edited before catalog");
-      draftView.onBlur();
+    expect(view).toMatchObject({
+      editorId: "task:91",
+      remoteTid: 91,
+      text: "persisted before catalog",
+      entryPoint: "entry",
+      agent: "agent",
+      metadataReady: false,
+      disabled: false,
     });
-
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(() => {
+      view.onTextChange("edited before catalog");
+      view.onEntryPointChange("other-entry");
+      view.onAgentChange("other-agent");
+      view.onSubmit("edited before catalog", []);
+    });
+    const connection = testState.connection!;
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+    await act(() => {
+      vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+    });
     expect(connection.saveDraft).toHaveBeenCalledWith(
       91,
       "edited before catalog",
     );
+    expect(connection.setEntryPoint).not.toHaveBeenCalled();
+    expect(connection.setAgentName).not.toHaveBeenCalled();
+    expect(connection.createTask).not.toHaveBeenCalled();
+    expect(connection.sendMessage).not.toHaveBeenCalled();
     expect(manager!.getByTid(91)).toMatchObject({
       entryPoint: "entry",
       agentName: "agent",
       taskType: "snapshot-type",
-      serverDraft: "edited before catalog",
+      serverDraft: "persisted before catalog",
+      title: "edited before catalog",
     });
-  });
-
-  it("fails fast when a pre-catalog persisted task lacks its snapshot task type", async () => {
-    const draftView = await preparePreCatalogPersistedDraft({
-      ...persistedSnapshot(92),
-      task_type: undefined,
-    });
-
-    expect(() => {
-      draftView.onBlur();
-    }).toThrow("Draft projection requires task type 92");
-  });
-
-  it("fails fast when a pre-catalog persisted task entry point diverges from its form", async () => {
-    const draftView = await preparePreCatalogPersistedDraft(
-      persistedSnapshot(93),
-    );
-    const task = manager!.getByTid(93);
-    if (!task)
-      throw new Error("Pre-catalog persisted task did not materialize");
-    task.entryPoint = "different-entry";
-
-    expect(() => {
-      draftView.onBlur();
-    }).toThrow("Draft projection entry point does not match task 93");
   });
 
   it("validates a persisted task against an arrived catalog without rewriting it", async () => {
-    await preparePreCatalogPersistedDraft({
+    await seedPreCatalogPersistedDraft({
       ...persistedSnapshot(94),
       task_type: "snapshot-type",
     });
@@ -2048,6 +2393,7 @@ describe("submission acknowledgement routing", () => {
     testState.route.tid = "95";
     const switchedDraftView = (await renderManager()).draftView;
     expect(switchedDraftView).toMatchObject({
+      editorId: "task:95",
       remoteTid: 95,
       entryPoint: "entry-b",
       agent: "agent-b",
@@ -2055,24 +2401,291 @@ describe("submission acknowledgement routing", () => {
     });
   });
 
-  it("keeps an empty arrived project catalog authoritative", async () => {
-    const draftView = await preparePreCatalogPersistedDraft({
-      ...persistedSnapshot(95),
-      task_type: "snapshot-type",
-    });
+  it.each([
+    ["active", { status: "active" }],
+    ["alive", { alive: true }],
+    ["processing", { isProcessing: true }],
+    ["blank", { draft: "  " }],
+    ["missing entry point", { entry_point: "" }],
+    ["wrong project", { project_path: "/other-project" }],
+    ["wrong workspace", { workspace: "other" }],
+  ] satisfies [string, Partial<TaskSnapshotEntry>][])(
+    "does not open a direct editor for a snapshot that is %s",
+    async (_condition, change) => {
+      await bootstrapProject();
+      testState.route.tid = "95";
+      expect((await renderManager()).draftView).toBeNull();
+      await act(() => {
+        testState.connection!.onControlMessage?.({
+          type: "task_updated",
+          task: { ...persistedSnapshot(95), ...change },
+        });
+      });
+      expect((await renderManager()).draftView).toBeNull();
+      expect(testState.connection!.createTask).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps a pending task with messages on the ordinary path", async () => {
+    await bootstrapProject();
     const connection = testState.connection!;
     await act(() => {
       connection.onControlMessage?.({
-        type: "project_task_types_list",
-        project_path: "/source-project",
-        entry_points: [],
-        type_info: [],
-      } satisfies ControlMessage);
+        type: "task_updated",
+        task: persistedSnapshot(95),
+      });
+      connection.onTaskMessage?.(
+        95,
+        {
+          type: "item/started",
+          item_type: "user_message",
+          item_id: "existing-user",
+          text: "existing message",
+        },
+        1,
+      );
     });
+    testState.route.tid = "95";
+    const manager = await renderManager();
+    expect(manager.getByTid(95)?.messages).toHaveLength(1);
+    expect(manager.draftView).toBeNull();
+  });
 
+  const catalogWithoutEntry = {
+    type: "project_task_types_list",
+    project_path: "/source-project",
+    entry_points: [],
+    type_info: [],
+  } satisfies ControlMessage;
+
+  it("an unlisted-entry editor clears with one delete and cannot submit", async () => {
+    await seedPreCatalogPersistedDraft(persistedSnapshot(95));
+    const connection = testState.connection!;
+    await act(() => connection.onControlMessage?.(catalogWithoutEntry));
+    const view = (await renderManager()).draftView as DraftViewSnapshot;
+    expect(view.submitReady).toBe(false);
+    await act(() => {
+      view.onSubmit(view.text, []);
+      view.onTextChange("");
+    });
+    expect(connection.sendMessage).not.toHaveBeenCalled();
+    expect(connection.deleteTask).toHaveBeenCalledExactlyOnceWith(95);
+  });
+
+  it("publishes roster changes with the same default agent", async () => {
+    await renderManager();
+    const connection = testState.connection!;
+    await act(() => connection.onControlMessage?.(agents("agent")));
+    const previous = (await renderManager()).agents;
+    const roster = [...previous, { name: "second", driver: "codex" }];
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "agents_list",
+        agents: roster,
+        default_agent: "agent",
+      });
+    });
+    expect(manager!.agents).toEqual(roster);
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "agents_list",
+        agents: roster.map((agent) => ({ ...agent })),
+        default_agent: "agent",
+      });
+    });
+    expect(manager!.agents).toBe(roster);
+  });
+
+  it("admits the persisted draft when a rejecting catalog arrives first", async () => {
+    testState.route.tid = "95";
+    await renderManager();
+    const connection = testState.connection!;
+    await act(() => {
+      connection.onControlMessage?.(workspaceCatalog());
+      connection.onControlMessage?.(catalogWithoutEntry);
+      connection.onControlMessage?.(
+        tasksList([persistedSnapshot(95, "server draft")]),
+      );
+    });
+    const view = await renderManager();
+    expect(view.draftView).toMatchObject({
+      editorId: "task:95",
+      text: "server draft",
+      submitReady: false,
+    });
+    expect(view.getByTid(95)?.serverDraft).toBe("server draft");
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+  });
+
+  it.each(["unedited", "pending edit", "already saved"] as const)(
+    "keeps a persisted draft controlled when a rejecting catalog arrives after a %s snapshot",
+    async (variant) => {
+      const view = await seedPreCatalogPersistedDraft(
+        persistedSnapshot(95, "server draft"),
+      );
+      const connection = testState.connection!;
+      const image = seedEditorImage(view.editorId);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      if (variant !== "unedited") {
+        await act(() => {
+          view.onTextChange("local edit");
+          if (variant === "already saved")
+            vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+        });
+      }
+      expect(connection.saveDraft).toHaveBeenCalledTimes(
+        variant === "already saved" ? 1 : 0,
+      );
+      await act(() => {
+        connection.onControlMessage?.(catalogWithoutEntry);
+        vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS - 1);
+      });
+      const controlled = (await renderManager()).draftView as DraftViewSnapshot;
+      expect(controlled).toMatchObject({
+        editorId: "task:95",
+        text: variant === "unedited" ? "server draft" : "local edit",
+        submitReady: false,
+      });
+      expect(connection.saveDraft).toHaveBeenCalledTimes(
+        variant === "already saved" ? 1 : 0,
+      );
+      await act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      if (variant === "unedited")
+        expect(connection.saveDraft).not.toHaveBeenCalled();
+      else
+        expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+          95,
+          "local edit",
+        );
+      expect(imageStore.entries.get(view.editorId)).toBe(image);
+      expect(image.images).toHaveLength(1);
+      await act(() => {
+        controlled.onTextChange("next edit");
+      });
+      expect((await renderManager()).draftView).toMatchObject({
+        editorId: view.editorId,
+        text: "next edit",
+      });
+      expect(connection.deleteTask).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["task_updated", "tasks_list"] as const)(
+    "keeps a pending edit controlled when %s names an unavailable entry point",
+    async (frame) => {
+      await bootstrapProject();
+      testState.route.tid = "96";
+      const connection = testState.connection!;
+      await act(() => {
+        connection.onControlMessage?.({
+          type: "task_updated",
+          task: persistedSnapshot(96),
+        });
+      });
+      const view = (await renderManager()).draftView as DraftViewSnapshot;
+      expect(view.editorId).toBe("task:96");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const edit = "pending local edit";
+      await act(() => {
+        view.onTextChange(edit);
+      });
+      expect(connection.saveDraft).not.toHaveBeenCalled();
+      const snapshot = { ...persistedSnapshot(96), entry_point: "unavailable" };
+      await act(() => {
+        // Open via task_updated so this can be the epoch's first list entry.
+        connection.onControlMessage?.(
+          frame === "tasks_list"
+            ? tasksList([snapshot])
+            : { type: frame, task: snapshot },
+        );
+      });
+      const manager = await renderManager();
+      expect(manager.draftView).toMatchObject({
+        editorId: "task:96",
+        text: edit,
+        entryPoint: "unavailable",
+        submitReady: false,
+      });
+      const task = manager.getByTid(96)!;
+      expect(task.entryPoint).toBe("unavailable");
+      expect(task.serverDraft).toBe(snapshot.draft);
+      expect(manager.ordinaryDraftStore.read(task.uuid)).toBeUndefined();
+      expect(connection.saveDraft).not.toHaveBeenCalled();
+      await act(() => {
+        vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+      });
+      expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(96, edit);
+    },
+  );
+
+  it("merges an unavailable-entry snapshot and keeps a pending save", async () => {
+    await bootstrapProject();
+    testState.route.tid = "96";
+    const connection = testState.connection!;
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: persistedSnapshot(96, "baseline"),
+      });
+    });
+    const view = (await renderManager()).draftView as DraftViewSnapshot;
+    expect(view.metadataReady).toBe(true);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const idleTimers = vi.getTimerCount();
+    await act(() => {
+      view.onTextChange("transient edit");
+      view.onTextChange("baseline");
+    });
+    expect(vi.getTimerCount()).toBe(idleTimers + 1);
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: {
+          ...persistedSnapshot(96, "merged server text"),
+          entry_point: "unavailable",
+        },
+      });
+    });
+    expect(vi.getTimerCount()).toBe(idleTimers + 1);
+    const controlled = await renderManager();
+    expect(controlled.draftView).toMatchObject({
+      editorId: "task:96",
+      text: "merged server text",
+      entryPoint: "unavailable",
+      submitReady: false,
+    });
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+    await act(() => {
+      vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+    });
+    expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+      96,
+      "merged server text",
+    );
+  });
+
+  it("fails fast when a pre-catalog persisted task lacks its snapshot task type", async () => {
+    const view = await seedPreCatalogPersistedDraft({
+      ...persistedSnapshot(92),
+      task_type: undefined,
+    });
     expect(() => {
-      draftView.onBlur();
-    }).toThrow("Unknown entry point: entry");
+      view.onTextChange("pending edit");
+    }).toThrow("Draft projection requires task type 92");
+    expect(testState.connection!.saveDraft).not.toHaveBeenCalled();
+  });
+
+  it("fails fast when a pre-catalog persisted task entry point diverges from its form", async () => {
+    const view = await seedPreCatalogPersistedDraft(persistedSnapshot(93));
+    const task = manager!.getByTid(93);
+    if (!task) throw new Error("Expected numeric task");
+    task.entryPoint = "different-entry";
+    expect(() => {
+      view.onTextChange("pending edit");
+    }).toThrow("Draft projection entry point does not match task 93");
+    expect(testState.connection!.saveDraft).not.toHaveBeenCalled();
   });
 
   it("waits for project types and the global default on a direct route", async () => {
@@ -2221,9 +2834,7 @@ describe("submission acknowledgement routing", () => {
         "Project draft did not remain resolved after local clear",
       );
     }
-    expect(afterLocalClear.composerResetToken).toBeGreaterThan(
-      afterZeroReset.composerResetToken,
-    );
+    expect(afterLocalClear.viewKey).not.toBe(afterZeroReset.viewKey);
 
     testState.route.workspace = "other";
     testState.route.project = "other-project";
@@ -2265,9 +2876,7 @@ describe("submission acknowledgement routing", () => {
     if (!afterIncrementedReset || afterIncrementedReset.kind !== "resolved") {
       throw new Error("Project draft did not resolve after incremented reset");
     }
-    expect(afterIncrementedReset.composerResetToken).toBeGreaterThan(
-      afterLocalClear.composerResetToken,
-    );
+    expect(afterIncrementedReset.viewKey).not.toBe(afterLocalClear.viewKey);
 
     testState.route.workspace = "other";
     testState.route.project = "other-project";
@@ -2349,7 +2958,6 @@ describe("submission acknowledgement routing", () => {
     expect(fresh.entryPoint).toBe("entry-b");
     expect(fresh.agent).toBe("agent-b");
 
-    testState.uuid = "fresh-b-uuid";
     await act(() => {
       fresh.onTextChange("create with fresh defaults");
       fresh.onSubmit("create with fresh defaults", []);
@@ -2360,7 +2968,7 @@ describe("submission acknowledgement routing", () => {
       "entry-b",
       [{ type: "text", text: "create with fresh defaults" }],
       "agent-b",
-      "fresh-b-uuid",
+      fresh.editorId.slice("composition:".length),
     );
   });
 
@@ -2410,7 +3018,6 @@ describe("submission acknowledgement routing", () => {
     expect(fresh.entryPoint).toBe("entry-b");
     expect(fresh.agent).toBe("agent-b");
 
-    testState.uuid = "closed-interval-b-uuid";
     await act(() => {
       fresh.onTextChange("create with closed-interval defaults");
       fresh.onSubmit("create with closed-interval defaults", []);
@@ -2421,11 +3028,11 @@ describe("submission acknowledgement routing", () => {
       "entry-b",
       [{ type: "text", text: "create with closed-interval defaults" }],
       "agent-b",
-      "closed-interval-b-uuid",
+      fresh.editorId.slice("composition:".length),
     );
   });
 
-  it("does not initialize a reset slot from a pending old-epoch effect", async () => {
+  it("does not initialize a reset editor from a pending old-epoch effect", async () => {
     await renderManager();
     const connection = testState.connection!;
 
@@ -2457,7 +3064,6 @@ describe("submission acknowledgement routing", () => {
     expect(fresh.entryPoint).toBe("entry-b");
     expect(fresh.agent).toBe("agent-b");
 
-    testState.uuid = "stale-slot-b-uuid";
     await act(() => {
       fresh.onTextChange("create with fresh passive defaults");
       fresh.onSubmit("create with fresh passive defaults", []);
@@ -2468,7 +3074,7 @@ describe("submission acknowledgement routing", () => {
       "entry-b",
       [{ type: "text", text: "create with fresh passive defaults" }],
       "agent-b",
-      "stale-slot-b-uuid",
+      fresh.editorId.slice("composition:".length),
     );
   });
 
@@ -2509,18 +3115,14 @@ describe("submission acknowledgement routing", () => {
     );
   });
 
-  it("submits a present draft from the attached project root after history subscription", async () => {
-    await prepareEditableDraft();
-    testState.route.tid = null;
-    const draftView = (await renderManager()).draftView;
-    if (!draftView || draftView.kind !== "resolved") {
-      throw new Error("Present draft did not reattach to the project root");
-    }
+  it("submits a present numeric draft immediately after history subscription", async () => {
+    const draftView = await prepareEditableDraft();
     testState.connection!.requestHistory.mockClear();
     testState.connection!.sendMessage.mockClear();
     testState.navigate.mockClear();
 
     await act(() => {
+      testState.uuid = "present-send-nonce";
       draftView.onSubmit("draft to delete", []);
     });
 
@@ -2529,17 +3131,14 @@ describe("submission acknowledgement routing", () => {
     expect(testState.connection!.sendMessage).toHaveBeenCalledWith(
       71,
       [{ type: "text", text: "draft to delete" }],
-      "submission-uuid",
+      "present-send-nonce",
     );
     expect(
       testState.connection!.requestHistory.mock.invocationCallOrder[0],
     ).toBeLessThan(
       testState.connection!.sendMessage.mock.invocationCallOrder[0]!,
     );
-    expect(testState.navigate).toHaveBeenCalledWith(
-      "/source/project/task/71",
-      true,
-    );
+    expect(testState.navigate).not.toHaveBeenCalled();
 
     testState.route.tid = "71";
     expect((await renderManager()).draftView).toBeNull();
@@ -2556,6 +3155,7 @@ describe("submission acknowledgement routing", () => {
     testState.navigate.mockClear();
 
     await act(() => {
+      testState.uuid = "detached-send-nonce";
       attached.onSubmit("draft to delete", []);
     });
 
@@ -2564,7 +3164,7 @@ describe("submission acknowledgement routing", () => {
     expect(testState.connection!.sendMessage).toHaveBeenCalledWith(
       71,
       [{ type: "text", text: "draft to delete" }],
-      "submission-uuid",
+      "detached-send-nonce",
     );
     expect(
       testState.connection!.requestHistory.mock.invocationCallOrder[0],
@@ -2574,7 +3174,7 @@ describe("submission acknowledgement routing", () => {
     expect(testState.navigate).not.toHaveBeenCalled();
   });
 
-  it("retries deferred persisted adoption after reducer-only deletion settles", async () => {
+  it("opens a persisted editor while an unrelated composition is being deleted", async () => {
     await bootstrapProject();
     const initial = (await renderManager()).draftView;
     if (!initial || initial.kind !== "resolved") {
@@ -2610,7 +3210,10 @@ describe("submission acknowledgement routing", () => {
     });
 
     testState.route.tid = "82";
-    expect((await renderManager()).draftView).toBeNull();
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "task:82",
+      text: "persisted draft B",
+    });
 
     await act(() => {
       acknowledgeSubmission(81);
@@ -2623,12 +3226,12 @@ describe("submission acknowledgement routing", () => {
       } satisfies ControlMessage);
     });
 
-    const adopted = (await renderManager()).draftView;
-    if (!adopted || adopted.kind !== "resolved") {
+    const opened = (await renderManager()).draftView;
+    if (!opened || opened.kind !== "resolved") {
       throw new Error("Deferred persisted draft did not reattach");
     }
-    expect(adopted.remoteTid).toBe(82);
-    expect(adopted.text).toBe("persisted draft B");
+    expect(opened.remoteTid).toBe(82);
+    expect(opened.text).toBe("persisted draft B");
   });
 
   it("removes outbox entries when deleting an ordinary task", async () => {
@@ -2942,7 +3545,6 @@ describe("submission acknowledgement routing", () => {
       throw new Error("Source draft did not resolve");
     }
 
-    testState.uuid = "current-detached-ack";
     await act(() => {
       sourceDraft.onTextChange("initial text");
       vi.advanceTimersByTime(16);
@@ -2953,7 +3555,7 @@ describe("submission acknowledgement routing", () => {
       "entry",
       undefined,
       "agent",
-      "current-detached-ack",
+      sourceDraft.editorId.slice("composition:".length),
     );
 
     await act(() => {
@@ -2979,7 +3581,7 @@ describe("submission acknowledgement routing", () => {
         tid,
         workspace: "source",
         project_path: "/source-project",
-        correlation_id: "current-detached-ack",
+        correlation_id: sourceDraft.editorId.slice("composition:".length),
       } satisfies ControlMessage);
     });
 
@@ -3006,11 +3608,11 @@ describe("submission acknowledgement routing", () => {
       tid,
       status: "pending",
       title: "latest detached text",
-      serverDraft: "latest detached text",
       entryPoint: "latest-entry",
       agentName: "latest-agent",
       taskType: "latest-blank",
     });
+    expect(acknowledged.getByTid(tid)?.serverDraft).toBeUndefined();
     expect(
       [...acknowledged.tasks.values()].filter((task) => task.tid === tid),
     ).toHaveLength(1);
@@ -3062,6 +3664,7 @@ describe("submission acknowledgement routing", () => {
       } satisfies ControlMessage);
     });
 
+    testState.navigateBrowser("/source/project");
     await act(() => {
       connection.onStatusChange?.(false);
       connection.onStatusChange?.(true);
@@ -3120,299 +3723,6 @@ describe("submission acknowledgement routing", () => {
       [...snapshot.tasks.values()].filter((task) => task.tid === tid),
     ).toHaveLength(1);
     expect(connection.deleteTask).not.toHaveBeenCalled();
-  });
-
-  it("keeps retained stale generations isolated across canonical project keys", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    await bootstrapProject();
-    const connection = testState.connection!;
-    await act(() => {
-      connection.onControlMessage?.({
-        type: "project_task_types_list",
-        project_path: "/other-project",
-        entry_points: [
-          {
-            name: "entry",
-            task_type: "blank",
-            description: "",
-            model_class: "",
-            read_only: false,
-          },
-        ],
-        type_info: [],
-      } satisfies ControlMessage);
-    });
-
-    const sourceDraft = (await renderManager()).draftView;
-    if (!sourceDraft || sourceDraft.kind !== "resolved") {
-      throw new Error("Source draft did not resolve");
-    }
-    testState.uuid = "source-a-correlation";
-    await act(() => {
-      sourceDraft.onTextChange("source A");
-      vi.advanceTimersByTime(16);
-    });
-
-    testState.route.workspace = "other";
-    testState.route.project = "other-project";
-    testState.route.tid = null;
-    const otherDraft = (await renderManager()).draftView;
-    if (!otherDraft || otherDraft.kind !== "resolved") {
-      throw new Error("Other draft did not resolve");
-    }
-    expect(otherDraft).toMatchObject({
-      projectKey: "other\0/other-project",
-      entryPoint: "entry",
-      agent: "agent",
-    });
-    testState.uuid = "other-c-correlation";
-    await act(() => {
-      otherDraft.onTextChange("other C");
-      vi.advanceTimersByTime(16);
-    });
-
-    testState.uuid = "source-b-correlation";
-    await act(() => {
-      sourceDraft.onTextChange("");
-      sourceDraft.onTextChange("source B");
-    });
-    testState.uuid = "other-d-correlation";
-    await act(() => {
-      otherDraft.onTextChange("");
-      otherDraft.onTextChange("other D");
-    });
-
-    expect(connection.createTask).toHaveBeenCalledTimes(2);
-    expect(connection.createTask).toHaveBeenNthCalledWith(
-      1,
-      "source",
-      "/source-project",
-      "entry",
-      undefined,
-      "agent",
-      "source-a-correlation",
-    );
-    expect(connection.createTask).toHaveBeenNthCalledWith(
-      2,
-      "other",
-      "/other-project",
-      "entry",
-      undefined,
-      "agent",
-      "other-c-correlation",
-    );
-
-    const sourceTid = 954;
-    const otherTid = 955;
-    connection.deleteTask.mockClear();
-    connection.requestHistory.mockClear();
-    testState.navigate.mockClear();
-    await act(() => {
-      connection.onControlMessage?.({
-        type: "task_created",
-        tid: otherTid,
-        workspace: "other",
-        project_path: "/other-project",
-        correlation_id: "other-c-correlation",
-      } satisfies ControlMessage);
-      connection.onControlMessage?.({
-        type: "task_created",
-        tid: sourceTid,
-        workspace: "source",
-        project_path: "/source-project",
-        correlation_id: "source-a-correlation",
-      } satisfies ControlMessage);
-    });
-
-    expect(connection.deleteTask).toHaveBeenCalledTimes(2);
-    expect(connection.deleteTask).toHaveBeenNthCalledWith(1, otherTid);
-    expect(connection.deleteTask).toHaveBeenNthCalledWith(2, sourceTid);
-    expect(connection.requestHistory).not.toHaveBeenCalled();
-    expect(testState.navigate).not.toHaveBeenCalled();
-    expect(manager!.getByTid(sourceTid)).toBeUndefined();
-    expect(manager!.getByTid(otherTid)).toBeUndefined();
-    expect(
-      [...manager!.tasks.values()].filter(
-        (task) => task.tid === sourceTid || task.tid === otherTid,
-      ),
-    ).toHaveLength(0);
-
-    testState.route.workspace = "source";
-    testState.route.project = "project";
-    const sourceDeleting = commitRouteWithoutPassiveEffects().draftView;
-    if (!sourceDeleting || sourceDeleting.kind !== "resolved") {
-      throw new Error("Source retained generation did not remain resolved");
-    }
-    expect(sourceDeleting).toMatchObject({
-      projectKey: "source\0/source-project",
-      text: "source B",
-      entryPoint: "entry",
-      agent: "agent",
-      lifecycle: "deleting",
-      remoteTid: sourceTid,
-    });
-    testState.route.workspace = "other";
-    testState.route.project = "other-project";
-    const otherDeleting = commitRouteWithoutPassiveEffects().draftView;
-    if (!otherDeleting || otherDeleting.kind !== "resolved") {
-      throw new Error("Other retained generation did not remain resolved");
-    }
-    expect(otherDeleting).toMatchObject({
-      projectKey: "other\0/other-project",
-      text: "other D",
-      entryPoint: "entry",
-      agent: "agent",
-      lifecycle: "deleting",
-      remoteTid: otherTid,
-    });
-
-    await act(() => {
-      connection.onControlMessage?.({
-        type: "focus_hint",
-        from_tid: 0,
-        to_tid: otherTid,
-      } satisfies ControlMessage);
-      connection.onControlMessage?.({
-        type: "focus_hint",
-        from_tid: 0,
-        to_tid: sourceTid,
-      } satisfies ControlMessage);
-      connection.onTaskMessage?.(sourceTid, {
-        type: "item/started",
-        item_id: "source-tombstone-message",
-        item_type: "user_message",
-        content: [{ type: "text", text: "source pending traffic" }],
-      });
-      connection.onAgentAck?.(sourceTid, "source-tombstone-ack");
-      connection.onControlMessage?.({
-        type: "task_updated",
-        task: persistedSnapshot(sourceTid, "source pending traffic"),
-      } satisfies ControlMessage);
-      connection.onTaskMessage?.(otherTid, {
-        type: "item/started",
-        item_id: "other-tombstone-message",
-        item_type: "user_message",
-        content: [{ type: "text", text: "other pending traffic" }],
-      });
-      connection.onAgentAck?.(otherTid, "other-tombstone-ack");
-      connection.onControlMessage?.({
-        type: "task_updated",
-        task: {
-          ...persistedSnapshot(otherTid, "other pending traffic"),
-          workspace: "other",
-          project_path: "/other-project",
-        },
-      } satisfies ControlMessage);
-    });
-
-    expect(testState.navigate).not.toHaveBeenCalled();
-    expect(manager!.getByTid(sourceTid)).toBeUndefined();
-    expect(manager!.getByTid(otherTid)).toBeUndefined();
-    expect(connection.deleteTask).toHaveBeenCalledTimes(2);
-    expect(connection.createTask).toHaveBeenCalledTimes(2);
-
-    await act(() => {
-      connection.onControlMessage?.({
-        type: "task_deleted",
-        tid: sourceTid,
-      } satisfies ControlMessage);
-      vi.advanceTimersByTime(15);
-    });
-    expect(connection.createTask).toHaveBeenCalledTimes(2);
-    await act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    expect(connection.createTask).toHaveBeenCalledTimes(3);
-    expect(connection.createTask).toHaveBeenNthCalledWith(
-      3,
-      "source",
-      "/source-project",
-      "entry",
-      undefined,
-      "agent",
-      "source-b-correlation",
-    );
-
-    const otherStillDeleting = commitRouteWithoutPassiveEffects().draftView;
-    if (!otherStillDeleting || otherStillDeleting.kind !== "resolved") {
-      throw new Error("Other deletion wait did not retain its generation");
-    }
-    expect(otherStillDeleting).toMatchObject({
-      projectKey: "other\0/other-project",
-      text: "other D",
-      entryPoint: "entry",
-      agent: "agent",
-      lifecycle: "deleting",
-      remoteTid: otherTid,
-    });
-
-    testState.route.workspace = "source";
-    testState.route.project = "project";
-    const sourceReplacement = commitRouteWithoutPassiveEffects().draftView;
-    if (!sourceReplacement || sourceReplacement.kind !== "resolved") {
-      throw new Error("Source replacement did not remain resolved");
-    }
-    expect(sourceReplacement).toMatchObject({
-      projectKey: "source\0/source-project",
-      text: "source B",
-      entryPoint: "entry",
-      agent: "agent",
-      lifecycle: "creating",
-    });
-
-    testState.route.workspace = "other";
-    testState.route.project = "other-project";
-
-    await act(() => {
-      connection.onControlMessage?.({
-        type: "task_deleted",
-        tid: otherTid,
-      } satisfies ControlMessage);
-      vi.advanceTimersByTime(15);
-    });
-    expect(connection.createTask).toHaveBeenCalledTimes(3);
-    await act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    expect(connection.createTask).toHaveBeenCalledTimes(4);
-    expect(connection.createTask).toHaveBeenNthCalledWith(
-      4,
-      "other",
-      "/other-project",
-      "entry",
-      undefined,
-      "agent",
-      "other-d-correlation",
-    );
-    const otherReplacement = commitRouteWithoutPassiveEffects().draftView;
-    if (!otherReplacement || otherReplacement.kind !== "resolved") {
-      throw new Error("Other replacement did not remain resolved");
-    }
-    expect(otherReplacement).toMatchObject({
-      projectKey: "other\0/other-project",
-      text: "other D",
-      entryPoint: "entry",
-      agent: "agent",
-      lifecycle: "creating",
-    });
-
-    testState.route.workspace = "source";
-    testState.route.project = "project";
-    expect(commitRouteWithoutPassiveEffects().draftView).toMatchObject({
-      projectKey: "source\0/source-project",
-      text: "source B",
-      entryPoint: "entry",
-      agent: "agent",
-      lifecycle: "creating",
-    });
-    expect(
-      connection.createTask.mock.calls.map((call) => String(call[5])),
-    ).toEqual([
-      "source-a-correlation",
-      "other-c-correlation",
-      "source-b-correlation",
-      "other-d-correlation",
-    ]);
   });
 
   it("CAS-reduces same-rAF ordinary A to B to C updates", async () => {
@@ -3546,9 +3856,9 @@ describe("submission acknowledgement routing", () => {
     const { task } = await seedOrdinaryTask(71, "ordinary A");
     manager!.ordinaryDraftStore.ensure(task.uuid, "ordinary local");
 
-    await prepareCreatingDraft();
+    const correlationId = await prepareCreatingDraft();
     await act(() => {
-      acknowledgeSubmission(71);
+      acknowledgeSubmission(71, correlationId);
     });
 
     expect(manager!.ordinaryDraftStore.read(task.uuid)).toBeUndefined();
@@ -3587,7 +3897,113 @@ describe("submission acknowledgement routing", () => {
     expect(manager!.ordinaryDraftStore.read(released.uuid)).toBe("");
   });
 
-  it("discards a controlled receipt drained after its owner generation releases", async () => {
+  it("discards peer draft deltas while a numeric clear waits for its deletion acknowledgement", async () => {
+    const view = await prepareEditableDraft();
+    const task = manager!.getByTid(71)!;
+    const connection = testState.connection!;
+    const peerUpdate = {
+      type: "draft_updated",
+      tid: 71,
+      old_draft: "draft to delete",
+      new_draft: "peer edit during deletion",
+    } satisfies ControlMessage;
+
+    testState.hidden = false;
+    connection.onControlMessage?.(peerUpdate);
+    await act(() => {
+      view.onTextChange("");
+    });
+    expect(connection.deleteTask).toHaveBeenCalledExactlyOnceWith(71);
+
+    manager!.ordinaryDraftStore.ensure(task.uuid, "draft to delete");
+    connection.onControlMessage?.(peerUpdate);
+    await flushAnimationFrames();
+    expect(manager!.ordinaryDraftStore.read(task.uuid)).toBe("draft to delete");
+    expect(manager!.getByTid(71)).toBeUndefined();
+
+    connection.onControlMessage?.({ type: "task_deleted", tid: 71 });
+    await flushAnimationFrames();
+    expect(manager!.ordinaryDraftStore.read(task.uuid)).toBeUndefined();
+  });
+
+  it("retires images when clearing an unsent or in-flight composition", async () => {
+    await bootstrapProject();
+    const initial = (await renderManager()).draftView as DraftViewSnapshot;
+    const first = seedEditorImage(initial.editorId);
+    await act(() => {
+      initial.onTextChange("discard before timer");
+      initial.onTextChange("");
+    });
+    expect(imageStore.entries.has(initial.editorId)).toBe(false);
+    expect(first.images).toEqual([]);
+
+    const successor = (await renderManager()).draftView as DraftViewSnapshot;
+    await act(() => {
+      successor.onTextChange("discard while creating");
+    });
+    await vi.waitFor(() => {
+      expect(testState.connection!.createTask).toHaveBeenCalledTimes(1);
+    });
+    const second = seedEditorImage(successor.editorId);
+    await act(() => {
+      successor.onTextChange("");
+    });
+    expect(imageStore.entries.has(successor.editorId)).toBe(false);
+    expect(second.images).toEqual([]);
+  });
+
+  it.each([
+    "clear",
+    "submit",
+    "external delete",
+    "activity",
+    "disconnect",
+  ] as const)(
+    "retires attachments on numeric editor %s and preserves them while detached",
+    async (retirement) => {
+      const view = await prepareEditableDraft();
+      const entry = seedEditorImage(view.editorId);
+      testState.route.tid = null;
+      const rootView = (await renderManager()).draftView as DraftViewSnapshot;
+      const rootEntry = seedEditorImage(rootView.editorId);
+      expect(imageStore.entries.get(view.editorId)).toBe(entry);
+      testState.route.tid = "71";
+      const attached = (await renderManager()).draftView as DraftViewSnapshot;
+      expect(attached.editorId).toBe(view.editorId);
+      const connection = testState.connection!;
+      await act(() => {
+        switch (retirement) {
+          case "clear":
+            attached.onTextChange("");
+            break;
+          case "submit":
+            attached.onSubmit(attached.text, entry.images);
+            break;
+          case "external delete":
+            connection.onControlMessage?.({ type: "task_deleted", tid: 71 });
+            break;
+          case "activity":
+            connection.onControlMessage?.({
+              type: "task_updated",
+              task: activeSnapshot(71),
+            });
+            break;
+          case "disconnect":
+            connection.onStatusChange?.(false);
+            break;
+        }
+      });
+      expect(entry.images).toEqual([]);
+      expect(imageStore.entries.has(view.editorId)).toBe(false);
+      if (retirement === "disconnect") {
+        expect(imageStore.entries.size).toBe(0);
+      } else {
+        expect(imageStore.entries.get(rootView.editorId)).toBe(rootEntry);
+      }
+    },
+  );
+
+  it("discards a controlled receipt drained after its owner lifetime ends", async () => {
     const attached = await prepareEditableDraft();
     const connection = testState.connection!;
 
@@ -3657,5 +4073,955 @@ describe("submission acknowledgement routing", () => {
       throw new Error("Expected task_created to own the draft");
     expect(received).toEqual([]);
     expect(controlled.text).toBe("controlled B");
+  });
+  it("settles a pending numeric save on pagehide while detached", async () => {
+    const pageEvents = new EventTarget();
+    const previousWindow = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "window",
+    );
+    Object.defineProperty(globalThis, "window", {
+      value: pageEvents,
+      configurable: true,
+    });
+    try {
+      const view = await prepareEditableDraft();
+      const connection = testState.connection!;
+      connection.saveDraft.mockClear();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await act(() => {
+        view.onTextChange("detached pagehide edit");
+      });
+      testState.route.tid = null;
+      await renderManager();
+      expect(connection.saveDraft).not.toHaveBeenCalled();
+      await act(() => {
+        pageEvents.dispatchEvent(new Event("pagehide"));
+        pageEvents.dispatchEvent(new Event("pagehide"));
+        vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+      });
+      expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+        71,
+        "detached pagehide edit",
+      );
+    } finally {
+      await act(() => {
+        render(null, root);
+      });
+      if (previousWindow)
+        Object.defineProperty(globalThis, "window", previousWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
+  });
+
+  it("drops a detached pending save when the transport epoch closes", async () => {
+    const view = await prepareEditableDraft();
+    const connection = testState.connection!;
+    connection.saveDraft.mockClear();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(() => {
+      view.onTextChange("unsaved offline edit");
+    });
+    testState.route.tid = null;
+    await renderManager();
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+    await act(() => {
+      connection.onStatusChange?.(false);
+      connection.onStatusChange?.(true);
+      connection.onControlMessage?.(workspaceCatalog());
+      connection.onControlMessage?.(globalTaskTypes("entry", "blank"));
+      connection.onControlMessage?.(agents("agent"));
+      connection.onControlMessage?.(projectTaskTypes("entry", "blank"));
+      connection.onControlMessage?.(
+        tasksList([persistedSnapshot(71, "server text in new epoch")]),
+      );
+    });
+    await act(() => {
+      vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+    });
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+    testState.route.tid = "71";
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "task:71",
+      text: "server text in new epoch",
+    });
+  });
+
+  it("typing before metadata still files the draft if the user navigates away first", async () => {
+    await renderManager();
+    const connection = testState.connection!;
+    await act(() => {
+      connection.onControlMessage?.(workspaceCatalog());
+      connection.onControlMessage?.(globalTaskTypes("entry", "global-type"));
+      connection.onControlMessage?.(agents("agent"));
+      connection.onControlMessage?.(tasksList([activeSnapshot(72)]));
+    });
+    const view = (await renderManager()).draftView as DraftViewSnapshot;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(() => {
+      view.onTextChange("before metadata while attached");
+    });
+    testState.route.tid = "72";
+    await renderManager();
+    await act(() => {
+      connection.onControlMessage?.(projectTaskTypes("entry", "global-type"));
+    });
+    await act(() => {
+      vi.advanceTimersByTime(10000);
+    });
+    expect(connection.createTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("a rejecting catalog keeps a detached editor and saves once", async () => {
+    const attached = await seedPreCatalogPersistedDraft(
+      persistedSnapshot(95, "start"),
+    );
+    const connection = testState.connection!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(() => {
+      attached.onTextChange("one local edit");
+      attached.onEntryPointChange("ignored before catalog");
+      attached.onAgentChange("ignored before catalog");
+    });
+    testState.route.tid = null;
+    await renderManager();
+    await act(() => {
+      connection.onControlMessage?.(catalogWithoutEntry);
+      vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+    });
+    expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+      95,
+      "one local edit",
+    );
+    expect(connection.setEntryPoint).not.toHaveBeenCalled();
+    expect(connection.setAgentName).not.toHaveBeenCalled();
+    testState.route.tid = "95";
+    const controlled = await renderManager();
+    expect(controlled.draftView).toMatchObject({
+      editorId: attached.editorId,
+      text: "one local edit",
+      submitReady: false,
+    });
+    expect(
+      controlled.ordinaryDraftStore.read(controlled.getByTid(95)!.uuid),
+    ).toBeUndefined();
+  });
+
+  it.each(["snapshot-first", "catalog-first"] as const)(
+    "%s legacy snapshots inherit the same agent default",
+    async (order) => {
+      testState.route.tid = "95";
+      await renderManager();
+      const connection = testState.connection!;
+      const snapshot = tasksList([
+        { ...persistedSnapshot(95, "start"), agent_name: "" },
+      ]);
+      await act(() => {
+        connection.onControlMessage?.(workspaceCatalog());
+        if (order === "snapshot-first") connection.onControlMessage?.(snapshot);
+      });
+      if (order === "snapshot-first") {
+        const preCatalog = (await renderManager())
+          .draftView as DraftViewSnapshot;
+        expect(preCatalog.metadataReady).toBe(false);
+        await act(() => {
+          preCatalog.onTextChange("changed before metadata");
+        });
+      }
+      await act(() => {
+        connection.onControlMessage?.(globalTaskTypes("entry", "global-type"));
+        connection.onControlMessage?.(projectTaskTypes("entry", "global-type"));
+        connection.onControlMessage?.(agents("agent"));
+        if (order === "catalog-first") connection.onControlMessage?.(snapshot);
+      });
+      const view = (await renderManager()).draftView as DraftViewSnapshot;
+      expect(view).toMatchObject({ agent: "agent", metadataReady: true });
+    },
+  );
+
+  it("scheduled save survives routing to an ordinary task and another project", async () => {
+    const view = await prepareEditableDraft();
+    const connection = testState.connection!;
+    await act(() =>
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: activeSnapshot(72),
+      }),
+    );
+    connection.saveDraft.mockClear();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(() => {
+      view.onTextChange("two route changes");
+    });
+    testState.route.tid = "72";
+    expect((await renderManager()).draftView).toBeNull();
+    testState.route.workspace = "other";
+    testState.route.project = "other-project";
+    testState.route.tid = null;
+    await renderManager();
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+    await act(() => {
+      vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+    });
+    expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+      71,
+      "two route changes",
+    );
+  });
+
+  it("immediate submit uses the still-debounced text and clear cancels its sibling write", async () => {
+    await bootstrapProject();
+    const connection = testState.connection!;
+    await act(() =>
+      connection.onControlMessage?.(
+        tasksList([
+          persistedSnapshot(95, "clear this"),
+          persistedSnapshot(96, "submit this"),
+        ]),
+      ),
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    testState.route.tid = "95";
+    const first = (await renderManager()).draftView as DraftViewSnapshot;
+    await act(() => {
+      first.onTextChange("cancel pending write");
+    });
+    await act(() => {
+      first.onTextChange("");
+    });
+    testState.route.tid = "96";
+    const second = (await renderManager()).draftView as DraftViewSnapshot;
+    await act(() => {
+      second.onTextChange("latest submitted text");
+      second.onSubmit("latest submitted text", []);
+      vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+    });
+    expect(connection.deleteTask).toHaveBeenCalledExactlyOnceWith(95);
+    expect(connection.sendMessage).toHaveBeenCalledExactlyOnceWith(
+      96,
+      [{ type: "text", text: "latest submitted text" }],
+      expect.any(String),
+    );
+    expect(connection.saveDraft.mock.calls).toEqual([[96, ""]]);
+  });
+  it("a pre-save snapshot queued behind a rejecting catalog keeps the controlled text", async () => {
+    const snapshot = persistedSnapshot(95, "server draft");
+    const view = await seedPreCatalogPersistedDraft(snapshot);
+    const connection = testState.connection!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(() => {
+      view.onTextChange("latest local edit");
+    });
+    testState.hidden = false;
+    connection.onControlMessage?.(catalogWithoutEntry);
+    connection.onControlMessage?.({ type: "task_updated", task: snapshot });
+    await flushAnimationFrames();
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: view.editorId,
+      text: "latest local edit",
+      submitReady: false,
+    });
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+    await act(() => {
+      vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+    });
+    expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+      95,
+      "latest local edit",
+    );
+  });
+
+  it("keeps settled text controlled after bootstrap and repeated catalog changes", async () => {
+    const snapshot = persistedSnapshot(95, "old server text");
+    const view = await seedPreCatalogPersistedDraft(snapshot);
+    const connection = testState.connection!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(() => {
+      view.onTextChange("settled local text");
+    });
+    testState.hidden = false;
+    connection.onControlMessage?.(catalogWithoutEntry);
+    connection.onControlMessage?.({ type: "task_updated", task: snapshot });
+    await flushAnimationFrames();
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "task:95",
+      text: "settled local text",
+      submitReady: false,
+    });
+
+    connection.onControlMessage?.(projectTaskTypes("entry", "blank"));
+    await flushAnimationFrames();
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "task:95",
+      text: "settled local text",
+      submitReady: true,
+    });
+    await act(() => {
+      vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+    });
+    expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+      95,
+      "settled local text",
+    );
+  });
+
+  it("never creates an ordinary scalar for a controlled pending task across catalog changes", async () => {
+    const snapshot = persistedSnapshot(95, "old server text");
+    testState.route.tid = "95";
+    await renderManager();
+    const connection = testState.connection!;
+    await act(() => {
+      connection.onControlMessage?.(workspaceCatalog());
+      connection.onControlMessage?.(globalTaskTypes("entry", "blank"));
+      connection.onControlMessage?.(agents("agent"));
+      connection.onControlMessage?.({ type: "task_updated", task: snapshot });
+    });
+    const first = (await renderManager()).draftView as DraftViewSnapshot;
+    const task = manager!.getByTid(95)!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const frames = [
+      catalogWithoutEntry,
+      { type: "task_updated", task: snapshot },
+      projectTaskTypes("entry", "blank"),
+      tasksList([snapshot]),
+      catalogWithoutEntry,
+    ] satisfies ControlMessage[];
+    let submitReady = false;
+    for (const [index, frame] of frames.entries()) {
+      const text = `edit ${index}`;
+      const current = (await renderManager()).draftView as DraftViewSnapshot;
+      await act(() => {
+        current.onTextChange(text);
+        connection.onControlMessage?.(frame);
+      });
+      if (frame.type === "project_task_types_list")
+        submitReady = frame.entry_points.some(({ name }) => name === "entry");
+      const controlled = await renderManager();
+      expect(controlled.draftView).toMatchObject({
+        editorId: first.editorId,
+        text,
+        submitReady,
+      });
+      expect(controlled.ordinaryDraftStore.read(task.uuid)).toBeUndefined();
+      expect(connection.saveDraft).not.toHaveBeenCalled();
+    }
+    await act(() => {
+      vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+    });
+    expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(95, "edit 4");
+  });
+
+  it.each([false, true])(
+    "keeps settled text across two catalog round trips (batched stale frame: %s)",
+    async (batched) => {
+      const snapshot = persistedSnapshot(95, "old server text");
+      const opened = await seedPreCatalogPersistedDraft(snapshot);
+      const connection = testState.connection!;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      for (const text of ["first settled edit", "second settled edit"]) {
+        testState.hidden = true;
+        const active = (await renderManager()).draftView as DraftViewSnapshot;
+        await act(() => {
+          active.onTextChange(text);
+          vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+          connection.onControlMessage?.(catalogWithoutEntry);
+        });
+        expect((await renderManager()).draftView).toMatchObject({
+          editorId: opened.editorId,
+          text,
+          submitReady: false,
+        });
+        testState.hidden = !batched;
+        await act(() => {
+          connection.onControlMessage?.(projectTaskTypes("entry", "blank"));
+          connection.onControlMessage?.({
+            type: "task_updated",
+            task: snapshot,
+          });
+        });
+        if (batched) await flushAnimationFrames();
+        expect((await renderManager()).draftView).toMatchObject({
+          editorId: opened.editorId,
+          text,
+          submitReady: true,
+        });
+      }
+      expect(connection.saveDraft.mock.calls).toEqual([
+        [95, "first settled edit"],
+        [95, "second settled edit"],
+      ]);
+    },
+  );
+
+  it("keeps peer CAS on the same editor through several catalog changes", async () => {
+    const opened = await seedPreCatalogPersistedDraft(
+      persistedSnapshot(95, "baseline"),
+    );
+    const connection = testState.connection!;
+    const peer = (old_draft: string, new_draft: string) =>
+      connection.onControlMessage?.({
+        type: "draft_updated",
+        tid: 95,
+        old_draft,
+        new_draft,
+      });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let current = opened;
+    for (const turn of [1, 2]) {
+      const local = `local ${turn}`;
+      const accepted = `accepted peer ${turn}`;
+      await act(() => {
+        current.onTextChange(local);
+        connection.onControlMessage?.(catalogWithoutEntry);
+        peer("different text", "rejected peer");
+      });
+      expect((await renderManager()).draftView).toMatchObject({
+        editorId: opened.editorId,
+        text: local,
+        submitReady: false,
+      });
+      await act(() => {
+        connection.onControlMessage?.(projectTaskTypes("entry", "blank"));
+        peer(local, accepted);
+      });
+      current = (await renderManager()).draftView as DraftViewSnapshot;
+      expect(current).toMatchObject({
+        editorId: opened.editorId,
+        text: accepted,
+        submitReady: true,
+      });
+    }
+    await act(() => {
+      current.onTextChange("");
+    });
+    expect(connection.deleteTask).toHaveBeenCalledExactlyOnceWith(95);
+  });
+
+  it("retains a catalog received before a project first appears in the workspace list", async () => {
+    testState.route.tid = "95";
+    await renderManager();
+    const connection = testState.connection!;
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "workspaces_list",
+        workspaces: [{ name: "source", projects: [] }],
+      });
+      connection.onControlMessage?.(catalogWithoutEntry);
+      connection.onControlMessage?.(globalTaskTypes("entry", "blank"));
+      connection.onControlMessage?.(agents("agent"));
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: persistedSnapshot(95, "server text"),
+      });
+    });
+    expect((await renderManager()).draftView).toBeNull();
+    await act(() => {
+      connection.onControlMessage?.(workspaceCatalog());
+    });
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "task:95",
+      text: "server text",
+      metadataReady: false,
+      submitReady: false,
+    });
+    await act(() => {
+      connection.onControlMessage?.(projectTaskTypes("entry", "blank"));
+    });
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "task:95",
+      text: "server text",
+      agent: "agent",
+      metadataReady: true,
+      submitReady: true,
+    });
+  });
+
+  it("reopens from the last server observation when a same-epoch snapshot omits its draft", async () => {
+    const view = await seedPreCatalogPersistedDraft(
+      persistedSnapshot(95, "server baseline"),
+    );
+    const connection = testState.connection!;
+    const { draft: _pendingDraft, ...pending } = persistedSnapshot(95);
+    const { draft: _activeDraft, ...active } = activeSnapshot(95);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(() => {
+      view.onTextChange("unsaved sidebar projection");
+    });
+    expect(manager!.getByTid(95)?.title).toBe("unsaved sidebar projection");
+    expect(manager!.getByTid(95)?.serverDraft).toBe("server baseline");
+    await act(() => {
+      connection.onControlMessage?.({ type: "task_updated", task: active });
+    });
+    expect((await renderManager()).draftView).toBeNull();
+    await act(() => {
+      connection.onControlMessage?.({ type: "task_updated", task: pending });
+      vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+    });
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "task:95",
+      text: "server baseline",
+    });
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+  });
+
+  const permutations = (items: readonly number[]): number[][] =>
+    items.length === 0
+      ? [[]]
+      : items.flatMap((item) =>
+          permutations(items.filter((other) => other !== item)).map((rest) => [
+            item,
+            ...rest,
+          ]),
+        );
+
+  const orderingCases = permutations([0, 1, 2, 3]).flatMap((order) =>
+    [false, true].flatMap((detached) =>
+      [false, true].flatMap((batched) =>
+        [false, true].map((rejecting) => ({
+          order: order.join(""),
+          detached,
+          batched,
+          rejecting,
+        })),
+      ),
+    ),
+  );
+
+  it.each(orderingCases)(
+    "verification ordering $order detached=$detached batched=$batched rejecting=$rejecting",
+    async ({ order, detached, batched, rejecting }) => {
+      const snapshot = {
+        ...persistedSnapshot(95, "old server text"),
+        agent_name: undefined,
+      };
+      testState.route.tid = "95";
+      await renderManager();
+      const connection = testState.connection!;
+      const emit = (msg: ControlMessage) => connection.onControlMessage?.(msg);
+      await act(() => {
+        emit(workspaceCatalog());
+        emit(globalTaskTypes("entry", "blank"));
+        emit({ type: "task_updated", task: snapshot });
+      });
+      const view = (await renderManager()).draftView as DraftViewSnapshot;
+      expect(view.editorId).toBe("task:95");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await act(() => {
+        view.onTextChange("settled local text");
+      });
+      if (detached) {
+        testState.route.tid = null;
+        await renderManager();
+      }
+      const frames = [
+        projectTaskTypes(rejecting ? "replacement" : "entry", "blank"),
+        agents("agent"),
+        { type: "task_updated", task: snapshot } as const,
+        tasksList([snapshot]),
+      ];
+      testState.hidden = false;
+      for (const n of order) {
+        emit(frames[Number(n)]!);
+        if (!batched) await flushAnimationFrames();
+      }
+      if (batched) await flushAnimationFrames();
+      await act(() => {
+        vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+      });
+      expect(connection.saveDraft).toHaveBeenCalledExactlyOnceWith(
+        95,
+        "settled local text",
+      );
+      testState.route.tid = "95";
+      const controlled = await renderManager();
+      const task = controlled.getByTid(95)!;
+      expect(controlled.draftView).toMatchObject({
+        editorId: "task:95",
+        text: "settled local text",
+        agent: "agent",
+        submitReady: !rejecting,
+      });
+      expect(controlled.ordinaryDraftStore.read(task.uuid)).toBeUndefined();
+      if (rejecting) {
+        emit(projectTaskTypes("entry", "blank"));
+        await flushAnimationFrames();
+        expect((await renderManager()).draftView).toMatchObject({
+          editorId: "task:95",
+          text: "settled local text",
+          agent: "agent",
+          submitReady: true,
+        });
+        expect(controlled.ordinaryDraftStore.read(task.uuid)).toBeUndefined();
+      }
+    },
+  );
+
+  it("drops pending snapshots and history controls queued on both sides of a numeric clear", async () => {
+    const view = await prepareEditableDraft();
+    const connection = testState.connection!;
+    testState.hidden = false;
+    const emitPeerTraffic = () => {
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: persistedSnapshot(71, "stale snapshot"),
+      });
+      connection.onControlMessage?.({
+        type: "task_history_start",
+        tid: 71,
+        total: 1,
+      });
+      const event = {
+        type: "item/started",
+        item_id: "stale",
+        item_type: "user_message",
+        content: [{ type: "text", text: "stale history" }],
+        history_boundary: { anchor: "stale", kind: "user" },
+      } satisfies AgnosticEvent;
+      connection.onHistoryBoundaryReplaced?.(71, event, 1);
+      connection.onTaskMessage?.(71, event, 1);
+    };
+    emitPeerTraffic();
+    await act(() => {
+      view.onTextChange("");
+    });
+    emitPeerTraffic();
+    await flushAnimationFrames();
+    expect(connection.deleteTask).toHaveBeenCalledExactlyOnceWith(71);
+    const settled = await renderManager();
+    expect(settled.getByTid(71)).toBeUndefined();
+    expect(
+      Array.from(settled.tasks.values()).some((task) => task.tid === 71),
+    ).toBe(false);
+  });
+
+  const retirementCases = (
+    ["task_updated", "tasks_list", "task_deleted"] as const
+  ).flatMap((retirement) =>
+    [false, true].flatMap((detached) =>
+      [false, true].map((batched) => ({ retirement, detached, batched })),
+    ),
+  );
+
+  it.each(retirementCases)(
+    "verification $retirement retires pending edits detached=$detached batched=$batched",
+    async ({ retirement, detached, batched }) => {
+      const tid = 95;
+      testState.route.tid = String(tid);
+      await renderManager();
+      const conn = testState.connection!;
+      const pending = persistedSnapshot(tid);
+      const active = { ...activeSnapshot(tid), draft: "" };
+      await act(() => {
+        emitGlobalDefaultProjectBootstrap("entry", "blank", "agent");
+        conn.onControlMessage?.({ type: "task_updated", task: pending });
+      });
+      const view = (await renderManager()).draftView as DraftViewSnapshot;
+      expect(view.editorId).toBe(`task:${tid}`);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await act(() => {
+        view.onTextChange("pending local edit");
+      });
+      if (detached) {
+        testState.route.tid = null;
+        await renderManager();
+      }
+      testState.hidden = false;
+      conn.onControlMessage?.({ type: "task_updated", task: pending });
+      if (!batched) await flushAnimationFrames();
+      switch (retirement) {
+        case "task_updated":
+          conn.onControlMessage?.({ type: retirement, task: active });
+          break;
+        case "tasks_list":
+          conn.onControlMessage?.(tasksList([active]));
+          break;
+        case "task_deleted":
+          conn.onControlMessage?.({ type: retirement, tid });
+          break;
+      }
+      await flushAnimationFrames();
+      await act(() => {
+        vi.advanceTimersByTime(DRAFT_SAVE_DELAY_MS);
+      });
+      expect(conn.saveDraft).not.toHaveBeenCalled();
+      expect(conn.deleteTask).not.toHaveBeenCalled();
+      testState.route.tid = String(tid);
+      const settled = await renderManager();
+      expect(settled.draftView).toBeNull();
+      if (retirement === "task_deleted") {
+        expect(settled.getByTid(tid)).toBeUndefined();
+      } else {
+        expect(settled.getByTid(tid)?.serverDraft).toBeUndefined();
+      }
+    },
+  );
+
+  it("ignores a duplicate late acknowledgement while deletion is outstanding", async () => {
+    const correlationId = await prepareCreatingDraft();
+    const connection = testState.connection!;
+    const a = manager!.draftView;
+    if (a?.kind !== "resolved") throw new Error("A did not open");
+    await act(() => {
+      a.onTextChange("");
+    });
+    const b = (await renderManager()).draftView;
+    if (b?.kind !== "resolved") throw new Error("B did not open");
+    expect(b.editorId).not.toBe(a.editorId);
+    await act(() => {
+      b.onTextChange("B survives");
+    });
+    await vi.waitFor(() => {
+      expect(connection.createTask).toHaveBeenCalledTimes(2);
+    });
+
+    connection.saveDraft.mockClear();
+    testState.navigate.mockClear();
+    const ack = {
+      type: "task_created",
+      tid: 71,
+      workspace: "source",
+      project_path: "/source-project",
+      correlation_id: correlationId,
+    } satisfies ControlMessage;
+    await act(() => {
+      connection.onControlMessage?.(ack);
+      connection.onControlMessage?.(ack);
+    });
+    expect(connection.deleteTask.mock.calls).toEqual([[71]]);
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+    expect(testState.navigate).not.toHaveBeenCalled();
+    expect(manager!.getByTid(71)).toBeUndefined();
+    expect(manager!.draftView).toMatchObject({
+      editorId: b.editorId,
+      remoteTid: null,
+      text: "B survives",
+    });
+
+    await act(() => {
+      connection.onControlMessage?.({ type: "task_deleted", tid: 71 });
+      connection.onControlMessage?.({
+        ...ack,
+        tid: 72,
+        correlation_id: connection.createTask.mock.calls[1]![5] as string,
+      });
+    });
+    testState.route.tid = "72";
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: b.editorId,
+      remoteTid: 72,
+      text: "B survives",
+    });
+  });
+
+  it("isolates A/B/A through a single numeric clear", async () => {
+    await bootstrapProject();
+    const connection = testState.connection!;
+    await act(() => {
+      for (const task of [
+        persistedSnapshot(91, "A"),
+        persistedSnapshot(92, "B"),
+      ])
+        connection.onControlMessage?.({ type: "task_updated", task });
+    });
+    for (const [tid, text] of [
+      [91, "A"],
+      [92, "B"],
+      [91, "A"],
+    ] as const) {
+      testState.route.tid = String(tid);
+      expect((await renderManager()).draftView).toMatchObject({
+        editorId: `task:${tid}`,
+        text,
+      });
+    }
+    expect(connection.createTask).not.toHaveBeenCalled();
+    expect(connection.deleteTask).not.toHaveBeenCalled();
+    const a = manager!.draftView;
+    if (a?.kind !== "resolved") throw new Error("A did not open");
+    await act(() => {
+      a.onTextChange(" \t");
+      connection.onControlMessage?.({ type: "task_deleted", tid: 91 });
+    });
+    expect(connection.deleteTask.mock.calls).toEqual([[91]]);
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+    expect(manager!.getByTid(91)).toBeUndefined();
+    testState.route.tid = null;
+    expect((await renderManager()).draftView).toMatchObject({
+      text: "",
+      remoteTid: null,
+    });
+    testState.route.tid = "92";
+    expect((await renderManager()).draftView).toMatchObject({
+      text: "B",
+      remoteTid: 92,
+    });
+  });
+
+  it("drops a queued CAS receipt after release and checks CAS on the reopened key", async () => {
+    await bootstrapProject();
+    const connection = testState.connection!;
+    await act(() =>
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: persistedSnapshot(91, "same"),
+      }),
+    );
+    testState.route.tid = "91";
+    const old = (await renderManager()).draftView;
+    if (old?.kind !== "resolved") throw new Error("A did not open");
+    testState.hidden = false;
+    const receipt = {
+      type: "draft_updated",
+      tid: 91,
+      old_draft: "same",
+      new_draft: "stale lifetime",
+    } satisfies ControlMessage;
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: activeSnapshot(91),
+      });
+      connection.onControlMessage?.(receipt);
+    });
+    await flushAnimationFrames();
+    expect(manager!.getByTid(91)?.serverDraft).toBe("same");
+    await act(() =>
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: persistedSnapshot(91, "same"),
+      }),
+    );
+    await flushAnimationFrames();
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: old.editorId,
+      text: "same",
+    });
+
+    await act(() =>
+      connection.onControlMessage?.({
+        ...receipt,
+        old_draft: "wrong",
+        new_draft: "bad CAS",
+      }),
+    );
+    await flushAnimationFrames();
+    expect(manager!.draftView).toMatchObject({ text: "same" });
+    await act(() =>
+      connection.onControlMessage?.({
+        ...receipt,
+        new_draft: "fresh lifetime",
+      }),
+    );
+    await flushAnimationFrames();
+    expect(manager!.draftView).toMatchObject({ text: "fresh lifetime" });
+  });
+  it("drops create aliases, pending frames, and delete tombstones at reset", async () => {
+    const correlationId = await prepareCreatingDraft();
+    const connection = testState.connection!;
+    for (const task of [
+      persistedSnapshot(91, "deleting"),
+      persistedSnapshot(92, "discarded in epoch"),
+    ]) {
+      await act(() =>
+        connection.onControlMessage?.({ type: "task_updated", task }),
+      );
+    }
+    testState.route.tid = "91";
+    const old = (await renderManager()).draftView;
+    if (old?.kind !== "resolved") throw new Error("91 did not open");
+    await act(() => {
+      old.onTextChange("");
+    });
+    expect(connection.deleteTask.mock.calls).toEqual([[91]]);
+
+    testState.hidden = false;
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "task_created",
+        tid: 93,
+        workspace: "source",
+        project_path: "/source-project",
+        correlation_id: correlationId,
+      });
+      connection.onStatusChange?.(false);
+    });
+    await flushAnimationFrames();
+    expect(manager!.getByTid(93)).toBeUndefined();
+    expect(manager!.getByTid(92)).toBeUndefined();
+    expect(manager!.draftView).toBeNull();
+    expect(connection.saveDraft).not.toHaveBeenCalled();
+
+    testState.hidden = true;
+    testState.route.tid = null;
+    await act(() => connection.onStatusChange?.(true));
+    await bootstrapProject();
+    expect((await renderManager()).draftView).toMatchObject({
+      text: "",
+      remoteTid: null,
+    });
+    await act(() =>
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: persistedSnapshot(91, "new epoch"),
+      }),
+    );
+    testState.route.tid = "91";
+    expect((await renderManager()).draftView).toMatchObject({
+      editorId: "task:91",
+      text: "new epoch",
+    });
+    expect(connection.deleteTask.mock.calls).toEqual([[91]]);
+  });
+  it("flushes two detached deferred saves to their exact tids on pagehide", async () => {
+    const window = new EventTarget();
+    const restoreWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: window,
+    });
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await bootstrapProject();
+      const connection = testState.connection!;
+      await act(() => {
+        for (const task of [
+          persistedSnapshot(91, "A"),
+          persistedSnapshot(92, "B"),
+        ]) {
+          connection.onControlMessage?.({ type: "task_updated", task });
+        }
+      });
+      for (const tid of [91, 92]) {
+        testState.route.tid = String(tid);
+        const draft = (await renderManager()).draftView;
+        if (draft?.kind !== "resolved")
+          throw new Error("Numeric draft did not open");
+        await act(() => {
+          draft.onTextChange(`edit ${tid}`);
+        });
+      }
+      testState.route.tid = null;
+      await renderManager();
+      expect(connection.saveDraft).not.toHaveBeenCalled();
+      await act(() => {
+        window.dispatchEvent(new Event("pagehide"));
+      });
+      expect(connection.saveDraft.mock.calls).toEqual([
+        [91, "edit 91"],
+        [92, "edit 92"],
+      ]);
+      await act(() => {
+        vi.runOnlyPendingTimers();
+      });
+      expect(connection.saveDraft).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(() => {
+        render(null, root);
+      });
+      if (restoreWindow)
+        Object.defineProperty(globalThis, "window", restoreWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
   });
 });

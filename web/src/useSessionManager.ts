@@ -12,7 +12,7 @@ import {
   useCallback,
   useMemo,
 } from "preact/hooks";
-import { useLocation, useRoute } from "preact-iso";
+import { useLocation } from "preact-iso";
 import { Connection } from "./connection";
 import type {
   AgentUsageMessage,
@@ -24,6 +24,11 @@ import type {
   Notice,
   TaskListEntry,
 } from "./protocol";
+import {
+  resetControlledImageStore,
+  retireControlledImage,
+  type ControlledImageStore,
+} from "./controlledImageStore";
 import {
   createOrdinaryDraftStore,
   type OrdinaryDraftStore,
@@ -48,24 +53,27 @@ import {
   assertResolvedDraftForm,
   createDraftState,
   createProjectKey,
-  getSlot,
+  editorMetadataReady,
+  editorSubmittable,
+  type AgentInfo,
+  getEditor,
   reduceDraft,
   type DraftEffect,
   type DraftEvent,
-  type DraftId,
-  type DraftSlotState,
+  type EditorState,
   type DraftState,
-  type ProjectKey,
-  type ResolvedDraftForm,
+  type CompositionId,
+  type EditorId,
+  type EntryPointInfo,
+  type ProjectedDraftForm,
   type TaskObservation,
-  type TaskSnapshot,
+  type PersistedSnapshot,
 } from "./draftReconciler";
 import {
   buildProjectHref,
   buildScopedHref,
   canonicalTaskRedirect,
   parseRoute,
-  taskPath,
 } from "./routing";
 
 export interface ImageAttachment {
@@ -135,22 +143,7 @@ export interface WorkspaceInfo {
   default_task_type?: string;
 }
 
-export interface AgentInfo {
-  name: string;
-  driver: string;
-  display_name?: string;
-  is_available?: boolean;
-}
-
-export interface EntryPointInfo {
-  name: string;
-  task_type: string;
-  description: string;
-  model_class: string;
-  model_classes?: Record<string, string>;
-  read_only: boolean;
-  icon?: string;
-}
+export type { AgentInfo, EntryPointInfo } from "./draftReconciler";
 
 export interface TypeInfo {
   name: string;
@@ -176,6 +169,7 @@ interface DraftViewBase {
   lifecycle: DraftLifecycle;
   disabled: boolean;
   metadataReady: boolean;
+  submitReady: boolean;
   composerResetToken: number;
 }
 
@@ -185,11 +179,10 @@ export interface UnresolvedDraftView extends DraftViewBase {
 
 export interface DraftViewSnapshot extends DraftViewBase {
   kind: "resolved";
-  projectKey: ProjectKey;
+  editorId: EditorId;
   onTextChange: (text: string) => void;
   onEntryPointChange: (entryPoint: string) => void;
   onAgentChange: (agent: string) => void;
-  onBlur: () => void;
   onSubmit: (text: string, images: ImageAttachment[]) => void;
 }
 
@@ -199,7 +192,7 @@ export interface TaskManager {
   tasks: Map<string, TaskState>;
   ordinaryDraftStore: OrdinaryDraftStore;
   activeTaskId: string | null;
-  activeTaskIdRef: { current: string | null };
+  getActiveTaskId: () => string | null;
   setActiveTaskId: (id: string) => void;
   connected: boolean;
   tasksLoaded: boolean;
@@ -257,7 +250,7 @@ export interface TaskManager {
   workspaces: WorkspaceInfo[];
   entryPoints: EntryPointInfo[];
   typeInfo: TypeInfo[];
-  agents: AgentInfo[];
+  agents: readonly AgentInfo[];
   defaultAgent: string;
   defaultTaskType: string;
   activeWorkspace: string | null;
@@ -279,9 +272,8 @@ export interface TaskManager {
 }
 
 interface ControlledDraftOwner {
-  readonly projectKey: ProjectKey;
-  readonly desiredUuid: DraftId | null;
-  readonly generation: number;
+  readonly editorId: EditorId;
+  readonly lifetime: number;
 }
 
 type DraftUpdatedReceipt =
@@ -292,82 +284,78 @@ function sameControlledDraftOwner(
   left: ControlledDraftOwner,
   right: ControlledDraftOwner,
 ) {
-  return (
-    left.projectKey === right.projectKey &&
-    left.desiredUuid === right.desiredUuid &&
-    left.generation === right.generation
-  );
+  return left.editorId === right.editorId && left.lifetime === right.lifetime;
+}
+
+function mintCompositionId(): CompositionId {
+  return `composition:${crypto.randomUUID()}`;
 }
 
 function makeDraftViewSnapshot(
-  slot: DraftSlotState,
-  projectKey: ProjectKey,
+  editor: EditorState,
+  editorId: EditorId,
   projectName: string,
   composerDisabled: boolean,
   metadataReady: boolean,
+  submitReady: boolean,
   composerResetToken: number,
-  editText: (projectKey: ProjectKey, text: string) => void,
+  editText: (editorId: EditorId, text: string) => void,
   dispatch: (event: DraftEvent) => void,
-  submit: (projectKey: ProjectKey, images: ImageAttachment[]) => void,
+  submit: (editorId: EditorId, images: ImageAttachment[]) => void,
 ): DraftViewSnapshot {
   const form =
-    slot.desired.kind === "none"
-      ? { text: "", ...slot.defaults }
+    editor.desired.kind === "none"
+      ? { text: "", ...editor.defaults }
       : {
-          text: slot.desired.text,
-          entryPoint: slot.desired.entryPoint,
-          agent: slot.desired.agent,
+          text: editor.desired.text,
+          entryPoint: editor.desired.entryPoint,
+          agent: editor.desired.agent,
         };
-  const resolvedMetadata =
-    metadataReady && form.entryPoint !== null && form.agent !== null;
   const lifecycle: DraftLifecycle =
-    slot.desired.kind === "submitting"
+    editor.desired.kind === "submitting"
       ? "submitting"
-      : slot.remote.kind === "creating"
+      : editor.remote.kind === "creating"
         ? "creating"
-        : slot.remote.kind === "present"
+        : editor.remote.kind === "present"
           ? "present"
-          : slot.remote.kind === "deleting"
+          : editor.remote.kind === "deleting"
             ? "deleting"
             : "idle";
-  const disabled = composerDisabled || slot.desired.kind === "submitting";
+  const disabled = composerDisabled || editor.desired.kind !== "editing";
   return {
     kind: "resolved",
-    projectKey,
-    viewKey: projectKey,
-    workspace: slot.project.workspace,
+    editorId,
+    viewKey: editorId,
+    workspace: editor.project.workspace,
     projectName,
-    projectPath: slot.project.projectPath,
+    projectPath: editor.project.projectPath,
     remoteTid:
-      slot.remote.kind === "present" || slot.remote.kind === "deleting"
-        ? slot.remote.tid
+      editor.remote.kind === "present" || editor.remote.kind === "deleting"
+        ? editor.remote.tid
         : null,
     text: form.text,
     entryPoint: form.entryPoint ?? "",
     agent: form.agent ?? "",
     lifecycle,
     disabled,
-    metadataReady: resolvedMetadata,
+    metadataReady,
+    submitReady,
     composerResetToken,
     onTextChange: (text) => {
       if (disabled) return;
-      editText(projectKey, text);
+      editText(editorId, text);
     },
     onEntryPointChange: (entryPoint) => {
-      if (disabled || !resolvedMetadata) return;
-      dispatch({ type: "change-entry-point", projectKey, entryPoint });
+      if (disabled || !metadataReady) return;
+      dispatch({ type: "change-entry-point", editorId, entryPoint });
     },
     onAgentChange: (agent) => {
-      if (disabled || !resolvedMetadata) return;
-      dispatch({ type: "change-agent", projectKey, agent });
-    },
-    onBlur: () => {
-      if (disabled) return;
-      dispatch({ type: "flush", projectKey });
+      if (disabled || !metadataReady) return;
+      dispatch({ type: "change-agent", editorId, agent });
     },
     onSubmit: (_text, images) => {
-      if (disabled || !resolvedMetadata) return;
-      submit(projectKey, images);
+      if (disabled || !submitReady) return;
+      submit(editorId, images);
     },
   };
 }
@@ -508,6 +496,47 @@ export function taskObservationFromEntry(
   return observation;
 }
 
+export function projectDraftTask(
+  task: TaskState | undefined,
+  tid: number,
+  form: ProjectedDraftForm,
+  catalogs: ReadonlyMap<string, readonly EntryPointInfo[]>,
+): TaskState {
+  if (!task) throw new Error(`Draft projection requires task ${tid}`);
+  const projectPath = task.projectPath;
+  if (!projectPath) throw new Error(`Draft projection requires project ${tid}`);
+  const entryPoint = catalogs
+    .get(projectPath)
+    ?.find((candidate) => candidate.name === form.entryPoint);
+  let taskType: string;
+  if (entryPoint) {
+    taskType = entryPoint.task_type;
+  } else {
+    if (task.entryPoint !== form.entryPoint) {
+      throw new Error(
+        `Draft projection entry point does not match task ${tid}`,
+      );
+    }
+    if (!task.taskType) {
+      throw new Error(`Draft projection requires task type ${tid}`);
+    }
+    taskType = task.taskType;
+  }
+  return {
+    ...projectDraftText(task, form.text),
+    entryPoint: form.entryPoint,
+    agentName: form.agent ?? task.agentName,
+    taskType,
+  };
+}
+
+function projectDraftText(task: TaskState, text: string): TaskState {
+  return {
+    ...task,
+    title: text.trim().split("\n")[0]?.slice(0, 100) || undefined,
+  };
+}
+
 function isAuthoritativeActivity(observation: TaskObservation): boolean {
   return (
     observation.active === true ||
@@ -549,6 +578,14 @@ function findByTid(tid: number): TaskState | undefined {
 }
 
 /** Convert a string task id to a numeric tid; returns null for non-numeric strings. */
+function readBrowserRoute(): ReturnType<typeof parseRoute> {
+  return parseRoute(location.pathname);
+}
+
+function getActiveTaskId(): string | null {
+  return readBrowserRoute().tid;
+}
+
 export function parseTaskId(id: string | null): number | null {
   if (id === null) return null;
   const n = parseInt(id, 10);
@@ -570,6 +607,7 @@ export function useTaskManager(
     level: "info" | "warning" | "error" | "alert",
     message: string,
   ) => void,
+  controlledImageStore?: ControlledImageStore,
 ): TaskManager {
   const [connected, setConnected] = useState(false);
   const [tasks, setTasks] = useState<Map<string, TaskState>>(new Map());
@@ -580,17 +618,9 @@ export function useTaskManager(
   );
   const [entryPoints, setEntryPoints] = useState<EntryPointInfo[]>([]);
   const [typeInfo, setTypeInfo] = useState<TypeInfo[]>([]);
-  const [projectEntryPoints, setProjectEntryPoints] = useState<
-    Map<string, EntryPointInfo[]>
-  >(new Map());
   const [projectTypeInfo, setProjectTypeInfo] = useState<
     Map<string, TypeInfo[]>
   >(new Map());
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [defaultAgent, setDefaultAgent] = useState("");
-  const [defaultTaskType, setDefaultTaskType] = useState("");
-  const [globalTaskTypesLoaded, setGlobalTaskTypesLoaded] = useState(false);
-  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [tasksListEpoch, setTasksListEpoch] = useState<number | null>(null);
   const [notices, setNotices] = useState<Record<string, Notice>>({});
   const [localNotices, setLocalNotices] = useState<Record<string, Notice>>({});
@@ -606,37 +636,75 @@ export function useTaskManager(
   addToastRef.current = addToast;
   const prevNoticeIdsRef = useRef<Set<string>>(new Set());
   const initialNoticeLoadRef = useRef(true);
-  const { route } = useLocation();
-  const routeRef = useRef(route);
-  routeRef.current = route;
+  const { route, path } = useLocation();
+  const routerNavigateRef = useRef(route);
+  useLayoutEffect(() => {
+    routerNavigateRef.current = route;
+  }, [route]);
   const workspacesRef = useRef(workspaces);
-  workspacesRef.current = workspaces;
-  const projectEntryPointsRef = useRef(projectEntryPoints);
-  projectEntryPointsRef.current = projectEntryPoints;
-  const defaultAgentRef = useRef(defaultAgent);
-  defaultAgentRef.current = defaultAgent;
 
-  const { params, path } = useRoute();
-  const parsed = useMemo(
-    () => parseRoute(path, params),
-    [
-      path,
-      params.workspace,
-      params.project,
-      params.tid,
-      params.sid,
-      params.parentTid,
-    ],
+  const parsed = useMemo(() => parseRoute(path), [path]);
+  const {
+    tid: activeTaskId,
+    workspace: activeWorkspace,
+    project: activeProject,
+  } = parsed;
+  const connectionEpochRef = useRef(0);
+  const openConnectionEpochRef = useRef<number | null>(0);
+
+  const isCurrentOpenEpoch = useCallback(
+    (epoch: number | null): epoch is number => {
+      return (
+        epoch !== null &&
+        connectionEpochRef.current === epoch &&
+        openConnectionEpochRef.current === epoch
+      );
+    },
+    [],
   );
-  const activeTaskIdRef = useRef<string | null>(parsed.tid);
-  activeTaskIdRef.current = parsed.tid;
-  const activeTaskId = parsed.tid;
-  const activeWorkspace = parsed.workspace;
-  const activeProject = parsed.project;
-  const activeWorkspaceRef = useRef(activeWorkspace);
-  activeWorkspaceRef.current = activeWorkspace;
-  const activeProjectRef = useRef(activeProject);
-  activeProjectRef.current = activeProject;
+  const renderedConnectionEpoch = openConnectionEpochRef.current;
+
+  const routeProjectCacheRef = useRef<{
+    epoch: number;
+    workspace: string;
+    projectName: string;
+    projectPath: string;
+  } | null>(null);
+
+  const resolveRouteProject = useCallback(
+    ({ workspace, project }: ReturnType<typeof parseRoute>) => {
+      if (!workspace || !project) return null;
+      const listed = workspacesRef.current
+        .find((candidate) => candidate.name === workspace)
+        ?.projects.find((candidate) => candidate.name === project);
+      const cached = routeProjectCacheRef.current;
+      const epoch = openConnectionEpochRef.current;
+      const cachedPath =
+        cached &&
+        cached.epoch === epoch &&
+        cached.workspace === workspace &&
+        cached.projectName === project
+          ? cached.projectPath
+          : "";
+      return {
+        workspace,
+        projectName: project,
+        projectPath: listed?.path ?? cachedPath,
+      };
+    },
+    [],
+  );
+
+  const rememberRouteProject = useCallback(() => {
+    const epoch = openConnectionEpochRef.current;
+    const project = resolveRouteProject(readBrowserRoute());
+    routeProjectCacheRef.current =
+      epoch !== null && project?.projectPath ? { ...project, epoch } : null;
+  }, [resolveRouteProject]);
+
+  useLayoutEffect(() => {
+    rememberRouteProject();
+  }, [path, rememberRouteProject]);
 
   const taskContext = useCallback(
     (tid: number): [string | null, string | null] => {
@@ -658,80 +726,110 @@ export function useTaskManager(
     [],
   );
 
-  const currentRouteProjectName = useCallback(
+  const currentDraftRouteProjectName = useCallback(
     (
       project: { workspace: string; projectPath: string },
       tid: number | null,
     ): string | null => {
-      if (
-        activeWorkspaceRef.current !== project.workspace ||
-        activeTaskIdRef.current !== (tid === null ? null : String(tid))
-      )
-        return null;
-      const projectName = findProjectName(
-        workspacesRef.current,
-        project.workspace,
-        project.projectPath,
-      );
-      return projectName === activeProjectRef.current ? projectName : null;
+      const current = readBrowserRoute();
+      if (current.tid !== (tid === null ? null : String(tid))) return null;
+      const resolved = resolveRouteProject(current);
+      return resolved?.workspace === project.workspace &&
+        resolved.projectPath === project.projectPath
+        ? resolved.projectName
+        : null;
+    },
+    [resolveRouteProject],
+  );
+
+  const taskRoute = useCallback(
+    (id: string): ReturnType<typeof parseRoute> => {
+      if (id === "archive" || id === "import") {
+        return { ...readBrowserRoute(), tid: id };
+      }
+      const archiveMatch = id.match(/^archive:(\d+)$/);
+      const tid = parseInt(archiveMatch?.[1] ?? id, 10);
+      if (isNaN(tid)) return { workspace: null, project: null, tid: null };
+      const [workspace, project] = taskContext(tid);
+      return { workspace, project, tid: id };
+    },
+    [taskContext],
+  );
+
+  const routeHref = useCallback(
+    ({ workspace, project, tid }: ReturnType<typeof parseRoute>) => {
+      if (tid === null)
+        return workspace && project
+          ? buildProjectHref(workspace, project)
+          : "/";
+      if (tid === "archive" || tid === "import")
+        return buildScopedHref(workspace, project, `/${tid}`);
+      if (tid.startsWith("archive:"))
+        return buildScopedHref(
+          workspace,
+          project,
+          `/archive/${tid.slice("archive:".length)}`,
+        );
+      return buildScopedHref(workspace, project, `/task/${tid}`);
     },
     [],
   );
 
   const getTaskHref = useCallback(
-    (id: string) => {
-      if (id === "archive") {
-        return buildScopedHref(
-          activeWorkspaceRef.current,
-          activeProjectRef.current,
-          "/archive",
-        );
-      }
-      const archiveMatch = id.match(/^archive:(\d+)$/);
-      if (archiveMatch) {
-        const parentTid = parseInt(archiveMatch[1]!, 10);
-        const [ws, proj] = taskContext(parentTid);
-        return buildScopedHref(ws, proj, `/archive/${parentTid}`);
-      }
-      if (id === "import") {
-        return buildScopedHref(
-          activeWorkspaceRef.current,
-          activeProjectRef.current,
-          "/import",
-        );
-      }
+    (id: string) => routeHref(taskRoute(id)),
+    [routeHref, taskRoute],
+  );
 
-      const tid = parseInt(id, 10);
-      if (!isNaN(tid)) {
-        const [ws, proj] = taskContext(tid);
-        return buildScopedHref(ws, proj, `/task/${id}`);
-      }
-
-      return "/";
+  const navigate = useCallback(
+    (destination: ReturnType<typeof parseRoute>, replace?: boolean) => {
+      const href = routeHref(destination);
+      if (replace) routerNavigateRef.current(href, true);
+      else routerNavigateRef.current(href);
+      rememberRouteProject();
     },
-    [taskContext],
+    [rememberRouteProject, routeHref],
+  );
+
+  const returnFromDeletedDraft = useCallback(
+    (project: { workspace: string; projectPath: string }, tid: number) => {
+      if (readBrowserRoute().tid !== String(tid)) return;
+      const { workspace, projectPath } = project;
+      const listed = findProjectName(
+        workspacesRef.current,
+        workspace,
+        projectPath,
+      );
+      const cached = routeProjectCacheRef.current;
+      const projectName =
+        listed ??
+        (cached &&
+        cached.epoch === openConnectionEpochRef.current &&
+        cached.workspace === workspace &&
+        cached.projectPath === projectPath
+          ? cached.projectName
+          : null);
+      if (projectName)
+        navigate({ workspace, project: projectName, tid: null }, true);
+    },
+    [navigate],
   );
 
   const setActiveTaskId = useCallback(
     (id: string) => {
-      const tid = parseInt(id, 10);
-      if (!isNaN(tid)) {
-        activeTaskIdRef.current = id;
-      }
-      routeRef.current(getTaskHref(id));
+      navigate(taskRoute(id));
     },
-    [getTaskHref],
+    [navigate, taskRoute],
   );
 
   const navigateHome = useCallback(() => {
-    routeRef.current("/");
-  }, []);
+    navigate({ workspace: null, project: null, tid: null });
+  }, [navigate]);
 
   const navigateToProject = useCallback(
-    (workspace: string, projectName: string) => {
-      routeRef.current(buildProjectHref(workspace, projectName));
+    (workspace: string, project: string) => {
+      navigate({ workspace, project, tid: null });
     },
-    [],
+    [navigate],
   );
 
   const connRef = useRef<Connection | null>(null);
@@ -747,30 +845,14 @@ export function useTaskManager(
   const tasksListPhaseRef = useRef<"awaiting" | "receiving" | "complete">(
     "awaiting",
   );
-  const connectionEpochRef = useRef(0);
-  const openConnectionEpochRef = useRef<number | null>(0);
-
-  const isCurrentOpenEpoch = useCallback(
-    (epoch: number | null): epoch is number => {
-      return (
-        epoch !== null &&
-        connectionEpochRef.current === epoch &&
-        openConnectionEpochRef.current === epoch
-      );
-    },
-    [],
-  );
-  const renderedConnectionEpoch = openConnectionEpochRef.current;
-
   const draftStateRef = useRef<DraftState>(createDraftState());
   const [draftRevision, setDraftRevision] = useState(0);
   const requestedProjectTypesRef = useRef(new Map<string, number>());
-  const readyDraftMetadataProjectsRef = useRef(new Set<ProjectKey>());
   const createRuntimeRef = useRef(
     new Map<
-      ProjectKey,
+      EditorId,
       {
-        generation: string;
+        correlationId: string;
         token: number;
         handle: ReturnType<typeof setTimeout>;
       }
@@ -780,33 +862,21 @@ export function useTaskManager(
     new Map<
       number,
       {
-        projectKey: ProjectKey;
+        editorId: EditorId;
         formVersion: number;
         handle: ReturnType<typeof setTimeout>;
       }
     >(),
   );
   const createTokenRef = useRef(0);
-  const correlationToProjectRef = useRef(new Map<string, ProjectKey>());
+  const correlationToEditorRef = useRef(new Map<string, EditorId>());
   const controlledOwnerByTidRef = useRef(
     new Map<number, ControlledDraftOwner>(),
   );
-  const nextControlledOwnerGenerationRef = useRef(0);
-  const tombstoneTidToProjectRef = useRef(new Map<number, ProjectKey>());
+  const nextControlledOwnerLifetimeRef = useRef(0);
+  const tombstoneTidToEditorRef = useRef(new Map<number, EditorId>());
   const expectedFocusRef = useRef(new Set<string>());
-  const draftAttachmentRef = useRef<{
-    projectKey: ProjectKey;
-    routeTid: number | null;
-  } | null>(null);
-  const routeProjectCacheRef = useRef<{
-    epoch: number;
-    workspace: string;
-    projectName: string;
-    projectPath: string;
-  } | null>(null);
-  const composerResetSequenceRef = useRef(0);
   const composerResetEpochRef = useRef(0);
-  const composerResetRef = useRef(new Map<ProjectKey, number>());
   const executeDraftEffectsRef = useRef<
     (effects: readonly DraftEffect[]) => void
   >(() => {
@@ -821,35 +891,29 @@ export function useTaskManager(
     (state: DraftState) => {
       const previousOwners = controlledOwnerByTidRef.current;
       const nextOwners = new Map<number, ControlledDraftOwner>();
-      correlationToProjectRef.current.clear();
-      tombstoneTidToProjectRef.current.clear();
-      for (const [projectKey, slot] of Object.entries(state.slots)) {
-        if (slot.remote.kind === "creating") {
-          correlationToProjectRef.current.set(
-            slot.remote.correlationId,
-            projectKey,
-          );
+      correlationToEditorRef.current.clear();
+      tombstoneTidToEditorRef.current.clear();
+      for (const editorId of Object.keys(state.editors) as EditorId[]) {
+        const { remote } = getEditor(state, editorId);
+        if (remote.kind === "creating") {
+          correlationToEditorRef.current.set(remote.correlationId, editorId);
         }
-        if (slot.remote.kind === "present" || slot.remote.kind === "deleting") {
-          const desiredUuid =
-            slot.desired.kind === "none" ? null : slot.desired.uuid;
-          const previous = previousOwners.get(slot.remote.tid);
-          const owner =
-            previous &&
-            previous.projectKey === projectKey &&
-            previous.desiredUuid === desiredUuid
+        if (remote.kind === "present") {
+          const previous = previousOwners.get(remote.tid);
+          nextOwners.set(
+            remote.tid,
+            previous?.editorId === editorId
               ? previous
               : {
-                  projectKey,
-                  desiredUuid,
-                  generation: ++nextControlledOwnerGenerationRef.current,
-                };
-          nextOwners.set(slot.remote.tid, owner);
-          const uuid = tidToUuid.get(slot.remote.tid);
+                  editorId,
+                  lifetime: ++nextControlledOwnerLifetimeRef.current,
+                },
+          );
+          const uuid = tidToUuid.get(remote.tid);
           if (uuid) ordinaryDraftStore.retire(uuid);
         }
-        if (slot.remote.kind === "deleting") {
-          tombstoneTidToProjectRef.current.set(slot.remote.tid, projectKey);
+        if (remote.kind === "deleting") {
+          tombstoneTidToEditorRef.current.set(remote.tid, editorId);
         }
       }
       controlledOwnerByTidRef.current = nextOwners;
@@ -883,18 +947,29 @@ export function useTaskManager(
 
   const applyDraftEvent = useCallback(
     (event: DraftEvent) => {
-      const result = reduceDraft(draftStateRef.current, event);
+      const previous = draftStateRef.current;
+      const result = reduceDraft(previous, event);
+      if (result.state === previous) return result;
       draftStateRef.current = result.state;
+      if (controlledImageStore) {
+        for (const key of Object.keys(previous.editors) as EditorId[]) {
+          const editor = result.state.editors[key];
+          if (!editor || editor.desired.kind === "none") {
+            retireControlledImage(controlledImageStore, key);
+          }
+        }
+      }
       rebuildDraftIndexes(result.state);
       refreshDraftView();
       return result;
     },
-    [rebuildDraftIndexes, refreshDraftView],
+    [controlledImageStore, rebuildDraftIndexes, refreshDraftView],
   );
 
   const entryPointFor = useCallback(
     (projectPath: string, entryPointName: string) => {
-      const candidates = projectEntryPointsRef.current.get(projectPath);
+      const candidates =
+        draftStateRef.current.metadata.catalogs.get(projectPath);
       if (!candidates) {
         throw new Error(`Project entry points unavailable for ${projectPath}`);
       }
@@ -909,44 +984,15 @@ export function useTaskManager(
     [],
   );
 
-  const projectDraft = useCallback((tid: number, form: ResolvedDraftForm) => {
-    const task = findByTid(tid);
-    if (!task) throw new Error(`Draft projection requires task ${tid}`);
-    const projectPath = task.projectPath;
-    if (!projectPath)
-      throw new Error(`Draft projection requires project ${tid}`);
-    const candidates = projectEntryPointsRef.current.get(projectPath);
-    let taskType: string;
-    if (candidates !== undefined) {
-      const entryPoint = candidates.find(
-        (candidate) => candidate.name === form.entryPoint,
-      );
-      if (!entryPoint) {
-        throw new Error(`Unknown entry point: ${form.entryPoint}`);
-      }
-      taskType = entryPoint.task_type;
-    } else {
-      if (task.entryPoint !== form.entryPoint) {
-        throw new Error(
-          `Draft projection entry point does not match task ${tid}`,
-        );
-      }
-      if (!task.taskType) {
-        throw new Error(`Draft projection requires task type ${tid}`);
-      }
-      taskType = task.taskType;
-    }
-    const title = form.text.trim().split("\n")[0]?.slice(0, 100) || undefined;
-    const updated: TaskState = {
-      ...task,
-      serverDraft: form.text || undefined,
-      title,
-      entryPoint: form.entryPoint,
-      agentName: form.agent,
-      taskType,
-    };
-    liveStates.set(task.uuid, updated);
-    setTasks((previous) => new Map(previous).set(task.uuid, updated));
+  const projectDraft = useCallback((tid: number, form: ProjectedDraftForm) => {
+    const updated = projectDraftTask(
+      findByTid(tid),
+      tid,
+      form,
+      draftStateRef.current.metadata.catalogs,
+    );
+    liveStates.set(updated.uuid, updated);
+    setTasks((previous) => new Map(previous).set(updated.uuid, updated));
   }, []);
 
   const sendRealTask = useCallback(
@@ -988,32 +1034,14 @@ export function useTaskManager(
     [],
   );
 
-  const clearComposerImages = useCallback(
-    (projectKey: ProjectKey) => {
-      composerResetSequenceRef.current++;
-      composerResetRef.current.set(
-        projectKey,
-        composerResetSequenceRef.current,
-      );
-      refreshDraftView();
-    },
-    [refreshDraftView],
-  );
-
-  const composerResetTokenFor = useCallback((projectKey: ProjectKey) => {
-    return (
-      composerResetRef.current.get(projectKey) ?? composerResetEpochRef.current
-    );
-  }, []);
-
   const executeDraftEffects = useCallback(
     (effects: readonly DraftEffect[]) => {
       for (const effect of effects) {
         switch (effect.type) {
           case "schedule-create": {
-            const existing = createRuntimeRef.current.get(effect.projectKey);
+            const existing = createRuntimeRef.current.get(effect.editorId);
             if (existing) {
-              if (existing.generation !== effect.generation) {
+              if (existing.correlationId !== effect.correlationId) {
                 throw new Error(
                   "Different draft creation is already scheduled",
                 );
@@ -1022,23 +1050,23 @@ export function useTaskManager(
             }
             const token = ++createTokenRef.current;
             const handle = setTimeout(() => {
-              const current = createRuntimeRef.current.get(effect.projectKey);
+              const current = createRuntimeRef.current.get(effect.editorId);
               if (
                 !current ||
-                current.generation !== effect.generation ||
+                current.correlationId !== effect.correlationId ||
                 current.token !== token
               )
                 return;
-              createRuntimeRef.current.delete(effect.projectKey);
+              createRuntimeRef.current.delete(effect.editorId);
               const result = applyDraftEvent({
                 type: "create-timer-due",
-                projectKey: effect.projectKey,
-                generation: effect.generation,
+                editorId: effect.editorId,
+                correlationId: effect.correlationId,
               });
               executeDraftEffectsRef.current(result.effects);
             }, effect.delayMs);
-            createRuntimeRef.current.set(effect.projectKey, {
-              generation: effect.generation,
+            createRuntimeRef.current.set(effect.editorId, {
+              correlationId: effect.correlationId,
               token,
               handle,
             });
@@ -1046,19 +1074,19 @@ export function useTaskManager(
           }
 
           case "cancel-create-schedule": {
-            const existing = createRuntimeRef.current.get(effect.projectKey);
-            if (existing?.generation === effect.generation) {
+            const existing = createRuntimeRef.current.get(effect.editorId);
+            if (existing?.correlationId === effect.correlationId) {
               clearTimeout(existing.handle);
-              createRuntimeRef.current.delete(effect.projectKey);
+              createRuntimeRef.current.delete(effect.editorId);
             }
             break;
           }
 
           case "create-task": {
-            const slot = getSlot(draftStateRef.current, effect.projectKey);
+            const editor = getEditor(draftStateRef.current, effect.editorId);
             connRef.current?.createTask(
-              slot.project.workspace,
-              slot.project.projectPath,
+              editor.project.workspace,
+              editor.project.projectPath,
               effect.entryPoint,
               effect.content
                 ? buildContentBlocks(effect.content.text, effect.content.images)
@@ -1073,7 +1101,7 @@ export function useTaskManager(
             const existing = saveRuntimeRef.current.get(effect.tid);
             if (
               existing &&
-              existing.projectKey === effect.projectKey &&
+              existing.editorId === effect.editorId &&
               existing.formVersion === effect.formVersion
             )
               break;
@@ -1082,21 +1110,22 @@ export function useTaskManager(
               const current = saveRuntimeRef.current.get(effect.tid);
               if (
                 !current ||
-                current.projectKey !== effect.projectKey ||
-                current.formVersion !== effect.formVersion
+                current.editorId !== effect.editorId ||
+                current.formVersion !== effect.formVersion ||
+                current.handle !== handle
               )
                 return;
               saveRuntimeRef.current.delete(effect.tid);
               const result = applyDraftEvent({
                 type: "save-timer-due",
-                projectKey: effect.projectKey,
+                editorId: effect.editorId,
                 tid: effect.tid,
                 formVersion: effect.formVersion,
               });
               executeDraftEffectsRef.current(result.effects);
             }, effect.delayMs);
             saveRuntimeRef.current.set(effect.tid, {
-              projectKey: effect.projectKey,
+              editorId: effect.editorId,
               formVersion: effect.formVersion,
               handle,
             });
@@ -1107,7 +1136,7 @@ export function useTaskManager(
             const existing = saveRuntimeRef.current.get(effect.tid);
             if (
               existing &&
-              existing.projectKey === effect.projectKey &&
+              existing.editorId === effect.editorId &&
               existing.formVersion === effect.formVersion
             ) {
               clearTimeout(existing.handle);
@@ -1140,45 +1169,21 @@ export function useTaskManager(
               next.delete(uuid);
               return next;
             });
-            const slot = getSlot(draftStateRef.current, effect.projectKey);
-            const projectName = currentRouteProjectName(
-              slot.project,
-              effect.tid,
-            );
-            if (projectName) {
-              activeTaskIdRef.current = null;
-              routeRef.current(
-                buildProjectHref(slot.project.workspace, projectName),
-                true,
-              );
-            }
+            const editor = getEditor(draftStateRef.current, effect.editorId);
+            returnFromDeletedDraft(editor.project, effect.tid);
             connRef.current?.deleteTask(effect.tid);
             break;
           }
 
-          case "draft-ready": {
-            const slot = getSlot(draftStateRef.current, effect.projectKey);
-            const projectName = currentRouteProjectName(slot.project, null);
-            if (!projectName) break;
-            routeRef.current(
-              taskPath(slot.project.workspace, projectName, effect.tid),
-              true,
-            );
-            break;
-          }
-
           case "send-first-message": {
-            const uuid = tidToUuid.get(effect.tid);
-            if (!uuid) {
+            const task = findByTid(effect.tid);
+            if (!task) {
               throw new Error(`First message requires task ${effect.tid}`);
             }
-            sendRealTask(uuid, effect.content.text, effect.content.images);
+            liveStates.set(task.uuid, { ...task, serverDraft: undefined });
+            sendRealTask(task.uuid, effect.content.text, effect.content.images);
             break;
           }
-
-          case "release-task":
-            if (effect.resetComposer) clearComposerImages(effect.projectKey);
-            break;
 
           default:
             assertNeverDraftEffect(effect);
@@ -1187,8 +1192,8 @@ export function useTaskManager(
     },
     [
       applyDraftEvent,
-      clearComposerImages,
-      currentRouteProjectName,
+      returnFromDeletedDraft,
+      ordinaryDraftStore,
       projectDraft,
       sendRealTask,
     ],
@@ -1202,7 +1207,10 @@ export function useTaskManager(
       projectPath: string,
       parentTid: number | undefined,
       relationType: string | undefined,
-      desired: Exclude<ReturnType<typeof getSlot>["desired"], { kind: "none" }>,
+      desired: Exclude<
+        ReturnType<typeof getEditor>["desired"],
+        { kind: "none" }
+      >,
     ) => {
       assertResolvedDraftForm(desired);
       const entryPoint = entryPointFor(projectPath, desired.entryPoint);
@@ -1234,8 +1242,6 @@ export function useTaskManager(
       );
       const task: TaskState = {
         ...base,
-        uuid: desired.uuid,
-        serverDraft: submitting ? undefined : desired.text || undefined,
         everLoaded: submitting,
       };
       liveStates.set(task.uuid, task);
@@ -1257,13 +1263,13 @@ export function useTaskManager(
 
   const releaseTombstonedActivity = useCallback(
     (
-      projectKey: ProjectKey,
+      editorId: EditorId,
       observation: TaskObservation,
     ): readonly DraftEffect[] | null => {
       if (!isAuthoritativeActivity(observation)) return null;
       const result = applyDraftEvent({
         type: "task-observed",
-        projectKey,
+        editorId,
         observation: activityOnlyObservation(observation),
       });
       return result.effects;
@@ -1276,12 +1282,12 @@ export function useTaskManager(
   // notifications, then enqueues a Preact state update for rendering.
   const handleUnconfirmedUserMessage = useCallback(
     (tid: number, msg: AgnosticEvent, correlationId?: string) => {
-      if (tombstoneTidToProjectRef.current.has(tid)) return;
-      const projectKey = controlledOwnerByTidRef.current.get(tid)?.projectKey;
-      const effects = projectKey
+      if (tombstoneTidToEditorRef.current.has(tid)) return;
+      const editorId = controlledOwnerByTidRef.current.get(tid)?.editorId;
+      const effects = editorId
         ? applyDraftEvent({
             type: "task-observed",
-            projectKey,
+            editorId,
             observation: { tid, hasMessages: true },
           }).effects
         : [];
@@ -1364,12 +1370,12 @@ export function useTaskManager(
 
   const handleTaskMessage = useCallback(
     (tid: number, msg: AgnosticEvent, seq?: number, ts?: number) => {
-      if (tombstoneTidToProjectRef.current.has(tid)) return;
-      const projectKey = controlledOwnerByTidRef.current.get(tid)?.projectKey;
-      const effects = projectKey
+      if (tombstoneTidToEditorRef.current.has(tid)) return;
+      const editorId = controlledOwnerByTidRef.current.get(tid)?.editorId;
+      const effects = editorId
         ? applyDraftEvent({
             type: "task-observed",
-            projectKey,
+            editorId,
             observation: { tid, hasMessages: true },
           }).effects
         : [];
@@ -1416,6 +1422,7 @@ export function useTaskManager(
   const handleDraftUpdatedMessage = useCallback(
     (msg: DraftUpdatedMessage, receipt: DraftUpdatedReceipt) => {
       const { tid, old_draft, new_draft } = msg;
+      if (tombstoneTidToEditorRef.current.has(tid)) return;
       const ownerAtDrain = controlledOwnerByTidRef.current.get(tid);
       if (
         receipt.kind === "controlled" &&
@@ -1426,7 +1433,7 @@ export function useTaskManager(
       const result = ownerAtDrain
         ? applyDraftEvent({
             type: "task-observed",
-            projectKey: ownerAtDrain.projectKey,
+            editorId: ownerAtDrain.editorId,
             observation: { tid, text: new_draft, oldText: old_draft },
           })
         : null;
@@ -1454,6 +1461,45 @@ export function useTaskManager(
     [applyDraftEvent, executeDraftEffects, ordinaryDraftStore],
   );
 
+  const applyTaskSnapshotEntry = useCallback(
+    (entry: TaskSnapshotEntry) => {
+      const existing = findByTid(entry.tid);
+      const observation = taskObservationFromEntry(
+        entry,
+        (existing?.messages.length ?? 0) > 0,
+      );
+      const tombstoneEditorId = tombstoneTidToEditorRef.current.get(entry.tid);
+      const effects: DraftEffect[] = [];
+      if (tombstoneEditorId) {
+        const released = releaseTombstonedActivity(
+          tombstoneEditorId,
+          observation,
+        );
+        if (!released) return null;
+        effects.push(...released);
+      }
+      const updated = taskStateFromEntry(
+        entry,
+        existing,
+        tidToUuid.get(entry.tid),
+      );
+      liveStates.set(updated.uuid, updated);
+      bindTaskUuid(entry.tid, updated.uuid);
+      const owner = controlledOwnerByTidRef.current.get(entry.tid);
+      if (owner) {
+        effects.push(
+          ...applyDraftEvent({
+            type: "task-observed",
+            editorId: owner.editorId,
+            observation,
+          }).effects,
+        );
+      }
+      return { updated, effects };
+    },
+    [applyDraftEvent, bindTaskUuid, releaseTombstonedActivity],
+  );
+
   const handleControlMessage = useCallback(
     (msg: Exclude<ControlMessage, DraftUpdatedMessage>) => {
       const controlledTid =
@@ -1466,14 +1512,28 @@ export function useTaskManager(
         controlledTid !== undefined &&
         msg.type !== "task_deleted" &&
         msg.type !== "task_updated" &&
-        tombstoneTidToProjectRef.current.has(controlledTid)
+        tombstoneTidToEditorRef.current.has(controlledTid)
       )
         return;
       switch (msg.type) {
         case "workspaces_list": {
+          rememberRouteProject();
           workspacesRef.current = msg.workspaces;
+          rememberRouteProject();
           setWorkspaces(msg.workspaces);
           setConnected(true);
+          executeDraftEffects(
+            applyDraftEvent({
+              type: "workspace-draft-defaults",
+              projects: msg.workspaces.flatMap((workspace) =>
+                workspace.projects.map(({ path }) => ({
+                  project: { workspace: workspace.name, projectPath: path },
+                  entryPoint: workspace.default_task_type || null,
+                  agent: workspace.default_agent || null,
+                })),
+              ),
+            }).effects,
+          );
           break;
         }
         case "scan_status": {
@@ -1483,18 +1543,22 @@ export function useTaskManager(
         case "task_types_list": {
           setEntryPoints(msg.entry_points);
           setTypeInfo(msg.type_info);
-          setDefaultTaskType(msg.default_task_type ?? "");
-          setGlobalTaskTypesLoaded(true);
+          const entryPoint = msg.default_task_type ?? "";
+          executeDraftEffects(
+            applyDraftEvent({ type: "global-draft-defaults", entryPoint })
+              .effects,
+          );
           break;
         }
         case "project_task_types_list": {
           const { project_path, entry_points, type_info } = msg;
-          setProjectEntryPoints((prev) => {
-            const next = new Map(prev);
-            next.set(project_path, entry_points);
-            projectEntryPointsRef.current = next;
-            return next;
-          });
+          executeDraftEffects(
+            applyDraftEvent({
+              type: "project-catalog",
+              projectPath: project_path,
+              catalog: entry_points,
+            }).effects,
+          );
           setProjectTypeInfo((prev) => {
             const next = new Map(prev);
             next.set(project_path, type_info);
@@ -1503,11 +1567,13 @@ export function useTaskManager(
           break;
         }
         case "agents_list": {
-          setAgents(msg.agents);
-          const nextDefaultAgent = msg.default_agent ?? "";
-          defaultAgentRef.current = nextDefaultAgent;
-          setDefaultAgent(nextDefaultAgent);
-          setAgentsLoaded(true);
+          executeDraftEffects(
+            applyDraftEvent({
+              type: "agents-list",
+              agents: msg.agents,
+              defaultAgent: msg.default_agent ?? "",
+            }).effects,
+          );
           break;
         }
         case "task_created": {
@@ -1518,19 +1584,11 @@ export function useTaskManager(
           const relationType = msg.relation_type || undefined;
 
           const correlationId = msg.correlation_id;
-          const projectKey = correlationId
-            ? correlationToProjectRef.current.get(correlationId)
+          const editorId = correlationId
+            ? correlationToEditorRef.current.get(correlationId)
             : undefined;
-          if (projectKey && correlationId) {
-            const before = getSlot(draftStateRef.current, projectKey);
-            if (
-              before.remote.kind !== "creating" ||
-              before.remote.correlationId !== correlationId
-            ) {
-              throw new Error(
-                "Draft create index does not match reducer state",
-              );
-            }
+          if (editorId && correlationId) {
+            const before = getEditor(draftStateRef.current, editorId);
             if (
               before.project.workspace !== workspace ||
               before.project.projectPath !== projectPath
@@ -1539,39 +1597,39 @@ export function useTaskManager(
                 "Draft creation acknowledgement has wrong project",
               );
             }
-            const currentDesired =
-              before.desired.kind !== "none" &&
-              before.desired.uuid === correlationId
-                ? before.desired
+            const desired = before.desired;
+            const attachedProjectName =
+              draftStateRef.current.newTaskByProject[
+                createProjectKey(workspace, projectPath)
+              ] === editorId
+                ? currentDraftRouteProjectName(before.project, null)
                 : null;
             const result = applyDraftEvent({
               type: "task-created",
+              editorId,
               correlationId,
               tid,
+              successor:
+                desired.kind === "none" ? undefined : mintCompositionId(),
             });
             expectedFocusRef.current.add(`0:${tid}`);
-            if (currentDesired) {
+            if (desired.kind !== "none") {
               materializeDraftTask(
                 tid,
                 workspace,
                 projectPath,
                 parentTid,
                 relationType,
-                currentDesired,
+                desired,
               );
             }
-            if (currentDesired?.kind === "submitting") {
-              requestTaskHistory(tid);
-            }
+            if (desired.kind === "submitting") requestTaskHistory(tid);
             executeDraftEffects(result.effects);
-            if (currentDesired?.kind === "submitting") {
-              const projectName = currentRouteProjectName(before.project, null);
-              if (projectName) {
-                routeRef.current(
-                  taskPath(before.project.workspace, projectName, tid),
-                  true,
-                );
-              }
+            if (desired.kind !== "none" && attachedProjectName) {
+              navigate(
+                { workspace, project: attachedProjectName, tid: String(tid) },
+                true,
+              );
             }
             break;
           }
@@ -1640,40 +1698,10 @@ export function useTaskManager(
           const updates = new Map<string, TaskState>();
           const effects: DraftEffect[] = [];
           for (const entry of msg.tasks) {
-            const observation = taskObservationFromEntry(
-              entry,
-              (findByTid(entry.tid)?.messages.length ?? 0) > 0,
-            );
-            const tombstoneProjectKey = tombstoneTidToProjectRef.current.get(
-              entry.tid,
-            );
-            if (tombstoneProjectKey) {
-              const released = releaseTombstonedActivity(
-                tombstoneProjectKey,
-                observation,
-              );
-              if (!released) continue;
-              effects.push(...released);
-            }
-            const projectKey = controlledOwnerByTidRef.current.get(
-              entry.tid,
-            )?.projectKey;
-            const result = projectKey
-              ? applyDraftEvent({
-                  type: "task-observed",
-                  projectKey,
-                  observation,
-                })
-              : null;
-            const existingUuid = tidToUuid.get(entry.tid);
-            const existing = existingUuid
-              ? liveStates.get(existingUuid)
-              : undefined;
-            const state = taskStateFromEntry(entry, existing, existingUuid);
-            liveStates.set(state.uuid, state);
-            bindTaskUuid(entry.tid, state.uuid);
-            updates.set(state.uuid, state);
-            if (result) effects.push(...result.effects);
+            const result = applyTaskSnapshotEntry(entry);
+            if (!result) continue;
+            updates.set(result.updated.uuid, result.updated);
+            effects.push(...result.effects);
           }
           setTasks((prev) => {
             const next = new Map(prev);
@@ -1693,46 +1721,10 @@ export function useTaskManager(
           break;
         }
         case "task_updated": {
-          const entry = msg.task;
-          const observation = taskObservationFromEntry(
-            entry,
-            (findByTid(entry.tid)?.messages.length ?? 0) > 0,
-          );
-          const tombstoneProjectKey = tombstoneTidToProjectRef.current.get(
-            entry.tid,
-          );
-          const effects: DraftEffect[] = [];
-          if (tombstoneProjectKey) {
-            const released = releaseTombstonedActivity(
-              tombstoneProjectKey,
-              observation,
-            );
-            if (!released) break;
-            effects.push(...released);
-          }
-          const projectKey = controlledOwnerByTidRef.current.get(
-            entry.tid,
-          )?.projectKey;
-          const result = projectKey
-            ? applyDraftEvent({
-                type: "task-observed",
-                projectKey,
-                observation,
-              })
-            : null;
-          const existingUuid = tidToUuid.get(entry.tid);
-          const existing = existingUuid
-            ? liveStates.get(existingUuid)
-            : undefined;
-          const taskUpdated = taskStateFromEntry(entry, existing, existingUuid);
-          liveStates.set(taskUpdated.uuid, taskUpdated);
-          bindTaskUuid(entry.tid, taskUpdated.uuid);
-          setTasks((prev) => {
-            const next = new Map(prev);
-            next.set(taskUpdated.uuid, taskUpdated);
-            return next;
-          });
-          if (result) effects.push(...result.effects);
+          const result = applyTaskSnapshotEntry(msg.task);
+          if (!result) break;
+          const { updated, effects } = result;
+          setTasks((prev) => new Map(prev).set(updated.uuid, updated));
           executeDraftEffects(effects);
           break;
         }
@@ -1741,8 +1733,12 @@ export function useTaskManager(
           const toTid = msg.to_tid;
           const expectedKey = `${fromTid}:${toTid}`;
           if (expectedFocusRef.current.delete(expectedKey)) break;
-          if (tombstoneTidToProjectRef.current.has(toTid)) break;
-          const currentId = activeTaskIdRef.current;
+          if (
+            tombstoneTidToEditorRef.current.has(fromTid) ||
+            tombstoneTidToEditorRef.current.has(toTid)
+          )
+            break;
+          const currentId = getActiveTaskId();
           const currentTid = currentId !== null ? parseInt(currentId, 10) : NaN;
           const matches =
             fromTid === 0
@@ -1755,6 +1751,7 @@ export function useTaskManager(
         }
         case "task_reload": {
           const { tid } = msg;
+          if (tombstoneTidToEditorRef.current.has(tid)) break;
           const t = findByTid(tid);
           if (!t) break;
           outbox.removeForTask(tid);
@@ -1787,7 +1784,7 @@ export function useTaskManager(
           // Re-request history if this is the active task — the useEffect
           // won't re-fire because activeTaskId hasn't changed.
           let final = reset;
-          if (String(tid) === activeTaskIdRef.current) {
+          if (String(tid) === getActiveTaskId()) {
             if (connRef.current?.requestHistory(tid)) {
               requestedHistoryRef.current.add(t.uuid);
               final = {
@@ -1808,6 +1805,7 @@ export function useTaskManager(
         }
         case "task_history_start": {
           const { tid, total } = msg;
+          if (tombstoneTidToEditorRef.current.has(tid)) break;
           const t0 = findByTid(tid);
           if (!t0) break;
           const t = beginTaskHistoryReplay(t0, total);
@@ -1822,6 +1820,7 @@ export function useTaskManager(
         }
         case "task_history_end": {
           const { tid } = msg;
+          if (tombstoneTidToEditorRef.current.has(tid)) break;
           const t0 = findByTid(tid);
           if (!t0) break;
 
@@ -1901,15 +1900,16 @@ export function useTaskManager(
         }
         case "task_deleted": {
           const { tid } = msg;
-          const projectKey =
-            controlledOwnerByTidRef.current.get(tid)?.projectKey;
-          const deletedSlot = projectKey
-            ? getSlot(draftStateRef.current, projectKey)
+          const editorId =
+            controlledOwnerByTidRef.current.get(tid)?.editorId ??
+            tombstoneTidToEditorRef.current.get(tid);
+          const deletedSlot = editorId
+            ? getEditor(draftStateRef.current, editorId)
             : null;
           const deletedProject = deletedSlot?.project ?? null;
           const wasDeleting = deletedSlot?.remote.kind === "deleting";
-          const result = projectKey
-            ? applyDraftEvent({ type: "task-deleted", tid })
+          const result = editorId
+            ? applyDraftEvent({ type: "task-deleted", editorId, tid })
             : null;
           const uuid = tidToUuid.get(tid);
           outbox.removeForTask(tid);
@@ -1922,13 +1922,7 @@ export function useTaskManager(
           });
           if (result) executeDraftEffects(result.effects);
           if (deletedProject && !wasDeleting) {
-            const projectName = currentRouteProjectName(deletedProject, tid);
-            if (projectName) {
-              routeRef.current(
-                buildProjectHref(deletedProject.workspace, projectName),
-                true,
-              );
-            }
+            returnFromDeletedDraft(deletedProject, tid);
           }
           break;
         }
@@ -2109,11 +2103,15 @@ export function useTaskManager(
     [
       applyDraftEvent,
       bindTaskUuid,
-      currentRouteProjectName,
+      currentDraftRouteProjectName,
+      navigate,
+      rememberRouteProject,
+      returnFromDeletedDraft,
+      setActiveTaskId,
       executeDraftEffects,
       materializeDraftTask,
       removeTaskIdentity,
-      releaseTombstonedActivity,
+      applyTaskSnapshotEntry,
       requestTaskHistory,
       isCurrentOpenEpoch,
     ],
@@ -2165,12 +2163,12 @@ export function useTaskManager(
     let flushTimerId: ReturnType<typeof setTimeout> | null = null;
 
     const handleAgentAck = (tid: number, nonce: string) => {
-      if (tombstoneTidToProjectRef.current.has(tid)) return;
-      const projectKey = controlledOwnerByTidRef.current.get(tid)?.projectKey;
-      const effects = projectKey
+      if (tombstoneTidToEditorRef.current.has(tid)) return;
+      const editorId = controlledOwnerByTidRef.current.get(tid)?.editorId;
+      const effects = editorId
         ? applyDraftEvent({
             type: "task-observed",
-            projectKey,
+            editorId,
             observation: { tid, hasMessages: true },
           }).effects
         : [];
@@ -2213,7 +2211,7 @@ export function useTaskManager(
           handleUnconfirmedUserMessage(item.tid, item.msg, item.correlationId);
         else if (item.kind === "agentAck") handleAgentAck(item.tid, item.nonce);
         else if (item.kind === "historyBoundary") {
-          if (tombstoneTidToProjectRef.current.has(item.tid)) continue;
+          if (tombstoneTidToEditorRef.current.has(item.tid)) continue;
           const uuid = tidToUuid.get(item.tid);
           if (uuid === undefined)
             throw new Error(`Replacement for unknown task ${item.tid}`);
@@ -2235,6 +2233,10 @@ export function useTaskManager(
           liveStates.set(uuid, updated);
           setTasks((prev) => new Map(prev).set(uuid, updated));
         } else {
+          if (tombstoneTidToEditorRef.current.has(item.tid)) {
+            pendingHistoryBoundaries.delete(item.tid);
+            continue;
+          }
           handleTaskMessage(item.tid, item.msg, item.seq, item.ts);
           const pending = pendingHistoryBoundaries.get(item.tid);
           if (pending && item.seq !== undefined) {
@@ -2316,13 +2318,22 @@ export function useTaskManager(
       for (const runtime of saveRuntimeRef.current.values()) {
         const result = applyDraftEvent({
           type: "flush",
-          projectKey: runtime.projectKey,
+          editorId: runtime.editorId,
         });
         executeDraftEffects(result.effects);
       }
     };
     if (typeof window !== "undefined")
       window.addEventListener("pagehide", flushPendingDraftSaves);
+
+    const cancelDraftTimers = () => {
+      for (const runtime of createRuntimeRef.current.values())
+        clearTimeout(runtime.handle);
+      for (const runtime of saveRuntimeRef.current.values())
+        clearTimeout(runtime.handle);
+      createRuntimeRef.current.clear();
+      saveRuntimeRef.current.clear();
+    };
 
     conn.onStatusChange = (connected) => {
       if (!connected) {
@@ -2341,34 +2352,17 @@ export function useTaskManager(
         tasksListEpochRef.current = null;
         tasksListAcceptedTidsRef.current.clear();
         tasksListPhaseRef.current = "awaiting";
-        for (const runtime of createRuntimeRef.current.values())
-          clearTimeout(runtime.handle);
-        for (const runtime of saveRuntimeRef.current.values())
-          clearTimeout(runtime.handle);
-        createRuntimeRef.current.clear();
-        saveRuntimeRef.current.clear();
-        composerResetSequenceRef.current++;
-        composerResetEpochRef.current = composerResetSequenceRef.current;
-        composerResetRef.current.clear();
+        cancelDraftTimers();
+        composerResetEpochRef.current++;
         applyDraftEvent({ type: "connection-reset" });
         expectedFocusRef.current.clear();
-        draftAttachmentRef.current = null;
         routeProjectCacheRef.current = null;
         requestedProjectTypesRef.current.clear();
-        readyDraftMetadataProjectsRef.current.clear();
         workspacesRef.current = [];
-        projectEntryPointsRef.current = new Map();
-        defaultAgentRef.current = "";
         setWorkspaces([]);
         setEntryPoints([]);
         setTypeInfo([]);
-        setProjectEntryPoints(new Map());
         setProjectTypeInfo(new Map());
-        setAgents([]);
-        setDefaultAgent("");
-        setDefaultTaskType("");
-        setGlobalTaskTypesLoaded(false);
-        setAgentsLoaded(false);
         setTasksListEpoch(null);
         setTasks(new Map());
         setAgentUsage({});
@@ -2425,10 +2419,13 @@ export function useTaskManager(
       if (typeof window !== "undefined")
         window.removeEventListener("pagehide", flushPendingDraftSaves);
       flushPendingDraftSaves();
+      cancelDraftTimers();
+      if (controlledImageStore) resetControlledImageStore(controlledImageStore);
       ordinaryDraftStore.clear();
       conn.disconnect();
     };
   }, [
+    controlledImageStore,
     handleTaskMessage,
     handleDraftUpdatedMessage,
     handleControlMessage,
@@ -2447,17 +2444,19 @@ export function useTaskManager(
   // arriving would re-run this effect on its own — `tasks` and `workspaces` are
   // what make it fire.
   useEffect(() => {
-    const tid = parseTaskId(activeTaskId);
+    const current = readBrowserRoute();
+    const tid = parseTaskId(current.tid);
     if (tid === null) return;
     const [ws, proj] = taskContext(tid);
     const target = canonicalTaskRedirect({
       tid,
       taskWorkspace: ws,
       taskProject: proj,
-      urlWorkspace: activeWorkspace,
-      urlProject: activeProject,
+      urlWorkspace: current.workspace,
+      urlProject: current.project,
     });
-    if (target !== null) routeRef.current(target, true);
+    if (target !== null)
+      navigate({ workspace: ws, project: proj, tid: String(tid) }, true);
   }, [
     activeTaskId,
     activeWorkspace,
@@ -2465,6 +2464,7 @@ export function useTaskManager(
     tasks,
     workspaces,
     taskContext,
+    navigate,
   ]);
 
   // Request history when the active task changes and hasn't been loaded yet
@@ -2472,7 +2472,7 @@ export function useTaskManager(
     if (!connected || activeTaskId === null) return;
     const tid = parseTaskId(activeTaskId);
     if (tid === null) return;
-    if (tombstoneTidToProjectRef.current.has(tid)) return;
+    if (tombstoneTidToEditorRef.current.has(tid)) return;
     if (controlledOwnerByTidRef.current.has(tid)) return;
     const t = findByTid(tid);
     if (!t) return;
@@ -2526,143 +2526,40 @@ export function useTaskManager(
     isCurrentOpenEpoch,
   ]);
 
-  const cachedRouteProject = (() => {
-    const cached = routeProjectCacheRef.current;
-    if (
-      !cached ||
-      !activeWorkspace ||
-      !activeProject ||
-      cached.workspace !== activeWorkspace ||
-      cached.projectName !== activeProject ||
-      !isCurrentOpenEpoch(cached.epoch)
-    ) {
-      routeProjectCacheRef.current = null;
-      return null;
-    }
-    return cached;
-  })();
+  const routeDraftProject = useMemo(
+    () => resolveRouteProject(parsed),
+    [parsed, renderedConnectionEpoch, resolveRouteProject, workspaces],
+  );
 
-  const routeProject = useMemo(() => {
-    if (!connected || !activeWorkspace || !activeProject) return null;
-    const workspace = workspaces.find(
-      (candidate) => candidate.name === activeWorkspace,
-    );
-    const project = workspace?.projects.find(
-      (candidate) => candidate.name === activeProject,
-    );
-    if (!workspace || !project) return null;
-    return { workspace, projectName: activeProject, projectPath: project.path };
-  }, [activeWorkspace, activeProject, workspaces]);
-
-  if (
-    routeProject &&
-    isCurrentOpenEpoch(renderedConnectionEpoch) &&
-    draftStateRef.current.slots[
-      createProjectKey(routeProject.workspace.name, routeProject.projectPath)
-    ]
-  ) {
-    routeProjectCacheRef.current = {
-      epoch: renderedConnectionEpoch,
-      workspace: routeProject.workspace.name,
-      projectName: routeProject.projectName,
-      projectPath: routeProject.projectPath,
-    };
-  }
+  const projectEntryPoints = draftStateRef.current.metadata.catalogs;
 
   // Project task types are keyed by the canonical workspace metadata path,
   // which only exists after the workspace bootstrap has arrived.
   useEffect(() => {
-    if (!connected || !routeProject) return;
-    if (projectEntryPoints.has(routeProject.projectPath)) return;
+    if (!connected || !routeDraftProject?.projectPath) return;
+    if (projectEntryPoints.has(routeDraftProject.projectPath)) return;
     const epoch = renderedConnectionEpoch;
     if (!isCurrentOpenEpoch(epoch)) return;
     if (
-      requestedProjectTypesRef.current.get(routeProject.projectPath) === epoch
+      requestedProjectTypesRef.current.get(routeDraftProject.projectPath) ===
+      epoch
     )
       return;
     const connection = connRef.current;
     if (!connection) return;
-    connection.requestTaskTypes(routeProject.projectPath);
+    connection.requestTaskTypes(routeDraftProject.projectPath);
     if (isCurrentOpenEpoch(epoch))
-      requestedProjectTypesRef.current.set(routeProject.projectPath, epoch);
+      requestedProjectTypesRef.current.set(
+        routeDraftProject.projectPath,
+        epoch,
+      );
   }, [
     connected,
-    routeProject,
+    routeDraftProject,
     projectEntryPoints,
     renderedConnectionEpoch,
     isCurrentOpenEpoch,
   ]);
-
-  const routeDraftMetadata = useMemo(() => {
-    if (!activeWorkspace || !activeProject) return null;
-    if (!routeProject && cachedRouteProject) {
-      return {
-        workspace: cachedRouteProject.workspace,
-        projectName: cachedRouteProject.projectName,
-        projectPath: cachedRouteProject.projectPath,
-        entryPoint: undefined,
-        agent: "",
-        metadataReady: false,
-      };
-    }
-    if (!routeProject) {
-      return {
-        workspace: activeWorkspace,
-        projectName: activeProject,
-        projectPath: "",
-        entryPoint: undefined,
-        agent: "",
-        metadataReady: false,
-      };
-    }
-    const candidates = projectEntryPoints.get(routeProject.projectPath);
-    const preferred =
-      routeProject.workspace.default_task_type || defaultTaskType;
-    const agentReady = !!routeProject.workspace.default_agent || agentsLoaded;
-    const entryPoint =
-      candidates &&
-      agentReady &&
-      (routeProject.workspace.default_task_type || globalTaskTypesLoaded)
-        ? (candidates.find(
-            (candidate) =>
-              candidate.name === preferred || candidate.task_type === preferred,
-          ) ?? candidates[0])
-        : undefined;
-    return {
-      workspace: activeWorkspace,
-      projectName: routeProject.projectName,
-      projectPath: routeProject.projectPath,
-      entryPoint,
-      agent: agentReady
-        ? routeProject.workspace.default_agent || defaultAgent
-        : "",
-      metadataReady: entryPoint !== undefined,
-    };
-  }, [
-    activeWorkspace,
-    activeProject,
-    cachedRouteProject,
-    routeProject,
-    projectEntryPoints,
-    defaultTaskType,
-    globalTaskTypesLoaded,
-    agentsLoaded,
-    defaultAgent,
-  ]);
-
-  const setDraftAttachment = useCallback(
-    (next: { projectKey: ProjectKey; routeTid: number | null } | null) => {
-      const previous = draftAttachmentRef.current;
-      if (
-        previous?.projectKey === next?.projectKey &&
-        previous?.routeTid === next?.routeTid
-      )
-        return;
-      draftAttachmentRef.current = next;
-      refreshDraftView();
-    },
-    [refreshDraftView],
-  );
 
   const dispatchDraftIntent = useCallback(
     (event: DraftEvent) => {
@@ -2673,21 +2570,21 @@ export function useTaskManager(
   );
 
   const persistedSnapshot = useCallback(
-    (task: TaskState, fallbackAgent: string): TaskSnapshot | null => {
+    (task: TaskState, tid: number): PersistedSnapshot | null => {
       if (
         task.status !== "pending" ||
         task.messages.length !== 0 ||
         task.isProcessing ||
-        !task.serverDraft?.trim() ||
+        task.alive ||
         !task.entryPoint ||
-        task.tid === null
+        !task.serverDraft?.trim()
       )
         return null;
       return {
-        tid: task.tid,
+        tid,
         text: task.serverDraft,
         entryPoint: task.entryPoint,
-        agent: task.agentName ?? fallbackAgent,
+        agent: task.agentName ?? null,
         active: task.alive,
         processing: task.isProcessing,
         hasMessages: false,
@@ -2696,247 +2593,129 @@ export function useTaskManager(
     [],
   );
 
-  const switchStablePersistedRoute = useCallback(
-    (projectKey: ProjectKey, task: TaskState, snapshot: TaskSnapshot) => {
-      const slot = getSlot(draftStateRef.current, projectKey);
-      if (
-        slot.desired.kind !== "editing" ||
-        slot.remote.kind !== "present" ||
-        slot.remote.tid === snapshot.tid ||
-        (slot.remote.generation !== null &&
-          slot.remote.generation !== slot.desired.uuid)
-      )
-        return false;
-      const switched = applyDraftEvent({
-        type: "switch-persisted",
-        projectKey,
-        uuid: task.uuid,
-        snapshot,
-      });
-      executeDraftEffects(switched.effects);
-      return true;
-    },
-    [applyDraftEvent, executeDraftEffects],
-  );
-
-  useLayoutEffect(() => {
+  const selectedTid = activeTaskId === null ? null : parseTaskId(activeTaskId);
+  const selectedTask =
+    selectedTid === null ? undefined : findByTid(selectedTid);
+  const openPersistedEvent = useMemo<Extract<
+    DraftEvent,
+    { type: "open-persisted" }
+  > | null>(() => {
     if (
-      !isCurrentOpenEpoch(renderedConnectionEpoch) ||
       !connected ||
-      !routeDraftMetadata?.metadataReady ||
-      !routeDraftMetadata.projectPath ||
-      !routeDraftMetadata.entryPoint ||
-      activeTaskId === null
+      !routeDraftProject?.projectPath ||
+      selectedTid === null ||
+      !selectedTask ||
+      selectedTask.workspace !== routeDraftProject.workspace ||
+      selectedTask.projectPath !== routeDraftProject.projectPath
     )
-      return;
-    const tid = parseTaskId(activeTaskId);
-    if (tid === null) return;
-    const task = findByTid(tid);
+      return null;
+    const snapshot = persistedSnapshot(selectedTask, selectedTid);
     if (
-      !task ||
-      task.workspace !== routeDraftMetadata.workspace ||
-      task.projectPath !== routeDraftMetadata.projectPath
+      !snapshot ||
+      controlledOwnerByTidRef.current.has(snapshot.tid) ||
+      tombstoneTidToEditorRef.current.has(snapshot.tid)
     )
-      return;
-    const snapshot = persistedSnapshot(task, routeDraftMetadata.agent);
-    if (!snapshot) return;
-    const projectKey = createProjectKey(
-      routeDraftMetadata.workspace,
-      routeDraftMetadata.projectPath,
-    );
-    if (!draftStateRef.current.slots[projectKey]) return;
-    switchStablePersistedRoute(projectKey, task, snapshot);
+      return null;
+    const project = {
+      workspace: selectedTask.workspace,
+      projectPath: selectedTask.projectPath,
+    };
+    return {
+      type: "open-persisted",
+      editorId: `task:${snapshot.tid}`,
+      project,
+      snapshot,
+    };
   }, [
-    activeTaskId,
     connected,
     draftRevision,
-    isCurrentOpenEpoch,
     persistedSnapshot,
-    renderedConnectionEpoch,
-    routeDraftMetadata,
-    switchStablePersistedRoute,
-    tasks,
+    routeDraftProject,
+    selectedTask,
+    selectedTid,
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isCurrentOpenEpoch(renderedConnectionEpoch)) return;
-    if (!connected || !routeDraftMetadata?.projectPath) {
-      setDraftAttachment(null);
+    if (!connected || !routeDraftProject?.projectPath) return;
+    const current = readBrowserRoute();
+    if (
+      current.tid !== activeTaskId ||
+      current.workspace !== routeDraftProject.workspace ||
+      current.project !== routeDraftProject.projectName
+    )
       return;
-    }
-    const projectKey = createProjectKey(
-      routeDraftMetadata.workspace,
-      routeDraftMetadata.projectPath,
-    );
-    const existingSlot = draftStateRef.current.slots[projectKey];
-    if (routeDraftMetadata.metadataReady) {
-      const entryPoint = routeDraftMetadata.entryPoint;
-      if (!entryPoint) {
-        throw new Error("Resolved draft metadata lacks an entry point");
-      }
-      const metadataWasReady =
-        readyDraftMetadataProjectsRef.current.has(projectKey);
-      readyDraftMetadataProjectsRef.current.add(projectKey);
-      if (!existingSlot) {
-        const initialized = applyDraftEvent({
-          type: "initialize-slot",
-          project: {
-            workspace: routeDraftMetadata.workspace,
-            projectPath: routeDraftMetadata.projectPath,
-          },
-          defaults: {
-            entryPoint: entryPoint.name,
-            agent: routeDraftMetadata.agent,
-          },
-        });
-        executeDraftEffects(initialized.effects);
-      } else if (!metadataWasReady) {
-        const resolved = applyDraftEvent({
-          type: "resolve-metadata",
-          projectKey,
-          entryPoint: entryPoint.name,
-          agent: routeDraftMetadata.agent,
-        });
-        executeDraftEffects(resolved.effects);
-      }
-    } else {
-      readyDraftMetadataProjectsRef.current.delete(projectKey);
-      if (!existingSlot) {
-        const initialized = applyDraftEvent({
-          type: "initialize-slot",
-          project: {
-            workspace: routeDraftMetadata.workspace,
-            projectPath: routeDraftMetadata.projectPath,
-          },
-          defaults: {
-            entryPoint: null,
-            agent: null,
-          },
-        });
-        executeDraftEffects(initialized.effects);
-      }
-    }
-    routeProjectCacheRef.current = {
-      epoch: renderedConnectionEpoch,
-      workspace: routeDraftMetadata.workspace,
-      projectName: routeDraftMetadata.projectName,
-      projectPath: routeDraftMetadata.projectPath,
-    };
-
     if (activeTaskId === null) {
-      setDraftAttachment({ projectKey, routeTid: null });
-      return;
+      const { workspace, projectPath } = routeDraftProject;
+      const projectKey = createProjectKey(workspace, projectPath);
+      if (!draftStateRef.current.newTaskByProject[projectKey]) {
+        dispatchDraftIntent({
+          type: "attach-new-task",
+          project: { workspace, projectPath },
+          editorId: mintCompositionId(),
+        });
+      }
+    } else if (openPersistedEvent) {
+      dispatchDraftIntent(openPersistedEvent);
     }
-
-    const tid = parseTaskId(activeTaskId);
-    if (tid === null) {
-      setDraftAttachment(null);
-      return;
-    }
-    const task = findByTid(tid);
-    if (
-      !task ||
-      task.workspace !== routeDraftMetadata.workspace ||
-      task.projectPath !== routeDraftMetadata.projectPath
-    ) {
-      setDraftAttachment(null);
-      return;
-    }
-    const slot = getSlot(draftStateRef.current, projectKey);
-    if (
-      (slot.remote.kind === "present" || slot.remote.kind === "deleting") &&
-      slot.remote.tid === tid
-    ) {
-      setDraftAttachment({ projectKey, routeTid: tid });
-      return;
-    }
-    const snapshot = persistedSnapshot(task, routeDraftMetadata.agent);
-    if (!snapshot) {
-      setDraftAttachment(null);
-      return;
-    }
-    if (
-      slot.remote.kind === "creating" ||
-      slot.remote.kind === "deleting" ||
-      slot.desired.kind === "submitting"
-    ) {
-      setDraftAttachment(null);
-      return;
-    }
-    if (slot.desired.kind === "none" && slot.remote.kind === "absent") {
-      const adopted = applyDraftEvent({
-        type: "adopt-persisted",
-        projectKey,
-        uuid: task.uuid,
-        snapshot,
-      });
-      executeDraftEffects(adopted.effects);
-      setDraftAttachment({ projectKey, routeTid: tid });
-      return;
-    }
-    if (switchStablePersistedRoute(projectKey, task, snapshot)) {
-      setDraftAttachment({ projectKey, routeTid: tid });
-      return;
-    }
-    setDraftAttachment(null);
   }, [
     activeTaskId,
-    applyDraftEvent,
     connected,
+    dispatchDraftIntent,
     draftRevision,
-    executeDraftEffects,
-    persistedSnapshot,
-    routeDraftMetadata,
-    renderedConnectionEpoch,
     isCurrentOpenEpoch,
-    setDraftAttachment,
-    switchStablePersistedRoute,
-    tasks,
+    openPersistedEvent,
+    renderedConnectionEpoch,
+    routeDraftProject,
   ]);
 
   const editDraftText = useCallback(
-    (projectKey: ProjectKey, text: string) => {
-      const slot = getSlot(draftStateRef.current, projectKey);
-      if (slot.desired.kind !== "none" && text.trim().length === 0) {
-        clearComposerImages(projectKey);
+    (editorId: EditorId, text: string) => {
+      const editor = getEditor(draftStateRef.current, editorId);
+      const blank = text.trim() === "";
+      let successor: CompositionId | undefined;
+      if (
+        blank &&
+        editor.desired.kind === "editing" &&
+        editor.desired.text !== "" &&
+        editor.remote.kind !== "present"
+      ) {
+        successor = mintCompositionId();
       }
-      dispatchDraftIntent({
-        type: "edit-text",
-        projectKey,
-        text,
-        ...(slot.desired.kind === "none" && text.trim().length > 0
-          ? { uuid: crypto.randomUUID() }
-          : {}),
-      });
+      dispatchDraftIntent({ type: "edit-text", editorId, text, successor });
     },
-    [clearComposerImages, dispatchDraftIntent],
+    [dispatchDraftIntent],
   );
 
   const submitDraft = useCallback(
-    (projectKey: ProjectKey, images: ImageAttachment[]) => {
-      const slot = getSlot(draftStateRef.current, projectKey);
+    (editorId: EditorId, images: ImageAttachment[]) => {
+      const editor = getEditor(draftStateRef.current, editorId);
       const presentSubmission =
-        slot.remote.kind === "present" ? { tid: slot.remote.tid } : null;
+        editor.remote.kind === "present" ? { tid: editor.remote.tid } : null;
       const result = applyDraftEvent({
         type: "submit",
-        projectKey,
+        editorId,
         images,
-        ...(slot.desired.kind === "none" ? { uuid: crypto.randomUUID() } : {}),
       });
       if (presentSubmission) requestTaskHistory(presentSubmission.tid);
       executeDraftEffects(result.effects);
       if (presentSubmission) {
-        const projectName = currentRouteProjectName(slot.project, null);
+        const projectName = currentDraftRouteProjectName(editor.project, null);
         if (!projectName) return;
-        routeRef.current(
-          taskPath(slot.project.workspace, projectName, presentSubmission.tid),
+        navigate(
+          {
+            workspace: editor.project.workspace,
+            project: projectName,
+            tid: String(presentSubmission.tid),
+          },
           true,
         );
       }
     },
     [
       applyDraftEvent,
-      currentRouteProjectName,
+      currentDraftRouteProjectName,
+      navigate,
       executeDraftEffects,
       requestTaskHistory,
     ],
@@ -3121,7 +2900,7 @@ export function useTaskManager(
   const promote = useCallback((tid: number) => {
     const t = findByTid(tid);
     if (!t || t.status !== "importable") return;
-    connRef.current?.promoteTask(tid, activeWorkspaceRef.current ?? "");
+    connRef.current?.promoteTask(tid, readBrowserRoute().workspace ?? "");
   }, []);
 
   const setArchived = useCallback((tid: number, archived: boolean) => {
@@ -3203,34 +2982,44 @@ export function useTaskManager(
   );
 
   const resolvedEntryPoints = useMemo(() => {
-    const projectPath = routeDraftMetadata?.projectPath;
+    const projectPath = routeDraftProject?.projectPath;
     if (projectPath) {
       const projectEps = projectEntryPoints.get(projectPath);
-      if (projectEps) return projectEps;
+      if (projectEps) return [...projectEps];
     }
     return entryPoints;
-  }, [entryPoints, projectEntryPoints, routeDraftMetadata]);
+  }, [entryPoints, projectEntryPoints, routeDraftProject]);
 
   const resolvedTypeInfo = useMemo(() => {
-    const projectPath = routeDraftMetadata?.projectPath;
+    const projectPath = routeDraftProject?.projectPath;
     if (projectPath) {
       const projectTi = projectTypeInfo.get(projectPath);
       if (projectTi) return projectTi;
     }
     return typeInfo;
-  }, [projectTypeInfo, routeDraftMetadata, typeInfo]);
+  }, [projectTypeInfo, routeDraftProject, typeInfo]);
 
   const draftView = useMemo<DraftView | null>(() => {
-    if (!routeDraftMetadata) return null;
-    const routeViewKey = `route:${routeDraftMetadata.workspace}\0${routeDraftMetadata.projectName}`;
-    if (!routeDraftMetadata.projectPath) {
+    if (!routeDraftProject) return null;
+    const projectKey = createProjectKey(
+      routeDraftProject.workspace,
+      routeDraftProject.projectPath,
+    );
+    const editorId =
+      activeTaskId === null
+        ? draftStateRef.current.newTaskByProject[projectKey]
+        : selectedTid === null
+          ? undefined
+          : (controlledOwnerByTidRef.current.get(selectedTid)?.editorId ??
+            openPersistedEvent?.editorId);
+    if (!editorId) {
       if (activeTaskId !== null) return null;
       return {
         kind: "unresolved",
-        viewKey: routeViewKey,
-        workspace: routeDraftMetadata.workspace,
-        projectName: routeDraftMetadata.projectName,
-        projectPath: routeDraftMetadata.projectPath,
+        viewKey: `route:${routeDraftProject.workspace}\0${routeDraftProject.projectName}`,
+        workspace: routeDraftProject.workspace,
+        projectName: routeDraftProject.projectName,
+        projectPath: routeDraftProject.projectPath,
         remoteTid: null,
         text: "",
         entryPoint: "",
@@ -3238,87 +3027,29 @@ export function useTaskManager(
         lifecycle: "idle",
         disabled: true,
         metadataReady: false,
+        submitReady: false,
         composerResetToken: 0,
       };
     }
-    const projectKey = createProjectKey(
-      routeDraftMetadata.workspace,
-      routeDraftMetadata.projectPath,
-    );
-    const slot = draftStateRef.current.slots[projectKey];
-    const composerDisabled = !connected;
-    if (activeTaskId === null) {
-      if (!slot) {
-        return {
-          kind: "unresolved",
-          viewKey: routeViewKey,
-          workspace: routeDraftMetadata.workspace,
-          projectName: routeDraftMetadata.projectName,
-          projectPath: routeDraftMetadata.projectPath,
-          remoteTid: null,
-          text: "",
-          entryPoint: "",
-          agent: "",
-          lifecycle: "idle",
-          disabled: true,
-          metadataReady: false,
-          composerResetToken: 0,
-        };
-      }
-      return makeDraftViewSnapshot(
-        slot,
-        projectKey,
-        routeDraftMetadata.projectName,
-        composerDisabled,
-        routeDraftMetadata.metadataReady,
-        composerResetTokenFor(projectKey),
-        editDraftText,
-        dispatchDraftIntent,
-        submitDraft,
-      );
-    }
-
-    const tid = parseTaskId(activeTaskId);
-    if (tid === null || !slot) return null;
+    // Render a qualifying numeric route in the same commit as its snapshot.
+    // The layout effect commits this same transition before the view can edit.
+    const state = openPersistedEvent
+      ? reduceDraft(draftStateRef.current, openPersistedEvent).state
+      : draftStateRef.current;
+    const editor = getEditor(state, editorId);
     if (
-      (slot.remote.kind === "present" || slot.remote.kind === "deleting") &&
-      slot.remote.tid === tid
-    ) {
-      return makeDraftViewSnapshot(
-        slot,
-        projectKey,
-        routeDraftMetadata.projectName,
-        composerDisabled,
-        routeDraftMetadata.metadataReady,
-        composerResetTokenFor(projectKey),
-        editDraftText,
-        dispatchDraftIntent,
-        submitDraft,
-      );
-    }
-    if (!routeDraftMetadata.metadataReady) return null;
-    const task = findByTid(tid);
-    const snapshot =
-      task &&
-      task.workspace === routeDraftMetadata.workspace &&
-      task.projectPath === routeDraftMetadata.projectPath
-        ? persistedSnapshot(task, routeDraftMetadata.agent)
-        : null;
-    if (
-      !snapshot ||
-      slot.desired.kind !== "editing" ||
-      slot.remote.kind !== "present" ||
-      (slot.remote.generation !== null &&
-        slot.remote.generation !== slot.desired.uuid)
+      editor.project.workspace !== routeDraftProject.workspace ||
+      editor.project.projectPath !== routeDraftProject.projectPath
     )
       return null;
     return makeDraftViewSnapshot(
-      slot,
-      projectKey,
-      routeDraftMetadata.projectName,
-      true,
-      true,
-      composerResetTokenFor(projectKey),
+      editor,
+      editorId,
+      routeDraftProject.projectName,
+      !connected,
+      editorMetadataReady(state, editorId),
+      editorSubmittable(state, editorId),
+      composerResetEpochRef.current,
       editDraftText,
       dispatchDraftIntent,
       submitDraft,
@@ -3326,14 +3057,13 @@ export function useTaskManager(
   }, [
     activeTaskId,
     connected,
-    composerResetTokenFor,
     dispatchDraftIntent,
     draftRevision,
     editDraftText,
-    persistedSnapshot,
-    routeDraftMetadata,
+    openPersistedEvent,
+    routeDraftProject,
+    selectedTid,
     submitDraft,
-    tasks,
   ]);
 
   // Build sidebar task list filtered by active workspace/project and sorted by createdAt/tid
@@ -3367,28 +3097,36 @@ export function useTaskManager(
     }
     const result = filtered
       .sort((a, b) => a.tid - b.tid)
-      .map((t) => ({
-        tid: t.tid,
-        alive: t.alive,
-        canStop: t.canStop,
-        resumable: t.resumable,
-        isProcessing: t.isProcessing,
-        stdinClosed: t.stdinClosed,
-        title:
-          t.title ||
-          (t.status === "pending" && t.messages.length === 0 && t.serverDraft
-            ? t.serverDraft.replace(/\s+/g, " ").trim().slice(0, 100)
-            : undefined),
-        parentTid: t.parentTid,
-        childCount: t.childCount,
-        relationType: t.relationType,
-        status: t.status,
-        archived: t.archived,
-        archiving: t.archiving,
-        taskType: t.taskType,
-        hasPendingQuestion: t.hasPendingQuestion,
-        hasMessages: t.messages.length > 0,
-      }));
+      .map((t) => {
+        const owner = controlledOwnerByTidRef.current.get(t.tid);
+        const editor = owner && draftStateRef.current.editors[owner.editorId];
+        const text =
+          editor && editor.desired.kind !== "none"
+            ? editor.desired.text
+            : t.serverDraft;
+        return {
+          tid: t.tid,
+          alive: t.alive,
+          canStop: t.canStop,
+          resumable: t.resumable,
+          isProcessing: t.isProcessing,
+          stdinClosed: t.stdinClosed,
+          title:
+            t.title ||
+            (t.status === "pending" && t.messages.length === 0 && text
+              ? text.replace(/\s+/g, " ").trim().slice(0, 100)
+              : undefined),
+          parentTid: t.parentTid,
+          childCount: t.childCount,
+          relationType: t.relationType,
+          status: t.status,
+          archived: t.archived,
+          archiving: t.archiving,
+          taskType: t.taskType,
+          hasPendingQuestion: t.hasPendingQuestion,
+          hasMessages: t.messages.length > 0,
+        };
+      });
 
     const prev = prevSidebarTasksRef.current;
     if (
@@ -3419,10 +3157,10 @@ export function useTaskManager(
     }
     prevSidebarTasksRef.current = result;
     return result;
-  }, [tasks, activeWorkspace, activeProject, workspaces]);
+  }, [tasks, draftRevision, activeWorkspace, activeProject, workspaces]);
 
   const getProjectedByTid = useCallback((tid: number) => {
-    if (tombstoneTidToProjectRef.current.has(tid)) return undefined;
+    if (tombstoneTidToEditorRef.current.has(tid)) return undefined;
     return findByTid(tid);
   }, []);
 
@@ -3436,7 +3174,7 @@ export function useTaskManager(
     tasks,
     ordinaryDraftStore,
     activeTaskId,
-    activeTaskIdRef,
+    getActiveTaskId,
     setActiveTaskId,
     connected,
     tasksLoaded,
@@ -3466,9 +3204,9 @@ export function useTaskManager(
     workspaces,
     entryPoints: resolvedEntryPoints,
     typeInfo: resolvedTypeInfo,
-    agents,
-    defaultAgent,
-    defaultTaskType,
+    agents: draftStateRef.current.metadata.agents ?? [],
+    defaultAgent: draftStateRef.current.metadata.agent ?? "",
+    defaultTaskType: draftStateRef.current.metadata.entryPoint ?? "",
     activeWorkspace,
     activeProject,
     notices,

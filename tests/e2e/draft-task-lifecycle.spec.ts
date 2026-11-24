@@ -97,6 +97,7 @@ test("no remount during draft creation", async ({ page, agentType }) => {
   const input = page.locator(".input-textarea:visible").first();
   await input.click();
 
+  const initialInput = await input.elementHandle();
   // Trigger draft creation with the first keystroke, then wait for the
   // promotion boundary to settle before continuing to type through it.
   await input.press("h");
@@ -106,6 +107,11 @@ test("no remount during draft creation", async ({ page, agentType }) => {
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
   ).toBeVisible();
 
+  await expect(page).toHaveURL(new RegExp(`/task/${draftTid}(?:/|$)`));
+  expect(await initialInput!.evaluate((element) => element.isConnected)).toBe(
+    true,
+  );
+  await initialInput!.dispose();
   await expect(input).toBeFocused();
   await expect(input).toHaveValue("h");
 
@@ -217,7 +223,7 @@ test("draft task visible to second client", async ({ page, browser }) => {
   await context2.close();
 });
 
-test("new task navigates to the project draft without deleting it", async ({
+test("new task opens a blank composition after local promotion", async ({
   page,
 }) => {
   const deletedTasks: number[] = [];
@@ -251,31 +257,81 @@ test("new task navigates to the project draft without deleting it", async ({
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
   ).toBeVisible();
 
-  // New Task is project-root navigation, not a request to discard A.
+  await expect(page).toHaveURL(new RegExp(`/task/${draftTid}(?:/|$)`));
   await page.locator(".sidebar-new-task").click();
 
-  const projectInput = page.locator(".input-textarea:visible").first();
-  await expect(page.locator(".session-loading")).not.toBeVisible();
-  await expect(page.locator(".welcome-prompt:visible")).toBeVisible();
-  await expect(page.locator(".welcome-prompt .task-type-picker")).toBeVisible();
+  const projectInput = page.locator(".input-textarea:visible");
   await expect(projectInput).toBeEnabled();
-  await expect(projectInput).toHaveValue("draft navigation test");
-  await expect(
-    page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
-  ).toHaveCount(1);
-  expect(deletedTasks).toEqual([]);
-
-  // Explicit clearing, rather than navigation, deletes A and restores a blank form.
+  await expect(projectInput).toHaveValue("");
   await projectInput.fill("");
+  await page.locator(`.sidebar-item[data-tid="${draftTid}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`/task/${draftTid}(?:/|$)`));
+  await expect(projectInput).toHaveValue("draft navigation test");
+  expect(deletedTasks).toEqual([]);
+});
 
-  await expect.poll(() => deletedTasks).toEqual([Number(draftTid)]);
+test("new task is blank after leaving a directly opened persisted draft", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  const deletedTasks: number[] = [];
+  page.on("websocket", (ws) => {
+    ws.on("framesent", (frame) => {
+      try {
+        const message = JSON.parse(frame.payload.toString()) as {
+          type?: string;
+          tid?: number;
+        };
+        if (message.type === "delete_task" && typeof message.tid === "number")
+          deletedTasks.push(message.tid);
+      } catch {
+        // The application WebSocket transports JSON, but leave unrelated frames alone.
+      }
+    });
+  });
 
-  await expect(
-    page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
-  ).not.toBeAttached();
-  const blankInput = page.locator(".input-textarea:visible").first();
-  await expect(blankInput).toBeEnabled();
-  await expect(blankInput).toHaveValue("");
+  const seedContext = await browser.newContext({ baseURL });
+  const seedPage = await seedContext.newPage();
+  const persistedText = "persisted draft must not become a new task";
+  let draftTid: string;
+  try {
+    await enterSession(seedPage);
+    const before = await snapshotTids(seedPage);
+    await seedPage.locator(".input-textarea:visible").fill(persistedText);
+    draftTid = await waitForNewTid(seedPage, before);
+    // Read the body after reload to verify persistence.
+    await seedPage.reload();
+    await seedPage.locator(`.sidebar-item[data-tid="${draftTid}"]`).click();
+    await expect(seedPage.locator(".input-textarea:visible")).toHaveValue(
+      persistedText,
+    );
+  } finally {
+    await seedContext.close();
+  }
+
+  await enterSession(page);
+  const projectUrl = page.url();
+  const input = page.locator(".input-textarea:visible");
+  await expect(input).toHaveCount(1);
+  await expect(input).toHaveValue("");
+
+  const persistedDraft = page.locator(`.sidebar-item[data-tid="${draftTid}"]`);
+  await expect(persistedDraft).toHaveCount(1);
+  await persistedDraft.click();
+  await expect(page).toHaveURL(new RegExp(`/task/${draftTid}(?:/|$)`));
+  await expect(input).toHaveValue(persistedText);
+
+  await page.locator(".sidebar-new-task").click();
+  await expect(page).toHaveURL(projectUrl);
+  await expect(input).toBeEnabled();
+  await expect(input).toHaveValue("");
+
+  await input.fill("");
+  await persistedDraft.click();
+  await expect(page).toHaveURL(new RegExp(`/task/${draftTid}(?:/|$)`));
+  await expect(input).toHaveValue(persistedText);
+  expect(deletedTasks).toEqual([]);
 });
 
 test("draft persists across page reload", async ({ page }) => {
@@ -338,9 +394,7 @@ test("draft sidebar title survives page reload", async ({ page }) => {
 
   // Home intentionally renders its own task links. Re-enter the hydrated task
   // route before asserting the project sidebar's persisted-draft title.
-  await expect(
-    page.locator(`a[href$="/task/${draftTid}"]`),
-  ).toBeAttached();
+  await expect(page.locator(`a[href$="/task/${draftTid}"]`)).toBeAttached();
   await page.locator(`a[href$="/task/${draftTid}"]`).click();
 
   // Sidebar title should still show the draft text, not "Task NNN"
@@ -378,7 +432,7 @@ test("draft deletable after page reload", async ({ page }) => {
   await expect(restoredInput).toBeVisible();
   await expect(restoredInput).toHaveValue("delete after reload");
 
-  // Wait for re-adopt to complete (task type picker visible = onContentEnd wired)
+  // The restored numeric route must expose the controlled editor.
   await expect(page.locator(".welcome-prompt .task-type-picker")).toBeVisible();
 
   // Clear the text — this should trigger draft deletion

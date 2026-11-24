@@ -1,7 +1,7 @@
 import type { AgentInfo } from "../useSessionManager";
 
 interface Props {
-  agents: AgentInfo[];
+  agents: readonly AgentInfo[];
   selected: string;
   onChange: (agentName: string) => void;
   disabled?: boolean;

@@ -221,7 +221,7 @@ export function useExportedTaskManager(): TaskManager {
     tasks,
     ordinaryDraftStore,
     activeTaskId,
-    activeTaskIdRef,
+    getActiveTaskId: () => activeTaskIdRef.current,
     setActiveTaskId,
     connected: false,
     tasksLoaded: true,

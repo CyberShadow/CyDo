@@ -8,6 +8,11 @@ import {
   useCallback,
 } from "preact/hooks";
 import type { ImageAttachment } from "../useSessionManager";
+import {
+  invalidateControlledImageEntry,
+  type ControlledImageEntry,
+  type ControlledImageStore,
+} from "../controlledImageStore";
 import type { OrdinaryDraftStore } from "../ordinaryDraftStore";
 import { applyRecoveredInputDraft } from "./inputDraft";
 
@@ -40,7 +45,6 @@ interface ControlledProps extends CommonProps {
   mode: "controlled";
   value: string;
   onChange: (value: string) => void;
-  onBlur: () => void;
   onSubmit: (text: string, images: ImageAttachment[]) => void;
   submitDisabled?: boolean;
   composerResetToken: number;
@@ -49,43 +53,6 @@ interface ControlledProps extends CommonProps {
 }
 
 export type InputBoxProps = OrdinaryProps | ControlledProps;
-
-export interface ControlledImageEntry {
-  resetToken: number;
-  generation: number;
-  images: ImageAttachment[];
-  listeners: Set<(images: ImageAttachment[], generation: number) => void>;
-}
-
-export interface ControlledImageStore {
-  entries: Map<string, ControlledImageEntry>;
-}
-
-export function createControlledImageStore(): ControlledImageStore {
-  return { entries: new Map() };
-}
-
-function invalidateControlledImageEntry(
-  entry: ControlledImageEntry,
-  notify = true,
-) {
-  entry.generation++;
-  entry.images = [];
-  if (notify) {
-    for (const listener of entry.listeners) {
-      listener([], entry.generation);
-    }
-  }
-  entry.listeners.clear();
-}
-
-export function resetControlledImageStore(store: ControlledImageStore) {
-  const entries = Array.from(store.entries.values());
-  store.entries.clear();
-  for (const entry of entries) {
-    invalidateControlledImageEntry(entry);
-  }
-}
 
 function debounce<A extends unknown[]>(
   fn: (...args: A) => void,
@@ -636,7 +603,6 @@ function ControlledInputBox({
   disabled,
   value,
   onChange,
-  onBlur,
   onSubmit,
   submitDisabled = false,
   composerResetToken,
@@ -762,7 +728,6 @@ function ControlledInputBox({
         onInput={(event) => {
           change((event.target as HTMLTextAreaElement).value);
         }}
-        onBlur={onBlur}
         onKeyDown={handleKeyDown}
         onPaste={onPaste}
         placeholder={inputPlaceholder({ stdinClosed, disabled, isProcessing })}

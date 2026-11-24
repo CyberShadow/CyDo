@@ -6,6 +6,7 @@ vi.hoisted(() => {
   vi.stubGlobal("document", { querySelector: () => null });
 });
 import {
+  projectDraftTask,
   receiveServerError,
   revertFilesForUndo,
   taskObservationFromEntry,
@@ -167,5 +168,64 @@ describe("task observation adapter", () => {
       agent: "",
       active: true,
     });
+  });
+});
+
+describe("draft projection validation", () => {
+  const form = { text: "new text", entryPoint: "entry", agent: "agent" };
+  const task = {
+    ...makeTaskState(71, false),
+    projectPath: "/project",
+    taskType: "snapshot-type",
+    entryPoint: "entry",
+  };
+
+  it("projects an unresolved agent without changing the underlying task agent", () => {
+    expect(
+      projectDraftTask(
+        {
+          ...task,
+          agentName: "snapshot-agent",
+          serverDraft: "server observation",
+        },
+        71,
+        { ...form, agent: null },
+        new Map(),
+      ),
+    ).toMatchObject({
+      agentName: "snapshot-agent",
+      title: form.text,
+      serverDraft: "server observation",
+    });
+  });
+
+  it("requires the underlying task and its canonical project", () => {
+    expect(() => projectDraftTask(undefined, 71, form, new Map())).toThrow(
+      "Draft projection requires task 71",
+    );
+    expect(() =>
+      projectDraftTask({ ...task, projectPath: "" }, 71, form, new Map()),
+    ).toThrow("Draft projection requires project 71");
+  });
+
+  it.each([new Map(), new Map([["/project", []]])])(
+    "keeps the task type when its unlisted entry point matches the task",
+    (catalog) => {
+      expect(projectDraftTask(task, 71, form, catalog)).toMatchObject({
+        taskType: "snapshot-type",
+        entryPoint: "entry",
+      });
+    },
+  );
+
+  it("rejects an unlisted projected name that differs from the task's entry point", () => {
+    expect(() =>
+      projectDraftTask(
+        task,
+        71,
+        { ...form, entryPoint: "different" },
+        new Map([["/project", []]]),
+      ),
+    ).toThrow("Draft projection entry point does not match task 71");
   });
 });

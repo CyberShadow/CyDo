@@ -373,6 +373,7 @@ export interface TaskState {
   /** Auto-generated reply suggestions, shown when it's the user's turn. */
   suggestions?: string[];
   /** Server-provided draft for initial hydration on page load. */
+  // Last server draft observation. Controlled editor text lives in the reducer.
   serverDraft?: string;
   /** Pending AskUserQuestion from the agent, waiting for user response. */
   pendingAskUser?: {

@@ -22,7 +22,8 @@ import { NoticeBar } from "./NoticeBar";
 import { SystemBanner, normalizeSessionStatus } from "./SystemBanner";
 import { deriveBandStatus } from "./StatusBand";
 import { MessageList } from "./MessageList";
-import { InputBox, type ControlledImageStore } from "./InputBox";
+import { InputBox } from "./InputBox";
+import type { ControlledImageStore } from "../controlledImageStore";
 import { SessionConfig } from "./SessionConfig";
 import { AgentPicker } from "./AgentPicker";
 import { AskUserForm } from "./AskUserForm";
@@ -575,7 +576,7 @@ interface DraftSessionViewProps {
   connected: boolean;
   tasksLoading: boolean;
   entryPoints: EntryPointInfo[];
-  agents: AgentInfo[];
+  agents: readonly AgentInfo[];
   defaultAgent: string;
   notices?: Record<string, Notice>;
   theme: Theme;
@@ -684,9 +685,6 @@ export function DraftSessionView({
   const changeAgent = (agent: string) => {
     if (draftView.kind === "resolved") draftView.onAgentChange(agent);
   };
-  const flush = () => {
-    if (draftView.kind === "resolved") draftView.onBlur();
-  };
   const submit = (text: string, images: ImageAttachment[]) => {
     if (draftView.kind === "resolved") {
       requestNotificationPermissionFromGesture();
@@ -740,13 +738,12 @@ export function DraftSessionView({
             mode="controlled"
             value={draftView.text}
             onChange={changeText}
-            onBlur={flush}
             onSubmit={submit}
-            submitDisabled={!draftView.metadataReady}
+            submitDisabled={!draftView.submitReady}
             composerResetToken={draftView.composerResetToken}
             imageStore={imageStore}
             imageKey={
-              draftView.kind === "resolved" ? draftView.projectKey : undefined
+              draftView.kind === "resolved" ? draftView.editorId : undefined
             }
             onInterrupt={() => {}}
             isProcessing={false}

@@ -25,7 +25,7 @@ import { subtaskResultParent } from "./subtaskResultParent";
 import {
   createControlledImageStore,
   resetControlledImageStore,
-} from "./components/InputBox";
+} from "./controlledImageStore";
 import "./e2e";
 
 function shortProjectName(projectName: string): string {
@@ -39,7 +39,7 @@ function AppContent() {
   const {
     tasks,
     activeTaskId,
-    activeTaskIdRef,
+    getActiveTaskId,
     setActiveTaskId,
     connected,
     tasksLoaded,
@@ -87,7 +87,8 @@ function AppContent() {
     getByTid,
     refreshWorkspaces,
     scanState,
-  } = useTaskManager(addToast);
+  } = useTaskManager(addToast, controlledImageStore);
+  const browserTaskId = getActiveTaskId();
   const tasksLoading = connected && !tasksLoaded;
   const continuationPredecessors = useMemo(() => {
     const predecessors = new Set<number>();
@@ -516,7 +517,7 @@ function AppContent() {
                 t.everLoaded ||
                 t.historyLoaded ||
                 String(t.tid) === activeTaskId ||
-                String(t.tid) === activeTaskIdRef.current
+                String(t.tid) === browserTaskId
               );
             })
             .map((task) => {
@@ -525,7 +526,7 @@ function AppContent() {
               }
               const isActive =
                 String(task.tid) === activeTaskId ||
-                String(task.tid) === activeTaskIdRef.current;
+                String(task.tid) === browserTaskId;
               const resultParentTid = tasksLoaded
                 ? subtaskResultParent(
                     {

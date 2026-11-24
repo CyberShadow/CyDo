@@ -7,9 +7,9 @@ import { render } from "preact";
 import { act } from "preact/test-utils";
 import {
   createControlledImageStore,
-  InputBox,
   resetControlledImageStore,
-} from "./InputBox";
+} from "../controlledImageStore";
+import { InputBox } from "./InputBox";
 import type { ImageAttachment } from "../useSessionManager";
 import { createOrdinaryDraftStore } from "../ordinaryDraftStore";
 
@@ -137,7 +137,6 @@ describe("controlled InputBox", () => {
           onChange={(next) => {
             changes.push(next);
           }}
-          onBlur={() => {}}
           onSubmit={(text, images) => {
             submits.push({ text, images });
           }}

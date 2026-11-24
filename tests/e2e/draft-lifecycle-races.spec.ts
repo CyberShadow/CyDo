@@ -461,10 +461,9 @@ async function observeLoadingFallback(page: Page) {
       );
 
     const isMeasurementNode = (node: Node) =>
-      (node instanceof Element
-        ? node
-        : node.parentElement
-      )?.closest("[data-cydo-loading-measurement]") !== null;
+      (node instanceof Element ? node : node.parentElement)?.closest(
+        "[data-cydo-loading-measurement]",
+      ) !== null;
 
     const isLoadingFallback = (element: Element) =>
       element.matches(".session-empty") &&
@@ -477,10 +476,7 @@ async function observeLoadingFallback(page: Page) {
       hasVisibleGeometry(element);
 
     const inspectElement = (element: Element) => {
-      if (
-        !isMeasurementNode(element) &&
-        isVisibleLoadingFallback(element)
-      )
+      if (!isMeasurementNode(element) && isVisibleLoadingFallback(element))
         state.sawLoading = true;
     };
     const inspectNode = (node: Node) => {
@@ -678,8 +674,7 @@ async function verifyTransientLoadingFallbackObservation(page: Page) {
   await page.evaluate(() => {
     const stylesheet = document.createElement("style");
     stylesheet.id = "cydo-loading-probe-stylesheet";
-    stylesheet.textContent =
-      ".cydo-loading-probe-hidden { display: none; }";
+    stylesheet.textContent = ".cydo-loading-probe-hidden { display: none; }";
     document.head.append(stylesheet);
   });
   await observeLoadingFallback(page);
@@ -1049,7 +1044,7 @@ test("typing before held project metadata creates once after resolution", async 
   ).toHaveLength(1);
 });
 
-test("clear and retype waits for stale draft deletion before creating a replacement", async ({
+test("clear and retype creates a successor while the original create is held", async ({
   page,
 }) => {
   const proxy = await installDraftRaceProxy(page);
@@ -1073,40 +1068,29 @@ test("clear and retype waits for stale draft deletion before creating a replacem
   await expectControlledTextarea(page, "replacement B stays controlled");
   await expectNoTaskLoading(page);
   await expectNoObservedLoadingFallback(page);
-  expect(proxy.createRequests).toHaveLength(1);
 
   proxy.armDeleteAckHold(tidA);
+  await expect.poll(() => proxy.createRequests.length).toBe(2);
+  const createB = proxy.createRequests[1]!;
+  expect(createB.content).toEqual([]);
+  const correlationB = requireCorrelation(createB, "B");
+  expect(correlationB).not.toBe(correlationA);
+  const tidB = await waitForCreatedTid(proxy, correlationB);
+  expect(tidB).not.toBe(tidA);
+
   proxy.releaseCreateAck();
 
   await expect.poll(() => proxy.deleteRequests).toEqual([tidA]);
   await expect.poll(() => proxy.isDeleteAckHeld(tidA)).toBe(true);
-  expect(proxy.createRequests).toHaveLength(1);
   await expectControlledTextarea(page, "replacement B stays controlled");
   await expectNoTaskLoading(page);
   await expectNoObservedLoadingFallback(page);
   await expectNoStaleProjection(page, tidA);
 
   proxy.releaseDeleteAck(tidA);
+  await waitForServerDelivery(proxy, "task_deleted", tidA);
 
-  await expect.poll(() => proxy.createRequests.length).toBe(2);
-  const createB = proxy.createRequests[1]!;
-  expect(createB.content).toEqual([]);
-  const correlationB = requireCorrelation(createB, "B");
-  expect(correlationB).not.toBe(correlationA);
-  const deleteDelivery = proxy
-    .controls("task_deleted", {
-      tid: tidA,
-      direction: "server-delivered",
-    })
-    .at(-1);
-  const createBControl = proxy
-    .controls("create_task", { direction: "browser-to-server" })
-    .find((control) => control.frame.correlation_id === correlationB);
-  expect(deleteDelivery).toBeDefined();
-  expect(createBControl).toBeDefined();
-  expect(createBControl!.order).toBeGreaterThan(deleteDelivery!.order);
-  const tidB = await waitForCreatedTid(proxy, correlationB);
-  expect(tidB).not.toBe(tidA);
+  await expect(page).toHaveURL(new RegExp(`/task/${tidB}(?:/|$)`));
 
   await expectControlledTextarea(page, "replacement B stays controlled");
   await expectNoTaskLoading(page);
@@ -1119,7 +1103,7 @@ test("clear and retype waits for stale draft deletion before creating a replacem
   expect(proxy.taskDeleted.filter((tid) => tid === tidA)).toHaveLength(1);
 });
 
-test("clear-only waits for stale draft deletion and leaves a usable blank form", async ({
+test("clear replaces an unacknowledged draft with a usable blank form", async ({
   page,
 }) => {
   const proxy = await installDraftRaceProxy(page);
@@ -1138,8 +1122,13 @@ test("clear-only waits for stale draft deletion and leaves a usable blank form",
   await observeLoadingFallback(page);
   await observeStaleProjection(page, tidA);
 
+  const previousInput = await input.elementHandle();
   await input.fill("");
   await expectControlledTextarea(page, "");
+  expect(await previousInput!.evaluate((element) => element.isConnected)).toBe(
+    false,
+  );
+  await previousInput!.dispose();
   await expectNoTaskLoading(page);
   await expectNoObservedLoadingFallback(page);
   expect(proxy.createRequests).toHaveLength(1);
@@ -1171,7 +1160,7 @@ test("clear-only waits for stale draft deletion and leaves a usable blank form",
   expect(proxy.taskDeleted.filter((tid) => tid === tidA)).toHaveLength(1);
 });
 
-test("post-tid clear and retype waits for the genuine deletion acknowledgement", async ({
+test("post-tid clear and retype creates a successor while deletion is held", async ({
   page,
 }) => {
   const proxy = await installDraftRaceProxy(page);
@@ -1212,29 +1201,19 @@ test("post-tid clear and retype waits for the genuine deletion acknowledgement",
   await expectNoObservedLoadingFallback(page);
   await expectStaleProjectionAbsentAndWatch(page, tidA);
   await expectNoNavigationToTid(page, tidA);
-  expect(proxy.createRequests).toHaveLength(1);
-
-  proxy.releaseDeleteAck(tidA);
 
   await expect.poll(() => proxy.createRequests.length).toBe(2);
   const createB = proxy.createRequests[1]!;
   expect(createB.content).toEqual([]);
   const correlationB = requireCorrelation(createB, "B");
   expect(correlationB).not.toBe(correlationA);
-  const deleteDelivery = proxy
-    .controls("task_deleted", {
-      tid: tidA,
-      direction: "server-delivered",
-    })
-    .at(-1);
-  const createBControl = proxy
-    .controls("create_task", { direction: "browser-to-server" })
-    .find((control) => control.frame.correlation_id === correlationB);
-  expect(deleteDelivery).toBeDefined();
-  expect(createBControl).toBeDefined();
-  expect(createBControl!.order).toBeGreaterThan(deleteDelivery!.order);
   const tidB = await waitForCreatedTid(proxy, correlationB);
   expect(tidB).not.toBe(tidA);
+
+  proxy.releaseDeleteAck(tidA);
+  await waitForServerDelivery(proxy, "task_deleted", tidA);
+
+  await expect(page).toHaveURL(new RegExp(`/task/${tidB}(?:/|$)`));
 
   await expectControlledTextarea(page, "post-tid replacement B");
   await expectNoTaskLoading(page);
@@ -1401,6 +1380,7 @@ test("detached acknowledgement persists the latest controlled form without routi
   await expectControlledTextarea(page, latestText);
 
   await observeLoadingFallback(page);
+  const projectUrl = page.url();
   await page.locator(".sidebar-back-btn:visible").click();
   await expect(page).toHaveURL(/\/$/);
   await expect(page.locator(".input-textarea:visible")).toHaveCount(0);
@@ -1473,6 +1453,10 @@ test("detached acknowledgement persists the latest controlled form without routi
   expect(proxy.deleteRequests).toEqual([]);
 
   await page.goBack();
+  await expect(page).toHaveURL(projectUrl);
+  await expectControlledTextarea(page, "");
+  await page.locator(`.sidebar-item[data-tid="${tidA}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`/task/${tidA}(?:/|$)`));
   await expectControlledTextarea(page, latestText);
   await expect(
     page.locator(".task-type-row.selected .task-type-name"),
@@ -1489,7 +1473,7 @@ test("detached acknowledgement persists the latest controlled form without routi
   await expectNoObservedLoadingFallback(page);
 });
 
-test("returning before acknowledgement promotes the same attached generation", async ({
+test("returning before acknowledgement promotes the same attached composition", async ({
   page,
 }) => {
   const proxy = await installDraftRaceProxy(page);
@@ -1556,4 +1540,10 @@ test("returning before acknowledgement promotes the same attached generation", a
   expect(proxy.deleteRequests).toEqual([]);
   await expectNoTaskLoading(page);
   await expectNoObservedLoadingFallback(page);
+  await page.locator(".sidebar-new-task").click();
+  await expectControlledTextarea(page, "");
+  await expect(page.locator(`.sidebar-item[data-tid="${tidA}"]`)).toHaveCount(
+    1,
+  );
+  expect(proxy.deleteRequests).toEqual([]);
 });

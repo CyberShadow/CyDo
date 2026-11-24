@@ -12,7 +12,7 @@ import renderToString from "preact-render-to-string";
 import { act } from "preact/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ownedRoots } from "./test-support/preactAct";
-import type { ControlledImageStore } from "./components/InputBox";
+import type { ControlledImageStore } from "./controlledImageStore";
 import type { DraftViewSnapshot, TaskManager } from "./useSessionManager";
 import { makeTaskState, type TaskState } from "./types";
 import { createOrdinaryDraftStore } from "./ordinaryDraftStore";
@@ -71,7 +71,7 @@ vi.mock("./useSessionManager", () => ({
       ordinaryDraftStore: (state.ordinaryDraftStore ??=
         createOrdinaryDraftStore()),
       activeTaskId: state.activeTaskId,
-      activeTaskIdRef: { current: state.activeTaskId },
+      getActiveTaskId: () => state.activeTaskId,
       setActiveTaskId: vi.fn(),
       connected: state.connected,
       tasksLoaded: state.tasksLoaded,
@@ -122,8 +122,9 @@ vi.mock("./useSessionManager", () => ({
     }) satisfies TaskManager,
 }));
 
-vi.mock("./components/InputBox", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./components/InputBox")>();
+vi.mock("./controlledImageStore", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./controlledImageStore")>();
   return {
     ...actual,
     createControlledImageStore: () => {
@@ -253,8 +254,8 @@ function latest<T>(calls: T[]): T {
 function makeDraftView(): DraftViewSnapshot {
   return {
     kind: "resolved",
-    projectKey: "workspace\0/project",
-    viewKey: "workspace\0/project",
+    editorId: "composition:test" as const,
+    viewKey: "composition:test",
     workspace: "workspace",
     projectName: "project",
     projectPath: "/project",
@@ -265,11 +266,11 @@ function makeDraftView(): DraftViewSnapshot {
     lifecycle: "idle",
     disabled: false,
     metadataReady: true,
+    submitReady: true,
     composerResetToken: 0,
     onTextChange: vi.fn(),
     onEntryPointChange: vi.fn(),
     onAgentChange: vi.fn(),
-    onBlur: vi.fn(),
     onSubmit: vi.fn(),
   };
 }
@@ -338,8 +339,8 @@ describe("server command errors", () => {
     state.activeProject = "project";
     state.draftView = {
       kind: "resolved",
-      projectKey: "workspace\0/project",
-      viewKey: "workspace\0/project",
+      editorId: "composition:test" as const,
+      viewKey: "composition:test",
       workspace: "workspace",
       projectName: "project",
       projectPath: "/project",
@@ -350,11 +351,11 @@ describe("server command errors", () => {
       lifecycle: "present",
       disabled: false,
       metadataReady: true,
+      submitReady: true,
       composerResetToken: 0,
       onTextChange: vi.fn(),
       onEntryPointChange: vi.fn(),
       onAgentChange: vi.fn(),
-      onBlur: vi.fn(),
       onSubmit: vi.fn(),
     } satisfies DraftViewSnapshot;
 
@@ -363,6 +364,74 @@ describe("server command errors", () => {
     expect(html).toContain(">controlled draft</textarea>");
     expect(html).not.toContain("Loading task");
     expect(html.match(/input-textarea/g) ?? []).toHaveLength(1);
+  });
+
+  it("keeps the numeric-route draft editable with Submit disabled by the catalog", async () => {
+    const pending = {
+      ...makeTaskState(
+        95,
+        false,
+        false,
+        undefined,
+        false,
+        "workspace",
+        "/project",
+      ),
+      uuid: "pending-draft",
+      status: "pending" as const,
+      serverDraft: "controlled draft",
+      entryPoint: "entry",
+      agentName: "agent",
+    };
+    state.tasks = new Map([[pending.uuid, pending]]);
+    state.activeTaskId = "95";
+    state.entryPoints = [
+      {
+        name: "listed",
+        task_type: "blank",
+        description: "",
+        model_class: "",
+        read_only: false,
+      },
+    ];
+    state.activeWorkspace = "workspace";
+    state.activeProject = "project";
+    state.draftView = {
+      kind: "resolved",
+      editorId: "task:95" as const,
+      viewKey: "task:95",
+      workspace: "workspace",
+      projectName: "project",
+      projectPath: "/project",
+      remoteTid: 95,
+      text: "controlled draft",
+      entryPoint: "entry",
+      agent: "agent",
+      lifecycle: "present",
+      disabled: false,
+      metadataReady: true,
+      submitReady: false,
+      composerResetToken: 0,
+      onTextChange: vi.fn(),
+      onEntryPointChange: vi.fn(),
+      onAgentChange: vi.fn(),
+      onSubmit: vi.fn(),
+    } satisfies DraftViewSnapshot;
+
+    const container = roots.create();
+    await act(() => {
+      render(h(App, {}), container);
+    });
+    const inputs =
+      container.querySelectorAll<HTMLTextAreaElement>(".input-textarea");
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]?.value).toBe("controlled draft");
+    expect(inputs[0]?.disabled).toBe(false);
+    expect(
+      container.querySelector<HTMLButtonElement>(".btn-send")?.disabled,
+    ).toBe(true);
+    expect(container.querySelector(".task-type-row.selected")).toBeNull();
+    expect(container.textContent).not.toContain("Loading task");
   });
 
   it("does not hydrate an ordinary composer from a submitted controlled peer update", async () => {
@@ -389,8 +458,8 @@ describe("server command errors", () => {
     state.activeProject = "project";
     state.draftView = {
       kind: "resolved",
-      projectKey: "workspace\0/project",
-      viewKey: "workspace\0/project",
+      editorId: "composition:test" as const,
+      viewKey: "composition:test",
       workspace: "workspace",
       projectName: "project",
       projectPath: "/project",
@@ -401,11 +470,11 @@ describe("server command errors", () => {
       lifecycle: "present",
       disabled: false,
       metadataReady: true,
+      submitReady: true,
       composerResetToken: 0,
       onTextChange: vi.fn(),
       onEntryPointChange: vi.fn(),
       onAgentChange: vi.fn(),
-      onBlur: vi.fn(),
       onSubmit: controlledSubmit,
     } satisfies DraftViewSnapshot;
     const container = roots.create();
@@ -482,7 +551,7 @@ describe("server command errors", () => {
     expect(html).not.toContain("input-textarea");
   });
 
-  it("keeps the project-keyed controlled composer mounted through owned numeric acknowledgement", async () => {
+  it("keeps the same controlled editor mounted through numeric promotion", async () => {
     const readers: FileReader[] = [];
     const readAsDataURL = vi
       .spyOn(FileReader.prototype, "readAsDataURL")
@@ -514,8 +583,8 @@ describe("server command errors", () => {
     };
     const rootDraft = {
       kind: "resolved",
-      projectKey: "workspace\0/project",
-      viewKey: "workspace\0/project",
+      editorId: "composition:test" as const,
+      viewKey: "composition:test",
       workspace: "workspace",
       projectName: "project",
       projectPath: "/project",
@@ -526,11 +595,11 @@ describe("server command errors", () => {
       lifecycle: "creating",
       disabled: false,
       metadataReady: true,
+      submitReady: true,
       composerResetToken: 11,
       onTextChange: vi.fn(),
       onEntryPointChange: vi.fn(),
       onAgentChange: vi.fn(),
-      onBlur: vi.fn(),
       onSubmit: vi.fn(),
     } satisfies DraftViewSnapshot;
 
@@ -594,6 +663,23 @@ describe("server command errors", () => {
         completeNextReader();
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
+
+      state.activeTaskId = null;
+      state.draftView = {
+        ...rootDraft,
+        editorId: "composition:successor",
+        viewKey: "composition:successor",
+        lifecycle: "idle",
+        text: "",
+      };
+      await act(() => {
+        render(h(App, {}), container);
+      });
+      expect(container.querySelector("textarea")).not.toBe(beforeTextarea);
+      expect(
+        container.querySelector<HTMLTextAreaElement>("textarea")?.value,
+      ).toBe("");
+      expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
     } finally {
       readAsDataURL.mockRestore();
     }
@@ -631,8 +717,8 @@ describe("server command errors", () => {
     };
     const projectDraft = {
       kind: "resolved" as const,
-      projectKey: "workspace\0/project",
-      viewKey: "workspace\0/project",
+      editorId: "composition:test" as const,
+      viewKey: "composition:test",
       workspace: "workspace",
       projectName: "project",
       projectPath: "/project",
@@ -643,11 +729,11 @@ describe("server command errors", () => {
       lifecycle: "creating" as const,
       disabled: false,
       metadataReady: true,
+      submitReady: true,
       composerResetToken: 15,
       onTextChange: vi.fn(),
       onEntryPointChange: vi.fn(),
       onAgentChange: vi.fn(),
-      onBlur: vi.fn(),
       onSubmit: vi.fn(),
     } satisfies DraftViewSnapshot;
 
@@ -684,6 +770,7 @@ describe("server command errors", () => {
       state.draftView = {
         ...projectDraft,
         metadataReady: false,
+        submitReady: false,
       };
       await act(() => {
         render(h(App, {}), container);
@@ -759,8 +846,8 @@ describe("server command errors", () => {
     };
     const cachedDraft = {
       kind: "resolved" as const,
-      projectKey: "workspace\0/project",
-      viewKey: "workspace\0/project",
+      editorId: "composition:test" as const,
+      viewKey: "composition:test",
       workspace: "workspace",
       projectName: "project",
       projectPath: "/project",
@@ -771,11 +858,11 @@ describe("server command errors", () => {
       lifecycle: "creating" as const,
       disabled: false,
       metadataReady: false,
+      submitReady: false,
       composerResetToken: 19,
       onTextChange: vi.fn(),
       onEntryPointChange: vi.fn(),
       onAgentChange: vi.fn(),
-      onBlur: vi.fn(),
       onSubmit: vi.fn(),
     } satisfies DraftViewSnapshot;
     const realTaskB = {
@@ -894,6 +981,7 @@ describe("server command errors", () => {
         ...cachedDraft,
         disabled: false,
         metadataReady: true,
+        submitReady: true,
       };
       await act(() => {
         render(h(App, {}), container);
@@ -940,8 +1028,8 @@ describe("server command errors", () => {
     const submitA = vi.fn();
     const draftA = {
       kind: "resolved" as const,
-      projectKey: "workspace\0/project-a",
-      viewKey: "workspace\0/project-a",
+      editorId: "composition:test" as const,
+      viewKey: "composition:test",
       workspace: "workspace",
       projectName: "project-a",
       projectPath: "/project-a",
@@ -952,17 +1040,17 @@ describe("server command errors", () => {
       lifecycle: "creating" as const,
       disabled: false,
       metadataReady: true,
+      submitReady: true,
       composerResetToken: 0,
       onTextChange: vi.fn(),
       onEntryPointChange: vi.fn(),
       onAgentChange: vi.fn(),
-      onBlur: vi.fn(),
       onSubmit: submitA,
     } satisfies DraftViewSnapshot;
     const draftB = {
       ...draftA,
-      projectKey: "workspace\0/project-b",
-      viewKey: "workspace\0/project-b",
+      editorId: "composition:test-b" as const,
+      viewKey: "composition:test-b",
       projectName: "project-b",
       projectPath: "/project-b",
       text: "draft B",
@@ -994,7 +1082,7 @@ describe("server command errors", () => {
 
       const imageStore = controlledImageStore.current!;
       expect(imageStore.entries.size).toBe(1);
-      const aEntry = imageStore.entries.get(draftA.projectKey)!;
+      const aEntry = imageStore.entries.get(draftA.editorId)!;
 
       const aTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
@@ -1010,7 +1098,7 @@ describe("server command errors", () => {
       state.activeProject = null;
       state.draftView = null;
       await renderApp();
-      expect(imageStore.entries.get(draftA.projectKey)).toBe(aEntry);
+      expect(imageStore.entries.get(draftA.editorId)).toBe(aEntry);
       expect(aEntry.images).toHaveLength(1);
 
       state.activeProject = "project-a";
@@ -1034,7 +1122,7 @@ describe("server command errors", () => {
       state.draftView = draftB;
       await renderApp();
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
-      expect(imageStore.entries.get(draftA.projectKey)).toBe(aEntry);
+      expect(imageStore.entries.get(draftA.editorId)).toBe(aEntry);
       expect(aEntry.images).toHaveLength(2);
 
       const bTextarea =
@@ -1044,7 +1132,7 @@ describe("server command errors", () => {
         complete(readers[3]!);
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
-      const bEntry = imageStore.entries.get(draftB.projectKey)!;
+      const bEntry = imageStore.entries.get(draftB.editorId)!;
       expect(imageStore.entries.size).toBe(2);
       expect(bEntry.images).toHaveLength(1);
 
@@ -1074,16 +1162,19 @@ describe("server command errors", () => {
       expect(aEntry.images).toEqual([]);
 
       const freshSubmit = vi.fn();
-      state.connected = true;
-      state.activeProject = "project-a";
-      state.draftView = {
+      const freshDraft = {
         ...draftA,
+        editorId: "composition:after-reset",
+        viewKey: "composition:after-reset",
         text: "fresh A",
         composerResetToken: 1,
         onSubmit: freshSubmit,
-      };
+      } satisfies DraftViewSnapshot;
+      state.connected = true;
+      state.activeProject = "project-a";
+      state.draftView = freshDraft;
       await renderApp();
-      const freshEntry = imageStore.entries.get(draftA.projectKey)!;
+      const freshEntry = imageStore.entries.get(freshDraft.editorId)!;
       expect(freshEntry).not.toBe(aEntry);
       expect(freshEntry.resetToken).toBe(1);
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
@@ -1120,7 +1211,7 @@ describe("server command errors", () => {
     }
   });
 
-  it("keeps the project composer stable while switching persisted numeric drafts", async () => {
+  it("keeps attachments scoped to each persisted numeric editor", async () => {
     const readers: FileReader[] = [];
     const readAsDataURL = vi
       .spyOn(FileReader.prototype, "readAsDataURL")
@@ -1184,22 +1275,22 @@ describe("server command errors", () => {
     };
     const projectDraft = {
       kind: "resolved" as const,
-      projectKey: "workspace\0/project",
-      viewKey: "workspace\0/project",
       workspace: "workspace",
       projectName: "project",
       projectPath: "/project",
       lifecycle: "present" as const,
       disabled: false,
       metadataReady: true,
+      submitReady: true,
       onTextChange: vi.fn(),
       onEntryPointChange: vi.fn(),
       onAgentChange: vi.fn(),
-      onBlur: vi.fn(),
       onSubmit: vi.fn(),
     };
     const draftA = {
       ...projectDraft,
+      editorId: "task:71",
+      viewKey: "task:71",
       remoteTid: 71,
       text: "persisted draft A",
       entryPoint: "entry A",
@@ -1208,6 +1299,8 @@ describe("server command errors", () => {
     } satisfies DraftViewSnapshot;
     const draftB = {
       ...projectDraft,
+      editorId: "task:72",
+      viewKey: "task:72",
       remoteTid: 72,
       text: "persisted draft B",
       entryPoint: "entry B",
@@ -1259,31 +1352,18 @@ describe("server command errors", () => {
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
 
-      // The B route has committed, but the draft reducer has not yet adopted
-      // B. The A project slot must continue to own the controlled composer.
       state.activeTaskId = "72";
-      await act(() => {
-        render(h(App, {}), container);
-      });
-
-      expect(container.querySelector(".input-box")).toBe(beforeInputBox);
-      expect(container.querySelector("textarea")).toBe(beforeTextarea);
-      expect(container.querySelectorAll(".input-box")).toHaveLength(1);
-      expect(container.querySelectorAll("textarea")).toHaveLength(1);
-      expect(container.querySelector(".session-empty")).toBeNull();
-      expect(container.textContent).not.toContain("Loading task…");
-      expect(beforeTextarea.value).toBe("persisted draft A");
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
-
       state.draftView = draftB;
       await act(() => {
         render(h(App, {}), container);
       });
 
-      expect(container.querySelector(".input-box")).toBe(beforeInputBox);
-      expect(container.querySelector("textarea")).toBe(beforeTextarea);
+      expect(container.querySelector(".input-box")).not.toBe(beforeInputBox);
+      expect(container.querySelector("textarea")).not.toBe(beforeTextarea);
       expect(container.querySelectorAll("textarea")).toHaveLength(1);
-      expect(beforeTextarea.value).toBe("persisted draft B");
+      expect(
+        container.querySelector<HTMLTextAreaElement>("textarea")?.value,
+      ).toBe("persisted draft B");
       expect(
         container.querySelector(".task-type-row.selected .task-type-name")
           ?.textContent,
@@ -1292,6 +1372,15 @@ describe("server command errors", () => {
         container.querySelector<HTMLSelectElement>(".agent-picker")?.value,
       ).toBe("agent B");
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
+      state.activeTaskId = "71";
+      state.draftView = draftA;
+      await act(() => {
+        render(h(App, {}), container);
+      });
+      expect(
+        container.querySelector<HTMLTextAreaElement>("textarea")?.value,
+      ).toBe("persisted draft A");
+      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
     } finally {
       readAsDataURL.mockRestore();
     }

@@ -303,7 +303,7 @@ test("agent type persists across page reload on draft", async ({
   await expect(page.locator(".agent-picker")).toHaveValue(targetAgent);
 });
 
-test("selector defaults survive draft generations and history reattachment", async ({
+test("New Task defaults stay independent of promoted draft selectors", async ({
   page,
   agentType,
 }) => {
@@ -320,7 +320,7 @@ test("selector defaults survive draft generations and history reattachment", asy
     agentPicker.locator(`option[value="${targetAgent}"]`),
   ).toHaveCount(1);
 
-  // Select both defaults while no draft generation exists yet.
+  // Select both defaults on the blank New Task composition.
   await page.locator(".task-type-row", { hasText: "blank" }).click();
   await expect(
     page.locator(".task-type-row.selected .task-type-name"),
@@ -352,19 +352,27 @@ test("selector defaults survive draft generations and history reattachment", asy
     agentName: targetAgent,
   });
 
-  const clearAStart = recorder.mark();
-  await input.fill("");
+  await expect(page).toHaveURL(new RegExp(`/task/${tidA}(?:/|$)`));
+  const changedA = recorder.mark();
+  await page.locator(".task-type-row", { hasText: "isolated" }).click();
+  await agentPicker.selectOption(agentType);
   await expect
     .poll(
       () =>
-        recorder.controls("delete_task", { tid: tidA, since: clearAStart })
-          .length,
+        recorder
+          .controls("set_entry_point", { tid: tidA, since: changedA })
+          .at(-1)?.entry_point,
     )
-    .toBe(1);
-  await expect(page.locator(`.sidebar-item[data-tid="${tidA}"]`)).toHaveCount(
-    0,
-  );
-  await expect(input).toHaveCount(1);
+    .toBe("isolated");
+  await expect
+    .poll(
+      () =>
+        recorder
+          .controls("set_agent_name", { tid: tidA, since: changedA })
+          .at(-1)?.agent_name,
+    )
+    .toBe(agentType);
+  await page.locator(".sidebar-new-task").click();
   await expect(input).toBeEnabled();
   await expect(input).toHaveValue("");
   await expect(
@@ -408,7 +416,7 @@ test("selector defaults survive draft generations and history reattachment", asy
   const createsBeforeReattach = recorder.controls("create_task").length;
   const deletesBeforeReattach = recorder.controls("delete_task").length;
   expect(createsBeforeReattach).toBe(2);
-  expect(deletesBeforeReattach).toBe(1);
+  expect(deletesBeforeReattach).toBe(0);
 
   await page.locator(".sidebar-back-btn:visible").click();
   await expect(page).toHaveURL(/\/$/);
@@ -443,7 +451,13 @@ test("selector defaults survive draft generations and history reattachment", asy
     0,
   );
   expect(recorder.controls("delete_task").map((frame) => frame.tid)).toEqual([
-    tidA,
     tidB,
   ]);
+  await page.locator(`.sidebar-item[data-tid="${tidA}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`/task/${tidA}(?:/|$)`));
+  await expect(input).toHaveValue(textA);
+  await expect(
+    page.locator(".task-type-row.selected .task-type-name"),
+  ).toHaveText("isolated");
+  await expect(agentPicker).toHaveValue(agentType);
 });

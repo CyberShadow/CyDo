@@ -1,4516 +1,1579 @@
 import { describe, expect, it } from "vitest";
 import {
-  CREATE_DELAY_MS,
-  DRAFT_SAVE_DELAY_MS,
+  assertResolvedDraftForm,
+  editorMetadataReady,
+  editorSubmittable,
+  projectDraftDefaults,
   createDraftState,
   createProjectKey,
-  isTombstoned,
+  getEditor,
   reduceDraft,
-  selectDraftForm,
   tombstonedTids,
-  type DraftContent,
   type DraftEffect,
   type DraftEvent,
-  type DraftForm,
-  type DraftSlotState,
   type DraftState,
-  type FormDefaults,
-  type ImageAttachment,
   type ProjectIdentity,
-  type ProjectKey,
-  type ResolvedDraftForm,
-  type TaskObservation,
   type TaskSnapshot,
-  type UuidBinding,
 } from "./draftReconciler";
 
-const PROJECT_A: ProjectIdentity = {
-  workspace: "workspace-alpha",
-  projectPath: "/projects/alpha",
-};
-const PROJECT_B: ProjectIdentity = {
-  workspace: "workspace-alpha",
-  projectPath: "/projects/bravo",
-};
-const KEY_A = createProjectKey(PROJECT_A.workspace, PROJECT_A.projectPath);
-const KEY_B = createProjectKey(PROJECT_B.workspace, PROJECT_B.projectPath);
+const project = { workspace: "workspace", projectPath: "/project" };
+const projectKey = createProjectKey(project.workspace, project.projectPath);
+const defaults = { entryPoint: "entry", agent: "agent" };
+const metadata = {
+  type: "fixture-project-metadata",
+  project,
+  metadata: { catalog: null, defaults },
+} as const;
+const uuidA = "11111111-1111-4111-8111-111111111111";
+const uuidB = "22222222-2222-4222-8222-222222222222";
+const a = `composition:${uuidA}` as const;
+const b = `composition:${uuidB}` as const;
+const c = "composition:33333333-3333-4333-8333-333333333333";
 
-const DEFAULTS_A = {
-  entryPoint: "entry-alpha",
-  agent: "agent-alpha",
-} satisfies FormDefaults;
-const DEFAULTS_B = {
-  entryPoint: "entry-bravo",
-  agent: "agent-bravo",
-} satisfies FormDefaults;
-const CUSTOM_DEFAULTS_A = {
-  entryPoint: "entry-alpha-custom",
-  agent: "agent-alpha-custom",
-} satisfies FormDefaults;
-const PERSISTED_DEFAULTS_A = {
-  entryPoint: "entry-persisted-alpha",
-  agent: "agent-persisted-alpha",
-} satisfies FormDefaults;
-const PERSISTED_DEFAULTS_B = {
-  entryPoint: "entry-persisted-bravo",
-  agent: "agent-persisted-bravo",
-} satisfies FormDefaults;
-const UNRESOLVED_DEFAULTS_A = {
-  entryPoint: null,
-  agent: null,
-} satisfies FormDefaults;
-
-const UUID_A = "11111111-1111-4111-8111-111111111111";
-const UUID_B = "22222222-2222-4222-8222-222222222222";
-const UUID_IMAGE = "33333333-3333-4333-8333-333333333333";
-const UUID_PERSISTED_A = "44444444-4444-4444-8444-444444444444";
-const UUID_PERSISTED_B = "55555555-5555-4555-8555-555555555555";
-const UUID_PERSISTED_RETURN = "66666666-6666-4666-8666-666666666666";
-const UUID_PEER = "77777777-7777-4777-8777-777777777777";
-const UUID_ACTIVE = "88888888-8888-4888-8888-888888888888";
-const UUID_WRONG = "99999999-9999-4999-8999-999999999999";
-
-const IMAGE_ONE: ImageAttachment = {
-  id: "image-one",
-  dataURL: "data:image/png;base64,aW1hZ2Utb25l",
-  base64: "aW1hZ2Utb25l",
-  mediaType: "image/png",
-};
-const IMAGE_TWO: ImageAttachment = {
-  id: "image-two",
-  dataURL: "data:image/jpeg;base64,aW1hZ2UtdHdv",
-  base64: "aW1hZ2UtdHdv",
-  mediaType: "image/jpeg",
-};
-
-type Effect<T extends DraftEffect["type"]> = Extract<DraftEffect, { type: T }>;
-type Editing = Extract<DraftSlotState["desired"], { kind: "editing" }>;
-type Submitting = Extract<DraftSlotState["desired"], { kind: "submitting" }>;
-type SlotOptions = Pick<
-  DraftSlotState,
-  | "observed"
-  | "desired"
-  | "remote"
-  | "formVersion"
-  | "createSchedule"
-  | "saveSchedule"
-> & { historicalGeneration?: string | null };
-
-interface TraceStep {
-  label: string;
-  event: DraftEvent;
-  state: DraftState;
-  effects: readonly DraftEffect[];
-  assert?: (state: DraftState, effects: readonly DraftEffect[]) => void;
-}
-
-function form(
-  text: string,
-  defaults?: { entryPoint: string; agent: string },
-): ResolvedDraftForm;
-function form(text: string, defaults: FormDefaults): DraftForm;
-function form(text: string, defaults: FormDefaults = DEFAULTS_A): DraftForm {
-  return { text, ...defaults };
-}
-
-function resolvedForm(form: DraftForm): ResolvedDraftForm {
-  if (form.entryPoint === null || form.agent === null) {
-    throw new Error("Expected a resolved draft form");
+function assertDraftInvariants(state: DraftState) {
+  const tids: number[] = [];
+  const correlations: string[] = [];
+  const tombstones: number[] = [];
+  for (const [key, id] of Object.entries(state.newTaskByProject)) {
+    const editor = getEditor(state, id);
+    expect(id).toMatch(/^composition:/);
+    expect(
+      createProjectKey(editor.project.workspace, editor.project.projectPath),
+    ).toBe(key);
+    expect(editor.desired.kind).not.toBe("none");
+    expect(["absent", "creating"]).toContain(editor.remote.kind);
+    if (editor.desired.kind === "submitting")
+      expect(editor.remote.kind).toBe("creating");
   }
+  for (const [id, editor] of Object.entries(state.editors)) {
+    const { project: owner, remote, desired } = editor;
+    if (remote.kind === "present" || remote.kind === "deleting")
+      tids.push(remote.tid);
+    if (remote.kind === "deleting") {
+      tombstones.push(remote.tid);
+      expect(desired.kind).toBe("none");
+    }
+    if (remote.kind === "creating") {
+      correlations.push(remote.correlationId);
+      expect(id).toBe(`composition:${remote.correlationId}`);
+    }
+    if (id.startsWith("task:")) {
+      expect(remote.kind === "present" || remote.kind === "deleting").toBe(
+        true,
+      );
+      if (remote.kind === "present" || remote.kind === "deleting")
+        expect(id).toBe(`task:${remote.tid}`);
+    }
+    if (desired.kind === "editing") {
+      if (projectDraftDefaults(state, owner)) {
+        expect(editor.defaults.entryPoint).not.toBeNull();
+        expect(editor.defaults.agent).not.toBeNull();
+      }
+    }
+  }
+  expect(new Set(tids).size).toBe(tids.length);
+  expect(new Set(correlations).size).toBe(correlations.length);
+  expect(tombstonedTids(state)).toEqual(tombstones.sort((a, b) => a - b));
+}
+
+type ProjectMetadataFixture = {
+  type: "fixture-project-metadata";
+  project: ProjectIdentity;
+  metadata: {
+    catalog: readonly string[] | null;
+    defaults: typeof defaults | null;
+  };
+};
+
+function editorTrace(initial = createDraftState()) {
+  let state = initial;
+  const dispatch = (event: DraftEvent): readonly DraftEffect[] => {
+    const before = state;
+    const result = reduceDraft(before, event);
+    if (
+      event.type === "project-catalog" ||
+      event.type === "workspace-draft-defaults" ||
+      event.type === "global-draft-defaults" ||
+      event.type === "agents-list"
+    ) {
+      expect(Object.keys(result.state.editors)).toEqual(
+        Object.keys(before.editors),
+      );
+      for (const effect of result.effects) {
+        expect(effect.type).toBe("schedule-create");
+        expect(getEditor(before, effect.editorId).remote.kind).toBe("absent");
+      }
+    }
+    state = result.state;
+    assertDraftInvariants(state);
+    return result.effects;
+  };
   return {
-    text: form.text,
-    entryPoint: form.entryPoint,
-    agent: form.agent,
+    get state() {
+      return state;
+    },
+    dispatch(event: DraftEvent | ProjectMetadataFixture) {
+      if (event.type !== "fixture-project-metadata") return dispatch(event);
+      const { project, metadata } = event;
+      const projects = new Map(state.metadata.projects).set(
+        createProjectKey(project.workspace, project.projectPath),
+        {
+          project,
+          entryPoint: metadata.defaults?.entryPoint ?? null,
+          agent: metadata.defaults?.agent ?? null,
+        },
+      );
+      const effects = dispatch({
+        type: "workspace-draft-defaults",
+        projects: [...projects.values()],
+      });
+      const catalog =
+        metadata.catalog ??
+        (metadata.defaults ? [metadata.defaults.entryPoint] : null);
+      if (!catalog) return effects;
+      return [
+        ...effects,
+        ...dispatch({
+          type: "project-catalog",
+          projectPath: project.projectPath,
+          catalog: catalog.map((name) => ({
+            name,
+            task_type: name,
+            description: "",
+            model_class: "",
+            read_only: false,
+          })),
+        }),
+      ];
+    },
   };
 }
 
-function editing(uuid: string, draft: DraftForm): Editing {
-  return { kind: "editing", uuid, ...draft };
-}
-
-function submitting(
-  uuid: string,
-  draft: DraftForm,
-  images: readonly ImageAttachment[],
-  delivery: Submitting["delivery"],
-): Submitting {
-  return { kind: "submitting", uuid, ...draft, images, delivery };
-}
-
-function expectedSlot(
-  project: ProjectIdentity,
-  defaults: FormDefaults,
-  options: Partial<SlotOptions> = {},
-): DraftSlotState {
-  const copiedDefaults = { ...defaults };
-  return {
-    project: { ...project },
-    defaults: copiedDefaults,
-    observed: options.observed ?? form("", copiedDefaults),
-    desired: options.desired ?? { kind: "none" },
-    remote: options.remote ?? { kind: "absent" },
-    formVersion: options.formVersion ?? 0,
-    createSchedule: options.createSchedule ?? null,
-    saveSchedule: options.saveSchedule ?? null,
-  };
-}
-
-function stateOf(
-  entries: readonly (readonly [ProjectKey, DraftSlotState])[],
-  uuidBindings: readonly UuidBinding[] = [],
-): DraftState {
-  const slots: Record<ProjectKey, DraftSlotState> = {};
-  for (const [key, slot] of entries) slots[key] = slot;
-  return { slots, uuidBindings };
-}
-
-function stateA(
-  options: Partial<SlotOptions> = {},
-  defaults: FormDefaults = DEFAULTS_A,
-  uuidBindings?: readonly UuidBinding[],
-): DraftState {
-  const slot = expectedSlot(PROJECT_A, defaults, options);
-  return stateOf(
-    [[KEY_A, slot]],
-    uuidBindings ?? inferredUuidBindings([[KEY_A, slot, options]]),
-  );
-}
-
-function stateAB(
-  alpha: Partial<SlotOptions> = {},
-  bravo: Partial<SlotOptions> = {},
-  uuidBindings?: readonly UuidBinding[],
-): DraftState {
-  const alphaSlot = expectedSlot(PROJECT_A, DEFAULTS_A, alpha);
-  const bravoSlot = expectedSlot(PROJECT_B, DEFAULTS_B, bravo);
-  return stateOf(
-    [
-      [KEY_A, alphaSlot],
-      [KEY_B, bravoSlot],
-    ],
-    uuidBindings ??
-      inferredUuidBindings([
-        [KEY_A, alphaSlot, alpha],
-        [KEY_B, bravoSlot, bravo],
-      ]),
-  );
-}
-
-function inferredUuidBindings(
-  entries: readonly (readonly [
-    ProjectKey,
-    DraftSlotState,
-    Partial<SlotOptions>,
-  ])[],
-): readonly UuidBinding[] {
-  return entries.flatMap(([projectKey, slot, options]) => {
-    const uuid = options.historicalGeneration;
-    if (uuid === undefined || uuid === null) return [];
-    const tid =
-      slot.remote.kind === "present" &&
-      (slot.remote.generation === null || slot.remote.generation === uuid)
-        ? slot.remote.tid
-        : null;
-    return [{ uuid, projectKey, tid }];
-  });
-}
-
-function initialA(): DraftState {
-  return createDraftState([{ project: PROJECT_A, defaults: DEFAULTS_A }]);
-}
-
-function initialAB(): DraftState {
-  return createDraftState([
-    { project: PROJECT_A, defaults: DEFAULTS_A },
-    { project: PROJECT_B, defaults: DEFAULTS_B },
-  ]);
-}
-
-function pendingSnapshot(
-  tid: number,
-  draft: DraftForm,
-  flags: Partial<
-    Pick<TaskSnapshot, "active" | "processing" | "hasMessages">
-  > = {},
-): TaskSnapshot {
+function snapshot(tid: number, text: string): TaskSnapshot {
   return {
     tid,
-    ...resolvedForm(draft),
+    text,
+    ...defaults,
     active: false,
     processing: false,
     hasMessages: false,
-    ...flags,
   };
 }
 
-function taskObservation(
-  tid: number,
-  fields: Omit<TaskObservation, "tid"> = {},
-): TaskObservation {
-  return { tid, ...fields };
-}
-
-function content(
-  text: string,
-  images: readonly ImageAttachment[] = [],
-): DraftContent {
-  return { text, images };
-}
-
-function scheduleCreate(
-  projectKey: ProjectKey,
-  generation: string,
-): Effect<"schedule-create"> {
-  return {
-    type: "schedule-create",
-    projectKey,
-    generation,
-    delayMs: CREATE_DELAY_MS,
-  };
-}
-
-function cancelCreate(
-  projectKey: ProjectKey,
-  generation: string,
-): Effect<"cancel-create-schedule"> {
-  return { type: "cancel-create-schedule", projectKey, generation };
-}
-
-function createTask(
-  projectKey: ProjectKey,
-  correlationId: string,
-  entryPoint: string,
-  agent: string,
-  taskContent: DraftContent | null,
-): Effect<"create-task"> {
-  return {
-    type: "create-task",
-    projectKey,
-    correlationId,
-    entryPoint,
-    agent,
-    content: taskContent,
-  };
-}
-
-function ensureSave(
-  projectKey: ProjectKey,
-  tid: number,
-  formVersion: number,
-): Effect<"ensure-draft-save"> {
-  return {
-    type: "ensure-draft-save",
-    projectKey,
-    tid,
-    formVersion,
-    delayMs: DRAFT_SAVE_DELAY_MS,
-  };
-}
-
-function cancelSave(
-  projectKey: ProjectKey,
-  tid: number,
-  formVersion: number,
-): Effect<"cancel-draft-save"> {
-  return { type: "cancel-draft-save", projectKey, tid, formVersion };
-}
-
-function setEntryPoint(
-  projectKey: ProjectKey,
-  tid: number,
-  entryPoint: string,
-): Effect<"set-entry-point"> {
-  return { type: "set-entry-point", projectKey, tid, entryPoint };
-}
-
-function setAgent(
-  projectKey: ProjectKey,
-  tid: number,
-  agent: string,
-): Effect<"set-agent"> {
-  return { type: "set-agent", projectKey, tid, agent };
-}
-
-function setDraft(
-  projectKey: ProjectKey,
-  tid: number,
-  text: string,
-  formVersion: number,
-): Effect<"set-draft"> {
-  return { type: "set-draft", projectKey, tid, text, formVersion };
-}
-
-function projectDraft(
-  projectKey: ProjectKey,
-  tid: number,
-  draft: DraftForm,
-  formVersion: number,
-): Effect<"project-draft"> {
-  return {
-    type: "project-draft",
-    projectKey,
-    tid,
-    form: resolvedForm(draft),
-    formVersion,
-  };
-}
-
-function deleteTask(
-  projectKey: ProjectKey,
-  tid: number,
-): Effect<"delete-task"> {
-  return { type: "delete-task", projectKey, tid };
-}
-
-function draftReady(
-  projectKey: ProjectKey,
-  tid: number,
-  generation: string,
-): Effect<"draft-ready"> {
-  return { type: "draft-ready", projectKey, tid, generation };
-}
-
-function sendFirstMessage(
-  projectKey: ProjectKey,
-  tid: number,
-  message: DraftContent,
-): Effect<"send-first-message"> {
-  return { type: "send-first-message", projectKey, tid, content: message };
-}
-
-function releaseTask(
-  projectKey: ProjectKey,
-  tid: number,
-  resetComposer = true,
-): Effect<"release-task"> {
-  return { type: "release-task", projectKey, tid, resetComposer };
-}
-
-function trace(initial: DraftState, steps: readonly TraceStep[]): DraftState {
-  let state = initial;
-  let uuidBindings = initial.uuidBindings;
-  for (const step of steps) {
-    const result = reduceDraft(state, step.event);
-    uuidBindings =
-      step.event.type === "connection-reset"
-        ? []
-        : mergeUuidBindings(uuidBindings, step.state.uuidBindings);
-    expect(result.state, `${step.label}: state`).toEqual({
-      ...step.state,
-      uuidBindings,
-    });
-    expect(result.effects, `${step.label}: effects`).toEqual(step.effects);
-    step.assert?.(result.state, result.effects);
-    state = result.state;
-  }
-  return state;
-}
-
-function mergeUuidBindings(
-  previous: readonly UuidBinding[],
-  current: readonly UuidBinding[],
-): readonly UuidBinding[] {
-  const merged = [...previous];
-  for (const binding of current) {
-    const index = merged.findIndex(
-      (candidate) => candidate.uuid === binding.uuid,
-    );
-    if (index === -1) {
-      merged.push(binding);
-      continue;
-    }
-    const previousBinding = merged[index]!;
-    if (previousBinding.projectKey !== binding.projectKey) {
-      throw new Error("Incompatible expected UUID binding");
-    }
-    if (binding.tid !== null) {
-      merged[index] = binding;
-    }
-  }
-  return merged;
-}
-
-function expectReductionFailure(
-  state: DraftState,
-  event: DraftEvent,
-  message: string,
-): void {
-  const before = structuredClone(state);
-  expect(() => reduceDraft(state, event)).toThrow(message);
-  expect(state).toEqual(before);
-}
-
-describe("draft reconciler slot initialization", () => {
-  it("lazily initializes B without disturbing A's UUID-bound lifecycle", () => {
-    const draft = form("A lifecycle draft");
-    const afterA = trace(createDraftState(), [
-      {
-        label: "lazy initialize A",
-        event: {
-          type: "initialize-slot",
-          project: PROJECT_A,
-          defaults: DEFAULTS_A,
-        },
-        state: initialA(),
-        effects: [],
-      },
-      {
-        label: "start A generation",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: draft.text,
-          uuid: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, draft),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "start A creation",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, draft),
-          remote: { kind: "creating", correlationId: UUID_A },
-          formVersion: 1,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          createTask(
-            KEY_A,
-            UUID_A,
-            DEFAULTS_A.entryPoint,
-            DEFAULTS_A.agent,
-            null,
-          ),
-        ],
-      },
-      {
-        label: "acknowledge A",
-        event: { type: "task-created", correlationId: UUID_A, tid: 801 },
-        state: stateA({
-          desired: editing(UUID_A, draft),
-          remote: { kind: "present", tid: 801, generation: UUID_A },
-          formVersion: 1,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          setEntryPoint(KEY_A, 801, DEFAULTS_A.entryPoint),
-          setAgent(KEY_A, 801, DEFAULTS_A.agent),
-          setDraft(KEY_A, 801, draft.text, 1),
-          projectDraft(KEY_A, 801, draft, 1),
-          draftReady(KEY_A, 801, UUID_A),
-        ],
-      },
-    ]);
-
-    trace(afterA, [
-      {
-        label: "lazy initialize B while A is present",
-        event: {
-          type: "initialize-slot",
-          project: PROJECT_B,
-          defaults: DEFAULTS_B,
-        },
-        state: stateAB({
-          desired: editing(UUID_A, draft),
-          remote: { kind: "present", tid: 801, generation: UUID_A },
-          formVersion: 1,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [],
-        assert: (state) => {
-          expect(state.slots[KEY_A]).toBe(afterA.slots[KEY_A]);
-          expect(state.uuidBindings).toBe(afterA.uuidBindings);
-          expect(state.slots[KEY_B]).toEqual(
-            expectedSlot(PROJECT_B, DEFAULTS_B),
-          );
-        },
-      },
-    ]);
-  });
-
-  it("leaves an initialized slot unchanged when defaults change", () => {
-    const before = initialA();
-
-    trace(before, [
-      {
-        label: "repeat A initialization with changed defaults",
-        event: {
-          type: "initialize-slot",
-          project: PROJECT_A,
-          defaults: CUSTOM_DEFAULTS_A,
-        },
-        state: before,
-        effects: [],
-        assert: (state) => {
-          expect(state).toBe(before);
-        },
-      },
-    ]);
-  });
-
-  it("reinitializes a fresh idle slot after connection reset", () => {
-    const prior = form("pre-reset draft", CUSTOM_DEFAULTS_A);
-
-    trace(
-      stateA(
-        {
-          observed: prior,
-          desired: editing(UUID_A, prior),
-          remote: { kind: "present", tid: 802, generation: UUID_A },
-          formVersion: 6,
-          saveSchedule: { tid: 802, formVersion: 6 },
-          historicalGeneration: UUID_A,
-        },
-        CUSTOM_DEFAULTS_A,
-      ),
-      [
-        {
-          label: "connection reset clears initialized slots and UUID history",
-          event: { type: "connection-reset" },
-          state: { slots: {}, uuidBindings: [] },
-          effects: [],
-        },
-        {
-          label: "reinitialize A after reset",
-          event: {
-            type: "initialize-slot",
-            project: PROJECT_A,
-            defaults: DEFAULTS_A,
-          },
-          state: initialA(),
-          effects: [],
-        },
-      ],
-    );
-  });
-});
-
-describe("draft reconciler metadata resolution", () => {
-  it("waits to create a typed draft until metadata resolves", () => {
-    const text = "typed before project metadata";
-
-    trace(
-      createDraftState([
-        { project: PROJECT_A, defaults: UNRESOLVED_DEFAULTS_A },
-      ]),
-      [
-        {
-          label: "typing without entry point or agent metadata",
-          event: {
-            type: "edit-text",
-            projectKey: KEY_A,
-            text,
-            uuid: UUID_A,
-          },
-          state: stateA(
-            {
-              desired: editing(UUID_A, form(text, UNRESOLVED_DEFAULTS_A)),
-              formVersion: 1,
-              historicalGeneration: UUID_A,
-            },
-            UNRESOLVED_DEFAULTS_A,
-          ),
-          effects: [],
-        },
-        {
-          label: "manually delivered timer before scheduling",
-          event: {
-            type: "create-timer-due",
-            projectKey: KEY_A,
-            generation: UUID_A,
-          },
-          state: stateA(
-            {
-              desired: editing(UUID_A, form(text, UNRESOLVED_DEFAULTS_A)),
-              formVersion: 1,
-              historicalGeneration: UUID_A,
-            },
-            UNRESOLVED_DEFAULTS_A,
-          ),
-          effects: [],
-        },
-        {
-          label: "metadata resolves the existing editing generation",
-          event: {
-            type: "resolve-metadata",
-            projectKey: KEY_A,
-            entryPoint: DEFAULTS_A.entryPoint,
-            agent: DEFAULTS_A.agent,
-          },
-          state: stateA({
-            observed: form(""),
-            desired: editing(UUID_A, form(text)),
-            formVersion: 1,
-            createSchedule: UUID_A,
-            historicalGeneration: UUID_A,
-          }),
-          effects: [scheduleCreate(KEY_A, UUID_A)],
-        },
-        {
-          label: "repeated metadata does not schedule the generation again",
-          event: {
-            type: "resolve-metadata",
-            projectKey: KEY_A,
-            entryPoint: DEFAULTS_A.entryPoint,
-            agent: DEFAULTS_A.agent,
-          },
-          state: stateA({
-            observed: form(""),
-            desired: editing(UUID_A, form(text)),
-            formVersion: 1,
-            createSchedule: UUID_A,
-            historicalGeneration: UUID_A,
-          }),
-          effects: [],
-        },
-        {
-          label: "resolved metadata timer creates the draft once",
-          event: {
-            type: "create-timer-due",
-            projectKey: KEY_A,
-            generation: UUID_A,
-          },
-          state: stateA({
-            observed: form(""),
-            desired: editing(UUID_A, form(text)),
-            remote: { kind: "creating", correlationId: UUID_A },
-            formVersion: 1,
-            historicalGeneration: UUID_A,
-          }),
-          effects: [
-            createTask(
-              KEY_A,
-              UUID_A,
-              DEFAULTS_A.entryPoint,
-              DEFAULTS_A.agent,
-              null,
-            ),
-          ],
-        },
-      ],
-    );
-  });
-
-  it("fills only metadata fields that remain unresolved", () => {
-    const partialDefaults = {
-      entryPoint: PERSISTED_DEFAULTS_A.entryPoint,
-      agent: null,
-    } satisfies FormDefaults;
-    const observed = form("persisted text", partialDefaults);
-    const desired = {
-      text: "persisted text",
-      entryPoint: "entry-local",
-      agent: null,
-    } satisfies DraftForm;
-    const expectedDefaults = {
-      entryPoint: PERSISTED_DEFAULTS_A.entryPoint,
-      agent: DEFAULTS_A.agent,
-    } satisfies FormDefaults;
-    const expectedObserved = form("persisted text", expectedDefaults);
-    const expectedDesired = {
-      text: "persisted text",
-      entryPoint: "entry-local",
-      agent: DEFAULTS_A.agent,
-    } satisfies ResolvedDraftForm;
-
-    trace(
-      stateA(
-        {
-          observed,
-          desired: editing(UUID_A, desired),
-          remote: { kind: "present", tid: 400, generation: UUID_A },
-          formVersion: 1,
-          historicalGeneration: UUID_A,
-        },
-        partialDefaults,
-      ),
-      [
-        {
-          label: "resolve only the unresolved agent field",
-          event: {
-            type: "resolve-metadata",
-            projectKey: KEY_A,
-            entryPoint: DEFAULTS_A.entryPoint,
-            agent: DEFAULTS_A.agent,
-          },
-          state: stateA(
-            {
-              observed: expectedObserved,
-              desired: editing(UUID_A, expectedDesired),
-              remote: { kind: "present", tid: 400, generation: UUID_A },
-              formVersion: 1,
-              historicalGeneration: UUID_A,
-            },
-            expectedDefaults,
-          ),
-          effects: [],
-        },
-      ],
-    );
-  });
-
-  it("retains adopted persisted fields when metadata arrives", () => {
-    const persisted = form("persisted A", PERSISTED_DEFAULTS_A);
-
-    trace(
-      createDraftState([
-        { project: PROJECT_A, defaults: UNRESOLVED_DEFAULTS_A },
-      ]),
-      [
-        {
-          label: "adopt a persisted task before metadata",
-          event: {
-            type: "adopt-persisted",
-            projectKey: KEY_A,
-            uuid: UUID_PERSISTED_A,
-            snapshot: pendingSnapshot(401, persisted),
-          },
-          state: stateA(
-            {
-              observed: persisted,
-              desired: editing(UUID_PERSISTED_A, persisted),
-              remote: { kind: "present", tid: 401, generation: null },
-              formVersion: 1,
-              historicalGeneration: UUID_PERSISTED_A,
-            },
-            PERSISTED_DEFAULTS_A,
-          ),
-          effects: [],
-        },
-        {
-          label: "resolve route metadata without replacing the adopted form",
-          event: {
-            type: "resolve-metadata",
-            projectKey: KEY_A,
-            entryPoint: DEFAULTS_A.entryPoint,
-            agent: DEFAULTS_A.agent,
-          },
-          state: stateA(
-            {
-              observed: persisted,
-              desired: editing(UUID_PERSISTED_A, persisted),
-              remote: { kind: "present", tid: 401, generation: null },
-              formVersion: 1,
-              historicalGeneration: UUID_PERSISTED_A,
-            },
-            PERSISTED_DEFAULTS_A,
-          ),
-          effects: [],
-          assert: (state) => {
-            const slot = state.slots[KEY_A]!;
-            expect(slot.defaults).toEqual(PERSISTED_DEFAULTS_A);
-            expect(slot.observed).toEqual(persisted);
-            expect(slot.desired).toEqual(editing(UUID_PERSISTED_A, persisted));
-            expect(slot.remote).toEqual({
-              kind: "present",
-              tid: 401,
-              generation: null,
-            });
-          },
-        },
-      ],
-    );
-  });
-
-  it("retains switched persisted fields when metadata arrives", () => {
-    const persistedA = form("persisted A", PERSISTED_DEFAULTS_A);
-    const persistedB = form("persisted B", PERSISTED_DEFAULTS_B);
-
-    trace(
-      stateA(
-        {
-          observed: persistedA,
-          desired: editing(UUID_PERSISTED_A, persistedA),
-          remote: { kind: "present", tid: 501, generation: null },
-          formVersion: 1,
-          historicalGeneration: UUID_PERSISTED_A,
-        },
-        PERSISTED_DEFAULTS_A,
-      ),
-      [
-        {
-          label: "switch to persisted B before metadata",
-          event: {
-            type: "switch-persisted",
-            projectKey: KEY_A,
-            uuid: UUID_PERSISTED_B,
-            snapshot: pendingSnapshot(502, persistedB),
-          },
-          state: stateA(
-            {
-              observed: persistedB,
-              desired: editing(UUID_PERSISTED_B, persistedB),
-              remote: { kind: "present", tid: 502, generation: null },
-              formVersion: 2,
-              historicalGeneration: UUID_PERSISTED_B,
-            },
-            PERSISTED_DEFAULTS_B,
-          ),
-          effects: [
-            setEntryPoint(KEY_A, 501, PERSISTED_DEFAULTS_A.entryPoint),
-            setAgent(KEY_A, 501, PERSISTED_DEFAULTS_A.agent),
-            setDraft(KEY_A, 501, persistedA.text, 1),
-            projectDraft(KEY_A, 501, persistedA, 1),
-            releaseTask(KEY_A, 501),
-          ],
-        },
-        {
-          label: "resolve route metadata without replacing the switched form",
-          event: {
-            type: "resolve-metadata",
-            projectKey: KEY_A,
-            entryPoint: DEFAULTS_A.entryPoint,
-            agent: DEFAULTS_A.agent,
-          },
-          state: stateA(
-            {
-              observed: persistedB,
-              desired: editing(UUID_PERSISTED_B, persistedB),
-              remote: { kind: "present", tid: 502, generation: null },
-              formVersion: 2,
-              historicalGeneration: UUID_PERSISTED_B,
-            },
-            PERSISTED_DEFAULTS_B,
-          ),
-          effects: [],
-          assert: (state) => {
-            const slot = state.slots[KEY_A]!;
-            expect(slot.defaults).toEqual(PERSISTED_DEFAULTS_B);
-            expect(slot.observed).toEqual(persistedB);
-            expect(slot.desired).toEqual(editing(UUID_PERSISTED_B, persistedB));
-            expect(slot.remote).toEqual({
-              kind: "present",
-              tid: 502,
-              generation: null,
-            });
-          },
-        },
-      ],
-    );
-  });
-
-  it("does not create after a draft is cleared before metadata arrives", () => {
-    trace(
-      createDraftState([
-        { project: PROJECT_A, defaults: UNRESOLVED_DEFAULTS_A },
-      ]),
-      [
-        {
-          label: "type before metadata",
-          event: {
-            type: "edit-text",
-            projectKey: KEY_A,
-            text: "clear before metadata",
-            uuid: UUID_A,
-          },
-          state: stateA(
-            {
-              desired: editing(
-                UUID_A,
-                form("clear before metadata", UNRESOLVED_DEFAULTS_A),
-              ),
-              formVersion: 1,
-              historicalGeneration: UUID_A,
-            },
-            UNRESOLVED_DEFAULTS_A,
-          ),
-          effects: [],
-        },
-        {
-          label: "clear while metadata remains unavailable",
-          event: { type: "clear", projectKey: KEY_A },
-          state: stateA(
-            { formVersion: 2, historicalGeneration: UUID_A },
-            UNRESOLVED_DEFAULTS_A,
-          ),
-          effects: [],
-        },
-        {
-          label: "metadata resolves an empty slot",
-          event: {
-            type: "resolve-metadata",
-            projectKey: KEY_A,
-            entryPoint: DEFAULTS_A.entryPoint,
-            agent: DEFAULTS_A.agent,
-          },
-          state: stateA({ formVersion: 2, historicalGeneration: UUID_A }),
-          effects: [],
-        },
-        {
-          label: "stale timer cannot create a cleared generation",
-          event: {
-            type: "create-timer-due",
-            projectKey: KEY_A,
-            generation: UUID_A,
-          },
-          state: stateA({ formVersion: 2, historicalGeneration: UUID_A }),
-          effects: [],
-        },
-      ],
-    );
-  });
-
-  it("keeps unresolved and resolved project slots independent", () => {
-    const bindingA = { uuid: UUID_A, projectKey: KEY_A, tid: null };
-    const bindingB = { uuid: UUID_B, projectKey: KEY_B, tid: null };
-    const unresolvedA = expectedSlot(PROJECT_A, UNRESOLVED_DEFAULTS_A);
-    const resolvedB = expectedSlot(PROJECT_B, DEFAULTS_B);
-
-    trace(
-      stateOf([
-        [KEY_A, unresolvedA],
-        [KEY_B, resolvedB],
-      ]),
-      [
-        {
-          label: "type in unresolved project A",
-          event: {
-            type: "edit-text",
-            projectKey: KEY_A,
-            text: "A waits for metadata",
-            uuid: UUID_A,
-          },
-          state: stateOf(
-            [
-              [
-                KEY_A,
-                expectedSlot(PROJECT_A, UNRESOLVED_DEFAULTS_A, {
-                  desired: editing(
-                    UUID_A,
-                    form("A waits for metadata", UNRESOLVED_DEFAULTS_A),
-                  ),
-                  formVersion: 1,
-                }),
-              ],
-              [KEY_B, resolvedB],
-            ],
-            [bindingA],
-          ),
-          effects: [],
-        },
-        {
-          label: "type in independently resolved project B",
-          event: {
-            type: "edit-text",
-            projectKey: KEY_B,
-            text: "B can create",
-            uuid: UUID_B,
-          },
-          state: stateOf(
-            [
-              [
-                KEY_A,
-                expectedSlot(PROJECT_A, UNRESOLVED_DEFAULTS_A, {
-                  desired: editing(
-                    UUID_A,
-                    form("A waits for metadata", UNRESOLVED_DEFAULTS_A),
-                  ),
-                  formVersion: 1,
-                }),
-              ],
-              [
-                KEY_B,
-                expectedSlot(PROJECT_B, DEFAULTS_B, {
-                  desired: editing(UUID_B, form("B can create", DEFAULTS_B)),
-                  formVersion: 1,
-                  createSchedule: UUID_B,
-                }),
-              ],
-            ],
-            [bindingA, bindingB],
-          ),
-          effects: [scheduleCreate(KEY_B, UUID_B)],
-        },
-        {
-          label: "B creates without waiting for A metadata",
-          event: {
-            type: "create-timer-due",
-            projectKey: KEY_B,
-            generation: UUID_B,
-          },
-          state: stateOf(
-            [
-              [
-                KEY_A,
-                expectedSlot(PROJECT_A, UNRESOLVED_DEFAULTS_A, {
-                  desired: editing(
-                    UUID_A,
-                    form("A waits for metadata", UNRESOLVED_DEFAULTS_A),
-                  ),
-                  formVersion: 1,
-                }),
-              ],
-              [
-                KEY_B,
-                expectedSlot(PROJECT_B, DEFAULTS_B, {
-                  observed: form("", DEFAULTS_B),
-                  desired: editing(UUID_B, form("B can create", DEFAULTS_B)),
-                  remote: { kind: "creating", correlationId: UUID_B },
-                  formVersion: 1,
-                }),
-              ],
-            ],
-            [bindingA, bindingB],
-          ),
-          effects: [
-            createTask(
-              KEY_B,
-              UUID_B,
-              DEFAULTS_B.entryPoint,
-              DEFAULTS_B.agent,
-              null,
-            ),
-          ],
-        },
-        {
-          label: "A metadata resolution schedules only A",
-          event: {
-            type: "resolve-metadata",
-            projectKey: KEY_A,
-            entryPoint: DEFAULTS_A.entryPoint,
-            agent: DEFAULTS_A.agent,
-          },
-          state: stateOf(
-            [
-              [
-                KEY_A,
-                expectedSlot(PROJECT_A, DEFAULTS_A, {
-                  observed: form(""),
-                  desired: editing(UUID_A, form("A waits for metadata")),
-                  formVersion: 1,
-                  createSchedule: UUID_A,
-                }),
-              ],
-              [
-                KEY_B,
-                expectedSlot(PROJECT_B, DEFAULTS_B, {
-                  observed: form("", DEFAULTS_B),
-                  desired: editing(UUID_B, form("B can create", DEFAULTS_B)),
-                  remote: { kind: "creating", correlationId: UUID_B },
-                  formVersion: 1,
-                }),
-              ],
-            ],
-            [bindingA, bindingB],
-          ),
-          effects: [scheduleCreate(KEY_A, UUID_A)],
-        },
-      ],
-    );
-  });
-});
-
-describe("draft reconciler creation and replacement", () => {
-  it("schedules one empty creation and dispatches it only when its timer is due", () => {
-    trace(initialA(), [
-      {
-        label: "first edit",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "first",
-          uuid: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("first")),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "edit while creation remains scheduled",
-        event: { type: "edit-text", projectKey: KEY_A, text: "second" },
-        state: stateA({
-          desired: editing(UUID_A, form("second")),
-          formVersion: 2,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [],
-      },
-      {
-        label: "matching create timer",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("second")),
-          remote: { kind: "creating", correlationId: UUID_A },
-          formVersion: 2,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          createTask(
-            KEY_A,
-            UUID_A,
-            DEFAULTS_A.entryPoint,
-            DEFAULTS_A.agent,
-            null,
-          ),
-        ],
-      },
-      {
-        label: "repeated create timer",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("second")),
-          remote: { kind: "creating", correlationId: UUID_A },
-          formVersion: 2,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [],
-      },
-    ]);
-  });
-
-  it("cancels a cleared generation, ignores its stale timer, and preserves defaults for B", () => {
-    const originalObserved = form("");
-
-    const state = trace(initialA(), [
-      {
-        label: "change entry point while blank",
-        event: {
-          type: "change-entry-point",
-          projectKey: KEY_A,
-          entryPoint: CUSTOM_DEFAULTS_A.entryPoint,
-        },
-        state: stateA(
-          { observed: originalObserved },
-          { entryPoint: CUSTOM_DEFAULTS_A.entryPoint, agent: DEFAULTS_A.agent },
-        ),
-        effects: [],
-      },
-      {
-        label: "change agent while blank",
-        event: {
-          type: "change-agent",
-          projectKey: KEY_A,
-          agent: CUSTOM_DEFAULTS_A.agent,
-        },
-        state: stateA({ observed: originalObserved }, CUSTOM_DEFAULTS_A),
-        effects: [],
-      },
-      {
-        label: "edit A",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "draft A",
-          uuid: UUID_A,
-        },
-        state: stateA(
-          {
-            observed: originalObserved,
-            desired: editing(UUID_A, form("draft A", CUSTOM_DEFAULTS_A)),
-            formVersion: 1,
-            createSchedule: UUID_A,
-            historicalGeneration: UUID_A,
-          },
-          CUSTOM_DEFAULTS_A,
-        ),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "clear A before its timer",
-        event: { type: "clear", projectKey: KEY_A },
-        state: stateA(
-          {
-            observed: originalObserved,
-            formVersion: 2,
-            historicalGeneration: UUID_A,
-          },
-          CUSTOM_DEFAULTS_A,
-        ),
-        effects: [cancelCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "stale A timer",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_A,
-        },
-        state: stateA(
-          {
-            observed: originalObserved,
-            formVersion: 2,
-            historicalGeneration: UUID_A,
-          },
-          CUSTOM_DEFAULTS_A,
-        ),
-        effects: [],
-      },
-      {
-        label: "retype with fresh B",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "draft B",
-          uuid: UUID_B,
-        },
-        state: stateA(
-          {
-            observed: originalObserved,
-            desired: editing(UUID_B, form("draft B", CUSTOM_DEFAULTS_A)),
-            formVersion: 3,
-            createSchedule: UUID_B,
-            historicalGeneration: UUID_B,
-          },
-          CUSTOM_DEFAULTS_A,
-        ),
-        effects: [scheduleCreate(KEY_A, UUID_B)],
-      },
-    ]);
-
-    expect(selectDraftForm(state, KEY_A)).toEqual(
-      form("draft B", CUSTOM_DEFAULTS_A),
-    );
-  });
-
-  it("tombstones an acknowledged A while B waits for A deletion", () => {
-    trace(initialA(), [
-      {
-        label: "edit A",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "draft A",
-          uuid: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("draft A")),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "start empty A creation",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("draft A")),
-          remote: { kind: "creating", correlationId: UUID_A },
-          formVersion: 1,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          createTask(
-            KEY_A,
-            UUID_A,
-            DEFAULTS_A.entryPoint,
-            DEFAULTS_A.agent,
-            null,
-          ),
-        ],
-      },
-      {
-        label: "clear A while it is creating",
-        event: { type: "clear", projectKey: KEY_A },
-        state: stateA({
-          formVersion: 2,
-          remote: { kind: "creating", correlationId: UUID_A },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [],
-      },
-      {
-        label: "edit B while A is creating",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "draft B",
-          uuid: UUID_B,
-        },
-        state: stateA({
-          desired: editing(UUID_B, form("draft B")),
-          formVersion: 3,
-          remote: { kind: "creating", correlationId: UUID_A },
-          historicalGeneration: UUID_B,
-        }),
-        effects: [],
-      },
-      {
-        label: "A creation acknowledgement",
-        event: { type: "task-created", correlationId: UUID_A, tid: 101 },
-        state: stateA({
-          desired: editing(UUID_B, form("draft B")),
-          formVersion: 3,
-          remote: { kind: "deleting", tid: 101 },
-          historicalGeneration: UUID_B,
-        }),
-        effects: [deleteTask(KEY_A, 101)],
-        assert: (state, effects) => {
-          expect(tombstonedTids(state)).toEqual([101]);
-          expect(isTombstoned(state, 101)).toBe(true);
-          expect(
-            effects.filter((effect) => effect.type === "delete-task"),
-          ).toHaveLength(1);
-        },
-      },
-      {
-        label: "premature B timer",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_B,
-        },
-        state: stateA({
-          desired: editing(UUID_B, form("draft B")),
-          formVersion: 3,
-          remote: { kind: "deleting", tid: 101 },
-          historicalGeneration: UUID_B,
-        }),
-        effects: [],
-      },
-      {
-        label: "A deletion acknowledgement",
-        event: { type: "task-deleted", tid: 101 },
-        state: stateA({
-          desired: editing(UUID_B, form("draft B")),
-          formVersion: 3,
-          createSchedule: UUID_B,
-          historicalGeneration: UUID_B,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_B)],
-      },
-    ]);
-  });
-
-  it("deletes a late-created A after clear and leaves an absent blank slot", () => {
-    const state = trace(initialA(), [
-      {
-        label: "edit A",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "draft A",
-          uuid: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("draft A")),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "start A creation",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("draft A")),
-          formVersion: 1,
-          remote: { kind: "creating", correlationId: UUID_A },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          createTask(
-            KEY_A,
-            UUID_A,
-            DEFAULTS_A.entryPoint,
-            DEFAULTS_A.agent,
-            null,
-          ),
-        ],
-      },
-      {
-        label: "clear while creating",
-        event: { type: "clear", projectKey: KEY_A },
-        state: stateA({
-          formVersion: 2,
-          remote: { kind: "creating", correlationId: UUID_A },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [],
-      },
-      {
-        label: "late A acknowledgement",
-        event: { type: "task-created", correlationId: UUID_A, tid: 102 },
-        state: stateA({
-          formVersion: 2,
-          remote: { kind: "deleting", tid: 102 },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [deleteTask(KEY_A, 102)],
-      },
-      {
-        label: "A deletion acknowledgement",
-        event: { type: "task-deleted", tid: 102 },
-        state: stateA({ formVersion: 2, historicalGeneration: UUID_A }),
-        effects: [],
-      },
-    ]);
-
-    expect(selectDraftForm(state, KEY_A)).toEqual(form(""));
-    expect(tombstonedTids(state)).toEqual([]);
-  });
-
-  it("deletes a present A before it can create B", () => {
-    trace(initialA(), [
-      {
-        label: "edit A",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "draft A",
-          uuid: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("draft A")),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "start A creation",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("draft A")),
-          formVersion: 1,
-          remote: { kind: "creating", correlationId: UUID_A },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          createTask(
-            KEY_A,
-            UUID_A,
-            DEFAULTS_A.entryPoint,
-            DEFAULTS_A.agent,
-            null,
-          ),
-        ],
-      },
-      {
-        label: "current A acknowledgement",
-        event: { type: "task-created", correlationId: UUID_A, tid: 103 },
-        state: stateA({
-          desired: editing(UUID_A, form("draft A")),
-          formVersion: 1,
-          remote: { kind: "present", tid: 103, generation: UUID_A },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          setEntryPoint(KEY_A, 103, DEFAULTS_A.entryPoint),
-          setAgent(KEY_A, 103, DEFAULTS_A.agent),
-          setDraft(KEY_A, 103, "draft A", 1),
-          projectDraft(KEY_A, 103, form("draft A"), 1),
-          draftReady(KEY_A, 103, UUID_A),
-        ],
-      },
-      {
-        label: "clear present A",
-        event: { type: "clear", projectKey: KEY_A },
-        state: stateA({
-          formVersion: 2,
-          remote: { kind: "deleting", tid: 103 },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [deleteTask(KEY_A, 103)],
-      },
-      {
-        label: "edit B while A is tombstoned",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "draft B",
-          uuid: UUID_B,
-        },
-        state: stateA({
-          desired: editing(UUID_B, form("draft B")),
-          formVersion: 3,
-          remote: { kind: "deleting", tid: 103 },
-          historicalGeneration: UUID_B,
-        }),
-        effects: [],
-      },
-      {
-        label: "B timer before A deletion",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_B,
-        },
-        state: stateA({
-          desired: editing(UUID_B, form("draft B")),
-          formVersion: 3,
-          remote: { kind: "deleting", tid: 103 },
-          historicalGeneration: UUID_B,
-        }),
-        effects: [],
-      },
-      {
-        label: "A deletion acknowledgement",
-        event: { type: "task-deleted", tid: 103 },
-        state: stateA({
-          desired: editing(UUID_B, form("draft B")),
-          formVersion: 3,
-          createSchedule: UUID_B,
-          historicalGeneration: UUID_B,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_B)],
-      },
-      {
-        label: "B timer after A deletion",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_B,
-        },
-        state: stateA({
-          desired: editing(UUID_B, form("draft B")),
-          formVersion: 3,
-          remote: { kind: "creating", correlationId: UUID_B },
-          historicalGeneration: UUID_B,
-        }),
-        effects: [
-          createTask(
-            KEY_A,
-            UUID_B,
-            DEFAULTS_A.entryPoint,
-            DEFAULTS_A.agent,
-            null,
-          ),
-        ],
-      },
-    ]);
-  });
-});
-
-describe("draft reconciler submission", () => {
-  it("atomically creates a submitted text draft before its create timer", () => {
-    trace(initialA(), [
-      {
-        label: "edit draft",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "send this",
-          uuid: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("send this")),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "submit before create timer",
-        event: { type: "submit", projectKey: KEY_A, images: [] },
-        state: stateA({
-          desired: submitting(UUID_A, form("send this"), [], "atomic-create"),
-          formVersion: 1,
-          remote: { kind: "creating", correlationId: UUID_A },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          cancelCreate(KEY_A, UUID_A),
-          createTask(
-            KEY_A,
-            UUID_A,
-            DEFAULTS_A.entryPoint,
-            DEFAULTS_A.agent,
-            content("send this"),
-          ),
-        ],
-        assert: (_state, effects) => {
-          expect(
-            effects.filter((effect) => effect.type === "create-task"),
-          ).toEqual([
-            createTask(
-              KEY_A,
-              UUID_A,
-              DEFAULTS_A.entryPoint,
-              DEFAULTS_A.agent,
-              content("send this"),
-            ),
-          ]);
-          expect(
-            effects.filter((effect) => effect.type === "send-first-message"),
-          ).toEqual([]);
-          expect(
-            effects.filter(
-              (effect) =>
-                effect.type === "set-draft" && effect.text.trim().length > 0,
-            ),
-          ).toEqual([]);
-        },
-      },
-      {
-        label: "stale create timer after atomic submit",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_A,
-        },
-        state: stateA({
-          desired: submitting(UUID_A, form("send this"), [], "atomic-create"),
-          formVersion: 1,
-          remote: { kind: "creating", correlationId: UUID_A },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [],
-      },
-      {
-        label:
-          "atomic creation acknowledgement hands off without draft persistence",
-        event: { type: "task-created", correlationId: UUID_A, tid: 106 },
-        state: stateA({ formVersion: 2, historicalGeneration: UUID_A }),
-        effects: [releaseTask(KEY_A, 106)],
-        assert: (state, effects) => {
-          expect(state.slots[KEY_A]?.desired).toEqual({ kind: "none" });
-          expect(state.slots[KEY_A]?.remote).toEqual({ kind: "absent" });
-          expect(
-            effects.filter(
-              (effect) =>
-                effect.type === "set-draft" && effect.text.trim().length > 0,
-            ),
-          ).toEqual([]);
-          expect(
-            effects.filter((effect) => effect.type === "send-first-message"),
-          ).toEqual([]);
-        },
-      },
-    ]);
-  });
-
-  it("atomically creates an image-only submission with its exact attachments", () => {
-    trace(initialA(), [
-      {
-        label: "submit image-only draft",
-        event: {
-          type: "submit",
-          projectKey: KEY_A,
-          images: [IMAGE_ONE, IMAGE_TWO],
-          uuid: UUID_IMAGE,
-        },
-        state: stateA({
-          desired: submitting(
-            UUID_IMAGE,
-            form(""),
-            [IMAGE_ONE, IMAGE_TWO],
-            "atomic-create",
-          ),
-          formVersion: 1,
-          remote: { kind: "creating", correlationId: UUID_IMAGE },
-          historicalGeneration: UUID_IMAGE,
-        }),
-        effects: [
-          createTask(
-            KEY_A,
-            UUID_IMAGE,
-            DEFAULTS_A.entryPoint,
-            DEFAULTS_A.agent,
-            content("", [IMAGE_ONE, IMAGE_TWO]),
-          ),
-        ],
-      },
-    ]);
-  });
-
-  it("waits for the empty creation acknowledgement before sending a submitted draft", () => {
-    trace(initialA(), [
-      {
-        label: "edit draft",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "queued message",
-          uuid: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("queued message")),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "start empty task creation",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("queued message")),
-          formVersion: 1,
-          remote: { kind: "creating", correlationId: UUID_A },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          createTask(
-            KEY_A,
-            UUID_A,
-            DEFAULTS_A.entryPoint,
-            DEFAULTS_A.agent,
-            null,
-          ),
-        ],
-      },
-      {
-        label: "submit while empty creation is in flight",
-        event: { type: "submit", projectKey: KEY_A, images: [IMAGE_ONE] },
-        state: stateA({
-          desired: submitting(
-            UUID_A,
-            form("queued message"),
-            [IMAGE_ONE],
-            "send-when-present",
-          ),
-          formVersion: 1,
-          remote: { kind: "creating", correlationId: UUID_A },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [],
-      },
-      {
-        label: "matching creation acknowledgement",
-        event: { type: "task-created", correlationId: UUID_A, tid: 104 },
-        state: stateA({ formVersion: 2, historicalGeneration: UUID_A }),
-        effects: [
-          setEntryPoint(KEY_A, 104, DEFAULTS_A.entryPoint),
-          setAgent(KEY_A, 104, DEFAULTS_A.agent),
-          projectDraft(KEY_A, 104, form(""), 1),
-          setDraft(KEY_A, 104, "", 1),
-          sendFirstMessage(KEY_A, 104, content("queued message", [IMAGE_ONE])),
-          releaseTask(KEY_A, 104),
-        ],
-        assert: (state, effects) => {
-          expect(state.slots[KEY_A]?.desired).toEqual({ kind: "none" });
-          expect(state.slots[KEY_A]?.remote).toEqual({ kind: "absent" });
-          expect(
-            effects.filter((effect) => effect.type === "send-first-message"),
-          ).toHaveLength(1);
-          expect(
-            effects.filter((effect) => effect.type === "set-draft"),
-          ).toEqual([setDraft(KEY_A, 104, "", 1)]);
-        },
-      },
-    ]);
-  });
-
-  it("submits an adopted pending task without creating another task", () => {
-    const persisted = form("persisted message", PERSISTED_DEFAULTS_A);
-
-    trace(initialA(), [
-      {
-        label: "adopt persisted task",
-        event: {
-          type: "adopt-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_A,
-          snapshot: pendingSnapshot(105, persisted),
-        },
-        state: stateA(
-          {
-            observed: persisted,
-            desired: editing(UUID_PERSISTED_A, persisted),
-            formVersion: 1,
-            remote: { kind: "present", tid: 105, generation: null },
-            historicalGeneration: UUID_PERSISTED_A,
-          },
-          PERSISTED_DEFAULTS_A,
-        ),
-        effects: [],
-      },
-      {
-        label: "submit adopted task",
-        event: { type: "submit", projectKey: KEY_A, images: [] },
-        state: stateA(
-          { formVersion: 2, historicalGeneration: UUID_PERSISTED_A },
-          PERSISTED_DEFAULTS_A,
-        ),
-        effects: [
-          setEntryPoint(KEY_A, 105, PERSISTED_DEFAULTS_A.entryPoint),
-          setAgent(KEY_A, 105, PERSISTED_DEFAULTS_A.agent),
-          projectDraft(KEY_A, 105, form("", PERSISTED_DEFAULTS_A), 1),
-          setDraft(KEY_A, 105, "", 1),
-          sendFirstMessage(KEY_A, 105, content("persisted message")),
-          releaseTask(KEY_A, 105),
-        ],
-        assert: (_state, effects) => {
-          expect(
-            effects.filter((effect) => effect.type === "create-task"),
-          ).toEqual([]);
-        },
-      },
-    ]);
-  });
-});
-
-describe("draft reconciler acknowledgement, synchronization, and saves", () => {
-  it("synchronizes a current acknowledgement and deletes a stale acknowledgement without projecting it", () => {
-    trace(
-      stateA({
-        desired: editing(UUID_A, form("current acknowledgement")),
-        remote: { kind: "creating", correlationId: UUID_A },
-        formVersion: 7,
-        historicalGeneration: UUID_A,
-      }),
-      [
-        {
-          label: "current creation acknowledgement",
-          event: { type: "task-created", correlationId: UUID_A, tid: 200 },
-          state: stateA({
-            desired: editing(UUID_A, form("current acknowledgement")),
-            remote: { kind: "present", tid: 200, generation: UUID_A },
-            formVersion: 7,
-            historicalGeneration: UUID_A,
-          }),
-          effects: [
-            setEntryPoint(KEY_A, 200, DEFAULTS_A.entryPoint),
-            setAgent(KEY_A, 200, DEFAULTS_A.agent),
-            setDraft(KEY_A, 200, "current acknowledgement", 7),
-            projectDraft(KEY_A, 200, form("current acknowledgement"), 7),
-            draftReady(KEY_A, 200, UUID_A),
-          ],
-        },
-      ],
-    );
-
-    trace(
-      stateA({
-        desired: editing(UUID_B, form("desired B")),
-        remote: { kind: "creating", correlationId: UUID_A },
-        formVersion: 8,
-        historicalGeneration: UUID_B,
-      }),
-      [
-        {
-          label: "stale A creation acknowledgement",
-          event: { type: "task-created", correlationId: UUID_A, tid: 201 },
-          state: stateA({
-            desired: editing(UUID_B, form("desired B")),
-            remote: { kind: "deleting", tid: 201 },
-            formVersion: 8,
-            historicalGeneration: UUID_B,
-          }),
-          effects: [deleteTask(KEY_A, 201)],
-          assert: (_state, effects) => {
-            expect(
-              effects.some(
-                (effect) =>
-                  effect.type === "project-draft" ||
-                  effect.type === "draft-ready",
-              ),
-            ).toBe(false);
-          },
-        },
-      ],
-    );
-  });
-
-  it("merges peer observations field-wise, advances their baseline, and saves the resulting form", () => {
-    const priorObserved: ResolvedDraftForm = {
-      text: "baseline text",
-      entryPoint: "entry-observed",
-      agent: "agent-observed",
-    };
-    const locallyDiverged: ResolvedDraftForm = {
-      text: "baseline text",
-      entryPoint: "entry-observed",
-      agent: "agent-local",
-    };
-    const peerSnapshot: ResolvedDraftForm = {
-      text: "peer text",
-      entryPoint: "entry-peer",
-      agent: "agent-peer",
-    };
-    const merged: ResolvedDraftForm = {
-      text: "peer text",
-      entryPoint: "entry-peer",
-      agent: "agent-local",
-    };
-    const mergedDefaults = {
-      entryPoint: "entry-peer",
-      agent: "agent-local",
-    } satisfies FormDefaults;
-    const finalDefaults = {
-      entryPoint: "entry-peer",
-      agent: "agent-final",
-    } satisfies FormDefaults;
-    const afterLocalConfig: ResolvedDraftForm = {
-      text: "peer text",
-      ...finalDefaults,
-    };
-    const afterLocalText: ResolvedDraftForm = {
-      text: "local final text",
-      ...finalDefaults,
-    };
-
-    trace(
-      stateA(
-        {
-          observed: priorObserved,
-          desired: editing(UUID_PEER, locallyDiverged),
-          remote: { kind: "present", tid: 202, generation: UUID_PEER },
-          formVersion: 4,
-          saveSchedule: { tid: 202, formVersion: 4 },
-          historicalGeneration: UUID_PEER,
-        },
-        { entryPoint: "entry-observed", agent: "agent-local" },
-      ),
-      [
-        {
-          label: "peer observation merges pristine text and entry point",
-          event: {
-            type: "task-observed",
-            projectKey: KEY_A,
-            observation: taskObservation(202, peerSnapshot),
-          },
-          state: stateA(
-            {
-              observed: peerSnapshot,
-              desired: editing(UUID_PEER, merged),
-              remote: { kind: "present", tid: 202, generation: UUID_PEER },
-              formVersion: 5,
-              saveSchedule: { tid: 202, formVersion: 5 },
-              historicalGeneration: UUID_PEER,
-            },
-            mergedDefaults,
-          ),
-          effects: [
-            projectDraft(KEY_A, 202, merged, 5),
-            ensureSave(KEY_A, 202, 5),
-          ],
-        },
-        {
-          label: "local config change starts a new versioned save",
-          event: {
-            type: "change-agent",
-            projectKey: KEY_A,
-            agent: finalDefaults.agent,
-          },
-          state: stateA(
-            {
-              observed: peerSnapshot,
-              desired: editing(UUID_PEER, afterLocalConfig),
-              remote: { kind: "present", tid: 202, generation: UUID_PEER },
-              formVersion: 6,
-              saveSchedule: { tid: 202, formVersion: 6 },
-              historicalGeneration: UUID_PEER,
-            },
-            finalDefaults,
-          ),
-          effects: [
-            setAgent(KEY_A, 202, finalDefaults.agent),
-            projectDraft(KEY_A, 202, afterLocalConfig, 6),
-            ensureSave(KEY_A, 202, 6),
-          ],
-        },
-        {
-          label: "flush writes the reconciled current form immediately",
-          event: { type: "flush", projectKey: KEY_A },
-          state: stateA(
-            {
-              observed: peerSnapshot,
-              desired: editing(UUID_PEER, afterLocalConfig),
-              remote: { kind: "present", tid: 202, generation: UUID_PEER },
-              formVersion: 6,
-              historicalGeneration: UUID_PEER,
-            },
-            finalDefaults,
-          ),
-          effects: [
-            cancelSave(KEY_A, 202, 6),
-            setDraft(KEY_A, 202, "peer text", 6),
-            projectDraft(KEY_A, 202, afterLocalConfig, 6),
-          ],
-        },
-        {
-          label: "ordinary local edit schedules version 7",
-          event: {
-            type: "edit-text",
-            projectKey: KEY_A,
-            text: "local final text",
-          },
-          state: stateA(
-            {
-              observed: peerSnapshot,
-              desired: editing(UUID_PEER, afterLocalText),
-              remote: { kind: "present", tid: 202, generation: UUID_PEER },
-              formVersion: 7,
-              saveSchedule: { tid: 202, formVersion: 7 },
-              historicalGeneration: UUID_PEER,
-            },
-            finalDefaults,
-          ),
-          effects: [
-            projectDraft(KEY_A, 202, afterLocalText, 7),
-            ensureSave(KEY_A, 202, 7),
-          ],
-        },
-        {
-          label: "stale save timer",
-          event: {
-            type: "save-timer-due",
-            projectKey: KEY_A,
-            tid: 202,
-            formVersion: 6,
-          },
-          state: stateA(
-            {
-              observed: peerSnapshot,
-              desired: editing(UUID_PEER, afterLocalText),
-              remote: { kind: "present", tid: 202, generation: UUID_PEER },
-              formVersion: 7,
-              saveSchedule: { tid: 202, formVersion: 7 },
-              historicalGeneration: UUID_PEER,
-            },
-            finalDefaults,
-          ),
-          effects: [],
-        },
-        {
-          label: "matching save timer",
-          event: {
-            type: "save-timer-due",
-            projectKey: KEY_A,
-            tid: 202,
-            formVersion: 7,
-          },
-          state: stateA(
-            {
-              observed: peerSnapshot,
-              desired: editing(UUID_PEER, afterLocalText),
-              remote: { kind: "present", tid: 202, generation: UUID_PEER },
-              formVersion: 7,
-              historicalGeneration: UUID_PEER,
-            },
-            finalDefaults,
-          ),
-          effects: [setDraft(KEY_A, 202, "local final text", 7)],
-        },
-      ],
-    );
-  });
-
-  it("merges explicitly empty observed fields without changing omitted fields", () => {
-    const baseline: DraftForm = {
-      text: "baseline text",
-      entryPoint: "entry-observed",
-      agent: "agent-observed",
-    };
-    const cases: readonly {
-      label: string;
-      defaults: FormDefaults;
-      desired: DraftForm;
-      observation: Omit<TaskObservation, "tid">;
-      expectedDefaults: FormDefaults;
-      expectedObserved: DraftForm;
-      expectedDesired: DraftForm;
-    }[] = [
-      {
-        label: "text",
-        defaults: { entryPoint: "entry-local", agent: "agent-local" },
-        desired: {
-          text: "baseline text",
-          entryPoint: "entry-local",
-          agent: "agent-local",
-        },
-        observation: { text: "" },
-        expectedDefaults: { entryPoint: "entry-local", agent: "agent-local" },
-        expectedObserved: { ...baseline, text: "" },
-        expectedDesired: {
-          text: "",
-          entryPoint: "entry-local",
-          agent: "agent-local",
-        },
-      },
-      {
-        label: "entry point",
-        defaults: {
-          entryPoint: "entry-observed",
-          agent: "agent-local",
-        },
-        desired: {
-          text: "text-local",
-          entryPoint: "entry-observed",
-          agent: "agent-local",
-        },
-        observation: { entryPoint: "" },
-        expectedDefaults: { entryPoint: "", agent: "agent-local" },
-        expectedObserved: { ...baseline, entryPoint: "" },
-        expectedDesired: {
-          text: "text-local",
-          entryPoint: "",
-          agent: "agent-local",
-        },
-      },
-      {
-        label: "agent",
-        defaults: {
-          entryPoint: "entry-local",
-          agent: "agent-observed",
-        },
-        desired: {
-          text: "text-local",
-          entryPoint: "entry-local",
-          agent: "agent-observed",
-        },
-        observation: { agent: "" },
-        expectedDefaults: { entryPoint: "entry-local", agent: "" },
-        expectedObserved: { ...baseline, agent: "" },
-        expectedDesired: {
-          text: "text-local",
-          entryPoint: "entry-local",
-          agent: "",
-        },
-      },
-    ];
-
-    for (const testCase of cases) {
-      trace(
-        stateA(
-          {
-            observed: baseline,
-            desired: editing(UUID_PEER, testCase.desired),
-            remote: { kind: "present", tid: 207, generation: UUID_PEER },
-            formVersion: 4,
-            historicalGeneration: UUID_PEER,
-          },
-          testCase.defaults,
-        ),
-        [
-          {
-            label: `explicit empty ${testCase.label} observation`,
-            event: {
-              type: "task-observed",
-              projectKey: KEY_A,
-              observation: taskObservation(207, testCase.observation),
-            },
-            state: stateA(
-              {
-                observed: testCase.expectedObserved,
-                desired: editing(UUID_PEER, testCase.expectedDesired),
-                remote: {
-                  kind: "present",
-                  tid: 207,
-                  generation: UUID_PEER,
-                },
-                formVersion: 5,
-                historicalGeneration: UUID_PEER,
-              },
-              testCase.expectedDefaults,
-            ),
-            effects: [projectDraft(KEY_A, 207, testCase.expectedDesired, 5)],
-          },
-        ],
-      );
-    }
-  });
-
-  it("advances a diverged baseline before comparing a later observation", () => {
-    const defaults: FormDefaults = {
-      entryPoint: "entry-baseline",
-      agent: "agent-baseline",
-    };
-    const originalObserved: DraftForm = {
-      text: "baseline text",
-      ...defaults,
-    };
-    const locallyDiverged: DraftForm = {
-      text: "local text",
-      ...defaults,
-    };
-    const firstPeerBaseline: DraftForm = {
-      text: "peer baseline",
-      ...defaults,
-    };
-    const secondPeerBaseline: DraftForm = {
-      text: "peer follow-up",
-      ...defaults,
-    };
-
-    trace(
-      stateA(
-        {
-          observed: originalObserved,
-          desired: editing(UUID_PEER, locallyDiverged),
-          remote: { kind: "present", tid: 208, generation: UUID_PEER },
-          formVersion: 4,
-          historicalGeneration: UUID_PEER,
-        },
-        defaults,
-      ),
-      [
-        {
-          label: "first peer text advances the baseline but keeps local text",
-          event: {
-            type: "task-observed",
-            projectKey: KEY_A,
-            observation: taskObservation(208, {
-              text: firstPeerBaseline.text,
-            }),
-          },
-          state: stateA(
-            {
-              observed: firstPeerBaseline,
-              desired: editing(UUID_PEER, locallyDiverged),
-              remote: { kind: "present", tid: 208, generation: UUID_PEER },
-              formVersion: 4,
-              historicalGeneration: UUID_PEER,
-            },
-            defaults,
-          ),
-          effects: [projectDraft(KEY_A, 208, locallyDiverged, 4)],
-        },
-        {
-          label: "local text catches up to the advanced baseline",
-          event: {
-            type: "edit-text",
-            projectKey: KEY_A,
-            text: firstPeerBaseline.text,
-          },
-          state: stateA(
-            {
-              observed: firstPeerBaseline,
-              desired: editing(UUID_PEER, firstPeerBaseline),
-              remote: { kind: "present", tid: 208, generation: UUID_PEER },
-              formVersion: 5,
-              saveSchedule: { tid: 208, formVersion: 5 },
-              historicalGeneration: UUID_PEER,
-            },
-            defaults,
-          ),
-          effects: [
-            projectDraft(KEY_A, 208, firstPeerBaseline, 5),
-            ensureSave(KEY_A, 208, 5),
-          ],
-        },
-        {
-          label: "later peer text compares against the advanced baseline",
-          event: {
-            type: "task-observed",
-            projectKey: KEY_A,
-            observation: taskObservation(208, {
-              text: secondPeerBaseline.text,
-            }),
-          },
-          state: stateA(
-            {
-              observed: secondPeerBaseline,
-              desired: editing(UUID_PEER, secondPeerBaseline),
-              remote: { kind: "present", tid: 208, generation: UUID_PEER },
-              formVersion: 6,
-              saveSchedule: { tid: 208, formVersion: 6 },
-              historicalGeneration: UUID_PEER,
-            },
-            defaults,
-          ),
-          effects: [
-            projectDraft(KEY_A, 208, secondPeerBaseline, 6),
-            ensureSave(KEY_A, 208, 6),
-          ],
-        },
-      ],
-    );
-  });
-
-  it("uses old text for draft update compare-and-swap", () => {
-    const defaults: FormDefaults = {
-      entryPoint: "entry-cas",
-      agent: "agent-cas",
-    };
-    const cases: readonly {
-      label: string;
-      observed: string;
-      local: string;
-      oldText: string;
-      incoming: string;
-      expected: string;
-    }[] = [
-      {
-        label: "accepts a peer update matching the local sender value",
-        observed: "stale observed text",
-        local: "sender text",
-        oldText: "sender text",
-        incoming: "peer text",
-        expected: "peer text",
-      },
-      {
-        label: "keeps divergent local text",
-        observed: "observed text",
-        local: "local divergence",
-        oldText: "peer baseline",
-        incoming: "peer text",
-        expected: "local divergence",
-      },
-      {
-        label: "accepts a peer update into blank local text",
-        observed: "observed text",
-        local: "",
-        oldText: "peer baseline",
-        incoming: "peer text",
-        expected: "peer text",
-      },
-    ];
-
-    for (const testCase of cases) {
-      const changed = testCase.expected !== testCase.local;
-      const formVersion = changed ? 5 : 4;
-      const observed = form(testCase.observed, defaults);
-      const expected = form(testCase.expected, defaults);
-      trace(
-        stateA(
-          {
-            observed,
-            desired: editing(UUID_PEER, form(testCase.local, defaults)),
-            remote: { kind: "present", tid: 210, generation: UUID_PEER },
-            formVersion: 4,
-            historicalGeneration: UUID_PEER,
-          },
-          defaults,
-        ),
-        [
-          {
-            label: testCase.label,
-            event: {
-              type: "task-observed",
-              projectKey: KEY_A,
-              observation: taskObservation(210, {
-                text: testCase.incoming,
-                oldText: testCase.oldText,
-              }),
-            },
-            state: stateA(
-              {
-                observed: form(testCase.incoming, defaults),
-                desired: editing(UUID_PEER, expected),
-                remote: { kind: "present", tid: 210, generation: UUID_PEER },
-                formVersion,
-                historicalGeneration: UUID_PEER,
-              },
-              defaults,
-            ),
-            effects: [projectDraft(KEY_A, 210, expected, formVersion)],
-          },
-        ],
-      );
-    }
-  });
-
-  it("projects a pending observation without form fields without changing state", () => {
-    const defaults: FormDefaults = {
-      entryPoint: "entry-default",
-      agent: "agent-default",
-    };
-    const observed: ResolvedDraftForm = {
-      text: "observed text",
-      entryPoint: "entry-observed",
-      agent: "agent-observed",
-    };
-    const desired: DraftForm = {
-      text: "local text",
-      entryPoint: "entry-local",
-      agent: "agent-local",
-    };
-    const before = stateA(
-      {
-        observed,
-        desired: editing(UUID_PEER, desired),
-        remote: { kind: "present", tid: 209, generation: UUID_PEER },
-        formVersion: 9,
-        saveSchedule: { tid: 209, formVersion: 9 },
-        historicalGeneration: UUID_PEER,
-      },
-      defaults,
-    );
-
-    trace(before, [
-      {
-        label: "pending activity flags without form fields",
-        event: {
-          type: "task-observed",
-          projectKey: KEY_A,
-          observation: taskObservation(209, {
-            active: false,
-            processing: false,
-            hasMessages: false,
-          }),
-        },
-        state: before,
-        effects: [projectDraft(KEY_A, 209, desired, 9)],
-        assert: (state) => {
-          expect(state).toBe(before);
-        },
-      },
-    ]);
-  });
-
-  it("accepts each pristine-empty field from a peer observation", () => {
-    const observed: DraftForm = {
-      text: "observed text",
-      entryPoint: "entry-observed",
-      agent: "agent-observed",
-    };
-    const peer: ResolvedDraftForm = {
-      text: "peer text",
-      entryPoint: "entry-peer",
-      agent: "agent-peer",
-    };
-    const cases: readonly {
-      label: string;
-      desired: ResolvedDraftForm;
-      merged: ResolvedDraftForm;
-    }[] = [
-      {
-        label: "text",
-        desired: {
-          text: "",
-          entryPoint: "entry-local",
-          agent: "agent-local",
-        },
-        merged: {
-          text: peer.text,
-          entryPoint: "entry-local",
-          agent: "agent-local",
-        },
-      },
-      {
-        label: "entry point",
-        desired: {
-          text: "text-local",
-          entryPoint: "",
-          agent: "agent-local",
-        },
-        merged: {
-          text: "text-local",
-          entryPoint: peer.entryPoint,
-          agent: "agent-local",
-        },
-      },
-      {
-        label: "agent",
-        desired: {
-          text: "text-local",
-          entryPoint: "entry-local",
-          agent: "",
-        },
-        merged: {
-          text: "text-local",
-          entryPoint: "entry-local",
-          agent: peer.agent,
-        },
-      },
-    ];
-
-    for (const { label, desired, merged } of cases) {
-      trace(
-        stateA(
-          {
-            observed,
-            desired: editing(UUID_PEER, desired),
-            remote: { kind: "present", tid: 206, generation: UUID_PEER },
-            formVersion: 4,
-            historicalGeneration: UUID_PEER,
-          },
-          { entryPoint: desired.entryPoint, agent: desired.agent },
-        ),
-        [
-          {
-            label: `peer observation merges pristine empty ${label}`,
-            event: {
-              type: "task-observed",
-              projectKey: KEY_A,
-              observation: taskObservation(206, peer),
-            },
-            state: stateA(
-              {
-                observed: peer,
-                desired: editing(UUID_PEER, merged),
-                remote: {
-                  kind: "present",
-                  tid: 206,
-                  generation: UUID_PEER,
-                },
-                formVersion: 5,
-                historicalGeneration: UUID_PEER,
-              },
-              { entryPoint: merged.entryPoint, agent: merged.agent },
-            ),
-            effects: [projectDraft(KEY_A, 206, merged, 5)],
-          },
-        ],
-      );
-    }
-  });
-
-  it("cancels a scheduled save when a present draft is cleared", () => {
-    const draft = form("clear me", CUSTOM_DEFAULTS_A);
-
-    trace(
-      stateA(
-        {
-          observed: draft,
-          desired: editing(UUID_A, draft),
-          remote: { kind: "present", tid: 203, generation: UUID_A },
-          formVersion: 8,
-          saveSchedule: { tid: 203, formVersion: 8 },
-          historicalGeneration: UUID_A,
-        },
-        CUSTOM_DEFAULTS_A,
-      ),
-      [
-        {
-          label: "clear present draft",
-          event: { type: "clear", projectKey: KEY_A },
-          state: stateA(
-            {
-              observed: draft,
-              remote: { kind: "deleting", tid: 203 },
-              formVersion: 9,
-              historicalGeneration: UUID_A,
-            },
-            CUSTOM_DEFAULTS_A,
-          ),
-          effects: [cancelSave(KEY_A, 203, 8), deleteTask(KEY_A, 203)],
-        },
-        {
-          label: "stale save after clear",
-          event: {
-            type: "save-timer-due",
-            projectKey: KEY_A,
-            tid: 203,
-            formVersion: 8,
-          },
-          state: stateA(
-            {
-              observed: draft,
-              remote: { kind: "deleting", tid: 203 },
-              formVersion: 9,
-              historicalGeneration: UUID_A,
-            },
-            CUSTOM_DEFAULTS_A,
-          ),
-          effects: [],
-        },
-      ],
-    );
-  });
-
-  it("retains desired intent and recreates after an externally deleted present draft", () => {
-    const draft = form("recreate me");
-
-    trace(
-      stateA({
-        observed: draft,
-        desired: editing(UUID_A, draft),
-        remote: { kind: "present", tid: 204, generation: UUID_A },
-        formVersion: 5,
-        saveSchedule: { tid: 204, formVersion: 5 },
-        historicalGeneration: UUID_A,
-      }),
-      [
-        {
-          label: "external deletion acknowledgement",
-          event: { type: "task-deleted", tid: 204 },
-          state: stateA({
-            observed: draft,
-            desired: editing(UUID_A, draft),
-            formVersion: 5,
-            createSchedule: UUID_A,
-            historicalGeneration: UUID_A,
-          }),
-          effects: [cancelSave(KEY_A, 204, 5), scheduleCreate(KEY_A, UUID_A)],
-        },
-        {
-          label: "stale save after external deletion",
-          event: {
-            type: "save-timer-due",
-            projectKey: KEY_A,
-            tid: 204,
-            formVersion: 5,
-          },
-          state: stateA({
-            observed: draft,
-            desired: editing(UUID_A, draft),
-            formVersion: 5,
-            createSchedule: UUID_A,
-            historicalGeneration: UUID_A,
-          }),
-          effects: [],
-        },
-        {
-          label: "recreation timer",
-          event: {
-            type: "create-timer-due",
-            projectKey: KEY_A,
-            generation: UUID_A,
-          },
-          state: stateA({
-            observed: form(""),
-            desired: editing(UUID_A, draft),
-            remote: { kind: "creating", correlationId: UUID_A },
-            formVersion: 5,
-            historicalGeneration: UUID_A,
-          }),
-          effects: [
-            createTask(
-              KEY_A,
-              UUID_A,
-              DEFAULTS_A.entryPoint,
-              DEFAULTS_A.agent,
-              null,
-            ),
-          ],
-        },
-        {
-          label: "recreated task acknowledgement rebinds its UUID",
-          event: { type: "task-created", correlationId: UUID_A, tid: 206 },
-          state: stateA({
-            observed: form(""),
-            desired: editing(UUID_A, draft),
-            remote: { kind: "present", tid: 206, generation: UUID_A },
-            formVersion: 5,
-            historicalGeneration: UUID_A,
-          }),
-          effects: [
-            setEntryPoint(KEY_A, 206, DEFAULTS_A.entryPoint),
-            setAgent(KEY_A, 206, DEFAULTS_A.agent),
-            setDraft(KEY_A, 206, draft.text, 5),
-            projectDraft(KEY_A, 206, draft, 5),
-            draftReady(KEY_A, 206, UUID_A),
-          ],
-          assert: (state) => {
-            expect(state.uuidBindings).toEqual([
-              { uuid: UUID_A, projectKey: KEY_A, tid: 206 },
-            ]);
-          },
-        },
-      ],
-    );
-  });
-
-  it("cancels a scheduled save before submitting an owned present draft", () => {
-    const draft = form("send and cancel save");
-
-    trace(
-      stateA({
-        observed: draft,
-        desired: editing(UUID_A, draft),
-        remote: { kind: "present", tid: 205, generation: UUID_A },
-        formVersion: 6,
-        saveSchedule: { tid: 205, formVersion: 6 },
-        historicalGeneration: UUID_A,
-      }),
-      [
-        {
-          label: "submit present draft",
-          event: { type: "submit", projectKey: KEY_A, images: [] },
-          state: stateA({ formVersion: 7, historicalGeneration: UUID_A }),
-          effects: [
-            cancelSave(KEY_A, 205, 6),
-            setEntryPoint(KEY_A, 205, DEFAULTS_A.entryPoint),
-            setAgent(KEY_A, 205, DEFAULTS_A.agent),
-            projectDraft(KEY_A, 205, form(""), 6),
-            setDraft(KEY_A, 205, "", 6),
-            sendFirstMessage(KEY_A, 205, content("send and cancel save")),
-            releaseTask(KEY_A, 205),
-          ],
-        },
-        {
-          label: "stale save after submit",
-          event: {
-            type: "save-timer-due",
-            projectKey: KEY_A,
-            tid: 205,
-            formVersion: 6,
-          },
-          state: stateA({ formVersion: 7, historicalGeneration: UUID_A }),
-          effects: [],
-        },
-      ],
-    );
-  });
-});
-
-describe("draft reconciler ownership boundaries", () => {
-  it("releases ownership for activity-only observations", () => {
-    const variants: readonly [
-      string,
-      number,
-      Pick<TaskObservation, "active" | "processing" | "hasMessages">,
-    ][] = [
-      ["active", 300, { active: true }],
-      ["processing", 301, { processing: true }],
-      ["message-bearing", 302, { hasMessages: true }],
-    ];
-    const draft = form("owned draft");
-
-    for (const [label, tid, flags] of variants) {
-      trace(
-        stateA({
-          observed: draft,
-          desired: editing(UUID_ACTIVE, draft),
-          remote: { kind: "present", tid, generation: UUID_ACTIVE },
-          formVersion: 7,
-          saveSchedule: { tid, formVersion: 7 },
-          historicalGeneration: UUID_ACTIVE,
-        }),
-        [
-          {
-            label: `${label} observation releases ownership`,
-            event: {
-              type: "task-observed",
-              projectKey: KEY_A,
-              observation: taskObservation(tid, flags),
-            },
-            state: stateA({
-              formVersion: 8,
-              historicalGeneration: UUID_ACTIVE,
-            }),
-            effects: [cancelSave(KEY_A, tid, 7), releaseTask(KEY_A, tid)],
-            assert: (_state, effects) => {
-              expect(
-                effects.some(
-                  (effect) =>
-                    effect.type === "set-draft" ||
-                    effect.type === "delete-task",
-                ),
-              ).toBe(false);
-            },
-          },
-          {
-            label: `${label} stale save cannot write after release`,
-            event: {
-              type: "save-timer-due",
-              projectKey: KEY_A,
-              tid,
-              formVersion: 7,
-            },
-            state: stateA({
-              formVersion: 8,
-              historicalGeneration: UUID_ACTIVE,
-            }),
-            effects: [],
-          },
-          {
-            label: `${label} flush cannot write or delete after release`,
-            event: { type: "flush", projectKey: KEY_A },
-            state: stateA({
-              formVersion: 8,
-              historicalGeneration: UUID_ACTIVE,
-            }),
-            effects: [],
-          },
-          {
-            label: `${label} clear cannot delete after release`,
-            event: { type: "clear", projectKey: KEY_A },
-            state: stateA({
-              formVersion: 8,
-              historicalGeneration: UUID_ACTIVE,
-            }),
-            effects: [],
-          },
-        ],
-      );
-    }
-  });
-
-  it("releases an active tombstoned A and schedules B without discarding B", () => {
-    const replacement = form("replacement while deleting");
-    const bindings: readonly UuidBinding[] = [
-      { uuid: UUID_A, projectKey: KEY_A, tid: 303 },
-      { uuid: UUID_B, projectKey: KEY_A, tid: null },
-    ];
-
-    const afterActiveObservation = trace(
-      stateA(
-        {
-          desired: editing(UUID_B, replacement),
-          remote: { kind: "deleting", tid: 303 },
-          formVersion: 4,
-          historicalGeneration: UUID_B,
-        },
-        DEFAULTS_A,
-        bindings,
-      ),
-      [
-        {
-          label: "active observation releases tombstoned A and schedules B",
-          event: {
-            type: "task-observed",
-            projectKey: KEY_A,
-            observation: taskObservation(303, { active: true }),
-          },
-          state: stateA(
-            {
-              desired: editing(UUID_B, replacement),
-              formVersion: 4,
-              createSchedule: UUID_B,
-              historicalGeneration: UUID_B,
-            },
-            DEFAULTS_A,
-            bindings,
-          ),
-          effects: [
-            releaseTask(KEY_A, 303, false),
-            scheduleCreate(KEY_A, UUID_B),
-          ],
-        },
-      ],
-    );
-
-    expect(selectDraftForm(afterActiveObservation, KEY_A)).toEqual(replacement);
-    expectReductionFailure(
-      afterActiveObservation,
-      { type: "task-deleted", tid: 303 },
-      "Task deletion does not match one owned task",
-    );
-    expectReductionFailure(
-      afterActiveObservation,
-      {
-        type: "task-observed",
-        projectKey: KEY_A,
-        observation: taskObservation(303, { active: true }),
-      },
-      "Observation does not match an owned task",
-    );
-  });
-
-  it("recreates an atomic image submission after releasing tombstoned A", () => {
-    const submission = submitting(
-      UUID_B,
-      form("replacement message"),
-      [IMAGE_ONE],
-      "atomic-create",
-    );
-    const bindings: readonly UuidBinding[] = [
-      { uuid: UUID_A, projectKey: KEY_A, tid: 304 },
-      { uuid: UUID_B, projectKey: KEY_A, tid: null },
-    ];
-
-    const afterActiveObservation = trace(
-      stateA(
-        {
-          desired: submission,
-          remote: { kind: "deleting", tid: 304 },
-          formVersion: 4,
-          historicalGeneration: UUID_B,
-        },
-        DEFAULTS_A,
-        bindings,
-      ),
-      [
-        {
-          label:
-            "active observation releases tombstoned A and atomically creates B",
-          event: {
-            type: "task-observed",
-            projectKey: KEY_A,
-            observation: taskObservation(304, { active: true }),
-          },
-          state: stateA(
-            {
-              desired: submission,
-              remote: { kind: "creating", correlationId: UUID_B },
-              formVersion: 4,
-              historicalGeneration: UUID_B,
-            },
-            DEFAULTS_A,
-            bindings,
-          ),
-          effects: [
-            releaseTask(KEY_A, 304, false),
-            createTask(
-              KEY_A,
-              UUID_B,
-              DEFAULTS_A.entryPoint,
-              DEFAULTS_A.agent,
-              content("replacement message", [IMAGE_ONE]),
-            ),
-          ],
-          assert: (_state, effects) => {
-            expect(
-              effects.filter((effect) => effect.type === "create-task"),
-            ).toEqual([
-              createTask(
-                KEY_A,
-                UUID_B,
-                DEFAULTS_A.entryPoint,
-                DEFAULTS_A.agent,
-                content("replacement message", [IMAGE_ONE]),
-              ),
-            ]);
-            expect(
-              effects.filter((effect) => effect.type === "send-first-message"),
-            ).toEqual([]);
-          },
-        },
-      ],
-    );
-
-    expectReductionFailure(
-      afterActiveObservation,
-      { type: "task-deleted", tid: 304 },
-      "Task deletion does not match one owned task",
-    );
-    expectReductionFailure(
-      afterActiveObservation,
-      {
-        type: "task-observed",
-        projectKey: KEY_A,
-        observation: taskObservation(304, { active: true }),
-      },
-      "Observation does not match an owned task",
-    );
-
-    trace(afterActiveObservation, [
-      {
-        label: "atomic B acknowledgement hands off without another delivery",
-        event: { type: "task-created", correlationId: UUID_B, tid: 305 },
-        state: stateA(
-          { formVersion: 5, historicalGeneration: UUID_B },
-          DEFAULTS_A,
-          bindings,
-        ),
-        effects: [releaseTask(KEY_A, 305)],
-        assert: (state, effects) => {
-          expect(state.slots[KEY_A]?.desired).toEqual({ kind: "none" });
-          expect(state.slots[KEY_A]?.remote).toEqual({ kind: "absent" });
-          expect(
-            effects.filter((effect) => effect.type === "create-task"),
-          ).toEqual([]);
-          expect(
-            effects.filter((effect) => effect.type === "send-first-message"),
-          ).toEqual([]);
-        },
-      },
-    ]);
-  });
-
-  it("keeps two canonical project slots independent through creation and deletion", () => {
-    expect(KEY_A).not.toBe(KEY_B);
-    expect(createProjectKey(PROJECT_A.workspace, PROJECT_A.projectPath)).toBe(
-      KEY_A,
-    );
-
-    trace(initialAB(), [
-      {
-        label: "edit alpha",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "alpha",
-          uuid: UUID_A,
-        },
-        state: stateAB({
-          desired: editing(UUID_A, form("alpha")),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "edit bravo",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_B,
-          text: "bravo",
-          uuid: UUID_B,
-        },
-        state: stateAB(
-          {
-            desired: editing(UUID_A, form("alpha")),
-            formVersion: 1,
-            createSchedule: UUID_A,
-            historicalGeneration: UUID_A,
-          },
-          {
-            desired: editing(UUID_B, form("bravo", DEFAULTS_B)),
-            formVersion: 1,
-            createSchedule: UUID_B,
-            historicalGeneration: UUID_B,
-          },
-        ),
-        effects: [scheduleCreate(KEY_B, UUID_B)],
-      },
-      {
-        label: "alpha creation timer",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_A,
-        },
-        state: stateAB(
-          {
-            desired: editing(UUID_A, form("alpha")),
-            remote: { kind: "creating", correlationId: UUID_A },
-            formVersion: 1,
-            historicalGeneration: UUID_A,
-          },
-          {
-            desired: editing(UUID_B, form("bravo", DEFAULTS_B)),
-            formVersion: 1,
-            createSchedule: UUID_B,
-            historicalGeneration: UUID_B,
-          },
-        ),
-        effects: [
-          createTask(
-            KEY_A,
-            UUID_A,
-            DEFAULTS_A.entryPoint,
-            DEFAULTS_A.agent,
-            null,
-          ),
-        ],
-      },
-      {
-        label: "bravo creation timer",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_B,
-          generation: UUID_B,
-        },
-        state: stateAB(
-          {
-            desired: editing(UUID_A, form("alpha")),
-            remote: { kind: "creating", correlationId: UUID_A },
-            formVersion: 1,
-            historicalGeneration: UUID_A,
-          },
-          {
-            desired: editing(UUID_B, form("bravo", DEFAULTS_B)),
-            remote: { kind: "creating", correlationId: UUID_B },
-            formVersion: 1,
-            historicalGeneration: UUID_B,
-          },
-        ),
-        effects: [
-          createTask(
-            KEY_B,
-            UUID_B,
-            DEFAULTS_B.entryPoint,
-            DEFAULTS_B.agent,
-            null,
-          ),
-        ],
-      },
-      {
-        label: "alpha acknowledgement",
-        event: { type: "task-created", correlationId: UUID_A, tid: 401 },
-        state: stateAB(
-          {
-            desired: editing(UUID_A, form("alpha")),
-            remote: { kind: "present", tid: 401, generation: UUID_A },
-            formVersion: 1,
-            historicalGeneration: UUID_A,
-          },
-          {
-            desired: editing(UUID_B, form("bravo", DEFAULTS_B)),
-            remote: { kind: "creating", correlationId: UUID_B },
-            formVersion: 1,
-            historicalGeneration: UUID_B,
-          },
-        ),
-        effects: [
-          setEntryPoint(KEY_A, 401, DEFAULTS_A.entryPoint),
-          setAgent(KEY_A, 401, DEFAULTS_A.agent),
-          setDraft(KEY_A, 401, "alpha", 1),
-          projectDraft(KEY_A, 401, form("alpha"), 1),
-          draftReady(KEY_A, 401, UUID_A),
-        ],
-      },
-      {
-        label: "clear alpha",
-        event: { type: "clear", projectKey: KEY_A },
-        state: stateAB(
-          {
-            remote: { kind: "deleting", tid: 401 },
-            formVersion: 2,
-            historicalGeneration: UUID_A,
-          },
-          {
-            desired: editing(UUID_B, form("bravo", DEFAULTS_B)),
-            remote: { kind: "creating", correlationId: UUID_B },
-            formVersion: 1,
-            historicalGeneration: UUID_B,
-          },
-        ),
-        effects: [deleteTask(KEY_A, 401)],
-        assert: (state) => {
-          expect(tombstonedTids(state)).toEqual([401]);
-          expect(isTombstoned(state, 401)).toBe(true);
-          expect(isTombstoned(state, 402)).toBe(false);
-        },
-      },
-      {
-        label: "bravo acknowledgement",
-        event: { type: "task-created", correlationId: UUID_B, tid: 402 },
-        state: stateAB(
-          {
-            remote: { kind: "deleting", tid: 401 },
-            formVersion: 2,
-            historicalGeneration: UUID_A,
-          },
-          {
-            desired: editing(UUID_B, form("bravo", DEFAULTS_B)),
-            remote: { kind: "present", tid: 402, generation: UUID_B },
-            formVersion: 1,
-            historicalGeneration: UUID_B,
-          },
-        ),
-        effects: [
-          setEntryPoint(KEY_B, 402, DEFAULTS_B.entryPoint),
-          setAgent(KEY_B, 402, DEFAULTS_B.agent),
-          setDraft(KEY_B, 402, "bravo", 1),
-          projectDraft(KEY_B, 402, form("bravo", DEFAULTS_B), 1),
-          draftReady(KEY_B, 402, UUID_B),
-        ],
-      },
-      {
-        label: "clear bravo",
-        event: { type: "clear", projectKey: KEY_B },
-        state: stateAB(
-          {
-            remote: { kind: "deleting", tid: 401 },
-            formVersion: 2,
-            historicalGeneration: UUID_A,
-          },
-          {
-            remote: { kind: "deleting", tid: 402 },
-            formVersion: 2,
-            historicalGeneration: UUID_B,
-          },
-        ),
-        effects: [deleteTask(KEY_B, 402)],
-        assert: (state) => {
-          expect(tombstonedTids(state)).toEqual([401, 402]);
-        },
-      },
-      {
-        label: "alpha deletion acknowledgement",
-        event: { type: "task-deleted", tid: 401 },
-        state: stateAB(
-          { formVersion: 2, historicalGeneration: UUID_A },
-          {
-            remote: { kind: "deleting", tid: 402 },
-            formVersion: 2,
-            historicalGeneration: UUID_B,
-          },
-        ),
-        effects: [],
-        assert: (state) => {
-          expect(tombstonedTids(state)).toEqual([402]);
-          expect(isTombstoned(state, 401)).toBe(false);
-          expect(isTombstoned(state, 402)).toBe(true);
-        },
-      },
-      {
-        label: "bravo deletion acknowledgement",
-        event: { type: "task-deleted", tid: 402 },
-        state: stateAB(
-          { formVersion: 2, historicalGeneration: UUID_A },
-          { formVersion: 2, historicalGeneration: UUID_B },
-        ),
-        effects: [],
-        assert: (state) => {
-          expect(tombstonedTids(state)).toEqual([]);
-        },
-      },
-    ]);
-  });
-
-  it("keeps the same display name and canonical path in different workspaces separate", () => {
-    const projectInOtherWorkspace: ProjectIdentity = {
-      workspace: "workspace-bravo",
-      projectPath: PROJECT_A.projectPath,
-    };
-    const otherKey = createProjectKey(
-      projectInOtherWorkspace.workspace,
-      projectInOtherWorkspace.projectPath,
-    );
-    const otherDefaults: FormDefaults = {
-      entryPoint: "entry-other-workspace",
-      agent: "agent-other-workspace",
-    };
-
-    expect(otherKey).not.toBe(KEY_A);
+describe("identity-keyed draft editors", () => {
+  it("allocates a blank editor before typing and creates with its UUID after metadata resolves", () => {
+    const trace = editorTrace();
     expect(
-      createProjectKey(
-        projectInOtherWorkspace.workspace,
-        projectInOtherWorkspace.projectPath,
-      ),
-    ).toBe(otherKey);
-
-    trace(
-      createDraftState([
-        { project: PROJECT_A, defaults: DEFAULTS_A },
-        { project: projectInOtherWorkspace, defaults: otherDefaults },
-      ]),
-      [
-        {
-          label: "edit alpha in the first workspace",
-          event: {
-            type: "edit-text",
-            projectKey: KEY_A,
-            text: "first workspace alpha",
-            uuid: UUID_A,
-          },
-          state: stateOf(
-            [
-              [
-                KEY_A,
-                expectedSlot(PROJECT_A, DEFAULTS_A, {
-                  desired: editing(UUID_A, form("first workspace alpha")),
-                  formVersion: 1,
-                  createSchedule: UUID_A,
-                }),
-              ],
-              [otherKey, expectedSlot(projectInOtherWorkspace, otherDefaults)],
-            ],
-            [{ uuid: UUID_A, projectKey: KEY_A, tid: null }],
-          ),
-          effects: [scheduleCreate(KEY_A, UUID_A)],
-        },
-        {
-          label: "edit the identically named path in the other workspace",
-          event: {
-            type: "edit-text",
-            projectKey: otherKey,
-            text: "other workspace alpha",
-            uuid: UUID_B,
-          },
-          state: stateOf(
-            [
-              [
-                KEY_A,
-                expectedSlot(PROJECT_A, DEFAULTS_A, {
-                  desired: editing(UUID_A, form("first workspace alpha")),
-                  formVersion: 1,
-                  createSchedule: UUID_A,
-                }),
-              ],
-              [
-                otherKey,
-                expectedSlot(projectInOtherWorkspace, otherDefaults, {
-                  desired: editing(
-                    UUID_B,
-                    form("other workspace alpha", otherDefaults),
-                  ),
-                  formVersion: 1,
-                  createSchedule: UUID_B,
-                }),
-              ],
-            ],
-            [
-              { uuid: UUID_A, projectKey: KEY_A, tid: null },
-              { uuid: UUID_B, projectKey: otherKey, tid: null },
-            ],
-          ),
-          effects: [scheduleCreate(otherKey, UUID_B)],
-        },
-      ],
-    );
-  });
-});
-
-describe("draft reconciler persisted ownership", () => {
-  it("switches stable persisted tasks by flushing and releasing A, then permits a switch back", () => {
-    const persistedA = form("persisted A", PERSISTED_DEFAULTS_A);
-    const editedA = form("persisted A local", PERSISTED_DEFAULTS_A);
-    const persistedB = form("persisted B", PERSISTED_DEFAULTS_B);
-    const returnedA = form("persisted A returned", PERSISTED_DEFAULTS_A);
-
-    trace(initialA(), [
+      trace.dispatch({
+        type: "attach-new-task",
+        editorId: a,
+        project,
+      }),
+    ).toEqual([]);
+    expect(trace.state.newTaskByProject[projectKey]).toBe(a);
+    expect(getEditor(trace.state, a).desired).toMatchObject({ text: "" });
+    expect(
+      trace.dispatch({
+        type: "edit-text",
+        editorId: a,
+        text: "before metadata",
+      }),
+    ).toEqual([]);
+    expect(trace.dispatch(metadata)).toEqual([
+      expect.objectContaining({
+        type: "schedule-create",
+        editorId: a,
+        correlationId: uuidA,
+      }),
+    ]);
+    const due = {
+      type: "create-timer-due",
+      editorId: a,
+      correlationId: uuidA,
+    } as const;
+    expect(trace.dispatch(due)).toEqual([
       {
-        label: "adopt persisted A",
-        event: {
-          type: "adopt-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_A,
-          snapshot: pendingSnapshot(501, persistedA),
-        },
-        state: stateA(
-          {
-            observed: persistedA,
-            desired: editing(UUID_PERSISTED_A, persistedA),
-            remote: { kind: "present", tid: 501, generation: null },
-            formVersion: 1,
-            historicalGeneration: UUID_PERSISTED_A,
-          },
-          PERSISTED_DEFAULTS_A,
-        ),
-        effects: [],
-      },
-      {
-        label: "edit adopted A",
-        event: { type: "edit-text", projectKey: KEY_A, text: editedA.text },
-        state: stateA(
-          {
-            observed: persistedA,
-            desired: editing(UUID_PERSISTED_A, editedA),
-            remote: { kind: "present", tid: 501, generation: null },
-            formVersion: 2,
-            saveSchedule: { tid: 501, formVersion: 2 },
-            historicalGeneration: UUID_PERSISTED_A,
-          },
-          PERSISTED_DEFAULTS_A,
-        ),
-        effects: [
-          projectDraft(KEY_A, 501, editedA, 2),
-          ensureSave(KEY_A, 501, 2),
-        ],
-      },
-      {
-        label: "switch from persisted A to persisted B",
-        event: {
-          type: "switch-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_B,
-          snapshot: pendingSnapshot(502, persistedB),
-        },
-        state: stateA(
-          {
-            observed: persistedB,
-            desired: editing(UUID_PERSISTED_B, persistedB),
-            remote: { kind: "present", tid: 502, generation: null },
-            formVersion: 3,
-            historicalGeneration: UUID_PERSISTED_B,
-          },
-          PERSISTED_DEFAULTS_B,
-        ),
-        effects: [
-          cancelSave(KEY_A, 501, 2),
-          setEntryPoint(KEY_A, 501, PERSISTED_DEFAULTS_A.entryPoint),
-          setAgent(KEY_A, 501, PERSISTED_DEFAULTS_A.agent),
-          setDraft(KEY_A, 501, editedA.text, 2),
-          projectDraft(KEY_A, 501, editedA, 2),
-          releaseTask(KEY_A, 501),
-        ],
-        assert: (_state, effects) => {
-          expect(
-            effects.filter(
-              (effect) =>
-                effect.type === "create-task" || effect.type === "delete-task",
-            ),
-          ).toEqual([]);
-        },
-      },
-      {
-        label: "switch back from persisted B to persisted A",
-        event: {
-          type: "switch-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_RETURN,
-          snapshot: pendingSnapshot(501, returnedA),
-        },
-        state: stateA(
-          {
-            observed: returnedA,
-            desired: editing(UUID_PERSISTED_RETURN, returnedA),
-            remote: { kind: "present", tid: 501, generation: null },
-            formVersion: 4,
-            historicalGeneration: UUID_PERSISTED_RETURN,
-          },
-          PERSISTED_DEFAULTS_A,
-        ),
-        effects: [
-          setEntryPoint(KEY_A, 502, PERSISTED_DEFAULTS_B.entryPoint),
-          setAgent(KEY_A, 502, PERSISTED_DEFAULTS_B.agent),
-          setDraft(KEY_A, 502, persistedB.text, 3),
-          projectDraft(KEY_A, 502, persistedB, 3),
-          releaseTask(KEY_A, 502),
-        ],
-        assert: (_state, effects) => {
-          expect(
-            effects.filter(
-              (effect) =>
-                effect.type === "create-task" || effect.type === "delete-task",
-            ),
-          ).toEqual([]);
-        },
+        type: "create-task",
+        editorId: a,
+        correlationId: uuidA,
+        ...defaults,
+        content: null,
       },
     ]);
-  });
-
-  it("switches an acknowledged locally-created A to B and re-adopts A", () => {
-    const createdA = form("locally-created A");
-    const editedA = form("locally-created A local");
-    const persistedB = form("persisted B", PERSISTED_DEFAULTS_B);
-    const returnedA = form("persisted A returned", PERSISTED_DEFAULTS_A);
-
-    trace(initialA(), [
-      {
-        label: "start locally-created A",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: createdA.text,
-          uuid: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, createdA),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "create locally-created A",
-        event: {
-          type: "create-timer-due",
-          projectKey: KEY_A,
-          generation: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, createdA),
-          remote: { kind: "creating", correlationId: UUID_A },
-          formVersion: 1,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          createTask(
-            KEY_A,
-            UUID_A,
-            DEFAULTS_A.entryPoint,
-            DEFAULTS_A.agent,
-            null,
-          ),
-        ],
-      },
-      {
-        label: "acknowledge locally-created A",
-        event: { type: "task-created", correlationId: UUID_A, tid: 503 },
-        state: stateA({
-          desired: editing(UUID_A, createdA),
-          remote: { kind: "present", tid: 503, generation: UUID_A },
-          formVersion: 1,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          setEntryPoint(KEY_A, 503, DEFAULTS_A.entryPoint),
-          setAgent(KEY_A, 503, DEFAULTS_A.agent),
-          setDraft(KEY_A, 503, createdA.text, 1),
-          projectDraft(KEY_A, 503, createdA, 1),
-          draftReady(KEY_A, 503, UUID_A),
-        ],
-      },
-      {
-        label: "edit acknowledged locally-created A",
-        event: { type: "edit-text", projectKey: KEY_A, text: editedA.text },
-        state: stateA({
-          desired: editing(UUID_A, editedA),
-          remote: { kind: "present", tid: 503, generation: UUID_A },
-          formVersion: 2,
-          saveSchedule: { tid: 503, formVersion: 2 },
-          historicalGeneration: UUID_A,
-        }),
-        effects: [
-          projectDraft(KEY_A, 503, editedA, 2),
-          ensureSave(KEY_A, 503, 2),
-        ],
-      },
-      {
-        label: "flush, project, and release locally-created A for persisted B",
-        event: {
-          type: "switch-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_B,
-          snapshot: pendingSnapshot(504, persistedB),
-        },
-        state: stateA(
-          {
-            observed: persistedB,
-            desired: editing(UUID_PERSISTED_B, persistedB),
-            remote: { kind: "present", tid: 504, generation: null },
-            formVersion: 3,
-            historicalGeneration: UUID_PERSISTED_B,
-          },
-          PERSISTED_DEFAULTS_B,
-        ),
-        effects: [
-          cancelSave(KEY_A, 503, 2),
-          setEntryPoint(KEY_A, 503, DEFAULTS_A.entryPoint),
-          setAgent(KEY_A, 503, DEFAULTS_A.agent),
-          setDraft(KEY_A, 503, editedA.text, 2),
-          projectDraft(KEY_A, 503, editedA, 2),
-          releaseTask(KEY_A, 503),
-        ],
-        assert: (state, effects) => {
-          expect(state.uuidBindings).toEqual([
-            { uuid: UUID_A, projectKey: KEY_A, tid: 503 },
-            { uuid: UUID_PERSISTED_B, projectKey: KEY_A, tid: 504 },
-          ]);
-          expect(
-            effects.filter(
-              (effect) =>
-                effect.type === "create-task" || effect.type === "delete-task",
-            ),
-          ).toEqual([]);
-        },
-      },
-      {
-        label: "re-adopt locally-created A with its original UUID",
-        event: {
-          type: "switch-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_A,
-          snapshot: pendingSnapshot(503, returnedA),
-        },
-        state: stateA(
-          {
-            observed: returnedA,
-            desired: editing(UUID_A, returnedA),
-            remote: { kind: "present", tid: 503, generation: null },
-            formVersion: 4,
-            historicalGeneration: UUID_A,
-          },
-          PERSISTED_DEFAULTS_A,
-        ),
-        effects: [
-          setEntryPoint(KEY_A, 504, PERSISTED_DEFAULTS_B.entryPoint),
-          setAgent(KEY_A, 504, PERSISTED_DEFAULTS_B.agent),
-          setDraft(KEY_A, 504, persistedB.text, 3),
-          projectDraft(KEY_A, 504, persistedB, 3),
-          releaseTask(KEY_A, 504),
-        ],
-        assert: (state, effects) => {
-          expect(state.uuidBindings).toEqual([
-            { uuid: UUID_A, projectKey: KEY_A, tid: 503 },
-            { uuid: UUID_PERSISTED_B, projectKey: KEY_A, tid: 504 },
-          ]);
-          expect(
-            effects.filter(
-              (effect) =>
-                effect.type === "create-task" || effect.type === "delete-task",
-            ),
-          ).toEqual([]);
-        },
-      },
-    ]);
-  });
-});
-
-describe("draft reconciler failure boundaries", () => {
-  it("clears all slots without effects on connection reset", () => {
-    trace(
-      stateAB(
-        {
-          desired: editing(UUID_A, form("alpha")),
-          remote: { kind: "present", tid: 701, generation: UUID_A },
-          formVersion: 2,
-          saveSchedule: { tid: 701, formVersion: 2 },
-          historicalGeneration: UUID_A,
-        },
-        {
-          desired: editing(UUID_B, form("bravo", DEFAULTS_B)),
-          remote: { kind: "deleting", tid: 702 },
-          formVersion: 3,
-          historicalGeneration: UUID_B,
-        },
-      ),
-      [
-        {
-          label: "connection reset",
-          event: { type: "connection-reset" },
-          state: { slots: {}, uuidBindings: [] },
-          effects: [],
-        },
-      ],
-    );
-  });
-
-  it("rejects mismatched and pending observations without mutating state", () => {
-    const ownedDraft = form("owned observation");
-    const owned = stateAB({
-      observed: ownedDraft,
-      desired: editing(UUID_A, ownedDraft),
-      remote: { kind: "present", tid: 810, generation: UUID_A },
-      formVersion: 3,
-      historicalGeneration: UUID_A,
+    expect(trace.dispatch(due)).toEqual([]);
+    trace.dispatch({
+      type: "task-created",
+      editorId: a,
+      correlationId: uuidA,
+      tid: 71,
+      successor: b,
     });
-
-    expectReductionFailure(
-      owned,
-      {
-        type: "task-observed",
-        projectKey: KEY_B,
-        observation: taskObservation(810, { active: true }),
-      },
-      "Observation does not match an owned task",
-    );
-    expectReductionFailure(
-      owned,
-      {
-        type: "task-observed",
-        projectKey: KEY_A,
-        observation: taskObservation(811),
-      },
-      "Observation does not match an owned task",
-    );
-
-    const deleting = stateA({
-      desired: editing(UUID_B, form("replacement while deleting")),
-      remote: { kind: "deleting", tid: 812 },
-      formVersion: 4,
-      historicalGeneration: UUID_B,
+    expect(getEditor(trace.state, a)).toMatchObject({
+      remote: { kind: "present", tid: 71 },
+      desired: { text: "before metadata", ...defaults },
     });
-    expectReductionFailure(
-      deleting,
-      {
-        type: "task-observed",
-        projectKey: KEY_A,
-        observation: taskObservation(812),
-      },
-      "Only a present task accepts a pending observation",
-    );
+    expect(trace.state.newTaskByProject[projectKey]).toBe(b);
+    expect(getEditor(trace.state, b).desired).toMatchObject({
+      text: "",
+      ...defaults,
+    });
   });
 
-  it("rejects malformed observed form fields before state changes", () => {
-    const observed = form("observed draft", CUSTOM_DEFAULTS_A);
-    const owned = stateA(
-      {
-        observed,
-        desired: editing(UUID_A, observed),
-        remote: { kind: "present", tid: 811, generation: UUID_A },
-        formVersion: 3,
-        saveSchedule: { tid: 811, formVersion: 3 },
-        historicalGeneration: UUID_A,
-      },
-      CUSTOM_DEFAULTS_A,
-    );
-    const malformedObservations: readonly TaskObservation[] = [
-      { tid: 811, text: undefined } as never,
-      { tid: 811, oldText: undefined } as never,
-      { tid: 811, entryPoint: undefined } as never,
-      { tid: 811, agent: undefined } as never,
-      { tid: 811, text: 1 } as never,
-      { tid: 811, oldText: 1 } as never,
-      { tid: 811, entryPoint: null } as never,
-      { tid: 811, agent: false } as never,
-    ];
-
-    for (const observation of malformedObservations) {
-      expectReductionFailure(
-        owned,
-        {
-          type: "task-observed",
-          projectKey: KEY_A,
-          observation,
-        },
-        "Observed form field",
-      );
-    }
-  });
-
-  it("validates own-present activity facts before preserving or handing off a draft", () => {
-    const draft = form("owned activity draft", CUSTOM_DEFAULTS_A);
-    const pending = stateA(
-      {
-        observed: draft,
-        desired: editing(UUID_ACTIVE, draft),
-        remote: { kind: "present", tid: 813, generation: UUID_ACTIVE },
-        formVersion: 7,
-        saveSchedule: { tid: 813, formVersion: 7 },
-        historicalGeneration: UUID_ACTIVE,
-      },
-      CUSTOM_DEFAULTS_A,
-    );
-    const pendingEffects = [projectDraft(KEY_A, 813, draft, 7)];
-
-    trace(pending, [
-      {
-        label: "omitted activity facts keep an owned draft pending",
-        event: {
-          type: "task-observed",
-          projectKey: KEY_A,
-          observation: taskObservation(813),
-        },
-        state: pending,
-        effects: pendingEffects,
-        assert: (state) => {
-          expect(state).toBe(pending);
-        },
-      },
+  it("creates B before A settles and deletes only A when its acknowledgement arrives", () => {
+    const trace = editorTrace();
+    trace.dispatch(metadata);
+    trace.dispatch({ type: "attach-new-task", editorId: a, project });
+    trace.dispatch({ type: "edit-text", editorId: a, text: "discard A" });
+    trace.dispatch({
+      type: "create-timer-due",
+      editorId: a,
+      correlationId: uuidA,
+    });
+    expect(
+      trace.dispatch({ type: "clear", editorId: a, successor: b }),
+    ).toEqual([]);
+    expect(trace.state.newTaskByProject[projectKey]).toBe(b);
+    trace.dispatch({ type: "edit-text", editorId: b, text: "keep B" });
+    expect(
+      trace.dispatch({
+        type: "create-timer-due",
+        editorId: b,
+        correlationId: uuidB,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        type: "create-task",
+        editorId: b,
+        correlationId: uuidB,
+      }),
     ]);
+    const lateAck = {
+      type: "task-created",
+      editorId: a,
+      correlationId: uuidA,
+      tid: 71,
+    } as const;
+    expect(trace.dispatch(lateAck)).toEqual([
+      { type: "delete-task", editorId: a, tid: 71 },
+    ]);
+    expect(tombstonedTids(trace.state)).toEqual([71]);
+    expect(() => trace.dispatch(lateAck)).toThrow();
+    trace.dispatch({
+      type: "task-created",
+      editorId: b,
+      correlationId: uuidB,
+      tid: 72,
+      successor: c,
+    });
+    expect(
+      trace.dispatch({ type: "task-deleted", editorId: a, tid: 71 }),
+    ).toEqual([]);
+    expect(trace.state.editors[a]).toBeUndefined();
+    expect(tombstonedTids(trace.state)).toEqual([]);
+    expect(getEditor(trace.state, b)).toMatchObject({
+      remote: { kind: "present", tid: 72 },
+      desired: { text: "keep B" },
+    });
+    expect(trace.state.newTaskByProject[projectKey]).toBe(c);
+  });
 
-    const inactiveVariants: readonly [
-      string,
-      Pick<TaskObservation, "active" | "processing" | "hasMessages">,
-    ][] = [
-      ["active false", { active: false }],
-      ["processing false", { processing: false }],
-      ["has-messages false", { hasMessages: false }],
-    ];
-    for (const [label, activity] of inactiveVariants) {
-      trace(pending, [
-        {
-          label: `${label} keeps an owned draft pending`,
-          event: {
-            type: "task-observed",
-            projectKey: KEY_A,
-            observation: taskObservation(813, activity),
-          },
-          state: pending,
-          effects: pendingEffects,
-          assert: (state) => {
-            expect(state).toBe(pending);
-          },
-        },
+  it("keeps independent persisted forms and scopes delayed saves and deletion to each tid", () => {
+    const trace = editorTrace();
+    trace.dispatch(metadata);
+    trace.dispatch({ type: "attach-new-task", editorId: a, project });
+    expect(
+      trace.dispatch({
+        type: "open-persisted",
+        editorId: "task:71",
+        project,
+        snapshot: snapshot(71, "A"),
+      }),
+    ).toEqual([]);
+    expect(
+      trace.dispatch({
+        type: "open-persisted",
+        editorId: "task:72",
+        project,
+        snapshot: snapshot(72, "B"),
+      }),
+    ).toEqual([]);
+    expect(trace.dispatch({ type: "clear", editorId: a })).toEqual([]);
+    for (const [tid, text] of [
+      [71, "local A"],
+      [72, "local B"],
+    ] as const) {
+      const editorId = `task:${tid}` as const;
+      expect(trace.dispatch({ type: "edit-text", editorId, text })).toEqual([
+        expect.objectContaining({ type: "project-draft", editorId, tid }),
+        expect.objectContaining({ type: "ensure-draft-save", editorId, tid }),
       ]);
     }
-
-    const handoffVariants: readonly [
-      string,
-      number,
-      Pick<TaskObservation, "active" | "processing" | "hasMessages">,
-    ][] = [
-      ["active true", 814, { active: true }],
-      ["processing true", 815, { processing: true }],
-      ["has-messages true", 816, { hasMessages: true }],
-    ];
-    for (const [label, tid, activity] of handoffVariants) {
-      trace(
-        stateA(
-          {
-            observed: draft,
-            desired: editing(UUID_ACTIVE, draft),
-            remote: { kind: "present", tid, generation: UUID_ACTIVE },
-            formVersion: 7,
-            saveSchedule: { tid, formVersion: 7 },
-            historicalGeneration: UUID_ACTIVE,
-          },
-          CUSTOM_DEFAULTS_A,
-        ),
-        [
-          {
-            label: `${label} hands off the owned task`,
-            event: {
-              type: "task-observed",
-              projectKey: KEY_A,
-              observation: taskObservation(tid, activity),
-            },
-            state: stateA(
-              { formVersion: 8, historicalGeneration: UUID_ACTIVE },
-              CUSTOM_DEFAULTS_A,
-            ),
-            effects: [cancelSave(KEY_A, tid, 7), releaseTask(KEY_A, tid)],
-            assert: (state) => {
-              expect(state.uuidBindings).toEqual([
-                { uuid: UUID_ACTIVE, projectKey: KEY_A, tid },
-              ]);
-            },
-          },
-        ],
-      );
-    }
-
-    const malformedValues: readonly unknown[] = [undefined, null, 0, "true"];
-    for (const field of ["active", "processing", "hasMessages"] as const) {
-      for (const value of malformedValues) {
-        expectReductionFailure(
-          pending,
-          {
-            type: "task-observed",
-            projectKey: KEY_A,
-            observation: { tid: 813, [field]: value } as never,
-          },
-          `Observed activity field ${field} must be a boolean`,
-        );
-      }
-    }
+    const { formVersion } = getEditor(trace.state, "task:71");
+    expect(
+      trace.dispatch({
+        type: "save-timer-due",
+        editorId: "task:71",
+        tid: 71,
+        formVersion,
+      }),
+    ).toEqual([
+      expect.objectContaining({ type: "set-draft", tid: 71, text: "local A" }),
+    ]);
+    expect(trace.dispatch({ type: "clear", editorId: "task:71" })).toEqual([
+      { type: "delete-task", editorId: "task:71", tid: 71 },
+    ]);
+    expect(() =>
+      trace.dispatch({ type: "task-deleted", editorId: "task:71", tid: 72 }),
+    ).toThrow();
+    trace.dispatch({ type: "task-deleted", editorId: "task:71", tid: 71 });
+    expect(trace.state.editors["task:71"]).toBeUndefined();
+    expect(getEditor(trace.state, "task:72").desired).toMatchObject({
+      text: "local B",
+    });
+    expect(getEditor(trace.state, a).desired).toMatchObject({ text: "" });
   });
 
-  it("treats inherited activity facts as omitted for an owned draft", () => {
-    const draft = form("owned activity draft", CUSTOM_DEFAULTS_A);
-    const pending = stateA(
+  it.each([
+    ["active", { active: true }],
+    ["processing", { processing: true }],
+    ["has messages", { hasMessages: true }],
+    ["blank", { text: " " }],
+  ] as const)(
+    "rejects a %s snapshot before opening an editor",
+    (_name, overrides) => {
+      const trace = editorTrace();
+      expect(() =>
+        trace.dispatch({
+          type: "open-persisted",
+          editorId: "task:71",
+          project,
+          snapshot: { ...snapshot(71, "A"), ...overrides },
+        }),
+      ).toThrow();
+      expect(trace.state).toEqual(createDraftState());
+    },
+  );
+
+  it("cancels a scheduled create when the composition is cleared", () => {
+    const trace = editorTrace();
+    trace.dispatch(metadata);
+    trace.dispatch({ type: "attach-new-task", editorId: a, project });
+    trace.dispatch({
+      type: "edit-text",
+      editorId: a,
+      text: "discard before create",
+    });
+    expect(
+      trace.dispatch({ type: "clear", editorId: a, successor: b }),
+    ).toEqual([
+      { type: "cancel-create-schedule", editorId: a, correlationId: uuidA },
+    ]);
+    expect(trace.state.editors[a]).toBeUndefined();
+    expect(trace.state.newTaskByProject[projectKey]).toBe(b);
+    expect(getEditor(trace.state, b).desired).toMatchObject({
+      text: "",
+      ...defaults,
+    });
+    expect(trace.dispatch({ type: "clear", editorId: b })).toEqual([]);
+  });
+
+  it("includes image attachments in an atomic create with the composition correlation", () => {
+    const trace = editorTrace();
+    const image = {
+      id: "image-one",
+      dataURL: "data:image/png;base64,aW1hZ2U=",
+      base64: "aW1hZ2U=",
+      mediaType: "image/png",
+    };
+    trace.dispatch(metadata);
+    trace.dispatch({ type: "attach-new-task", editorId: a, project });
+    expect(
+      trace.dispatch({ type: "submit", editorId: a, images: [image] }),
+    ).toEqual([
       {
-        observed: draft,
-        desired: editing(UUID_ACTIVE, draft),
-        remote: { kind: "present", tid: 818, generation: UUID_ACTIVE },
-        formVersion: 7,
-        saveSchedule: { tid: 818, formVersion: 7 },
-        historicalGeneration: UUID_ACTIVE,
+        type: "create-task",
+        editorId: a,
+        correlationId: uuidA,
+        ...defaults,
+        content: { text: "", images: [image] },
       },
-      CUSTOM_DEFAULTS_A,
-    );
-    const pendingEffects = [projectDraft(KEY_A, 818, draft, 7)];
-    const inheritedActivityFields: readonly (
-      | "active"
-      | "processing"
-      | "hasMessages"
-    )[] = ["active", "processing", "hasMessages"];
-
-    for (const field of inheritedActivityFields) {
-      const observation = Object.assign(Object.create({ [field]: true }), {
-        tid: 818,
-      }) as TaskObservation;
-      expect(Object.prototype.hasOwnProperty.call(observation, "tid")).toBe(
-        true,
-      );
-      expect(Object.prototype.hasOwnProperty.call(observation, field)).toBe(
-        false,
-      );
-
-      trace(pending, [
-        {
-          label: `inherited ${field} true keeps an owned draft pending`,
-          event: {
-            type: "task-observed",
-            projectKey: KEY_A,
-            observation,
-          },
-          state: pending,
-          effects: pendingEffects,
-          assert: (state) => {
-            expect(state).toBe(pending);
-          },
-        },
-      ]);
-    }
+    ]);
+    expect(
+      trace.dispatch({
+        type: "task-created",
+        editorId: a,
+        correlationId: uuidA,
+        tid: 71,
+        successor: b,
+      }),
+    ).toEqual([]);
+    expect(trace.state.editors[a]).toBeUndefined();
   });
 
-  it("rejects incomplete and mistyped persisted snapshots before state changes", () => {
-    const idle = initialA();
-    const stable = stateA({
-      desired: editing(UUID_A, form("stable local A")),
-      remote: { kind: "present", tid: 91, generation: UUID_A },
-      formVersion: 1,
-      historicalGeneration: UUID_A,
+  it("flushes only the pending save of the same editor after a catalog drop", () => {
+    const trace = editorTrace();
+    const editorId = "task:71";
+    trace.dispatch({
+      type: "open-persisted",
+      editorId,
+      project,
+      snapshot: snapshot(71, "server"),
     });
-    const incompleteAdoption = { tid: 92, text: "persisted" } as never;
-    const incompleteSwitch = { tid: 93, text: "persisted" } as never;
-    const malformedSnapshots: readonly TaskSnapshot[] = [
+    const idle = trace.state;
+    expect(trace.dispatch({ type: "flush", editorId })).toEqual([]);
+    expect(trace.state).toBe(idle);
+    trace.dispatch({ type: "edit-text", editorId, text: "local edit" });
+    const edited = getEditor(trace.state, editorId);
+    expect(
+      trace.dispatch({
+        ...metadata,
+        metadata: { catalog: [], defaults: null },
+      }),
+    ).toEqual([]);
+    expect(getEditor(trace.state, editorId)).toBe(edited);
+    expect(editorSubmittable(trace.state, editorId)).toBe(false);
+    expect(trace.dispatch({ type: "flush", editorId })).toEqual([
       {
-        ...pendingSnapshot(94, form("persisted", PERSISTED_DEFAULTS_A)),
-        text: 1,
-      } as never,
-      {
-        ...pendingSnapshot(95, form("persisted", PERSISTED_DEFAULTS_A)),
-        entryPoint: null,
-      } as never,
-      {
-        ...pendingSnapshot(96, form("persisted", PERSISTED_DEFAULTS_A)),
-        agent: false,
-      } as never,
-      {
-        ...pendingSnapshot(97, form("persisted", PERSISTED_DEFAULTS_A)),
-        active: "false",
-      } as never,
-      {
-        ...pendingSnapshot(98, form("persisted", PERSISTED_DEFAULTS_A)),
-        processing: 0,
-      } as never,
-      {
-        ...pendingSnapshot(99, form("persisted", PERSISTED_DEFAULTS_A)),
-        hasMessages: null,
-      } as never,
-    ];
-
-    expectReductionFailure(
-      idle,
-      {
-        type: "adopt-persisted",
-        projectKey: KEY_A,
-        uuid: UUID_PERSISTED_A,
-        snapshot: incompleteAdoption,
+        type: "cancel-draft-save",
+        editorId,
+        tid: 71,
+        formVersion: edited.formVersion,
       },
-      "Persisted task snapshot must be complete",
-    );
-    expectReductionFailure(
-      stable,
       {
-        type: "switch-persisted",
-        projectKey: KEY_A,
-        uuid: UUID_PERSISTED_B,
-        snapshot: incompleteSwitch,
+        type: "set-draft",
+        editorId,
+        tid: 71,
+        text: "local edit",
+        formVersion: edited.formVersion,
       },
-      "Persisted task snapshot must be complete",
-    );
-
-    for (const snapshot of malformedSnapshots) {
-      expectReductionFailure(
-        idle,
-        {
-          type: "adopt-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_A,
-          snapshot,
-        },
-        "Persisted task snapshot must be complete",
-      );
-      expectReductionFailure(
-        stable,
-        {
-          type: "switch-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_B,
-          snapshot,
-        },
-        "Persisted task snapshot must be complete",
-      );
-    }
+    ]);
+    expect(tombstonedTids(trace.state)).toEqual([]);
   });
 
-  it("rejects persisted snapshots with inherited required fields", () => {
-    const idle = initialA();
-    const stable = stateA({
-      desired: editing(UUID_A, form("stable local A")),
-      remote: { kind: "present", tid: 91, generation: UUID_A },
-      formVersion: 1,
-      historicalGeneration: UUID_A,
+  it("keeps a promoted composition when a snapshot names an unlisted entry point", () => {
+    const trace = editorTrace();
+    trace.dispatch({ ...metadata, metadata: { catalog: ["entry"], defaults } });
+    trace.dispatch({ type: "attach-new-task", editorId: a, project });
+    trace.dispatch({ type: "edit-text", editorId: a, text: "original" });
+    trace.dispatch({
+      type: "create-timer-due",
+      editorId: a,
+      correlationId: uuidA,
     });
-    const requiredFields: readonly (keyof TaskSnapshot)[] = [
-      "tid",
-      "text",
-      "entryPoint",
-      "agent",
-      "active",
-      "processing",
-      "hasMessages",
-    ];
-
-    for (const field of requiredFields) {
-      const complete = pendingSnapshot(
-        819,
-        form("persisted inherited field", PERSISTED_DEFAULTS_A),
-      );
-      const { [field]: _omitted, ...ownFields } = complete;
-      const snapshot = Object.assign(
-        Object.create({ [field]: complete[field] }),
-        ownFields,
-      ) as TaskSnapshot;
-      expect(Object.prototype.hasOwnProperty.call(snapshot, field)).toBe(false);
-
-      expectReductionFailure(
-        idle,
-        {
-          type: "adopt-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_A,
-          snapshot,
-        },
-        "Persisted task snapshot must be complete",
-      );
-      expectReductionFailure(
-        stable,
-        {
-          type: "switch-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_B,
-          snapshot,
-        },
-        "Persisted task snapshot must be complete",
-      );
-    }
+    trace.dispatch({
+      type: "task-created",
+      editorId: a,
+      correlationId: uuidA,
+      tid: 71,
+      successor: b,
+    });
+    trace.dispatch({ type: "edit-text", editorId: a, text: "new edit" });
+    const { formVersion } = getEditor(trace.state, a);
+    expect(
+      trace.dispatch({
+        type: "task-observed",
+        editorId: a,
+        observation: { tid: 71, entryPoint: "unavailable", text: "original" },
+      }),
+    ).toEqual([
+      expect.objectContaining({ type: "project-draft", editorId: a, tid: 71 }),
+      expect.objectContaining({
+        type: "ensure-draft-save",
+        editorId: a,
+        tid: 71,
+        formVersion: formVersion + 1,
+      }),
+    ]);
+    expect(getEditor(trace.state, a).desired).toMatchObject({
+      text: "new edit",
+      entryPoint: "unavailable",
+    });
+    expect(editorSubmittable(trace.state, a)).toBe(false);
+    expect(trace.state.newTaskByProject[projectKey]).toBe(b);
   });
 
-  it("rejects malformed task IDs before bindings or effects can be introduced", () => {
-    const persisted = form("persisted task", PERSISTED_DEFAULTS_A);
-    const creatingDraft = form("creating task");
-    const idle = stateA({ historicalGeneration: UUID_A });
-    const stable = stateA({
-      observed: persisted,
-      desired: editing(UUID_A, persisted),
-      remote: { kind: "present", tid: 817, generation: UUID_A },
-      formVersion: 4,
-      saveSchedule: { tid: 817, formVersion: 4 },
-      historicalGeneration: UUID_A,
+  it("retains an absent editor and ignores repeated project metadata", () => {
+    const trace = editorTrace();
+    trace.dispatch({ type: "attach-new-task", editorId: a, project });
+    const rejecting = {
+      ...metadata,
+      metadata: { catalog: [], defaults: null },
+    };
+    expect(trace.dispatch(rejecting)).toEqual([]);
+    expect(trace.state.editors[a]).toBeDefined();
+    const before = trace.state;
+    expect(trace.dispatch(rejecting)).toEqual([]);
+    expect(trace.state).toBe(before);
+  });
+
+  it("cancels the exact pending save when the persisted editor is cleared", () => {
+    const trace = editorTrace();
+    const editorId = "task:71";
+    trace.dispatch({
+      type: "open-persisted",
+      editorId,
+      project,
+      snapshot: snapshot(71, "A"),
     });
-    const creating = stateA({
-      observed: creatingDraft,
-      desired: editing(UUID_B, creatingDraft),
-      remote: { kind: "creating", correlationId: UUID_B },
-      formVersion: 5,
-      historicalGeneration: UUID_B,
+    trace.dispatch({ type: "edit-text", editorId, text: "unsaved A" });
+    const { formVersion } = getEditor(trace.state, editorId);
+    expect(trace.dispatch({ type: "clear", editorId })).toEqual([
+      { type: "cancel-draft-save", editorId, tid: 71, formVersion },
+      { type: "delete-task", editorId, tid: 71 },
+    ]);
+    expect(
+      trace.dispatch({
+        type: "save-timer-due",
+        editorId,
+        tid: 71,
+        formVersion,
+      }),
+    ).toEqual([]);
+  });
+
+  it("merges pristine peer fields and uses the old text for compare-and-swap", () => {
+    const trace = editorTrace();
+    const editorId = "task:71";
+    trace.dispatch({
+      type: "open-persisted",
+      editorId,
+      project,
+      snapshot: snapshot(71, "A"),
     });
-    const malformedTids: readonly unknown[] = [
-      Number.NaN,
-      Number.POSITIVE_INFINITY,
-      Number.NEGATIVE_INFINITY,
-      817.5,
-      0,
-      -817,
-      2_147_483_648,
-      undefined,
-      null,
-      "818",
-      false,
-      {},
+    trace.dispatch({ type: "edit-text", editorId, text: "local A" });
+    trace.dispatch({
+      type: "task-observed",
+      editorId,
+      observation: {
+        tid: 71,
+        oldText: "A",
+        text: "peer B",
+        entryPoint: "peer entry",
+        agent: "peer agent",
+      },
+    });
+    expect(getEditor(trace.state, editorId).desired).toMatchObject({
+      text: "local A",
+      entryPoint: "peer entry",
+      agent: "peer agent",
+    });
+    trace.dispatch({
+      type: "task-observed",
+      editorId,
+      observation: {
+        tid: 71,
+        oldText: "local A",
+        text: "peer C",
+      },
+    });
+    expect(getEditor(trace.state, editorId).desired).toMatchObject({
+      text: "peer C",
+      entryPoint: "peer entry",
+      agent: "peer agent",
+    });
+  });
+
+  it("tracks tombstones independently across projects and removes only the matching deletion", () => {
+    const trace = editorTrace();
+    const otherProject = { ...project, workspace: "other workspace" };
+    trace.dispatch(metadata);
+    trace.dispatch({ type: "attach-new-task", editorId: a, project });
+    trace.dispatch({ ...metadata, project: otherProject });
+    trace.dispatch({
+      type: "attach-new-task",
+      editorId: b,
+      project: otherProject,
+    });
+    trace.dispatch({
+      type: "open-persisted",
+      editorId: "task:71",
+      project,
+      snapshot: snapshot(71, "A"),
+    });
+    trace.dispatch({
+      type: "open-persisted",
+      editorId: "task:72",
+      project: otherProject,
+      snapshot: snapshot(72, "B"),
+    });
+    trace.dispatch({ type: "clear", editorId: "task:71" });
+    trace.dispatch({ type: "clear", editorId: "task:72" });
+    expect(tombstonedTids(trace.state)).toEqual([71, 72]);
+
+    trace.dispatch({ type: "task-deleted", editorId: "task:71", tid: 71 });
+    expect(tombstonedTids(trace.state)).toEqual([72]);
+    expect(trace.state.newTaskByProject).toEqual({
+      [projectKey]: a,
+      [createProjectKey(otherProject.workspace, otherProject.projectPath)]: b,
+    });
+    expect(
+      trace.dispatch({
+        type: "task-observed",
+        editorId: "task:72",
+        observation: { tid: 72, processing: true },
+      }),
+    ).toEqual([]);
+    expect(tombstonedTids(trace.state)).toEqual([]);
+    expect(trace.state.editors["task:72"]).toBeUndefined();
+  });
+
+  it("drops an externally deleted editor and leaves its sibling's save intact", () => {
+    const trace = editorTrace();
+    trace.dispatch({
+      type: "open-persisted",
+      editorId: "task:71",
+      project,
+      snapshot: snapshot(71, "A"),
+    });
+    trace.dispatch({
+      type: "open-persisted",
+      editorId: "task:72",
+      project,
+      snapshot: snapshot(72, "B"),
+    });
+    trace.dispatch({
+      type: "edit-text",
+      editorId: "task:71",
+      text: "unsaved A",
+    });
+    trace.dispatch({
+      type: "edit-text",
+      editorId: "task:72",
+      text: "unsaved B",
+    });
+    const { formVersion } = getEditor(trace.state, "task:71");
+    expect(
+      trace.dispatch({ type: "task-deleted", editorId: "task:71", tid: 71 }),
+    ).toEqual([
+      { type: "cancel-draft-save", editorId: "task:71", tid: 71, formVersion },
+    ]);
+    expect(trace.state.editors["task:71"]).toBeUndefined();
+    const bVersion = getEditor(trace.state, "task:72").formVersion;
+    expect(
+      trace.dispatch({
+        type: "save-timer-due",
+        editorId: "task:72",
+        tid: 72,
+        formVersion: bVersion,
+      }),
+    ).toEqual([
+      {
+        type: "set-draft",
+        editorId: "task:72",
+        tid: 72,
+        formVersion: bVersion,
+        text: "unsaved B",
+      },
+    ]);
+  });
+
+  it("rejects duplicate identities and acknowledgements for another editor", () => {
+    const trace = editorTrace();
+    trace.dispatch(metadata);
+    trace.dispatch({ type: "attach-new-task", editorId: a, project });
+    trace.dispatch({ type: "edit-text", editorId: a, text: "A" });
+    trace.dispatch({
+      type: "create-timer-due",
+      editorId: a,
+      correlationId: uuidA,
+    });
+    const inFlight = trace.state;
+    expect(() =>
+      trace.dispatch({
+        type: "attach-new-task",
+        editorId: a,
+        project: { ...project, workspace: "other" },
+      }),
+    ).toThrow("Duplicate draft editor");
+    expect(() =>
+      trace.dispatch({
+        type: "open-persisted",
+        editorId: "task:72",
+        project,
+        snapshot: snapshot(71, "A"),
+      }),
+    ).toThrow("must match the task ID");
+    expect(() =>
+      trace.dispatch({
+        type: "task-created",
+        editorId: a,
+        correlationId: uuidB,
+        tid: 71,
+        successor: b,
+      }),
+    ).toThrow("does not match the editor");
+    expect(trace.state).toBe(inFlight);
+    trace.dispatch({
+      type: "task-created",
+      editorId: a,
+      correlationId: uuidA,
+      tid: 71,
+      successor: b,
+    });
+    expect(() =>
+      trace.dispatch({
+        type: "open-persisted",
+        editorId: "task:71",
+        project,
+        snapshot: snapshot(71, "A"),
+      }),
+    ).toThrow();
+  });
+
+  it("delivers an in-flight create submission once on the matching acknowledgement", () => {
+    const trace = editorTrace();
+    trace.dispatch(metadata);
+    trace.dispatch({ type: "attach-new-task", editorId: a, project });
+    trace.dispatch({
+      type: "edit-text",
+      editorId: a,
+      text: "send after create",
+    });
+    trace.dispatch({
+      type: "create-timer-due",
+      editorId: a,
+      correlationId: uuidA,
+    });
+    expect(trace.dispatch({ type: "submit", editorId: a, images: [] })).toEqual(
       [],
-    ];
+    );
+    const effects = trace.dispatch({
+      type: "task-created",
+      editorId: a,
+      correlationId: uuidA,
+      tid: 71,
+      successor: b,
+    });
+    expect(effects.filter(({ type }) => type === "send-first-message")).toEqual(
+      [
+        {
+          type: "send-first-message",
+          editorId: a,
+          tid: 71,
+          content: { text: "send after create", images: [] },
+        },
+      ],
+    );
+    expect(trace.state.editors[a]).toBeUndefined();
+    expect(trace.state.newTaskByProject[projectKey]).toBe(b);
+  });
 
-    for (const tid of malformedTids) {
-      const snapshot = pendingSnapshot(tid as number, persisted);
-      expectReductionFailure(
-        idle,
+  it("drops open, creating, and tombstoned editors and the project pointer on reset", () => {
+    const trace = editorTrace();
+    trace.dispatch({
+      type: "open-persisted",
+      editorId: "task:71",
+      project,
+      snapshot: snapshot(71, "A"),
+    });
+    trace.dispatch({ type: "clear", editorId: "task:71" });
+    trace.dispatch({
+      type: "open-persisted",
+      editorId: "task:72",
+      project,
+      snapshot: snapshot(72, "B"),
+    });
+    trace.dispatch(metadata);
+    trace.dispatch({ type: "attach-new-task", editorId: a, project });
+    trace.dispatch({ type: "edit-text", editorId: a, text: "in flight" });
+    trace.dispatch({
+      type: "create-timer-due",
+      editorId: a,
+      correlationId: uuidA,
+    });
+    expect(trace.dispatch({ type: "connection-reset" })).toEqual([]);
+    expect(trace.state).toEqual(createDraftState());
+    expect(tombstonedTids(trace.state)).toEqual([]);
+    trace.dispatch(metadata);
+    trace.dispatch({ type: "attach-new-task", editorId: b, project });
+    expect(trace.state.newTaskByProject[projectKey]).toBe(b);
+    expect(getEditor(trace.state, b).desired).toMatchObject({ text: "" });
+  });
+});
+
+describe("draft reducer validation and full observations", () => {
+  const id = "task:71";
+  const open = {
+    type: "open-persisted",
+    editorId: id,
+    project,
+    snapshot: snapshot(71, "original"),
+  } as const;
+  const attach = {
+    type: "attach-new-task",
+    editorId: a,
+    project,
+  } as const;
+
+  function reject(
+    trace: ReturnType<typeof editorTrace>,
+    event: DraftEvent | ProjectMetadataFixture,
+    message: string,
+  ) {
+    const before = trace.state;
+    expect(() => trace.dispatch(event)).toThrow(message);
+    expect(trace.state).toBe(before);
+  }
+
+  it("advances the baseline across consecutive full snapshots even while a field diverges", () => {
+    const trace = editorTrace();
+    trace.dispatch(open);
+    trace.dispatch({ type: "edit-text", editorId: id, text: "local" });
+    trace.dispatch({
+      type: "task-observed",
+      editorId: id,
+      observation: {
+        tid: 71,
+        text: "peer-1",
+        entryPoint: "peer-entry-1",
+        agent: "peer-agent-1",
+      },
+    });
+    expect(getEditor(trace.state, id)).toMatchObject({
+      observed: {
+        text: "peer-1",
+        entryPoint: "peer-entry-1",
+        agent: "peer-agent-1",
+      },
+      desired: {
+        text: "local",
+        entryPoint: "peer-entry-1",
+        agent: "peer-agent-1",
+      },
+    });
+    trace.dispatch({ type: "edit-text", editorId: id, text: "peer-1" });
+    trace.dispatch({
+      type: "task-observed",
+      editorId: id,
+      observation: {
+        tid: 71,
+        text: "peer-2",
+        entryPoint: "peer-entry-2",
+        agent: "peer-agent-2",
+      },
+    });
+    const expected = {
+      text: "peer-2",
+      entryPoint: "peer-entry-2",
+      agent: "peer-agent-2",
+    };
+    expect(getEditor(trace.state, id)).toMatchObject({
+      desired: expected,
+      observed: expected,
+    });
+  });
+
+  it("distinguishes omitted and explicitly empty form fields", () => {
+    const trace = editorTrace();
+    trace.dispatch(open);
+    trace.dispatch({
+      type: "task-observed",
+      editorId: id,
+      observation: Object.assign(
+        Object.create({ text: "inherited", agent: "inherited" }) as object,
+        { tid: 71, entryPoint: "" },
+      ),
+    });
+    expect(getEditor(trace.state, id)).toMatchObject({
+      desired: { text: "original", agent: "agent", entryPoint: "" },
+      observed: { text: "original", agent: "agent", entryPoint: "" },
+    });
+    trace.dispatch({
+      type: "task-observed",
+      editorId: id,
+      observation: { tid: 71, text: "", agent: "" },
+    });
+    expect(getEditor(trace.state, id)).toMatchObject({
+      desired: { text: "", agent: "", entryPoint: "" },
+      observed: { text: "", agent: "", entryPoint: "" },
+    });
+  });
+
+  it.each([0, -1, 1.5, 2147483648, NaN, "71"])(
+    "rejects malformed tid %s",
+    (tid) => {
+      const trace = editorTrace();
+      reject(
+        trace,
+        { ...open, snapshot: { ...open.snapshot, tid } as TaskSnapshot },
+        "positive signed 32-bit integer",
+      );
+      trace.dispatch(metadata);
+      trace.dispatch(attach);
+      trace.dispatch({ type: "edit-text", editorId: a, text: "prompt" });
+      trace.dispatch({
+        type: "create-timer-due",
+        editorId: a,
+        correlationId: uuidA,
+      });
+      reject(
+        trace,
         {
-          type: "adopt-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_A,
-          snapshot,
+          type: "task-created",
+          editorId: a,
+          correlationId: uuidA,
+          tid: tid as number,
+          successor: b,
         },
-        "Task ID",
+        "positive signed 32-bit integer",
       );
-      expectReductionFailure(
-        stable,
+    },
+  );
+
+  it.each(["task:70", "composition:", "composition:  "])(
+    "rejects malformed composition identity %s",
+    (editorId) => {
+      reject(
+        editorTrace(),
+        { ...attach, editorId: editorId as typeof a },
+        "requires a browser UUID",
+      );
+    },
+  );
+
+  it.each(Object.keys(open.snapshot) as (keyof TaskSnapshot)[])(
+    "rejects inherited persisted field %s",
+    (field) => {
+      const { [field]: inherited, ...own } = open.snapshot;
+      const incomplete = Object.assign(
+        Object.create({ [field]: inherited }) as Partial<TaskSnapshot>,
+        own,
+      );
+      reject(
+        editorTrace(),
+        { ...open, snapshot: incomplete as TaskSnapshot },
+        "snapshot must be complete",
+      );
+    },
+  );
+
+  it.each([
+    "text",
+    "entryPoint",
+    "agent",
+    "active",
+    "processing",
+    "hasMessages",
+  ] as const)("rejects malformed persisted field %s", (field) => {
+    reject(
+      editorTrace(),
+      { ...open, snapshot: { ...open.snapshot, [field]: undefined } },
+      "snapshot must be complete",
+    );
+  });
+
+  it.each([undefined, null, "snapshot"])(
+    "rejects non-record persisted snapshot %s",
+    (value) => {
+      reject(
+        editorTrace(),
+        { ...open, snapshot: value as unknown as TaskSnapshot },
+        "snapshot must be complete",
+      );
+    },
+  );
+
+  it.each(["active", "processing", "hasMessages"] as const)(
+    "rejects a persisted snapshot with %s",
+    (field) => {
+      reject(
+        editorTrace(),
+        { ...open, snapshot: { ...open.snapshot, [field]: true } },
+        "Only a pending task",
+      );
+    },
+  );
+
+  it("rejects an all-whitespace persisted draft", () => {
+    reject(
+      editorTrace(),
+      { ...open, snapshot: snapshot(71, "  ") },
+      "must have non-empty text",
+    );
+  });
+
+  it.each([
+    "text",
+    "oldText",
+    "entryPoint",
+    "agent",
+    "active",
+    "processing",
+    "hasMessages",
+  ] as const)(
+    "rejects malformed observation field %s before applying an active fact",
+    (field) => {
+      const trace = editorTrace();
+      trace.dispatch(open);
+      reject(
+        trace,
         {
-          type: "switch-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_B,
-          snapshot,
+          type: "task-observed",
+          editorId: id,
+          observation: { tid: 71, active: true, [field]: null },
         },
-        "Task ID",
+        `Observed ${["active", "processing", "hasMessages"].includes(field) ? "activity" : "form"} field ${field}`,
       );
-      expectReductionFailure(
-        creating,
-        { type: "task-created", correlationId: UUID_B, tid } as never,
-        "Task ID",
+    },
+  );
+
+  it.each(["active", "processing", "hasMessages"] as const)(
+    "ignores inherited activity flag %s",
+    (field) => {
+      const trace = editorTrace();
+      trace.dispatch(open);
+      const before = trace.state;
+      trace.dispatch({
+        type: "task-observed",
+        editorId: id,
+        observation: Object.assign(Object.create({ [field]: true }) as object, {
+          tid: 71,
+        }),
+      });
+      expect(trace.state).toBe(before);
+    },
+  );
+
+  it("rejects invalid delete and observation routing while retaining the owner and tombstone", () => {
+    const trace = editorTrace();
+    trace.dispatch(metadata);
+    trace.dispatch(attach);
+    trace.dispatch(open);
+    for (const editorId of [a, id] as const) {
+      reject(
+        trace,
+        { type: "task-deleted", editorId, tid: 72 },
+        "Deletion acknowledgement does not match",
       );
+      reject(
+        trace,
+        { type: "task-observed", editorId, observation: { tid: 72 } },
+        "Observation does not match",
+      );
+    }
+    trace.dispatch({ type: "clear", editorId: id });
+    reject(
+      trace,
+      { type: "task-deleted", editorId: id, tid: 72 },
+      "Deletion acknowledgement does not match",
+    );
+    reject(
+      trace,
+      { type: "task-observed", editorId: id, observation: { tid: 71 } },
+      "Only a present task",
+    );
+    expect(tombstonedTids(trace.state)).toEqual([71]);
+  });
+
+  it("rejects an unknown editor, duplicate root, bad project, and missing successor", () => {
+    const trace = editorTrace();
+    reject(trace, { type: "flush", editorId: a }, "Unknown draft editor");
+    expect(() => createProjectKey("bad\0workspace", "/ok")).toThrow(
+      "cannot contain NUL",
+    );
+    expect(() => createProjectKey("good", "/bad\0path")).toThrow(
+      "cannot contain NUL",
+    );
+    trace.dispatch(metadata);
+    trace.dispatch(attach);
+    reject(trace, { ...attach, editorId: b }, "already has a New Task editor");
+    trace.dispatch({ type: "edit-text", editorId: a, text: "prompt" });
+    reject(
+      trace,
+      { type: "clear", editorId: a },
+      "requires the current editor and a successor",
+    );
+    const invalidPointer: DraftState = { ...trace.state, newTaskByProject: {} };
+    reject(
+      editorTrace(invalidPointer),
+      { type: "clear", editorId: a, successor: b },
+      "requires the current editor and a successor",
+    );
+  });
+
+  it("rejects empty, unresolved, and repeated submission, and form edits during submission", () => {
+    const trace = editorTrace();
+    trace.dispatch({
+      ...metadata,
+      metadata: { catalog: ["entry", "other"], defaults },
+    });
+    trace.dispatch(attach);
+    const submit = { type: "submit", editorId: a, images: [] } as const;
+    reject(trace, submit, "Cannot submit an empty draft");
+    expect(() => {
+      assertResolvedDraftForm({
+        text: "prompt",
+        entryPoint: null,
+        agent: "agent",
+      });
+    }).toThrow("resolved entry point");
+    expect(() => {
+      assertResolvedDraftForm({
+        text: "prompt",
+        entryPoint: "entry",
+        agent: null,
+      });
+    }).toThrow("resolved agent");
+    trace.dispatch({ type: "edit-text", editorId: a, text: "prompt" });
+    trace.dispatch(submit);
+    reject(trace, submit, "Only an editing draft can be submitted");
+    reject(
+      trace,
+      { type: "edit-text", editorId: a, text: "other" },
+      "Only an editing draft can change text",
+    );
+    reject(
+      trace,
+      { type: "clear", editorId: a },
+      "A submitting draft cannot be cleared",
+    );
+    reject(
+      trace,
+      { type: "change-entry-point", editorId: a, entryPoint: "other" },
+      "cannot change entry point",
+    );
+    reject(
+      trace,
+      { type: "change-agent", editorId: a, agent: "other" },
+      "cannot change agent",
+    );
+  });
+
+  it("ignores stale create and save callbacks with different identities", () => {
+    const trace = editorTrace();
+    trace.dispatch(metadata);
+    trace.dispatch(attach);
+    trace.dispatch({ type: "edit-text", editorId: a, text: "waiting" });
+    const scheduled = trace.state;
+    expect(
+      trace.dispatch({
+        type: "create-timer-due",
+        editorId: a,
+        correlationId: uuidB,
+      }),
+    ).toEqual([]);
+    expect(trace.state).toBe(scheduled);
+
+    trace.dispatch(open);
+    const idle = trace.state;
+    expect(
+      trace.dispatch({
+        type: "save-timer-due",
+        editorId: id,
+        tid: 71,
+        formVersion: 0,
+      }),
+    ).toEqual([]);
+    expect(trace.state).toBe(idle);
+    trace.dispatch({ type: "edit-text", editorId: id, text: "unsaved" });
+    const pending = trace.state;
+    const { formVersion } = getEditor(pending, id);
+    for (const invalid of [
+      { tid: 72, formVersion },
+      { tid: 71, formVersion: formVersion - 1 },
+    ]) {
+      expect(
+        trace.dispatch({ type: "save-timer-due", editorId: id, ...invalid }),
+      ).toEqual([]);
+      expect(trace.state).toBe(pending);
     }
   });
 
-  it("fails fast for malformed generation, correlation, ownership, adoption, and switch events", () => {
-    expect(() =>
-      reduceDraft(initialA(), {
-        type: "edit-text",
-        projectKey: KEY_A,
-        text: "missing generation",
-      }),
-    ).toThrow("A browser UUID is required");
-
-    expect(() =>
-      reduceDraft(stateA({ historicalGeneration: UUID_A }), {
-        type: "edit-text",
-        projectKey: KEY_A,
-        text: "reused generation",
-        uuid: UUID_A,
-      }),
-    ).toThrow("A fresh generation UUID must not reuse a prior UUID");
-
-    expect(() =>
-      reduceDraft(stateAB({ historicalGeneration: UUID_A }), {
-        type: "edit-text",
-        projectKey: KEY_B,
-        text: "cross-slot reused generation",
-        uuid: UUID_A,
-      }),
-    ).toThrow("A fresh generation UUID must not reuse a prior UUID");
-
-    expect(() =>
-      reduceDraft(
-        stateA({
-          desired: editing(UUID_A, form("creating A")),
-          remote: { kind: "creating", correlationId: UUID_A },
-          formVersion: 1,
-          historicalGeneration: UUID_A,
-        }),
-        { type: "task-created", correlationId: UUID_WRONG, tid: 703 },
-      ),
-    ).toThrow("Create acknowledgement does not match one owned generation");
-
-    expect(() =>
-      reduceDraft(
-        stateAB(
-          {
-            desired: editing(UUID_A, form("owned A")),
-            remote: { kind: "present", tid: 704, generation: UUID_A },
-            formVersion: 1,
-            historicalGeneration: UUID_A,
-          },
-          {
-            desired: editing(UUID_B, form("creating B", DEFAULTS_B)),
-            remote: { kind: "creating", correlationId: UUID_B },
-            formVersion: 1,
-            historicalGeneration: UUID_B,
-          },
-        ),
-        { type: "task-created", correlationId: UUID_B, tid: 704 },
-      ),
-    ).toThrow("Task ID is already owned by another slot: 704");
-
-    expect(() =>
-      reduceDraft(
-        stateA({
-          desired: editing(UUID_A, form("not idle")),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        {
-          type: "adopt-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_A,
-          snapshot: pendingSnapshot(
-            705,
-            form("persisted", PERSISTED_DEFAULTS_A),
-          ),
-        },
-      ),
-    ).toThrow("Only an idle slot can adopt a persisted draft");
-
-    expect(() =>
-      reduceDraft(
-        stateA({
-          desired: editing(UUID_A, form("generated task")),
-          remote: { kind: "creating", correlationId: UUID_A },
-          formVersion: 1,
-          historicalGeneration: UUID_A,
-        }),
-        {
-          type: "switch-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_B,
-          snapshot: pendingSnapshot(
-            707,
-            form("persisted B", PERSISTED_DEFAULTS_B),
-          ),
-        },
-      ),
-    ).toThrow("Only a stable present draft can switch persisted tasks");
+  it("rejects an unexpected event type before touching state", () => {
+    reject(
+      editorTrace(),
+      { type: "bogus" } as unknown as DraftEvent,
+      "Unexpected value",
+    );
   });
 
-  it("rejects a persisted UUID rebound to a distinct task without mutating state", () => {
-    const persistedA = form("persisted A", PERSISTED_DEFAULTS_A);
-    const persistedB = form("persisted B", PERSISTED_DEFAULTS_B);
-    const persistedC = form("persisted C", PERSISTED_DEFAULTS_A);
+  it("fails fast for inconsistent internal submission and observation states", () => {
+    const trace = editorTrace();
+    trace.dispatch(metadata);
+    trace.dispatch(attach);
+    trace.dispatch({ type: "edit-text", editorId: a, text: "prompt" });
+    trace.dispatch({ type: "submit", editorId: a, images: [] });
+    const current = getEditor(trace.state, a);
+    if (current.desired.kind !== "submitting")
+      throw new Error("Expected submitting editor");
+    const corrupt = (editor: typeof current) =>
+      editorTrace({
+        ...trace.state,
+        metadata: { ...trace.state.metadata, projects: new Map() },
+        editors: { [a]: { ...editor, defaults: { ...defaults, agent: null } } },
+      });
+    const restoreDefaults = {
+      type: "workspace-draft-defaults",
+      projects: [{ project, ...defaults }],
+    } as const;
+    reject(
+      corrupt({
+        ...current,
+        remote: { kind: "absent" },
+        desired: { ...current.desired, delivery: "send-when-present" },
+      }),
+      restoreDefaults,
+      "send-when-present cannot target an absent task",
+    );
+    reject(
+      corrupt({
+        ...current,
+        remote: { kind: "absent" },
+        createSchedule: uuidA,
+      }),
+      restoreDefaults,
+      "Atomic submission must cancel its create schedule",
+    );
+    reject(
+      corrupt({ ...current, remote: { kind: "present", tid: 71 } }),
+      { type: "task-observed", editorId: a, observation: { tid: 71 } },
+      "Only an editing draft",
+    );
+  });
+});
 
-    const afterSwitch = trace(initialA(), [
-      {
-        label: "adopt persisted A and bind its UUID",
-        event: {
-          type: "adopt-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_A,
-          snapshot: pendingSnapshot(716, persistedA),
-        },
-        state: stateA(
+describe("project metadata and ownership handoff", () => {
+  const id = "task:71";
+  const attach = { type: "attach-new-task", project, editorId: a } as const;
+  const known = {
+    ...metadata,
+    metadata: { catalog: ["entry"], defaults },
+  } as const;
+  const rejected = {
+    ...metadata,
+    metadata: {
+      catalog: ["other"],
+      defaults: { ...defaults, entryPoint: "other" },
+    },
+  } as const;
+  const open = {
+    type: "open-persisted",
+    project,
+    editorId: id,
+    snapshot: { ...snapshot(71, "server"), agent: null },
+  } as const;
+  const edit = { type: "edit-text", editorId: id, text: "local edit" } as const;
+
+  it.each([
+    ["open", "catalog", "edit"],
+    ["open", "edit", "catalog"],
+    ["catalog", "open", "edit"],
+    ["catalog", "edit", "open"],
+    ["edit", "open", "catalog"],
+    ["edit", "catalog", "open"],
+  ] as const)("converges on a legacy agent after %s, %s, %s", (...order) => {
+    const trace = editorTrace();
+    const events = { open, catalog: known, edit };
+    const effects: DraftEffect[] = [];
+    let editBeforeOpen = false;
+    for (const name of order) {
+      if (name === "edit" && !trace.state.editors[id]) {
+        expect(() => trace.dispatch(edit)).toThrow("Unknown draft editor");
+        editBeforeOpen = true;
+        continue;
+      }
+      effects.push(...trace.dispatch(events[name]));
+      if (name === "open" && editBeforeOpen)
+        effects.push(...trace.dispatch(edit));
+    }
+    expect(getEditor(trace.state, id)).toMatchObject({
+      desired: { text: "local edit", ...defaults },
+      observed: { text: "server", ...defaults },
+      defaults,
+    });
+    expect(editorMetadataReady(trace.state, id)).toBe(true);
+    // A pre-catalog projection may carry a null agent, but it must schedule
+    // the same write and emit no picker or create RPC in any order.
+    expect(effects.filter(({ type }) => type !== "project-draft")).toEqual([
+      expect.objectContaining({
+        type: "ensure-draft-save",
+        editorId: id,
+        tid: 71,
+      }),
+    ]);
+  });
+
+  it.each(["untouched", "pending", "saved"] as const)(
+    "keeps the %s editor across a catalog drop on either side of a stale snapshot",
+    (variant) => {
+      for (const observeFirst of [true, false]) {
+        const trace = editorTrace();
+        trace.dispatch(known);
+        trace.dispatch(open);
+        if (variant !== "untouched") trace.dispatch(edit);
+        if (variant === "saved") {
+          const { formVersion } = getEditor(trace.state, id);
+          trace.dispatch({
+            type: "save-timer-due",
+            editorId: id,
+            tid: 71,
+            formVersion,
+          });
+        }
+        const initial = getEditor(trace.state, id);
+        const stale = {
+          type: "task-observed",
+          editorId: id,
+          observation: { tid: 71, text: "server" },
+        } as const;
+        if (observeFirst) trace.dispatch(stale);
+        expect(trace.dispatch(rejected)).toEqual([]);
+        if (!observeFirst) trace.dispatch(stale);
+        expect(getEditor(trace.state, id)).toEqual(initial);
+        expect(editorSubmittable(trace.state, id)).toBe(false);
+      }
+    },
+  );
+
+  const orders = (items: readonly string[]): string[][] =>
+    items.length === 0
+      ? [[]]
+      : items.flatMap((first) =>
+          orders(items.filter((other) => other !== first)).map((rest) => [
+            first,
+            ...rest,
+          ]),
+        );
+
+  it.each(
+    orders(["open", "drop", "restore", "snapshot"]).map((order) => ({
+      order: order.join(","),
+    })),
+  )(
+    "keeps ownership, baseline and the pending save across $order",
+    ({ order }) => {
+      const trace = editorTrace();
+      const catalog = (name: string): DraftEvent => ({
+        type: "project-catalog",
+        projectPath: project.projectPath,
+        catalog: [
           {
-            observed: persistedA,
-            desired: editing(UUID_PERSISTED_A, persistedA),
-            remote: { kind: "present", tid: 716, generation: null },
-            formVersion: 1,
-            historicalGeneration: UUID_PERSISTED_A,
+            name,
+            task_type: name,
+            description: "",
+            model_class: "",
+            read_only: false,
           },
-          PERSISTED_DEFAULTS_A,
-        ),
-        effects: [],
-      },
-      {
-        label: "switch to persisted B and bind its UUID",
-        event: {
-          type: "switch-persisted",
-          projectKey: KEY_A,
-          uuid: UUID_PERSISTED_B,
-          snapshot: pendingSnapshot(717, persistedB),
-        },
-        state: stateA(
-          {
-            observed: persistedB,
-            desired: editing(UUID_PERSISTED_B, persistedB),
-            remote: { kind: "present", tid: 717, generation: null },
-            formVersion: 2,
-            historicalGeneration: UUID_PERSISTED_B,
-          },
-          PERSISTED_DEFAULTS_B,
-        ),
-        effects: [
-          setEntryPoint(KEY_A, 716, PERSISTED_DEFAULTS_A.entryPoint),
-          setAgent(KEY_A, 716, PERSISTED_DEFAULTS_A.agent),
-          setDraft(KEY_A, 716, persistedA.text, 1),
-          projectDraft(KEY_A, 716, persistedA, 1),
-          releaseTask(KEY_A, 716),
         ],
-        assert: (state) => {
-          expect(state.uuidBindings).toEqual([
-            { uuid: UUID_PERSISTED_A, projectKey: KEY_A, tid: 716 },
-            { uuid: UUID_PERSISTED_B, projectKey: KEY_A, tid: 717 },
-          ]);
-        },
-      },
-    ]);
+      });
+      trace.dispatch({
+        type: "workspace-draft-defaults",
+        projects: [{ project, ...defaults }],
+      });
+      let listsEntry = false;
+      for (const step of order.split(",")) {
+        switch (step) {
+          case "open":
+            trace.dispatch(open);
+            trace.dispatch(edit);
+            break;
+          case "drop":
+          case "restore":
+            listsEntry = step === "restore";
+            expect(
+              trace.dispatch(catalog(listsEntry ? "entry" : "other")),
+            ).toEqual([]);
+            break;
+          case "snapshot":
+            if (trace.state.editors[id])
+              trace.dispatch({
+                type: "task-observed",
+                editorId: id,
+                observation: { tid: 71, text: "server" },
+              });
+            break;
+        }
+        if (trace.state.editors[id]) {
+          expect(getEditor(trace.state, id)).toMatchObject({
+            desired: { text: "local edit", entryPoint: "entry" },
+            observed: { text: "server", entryPoint: "entry" },
+            saveSchedule: { tid: 71, formVersion: 1 },
+          });
+          expect(editorSubmittable(trace.state, id)).toBe(listsEntry);
+        }
+      }
+    },
+  );
 
-    expectReductionFailure(
-      afterSwitch,
-      {
-        type: "switch-persisted",
-        projectKey: KEY_A,
-        uuid: UUID_PERSISTED_A,
-        snapshot: pendingSnapshot(718, persistedC),
-      },
-      "Browser UUID is already bound to another task",
-    );
-  });
-
-  it("retains UUID history across non-adjacent same-slot and cross-slot reuse", () => {
-    const afterTwoClears = trace(initialA(), [
-      {
-        label: "start generation A",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "generation A",
-          uuid: UUID_A,
-        },
-        state: stateA({
-          desired: editing(UUID_A, form("generation A")),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "clear generation A",
-        event: { type: "clear", projectKey: KEY_A },
-        state: stateA({ formVersion: 2, historicalGeneration: UUID_A }),
-        effects: [cancelCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "start non-adjacent generation B",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "generation B",
-          uuid: UUID_B,
-        },
-        state: stateA({
-          desired: editing(UUID_B, form("generation B")),
-          formVersion: 3,
-          createSchedule: UUID_B,
-          historicalGeneration: UUID_B,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_B)],
-      },
-      {
-        label: "clear generation B",
-        event: { type: "clear", projectKey: KEY_A },
-        state: stateA({ formVersion: 4, historicalGeneration: UUID_B }),
-        effects: [cancelCreate(KEY_A, UUID_B)],
-      },
-    ]);
-
-    expectReductionFailure(
-      afterTwoClears,
-      {
-        type: "edit-text",
-        projectKey: KEY_A,
-        text: "reused generation A",
-        uuid: UUID_A,
-      },
-      "A fresh generation UUID must not reuse a prior UUID",
-    );
-
-    const afterAlphaClear = trace(initialAB(), [
-      {
-        label: "start alpha generation A",
-        event: {
-          type: "edit-text",
-          projectKey: KEY_A,
-          text: "alpha generation A",
-          uuid: UUID_A,
-        },
-        state: stateAB({
-          desired: editing(UUID_A, form("alpha generation A")),
-          formVersion: 1,
-          createSchedule: UUID_A,
-          historicalGeneration: UUID_A,
-        }),
-        effects: [scheduleCreate(KEY_A, UUID_A)],
-      },
-      {
-        label: "clear alpha generation A",
-        event: { type: "clear", projectKey: KEY_A },
-        state: stateAB({ formVersion: 2, historicalGeneration: UUID_A }),
-        effects: [cancelCreate(KEY_A, UUID_A)],
-      },
-    ]);
-
-    expectReductionFailure(
-      afterAlphaClear,
-      {
-        type: "edit-text",
-        projectKey: KEY_B,
-        text: "bravo reuses alpha generation A",
-        uuid: UUID_A,
-      },
-      "A fresh generation UUID must not reuse a prior UUID",
-    );
-  });
-
-  it("rejects blank or missing persisted UUIDs and blank snapshots before state changes", () => {
-    const persisted = pendingSnapshot(
-      708,
-      form("persisted", PERSISTED_DEFAULTS_A),
-    );
-    const blankPersisted = pendingSnapshot(
-      709,
-      form(" \t\n ", PERSISTED_DEFAULTS_A),
-    );
-    const idle = initialA();
-    const stable = stateA({
-      desired: editing(UUID_A, form("stable local A")),
-      remote: { kind: "present", tid: 710, generation: UUID_A },
-      formVersion: 1,
-      historicalGeneration: UUID_A,
+  it("resolves a detached composition independently of the current project's editor", () => {
+    const trace = editorTrace();
+    trace.dispatch(attach);
+    trace.dispatch({ ...edit, editorId: a });
+    trace.dispatch({
+      ...attach,
+      editorId: b,
+      project: { ...project, projectPath: "/other" },
     });
+    trace.dispatch({ ...edit, editorId: b });
+    expect(trace.dispatch(known)).toEqual([
+      expect.objectContaining({
+        type: "schedule-create",
+        editorId: a,
+        correlationId: uuidA,
+      }),
+    ]);
+    expect(getEditor(trace.state, a).desired).toMatchObject({
+      text: "local edit",
+      ...defaults,
+    });
+    expect(getEditor(trace.state, b).defaults).toEqual({
+      entryPoint: null,
+      agent: null,
+    });
+  });
 
-    for (const uuid of ["", " \t "] as const) {
-      expectReductionFailure(
-        idle,
-        {
-          type: "adopt-persisted",
-          projectKey: KEY_A,
-          uuid,
-          snapshot: persisted,
+  it("resolves a successor minted before metadata and keeps predecessor defaults thereafter", () => {
+    const trace = editorTrace();
+    trace.dispatch(attach);
+    trace.dispatch({ ...edit, editorId: a });
+    trace.dispatch({ type: "clear", editorId: a, successor: b });
+    expect(getEditor(trace.state, b).defaults).toEqual({
+      entryPoint: null,
+      agent: null,
+    });
+    expect(trace.dispatch(known)).toEqual([]);
+    expect(getEditor(trace.state, b).defaults).toEqual(defaults);
+    trace.dispatch({ type: "change-agent", editorId: b, agent: "selected" });
+    trace.dispatch({ ...edit, editorId: b });
+    trace.dispatch({ type: "clear", editorId: b, successor: c });
+    expect(getEditor(trace.state, c).desired).toMatchObject({
+      text: "",
+      entryPoint: "entry",
+      agent: "selected",
+    });
+  });
+
+  it("updates the existing save when an observation merges an unlisted entry point and text", () => {
+    const trace = editorTrace();
+    trace.dispatch(known);
+    trace.dispatch(open);
+    trace.dispatch(edit);
+    trace.dispatch({ ...edit, text: "server" });
+    const { formVersion } = getEditor(trace.state, id);
+    expect(
+      trace.dispatch({
+        type: "task-observed",
+        editorId: id,
+        observation: {
+          tid: 71,
+          entryPoint: "unavailable",
+          text: "merged server",
         },
-        "A browser UUID is required",
-      );
-      expectReductionFailure(
-        stable,
-        {
-          type: "switch-persisted",
-          projectKey: KEY_A,
-          uuid,
-          snapshot: persisted,
-        },
-        "A browser UUID is required",
-      );
+      }),
+    ).toEqual([
+      expect.objectContaining({ type: "project-draft", editorId: id, tid: 71 }),
+      expect.objectContaining({
+        type: "ensure-draft-save",
+        editorId: id,
+        tid: 71,
+        formVersion: formVersion + 1,
+      }),
+    ]);
+    expect(getEditor(trace.state, id).desired).toMatchObject({
+      text: "merged server",
+      entryPoint: "unavailable",
+    });
+    expect(editorSubmittable(trace.state, id)).toBe(false);
+  });
+
+  it("rejects picker and submit intents with an unknown or unlisting catalog", () => {
+    const trace = editorTrace();
+    trace.dispatch(open);
+    for (const catalog of [null, rejected]) {
+      if (catalog) trace.dispatch(catalog);
+      const state = trace.state;
+      expect(() =>
+        trace.dispatch({
+          type: "change-entry-point",
+          editorId: id,
+          entryPoint: "entry",
+        }),
+      ).toThrow("Unknown entry point: entry");
+      expect(() =>
+        trace.dispatch({ type: "submit", editorId: id, images: [] }),
+      ).toThrow("Draft metadata does not allow submission");
+      expect(trace.state).toBe(state);
     }
-
-    expectReductionFailure(
-      idle,
-      {
-        type: "adopt-persisted",
-        projectKey: KEY_A,
-        snapshot: persisted,
-      } as unknown as DraftEvent,
-      "A browser UUID is required",
-    );
-    expectReductionFailure(
-      stable,
-      {
-        type: "switch-persisted",
-        projectKey: KEY_A,
-        snapshot: persisted,
-      } as unknown as DraftEvent,
-      "A browser UUID is required",
-    );
-
-    expectReductionFailure(
-      idle,
-      {
-        type: "adopt-persisted",
-        projectKey: KEY_A,
-        uuid: UUID_PERSISTED_A,
-        snapshot: blankPersisted,
-      },
-      "A persisted draft must have non-empty text",
-    );
-    expectReductionFailure(
-      stable,
-      {
-        type: "switch-persisted",
-        projectKey: KEY_A,
-        uuid: UUID_PERSISTED_B,
-        snapshot: blankPersisted,
-      },
-      "A persisted draft must have non-empty text",
-    );
+    trace.dispatch({
+      type: "change-entry-point",
+      editorId: id,
+      entryPoint: "other",
+    });
+    expect(editorSubmittable(trace.state, id)).toBe(true);
   });
 
-  it("rejects mismatched deletion acknowledgements and duplicate persisted task IDs", () => {
-    const deleting = stateA(
-      {
-        remote: { kind: "deleting", tid: 711 },
-        formVersion: 2,
-      },
-      DEFAULTS_A,
-      [{ uuid: UUID_A, projectKey: KEY_A, tid: 711 }],
-    );
-    expectReductionFailure(
-      deleting,
-      { type: "task-deleted", tid: 712 },
-      "Task deletion does not match one owned task",
-    );
-
-    const adoptionState = stateAB({
-      desired: editing(UUID_A, form("owned alpha")),
-      remote: { kind: "present", tid: 713, generation: UUID_A },
-      formVersion: 1,
-      historicalGeneration: UUID_A,
+  it("updates the roster and default together, preserves equal input, and clears both on reset", () => {
+    const trace = editorTrace();
+    trace.dispatch(known);
+    trace.dispatch({
+      type: "workspace-draft-defaults",
+      projects: [{ project, entryPoint: defaults.entryPoint, agent: null }],
     });
-    expectReductionFailure(
-      adoptionState,
-      {
-        type: "adopt-persisted",
-        projectKey: KEY_B,
-        uuid: UUID_PERSISTED_B,
-        snapshot: pendingSnapshot(
-          713,
-          form("duplicate alpha", PERSISTED_DEFAULTS_B),
-        ),
-      },
-      "Task ID is already owned by another slot: 713",
-    );
+    trace.dispatch(open);
+    expect(getEditor(trace.state, id).defaults.agent).toBeNull();
+    const first = {
+      type: "agents-list",
+      agents: [{ name: "agent", driver: "claude" }],
+      defaultAgent: "agent",
+    } as const;
+    expect(trace.dispatch(first)).toEqual([]);
+    expect(getEditor(trace.state, id).defaults.agent).toBe("agent");
+    expect(trace.state.metadata.agents).toEqual(first.agents);
+    const before = trace.state;
+    expect(
+      trace.dispatch({
+        ...first,
+        agents: first.agents.map((agent) => ({ ...agent })),
+      }),
+    ).toEqual([]);
+    expect(trace.state).toBe(before);
+    expect(
+      trace.dispatch({
+        ...first,
+        agents: [...first.agents, { name: "other", driver: "codex" }],
+      }),
+    ).toEqual([]);
+    expect(trace.state).not.toBe(before);
+    expect(trace.state.editors).toBe(before.editors);
+    expect(trace.dispatch({ type: "connection-reset" })).toEqual([]);
+    expect(trace.state.metadata.agents).toBeNull();
+    expect(trace.state.metadata.agent).toBeNull();
+  });
 
-    const switchState = stateAB(
-      {
-        desired: editing(UUID_A, form("owned alpha")),
-        remote: { kind: "present", tid: 714, generation: UUID_A },
-        formVersion: 1,
-        historicalGeneration: UUID_A,
-      },
-      {
-        desired: editing(UUID_B, form("owned bravo", DEFAULTS_B)),
-        remote: { kind: "present", tid: 715, generation: UUID_B },
-        formVersion: 1,
-        historicalGeneration: UUID_B,
-      },
-    );
-    expectReductionFailure(
-      switchState,
-      {
-        type: "switch-persisted",
-        projectKey: KEY_B,
-        uuid: UUID_PERSISTED_B,
-        snapshot: pendingSnapshot(
-          714,
-          form("duplicate alpha", PERSISTED_DEFAULTS_B),
-        ),
-      },
-      "Task ID is already owned by another slot: 714",
-    );
+  it("leaves server text authoritative when another client activates a pending-edit task", () => {
+    const trace = editorTrace();
+    trace.dispatch(open);
+    trace.dispatch(edit);
+    const { formVersion } = getEditor(trace.state, id);
+    expect(
+      trace.dispatch({
+        type: "task-observed",
+        editorId: id,
+        observation: { tid: 71, processing: true },
+      }),
+    ).toEqual([
+      { type: "cancel-draft-save", editorId: id, tid: 71, formVersion },
+    ]);
+    expect(trace.state.editors[id]).toBeUndefined();
+  });
+
+  it("rejects malformed metadata identities and non-null, non-string persisted agents", () => {
+    const trace = editorTrace();
+    const before = trace.state;
+    expect(() =>
+      trace.dispatch({
+        type: "workspace-draft-defaults",
+        projects: [
+          { project: { ...project, workspace: "bad\0workspace" }, ...defaults },
+        ],
+      }),
+    ).toThrow("cannot contain NUL");
+    expect(() =>
+      trace.dispatch({
+        ...open,
+        snapshot: { ...open.snapshot, agent: 1 as unknown as string },
+      }),
+    ).toThrow("snapshot must be complete");
+    expect(trace.state).toBe(before);
   });
 });

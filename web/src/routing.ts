@@ -8,31 +8,56 @@ export function decodeProjectSegment(segment: string): string {
   return segment.replace(/:/g, "/");
 }
 
-/**
- * Parses a matched route into its workspace, project, and task ID.
- *
- * The kind is read positionally so a project named "archive" or "import"
- * cannot be mistaken for a special route. A bound workspace param identifies
- * the optional workspace/project scope and therefore the kind's segment.
- */
-export function parseRoute(
-  path: string,
-  params: Record<string, string>,
-): { workspace: string | null; project: string | null; tid: string | null } {
+function decodePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/** Read task selection and project scope from the router's pathname. */
+export function parseRoute(path: string): {
+  workspace: string | null;
+  project: string | null;
+  tid: string | null;
+} {
   const segments = path.split("/").filter(Boolean);
-  const kind = segments[params.workspace !== undefined ? 2 : 0];
-  const tid =
-    kind === "archive"
-      ? params.parentTid
-        ? `archive:${params.parentTid}`
-        : "archive"
-      : kind === "import"
-        ? "import"
-        : (params.tid ?? params.sid ?? null);
+  const [first, second, third, fourth] = segments;
+  if (first === "task" && second && segments.length === 2)
+    return { workspace: null, project: null, tid: decodePathSegment(second) };
+  if (first === "archive" && segments.length <= 2)
+    return {
+      workspace: null,
+      project: null,
+      tid: second ? `archive:${decodePathSegment(second)}` : "archive",
+    };
+  if (first === "import" && segments.length === 1)
+    return { workspace: null, project: null, tid: "import" };
+  const scoped =
+    segments.length === 2 ||
+    (segments.length === 3 && (third === "archive" || third === "import")) ||
+    (segments.length === 4 &&
+      (third === "archive" || third === "task" || third === "session"));
+  if (!first || !second || !scoped)
+    return { workspace: null, project: null, tid: null };
+
+  const workspace = decodePathSegment(first);
+  const project = decodeProjectSegment(decodePathSegment(second));
+  if (third === "archive")
+    return {
+      workspace,
+      project,
+      tid: fourth ? `archive:${decodePathSegment(fourth)}` : "archive",
+    };
+  if (third === "import") return { workspace, project, tid: "import" };
   return {
-    workspace: params.workspace ?? null,
-    project: params.project ? decodeProjectSegment(params.project) : null,
-    tid,
+    workspace,
+    project,
+    tid:
+      fourth && (third === "task" || third === "session")
+        ? decodePathSegment(fourth)
+        : null,
   };
 }
 

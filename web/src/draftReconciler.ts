@@ -1,5 +1,7 @@
 export type ProjectKey = string;
 export type DraftId = string;
+export type CompositionId = `composition:${string}`;
+export type EditorId = CompositionId | `task:${number}`;
 
 export const CREATE_DELAY_MS = 16 as const;
 export const DRAFT_SAVE_DELAY_MS = 500 as const;
@@ -47,10 +49,9 @@ export interface DraftContent {
 
 export type Desired =
   | { kind: "none" }
-  | ({ kind: "editing"; uuid: DraftId } & DraftForm)
+  | ({ kind: "editing" } & DraftForm)
   | ({
       kind: "submitting";
-      uuid: DraftId;
       images: readonly ImageAttachment[];
       delivery: "atomic-create" | "send-when-present";
     } & DraftForm);
@@ -58,7 +59,7 @@ export type Desired =
 export type Remote =
   | { kind: "absent" }
   | { kind: "creating"; correlationId: DraftId }
-  | { kind: "present"; tid: number; generation: DraftId | null }
+  | { kind: "present"; tid: number }
   | { kind: "deleting"; tid: number };
 
 export interface SaveSchedule {
@@ -66,13 +67,7 @@ export interface SaveSchedule {
   formVersion: number;
 }
 
-export interface UuidBinding {
-  uuid: DraftId;
-  projectKey: ProjectKey;
-  tid: number | null;
-}
-
-export interface DraftSlotState {
+export interface EditorState {
   project: ProjectIdentity;
   defaults: FormDefaults;
   observed: DraftForm;
@@ -83,14 +78,41 @@ export interface DraftSlotState {
   saveSchedule: SaveSchedule | null;
 }
 
-export interface DraftState {
-  slots: Readonly<Record<ProjectKey, DraftSlotState>>;
-  uuidBindings: readonly UuidBinding[];
+export interface EntryPointInfo {
+  name: string;
+  task_type: string;
+  description: string;
+  model_class: string;
+  model_classes?: Record<string, string>;
+  read_only: boolean;
+  icon?: string;
 }
 
-export interface SlotInit {
+export interface ProjectDraftDefaults {
   project: ProjectIdentity;
-  defaults: FormDefaults;
+  entryPoint: string | null;
+  agent: string | null;
+}
+
+export interface AgentInfo {
+  name: string;
+  driver: string;
+  display_name?: string;
+  is_available?: boolean;
+}
+
+interface DraftMetadata {
+  agents: readonly AgentInfo[] | null;
+  catalogs: ReadonlyMap<string, readonly EntryPointInfo[]>;
+  projects: ReadonlyMap<ProjectKey, ProjectDraftDefaults>;
+  entryPoint: string | null;
+  agent: string | null;
+}
+
+export interface DraftState {
+  metadata: DraftMetadata;
+  editors: Readonly<Record<EditorId, EditorState>>;
+  newTaskByProject: Readonly<Record<ProjectKey, CompositionId>>;
 }
 
 export interface TaskSnapshot extends ResolvedDraftForm {
@@ -99,6 +121,11 @@ export interface TaskSnapshot extends ResolvedDraftForm {
   processing: boolean;
   hasMessages: boolean;
 }
+
+export type PersistedSnapshot = Omit<TaskSnapshot, "agent"> & {
+  agent: string | null;
+};
+export type ProjectedDraftForm = DraftForm & { entryPoint: string };
 
 export interface TaskObservation {
   tid: number;
@@ -114,18 +141,18 @@ export interface TaskObservation {
 export type DraftEffect =
   | {
       type: "schedule-create";
-      projectKey: ProjectKey;
-      generation: DraftId;
+      editorId: EditorId;
+      correlationId: DraftId;
       delayMs: typeof CREATE_DELAY_MS;
     }
   | {
       type: "cancel-create-schedule";
-      projectKey: ProjectKey;
-      generation: DraftId;
+      editorId: EditorId;
+      correlationId: DraftId;
     }
   | {
       type: "create-task";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       correlationId: DraftId;
       entryPoint: string;
       agent: string;
@@ -133,124 +160,116 @@ export type DraftEffect =
     }
   | {
       type: "ensure-draft-save";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       tid: number;
       formVersion: number;
       delayMs: typeof DRAFT_SAVE_DELAY_MS;
     }
   | {
       type: "cancel-draft-save";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       tid: number;
       formVersion: number;
     }
   | {
       type: "set-entry-point";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       tid: number;
       entryPoint: string;
     }
   | {
       type: "set-agent";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       tid: number;
       agent: string;
     }
   | {
       type: "set-draft";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       tid: number;
       text: string;
       formVersion: number;
     }
   | {
       type: "project-draft";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       tid: number;
-      form: ResolvedDraftForm;
+      form: ProjectedDraftForm;
       formVersion: number;
     }
-  | { type: "delete-task"; projectKey: ProjectKey; tid: number }
-  | {
-      type: "draft-ready";
-      projectKey: ProjectKey;
-      tid: number;
-      generation: DraftId;
-    }
+  | { type: "delete-task"; editorId: EditorId; tid: number }
   | {
       type: "send-first-message";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       tid: number;
       content: DraftContent;
-    }
-  | {
-      type: "release-task";
-      projectKey: ProjectKey;
-      tid: number;
-      resetComposer: boolean;
     };
 
 export type DraftEvent =
   | {
-      type: "initialize-slot";
+      type: "attach-new-task";
+      editorId: CompositionId;
       project: ProjectIdentity;
-      defaults: FormDefaults;
     }
   | {
-      type: "resolve-metadata";
-      projectKey: ProjectKey;
-      entryPoint: string;
-      agent: string;
+      type: "project-catalog";
+      projectPath: string;
+      catalog: readonly EntryPointInfo[];
     }
+  | {
+      type: "workspace-draft-defaults";
+      projects: readonly ProjectDraftDefaults[];
+    }
+  | { type: "global-draft-defaults"; entryPoint?: string }
+  | { type: "agents-list"; agents: readonly AgentInfo[]; defaultAgent: string }
   | {
       type: "edit-text";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       text: string;
-      uuid?: DraftId;
+      successor?: CompositionId;
     }
-  | { type: "clear"; projectKey: ProjectKey }
+  | { type: "clear"; editorId: EditorId; successor?: CompositionId }
   | {
       type: "change-entry-point";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       entryPoint: string;
     }
-  | { type: "change-agent"; projectKey: ProjectKey; agent: string }
+  | { type: "change-agent"; editorId: EditorId; agent: string }
   | {
       type: "submit";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       images: readonly ImageAttachment[];
-      uuid?: DraftId;
     }
-  | { type: "flush"; projectKey: ProjectKey }
+  | { type: "flush"; editorId: EditorId }
   | {
       type: "create-timer-due";
-      projectKey: ProjectKey;
-      generation: DraftId;
+      editorId: EditorId;
+      correlationId: DraftId;
     }
   | {
       type: "save-timer-due";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       tid: number;
       formVersion: number;
     }
-  | { type: "task-created"; correlationId: DraftId; tid: number }
-  | { type: "task-deleted"; tid: number }
+  | {
+      type: "task-created";
+      editorId: EditorId;
+      correlationId: DraftId;
+      tid: number;
+      successor?: CompositionId;
+    }
+  | { type: "task-deleted"; editorId: EditorId; tid: number }
   | {
       type: "task-observed";
-      projectKey: ProjectKey;
+      editorId: EditorId;
       observation: TaskObservation;
     }
   | {
-      type: "adopt-persisted";
-      projectKey: ProjectKey;
-      uuid: DraftId;
-      snapshot: TaskSnapshot;
-    }
-  | {
-      type: "switch-persisted";
-      projectKey: ProjectKey;
-      uuid: DraftId;
-      snapshot: TaskSnapshot;
+      type: "open-persisted";
+      editorId: EditorId;
+      project: ProjectIdentity;
+      snapshot: PersistedSnapshot;
     }
   | { type: "connection-reset" };
 
@@ -269,32 +288,29 @@ export function createProjectKey(
   return workspace + "\0" + projectPath;
 }
 
-export function createDraftState(
-  initial: readonly SlotInit[] = [],
-): DraftState {
-  const slots: Record<ProjectKey, DraftSlotState> = {};
-
-  for (const { project, defaults } of initial) {
-    const projectKey = createProjectKey(project.workspace, project.projectPath);
-    if (slots[projectKey]) {
-      throw new Error("Duplicate project slot: " + projectKey);
-    }
-    slots[projectKey] = createSlot(project, defaults);
-  }
-
-  return { slots, uuidBindings: [] };
+export function createDraftState(): DraftState {
+  return {
+    editors: {},
+    newTaskByProject: {},
+    metadata: {
+      agents: null,
+      catalogs: new Map(),
+      projects: new Map(),
+      entryPoint: null,
+      agent: null,
+    },
+  };
 }
 
-function createSlot(
+function createEditor(
   project: ProjectIdentity,
   defaults: FormDefaults,
-): DraftSlotState {
-  const copiedDefaults = { ...defaults };
+): EditorState {
   return {
     project: { ...project },
-    defaults: copiedDefaults,
-    observed: { text: "", ...copiedDefaults },
-    desired: { kind: "none" },
+    defaults: { ...defaults },
+    observed: { text: "", ...defaults },
+    desired: { kind: "editing", text: "", ...defaults },
     remote: { kind: "absent" },
     formVersion: 0,
     createSchedule: null,
@@ -302,30 +318,16 @@ function createSlot(
   };
 }
 
-export function getSlot(
-  state: DraftState,
-  projectKey: ProjectKey,
-): DraftSlotState {
-  const slot = state.slots[projectKey];
-  if (!slot) throw new Error("Unknown project slot: " + projectKey);
-  return slot;
-}
-
-export function selectDraftForm(
-  state: DraftState,
-  projectKey: ProjectKey,
-): DraftForm {
-  const slot = getSlot(state, projectKey);
-  if (slot.desired.kind === "none") {
-    return { text: "", ...slot.defaults };
-  }
-  return formOf(slot.desired);
+export function getEditor(state: DraftState, editorId: EditorId): EditorState {
+  const editor = state.editors[editorId];
+  if (!editor) throw new Error("Unknown draft editor: " + editorId);
+  return editor;
 }
 
 export function tombstonedTids(state: DraftState): readonly number[] {
-  return Object.values(state.slots)
-    .flatMap((slot) =>
-      slot.remote.kind === "deleting" ? [slot.remote.tid] : [],
+  return Object.values(state.editors)
+    .flatMap((editor) =>
+      editor.remote.kind === "deleting" ? [editor.remote.tid] : [],
     )
     .sort((left, right) => left - right);
 }
@@ -336,54 +338,73 @@ export function isTombstoned(state: DraftState, tid: number): boolean {
 
 export function reduceDraft(state: DraftState, event: DraftEvent): DraftResult {
   switch (event.type) {
-    case "initialize-slot":
-      return initializeSlot(state, event.project, event.defaults);
-
-    case "resolve-metadata":
-      return resolveMetadata(state, event);
-
+    case "attach-new-task":
+      return attachNewTask(state, event);
+    case "project-catalog": {
+      const previous = state.metadata.catalogs.get(event.projectPath);
+      if (JSON.stringify(previous) === JSON.stringify(event.catalog))
+        return { state, effects: [] };
+      const catalogs = new Map(state.metadata.catalogs).set(
+        event.projectPath,
+        event.catalog,
+      );
+      return updateDraftMetadata(state, { ...state.metadata, catalogs });
+    }
+    case "workspace-draft-defaults": {
+      const projects = new Map(
+        event.projects.map((defaults) => [
+          projectKeyOf(defaults.project),
+          defaults,
+        ]),
+      );
+      if (
+        JSON.stringify([...projects]) ===
+        JSON.stringify([...state.metadata.projects])
+      )
+        return { state, effects: [] };
+      return updateDraftMetadata(state, { ...state.metadata, projects });
+    }
+    case "global-draft-defaults": {
+      const entryPoint = event.entryPoint ?? state.metadata.entryPoint;
+      if (entryPoint === state.metadata.entryPoint)
+        return { state, effects: [] };
+      return updateDraftMetadata(state, { ...state.metadata, entryPoint });
+    }
+    case "agents-list": {
+      const { agents, defaultAgent: agent } = event;
+      if (
+        agent === state.metadata.agent &&
+        JSON.stringify(agents) === JSON.stringify(state.metadata.agents)
+      )
+        return { state, effects: [] };
+      return updateDraftMetadata(state, { ...state.metadata, agents, agent });
+    }
     case "edit-text":
       return editText(state, event);
-
     case "clear":
-      return clearSlot(state, event.projectKey);
-
+      return clearEditor(state, event.editorId, event.successor);
     case "change-entry-point":
-      return changeEntryPoint(state, event.projectKey, event.entryPoint);
-
+      return changeEntryPoint(state, event.editorId, event.entryPoint);
     case "change-agent":
-      return changeAgent(state, event.projectKey, event.agent);
-
+      return changeAgent(state, event.editorId, event.agent);
     case "submit":
       return submit(state, event);
-
     case "flush":
-      return flush(state, event.projectKey);
-
+      return flush(state, event.editorId);
     case "create-timer-due":
       return createTimerDue(state, event);
-
     case "save-timer-due":
       return saveTimerDue(state, event);
-
     case "task-created":
       return taskCreated(state, event);
-
     case "task-deleted":
-      return taskDeleted(state, event.tid);
-
+      return taskDeleted(state, event);
     case "task-observed":
       return taskObserved(state, event);
-
-    case "adopt-persisted":
-      return adoptPersisted(state, event);
-
-    case "switch-persisted":
-      return switchPersisted(state, event);
-
+    case "open-persisted":
+      return openPersisted(state, event);
     case "connection-reset":
-      return { state: { slots: {}, uuidBindings: [] }, effects: [] };
-
+      return { state: createDraftState(), effects: [] };
     default:
       return assertNever(event);
   }
@@ -404,52 +425,169 @@ export function assertResolvedDraftForm<T extends DraftForm>(
   }
 }
 
-function initializeSlot(
+function projectKeyOf(project: ProjectIdentity): ProjectKey {
+  return createProjectKey(project.workspace, project.projectPath);
+}
+
+export function projectDraftDefaults(
   state: DraftState,
   project: ProjectIdentity,
-  defaults: FormDefaults,
+): Omit<ResolvedDraftForm, "text"> | null {
+  const policy = state.metadata.projects.get(projectKeyOf(project));
+  const catalog = state.metadata.catalogs.get(project.projectPath);
+  if (!policy || !catalog) return null;
+  const preference = policy.entryPoint ?? state.metadata.entryPoint;
+  const agent = policy.agent ?? state.metadata.agent;
+  if (preference === null || agent === null) return null;
+  const entryPoint =
+    catalog.find(
+      (candidate) =>
+        candidate.name === preference || candidate.task_type === preference,
+    ) ?? catalog[0];
+  return entryPoint ? { entryPoint: entryPoint.name, agent } : null;
+}
+
+function catalogLists(
+  state: DraftState,
+  project: ProjectIdentity,
+  entryPoint: string | null,
+): boolean {
+  const catalog = state.metadata.catalogs.get(project.projectPath);
+  return catalog?.some((candidate) => candidate.name === entryPoint) ?? false;
+}
+
+export function editorMetadataReady(
+  state: DraftState,
+  editorId: EditorId,
+): boolean {
+  const editor = getEditor(state, editorId);
+  return (
+    projectDraftDefaults(state, editor.project) !== null &&
+    editor.desired.kind !== "none" &&
+    editor.desired.entryPoint !== null &&
+    editor.desired.agent !== null
+  );
+}
+
+export function editorSubmittable(
+  state: DraftState,
+  editorId: EditorId,
+): boolean {
+  const editor = getEditor(state, editorId);
+  return (
+    editor.desired.kind !== "none" &&
+    editorMetadataReady(state, editorId) &&
+    catalogLists(state, editor.project, editor.desired.entryPoint)
+  );
+}
+
+function updateDraftMetadata(
+  state: DraftState,
+  metadata: DraftMetadata,
+): DraftResult {
+  let next = { ...state, metadata };
+  const effects: DraftEffect[] = [];
+  for (const id of (Object.keys(state.editors) as EditorId[]).sort()) {
+    const project = getEditor(next, id).project;
+    const resolved = resolveEditorDefaults(
+      next,
+      id,
+      projectDraftDefaults(next, project),
+    );
+    next = resolved.state;
+    effects.push(...resolved.effects);
+  }
+  return { state: next, effects };
+}
+
+function attachNewTask(
+  state: DraftState,
+  { project, editorId }: Extract<DraftEvent, { type: "attach-new-task" }>,
 ): DraftResult {
   const projectKey = createProjectKey(project.workspace, project.projectPath);
-  if (state.slots[projectKey]) return { state, effects: [] };
-
+  if (state.newTaskByProject[projectKey] !== undefined) {
+    throw new Error("Project already has a New Task editor");
+  }
+  compositionCorrelation(editorId);
+  const defaults = projectDraftDefaults(state, project) ?? {
+    entryPoint: null,
+    agent: null,
+  };
   return {
     state: {
-      ...state,
-      slots: {
-        ...state.slots,
-        [projectKey]: createSlot(project, defaults),
-      },
+      ...insertEditor(state, editorId, createEditor(project, defaults)),
+      newTaskByProject: { ...state.newTaskByProject, [projectKey]: editorId },
     },
     effects: [],
   };
 }
 
-function resolveMetadata(
+function replaceNewTask(
   state: DraftState,
-  event: Extract<DraftEvent, { type: "resolve-metadata" }>,
+  editorId: EditorId,
+  successor: CompositionId | undefined,
+): DraftState {
+  const editor = getEditor(state, editorId);
+  const projectKey = createProjectKey(
+    editor.project.workspace,
+    editor.project.projectPath,
+  );
+  if (
+    state.newTaskByProject[projectKey] !== editorId ||
+    successor === undefined
+  ) {
+    throw new Error(
+      "Replacing New Task requires the current editor and a successor",
+    );
+  }
+  compositionCorrelation(successor);
+  const next = {
+    ...insertEditor(
+      state,
+      successor,
+      createEditor(editor.project, editor.defaults),
+    ),
+    newTaskByProject: { ...state.newTaskByProject, [projectKey]: successor },
+  };
+  return resolveEditorDefaults(
+    next,
+    successor,
+    projectDraftDefaults(state, editor.project),
+  ).state;
+}
+
+function resolveEditorDefaults(
+  state: DraftState,
+  editorId: EditorId,
+  fallback: Omit<ResolvedDraftForm, "text"> | null,
 ): DraftResult {
-  const current = getSlot(state, event.projectKey);
+  const current = getEditor(state, editorId);
+  if (
+    !fallback ||
+    (current.defaults.entryPoint !== null && current.defaults.agent !== null)
+  )
+    return { state, effects: [] };
   const defaults: FormDefaults = {
     entryPoint:
       current.defaults.entryPoint === null
-        ? event.entryPoint
+        ? fallback.entryPoint
         : current.defaults.entryPoint,
     agent:
-      current.defaults.agent === null ? event.agent : current.defaults.agent,
+      current.defaults.agent === null ? fallback.agent : current.defaults.agent,
   };
   const observed: DraftForm = {
     ...current.observed,
     entryPoint:
       current.defaults.entryPoint === null
-        ? event.entryPoint
+        ? fallback.entryPoint
         : current.observed.entryPoint,
     agent:
-      current.defaults.agent === null ? event.agent : current.observed.agent,
+      current.defaults.agent === null ? fallback.agent : current.observed.agent,
   };
 
   if (current.desired.kind === "none") {
     return {
-      state: replaceSlot(state, event.projectKey, {
+      state: replaceEditor(state, editorId, {
         ...current,
         defaults,
         observed,
@@ -458,7 +596,7 @@ function resolveMetadata(
     };
   }
 
-  const next = replaceSlot(state, event.projectKey, {
+  const next = replaceEditor(state, editorId, {
     ...current,
     defaults,
     observed,
@@ -469,7 +607,7 @@ function resolveMetadata(
           ? acceptsObservedValue(
               current.desired.entryPoint,
               current.observed.entryPoint,
-              event.entryPoint,
+              fallback.entryPoint,
             )
           : current.desired.entryPoint,
       agent:
@@ -477,108 +615,75 @@ function resolveMetadata(
           ? acceptsObservedValue(
               current.desired.agent,
               current.observed.agent,
-              event.agent,
+              fallback.agent,
             )
           : current.desired.agent,
     },
   });
-  return reconcileCore(next, event.projectKey);
+  return reconcileCore(next, editorId);
 }
 
 function editText(
   state: DraftState,
   event: Extract<DraftEvent, { type: "edit-text" }>,
 ): DraftResult {
-  const current = getSlot(state, event.projectKey);
-
+  const current = getEditor(state, event.editorId);
   if (event.text.trim().length === 0) {
-    if (event.uuid !== undefined) {
-      throw new Error("A fresh UUID is only valid for a non-empty generation");
-    }
-    return clearSlot(state, event.projectKey);
+    return clearEditor(state, event.editorId, event.successor);
   }
-
-  switch (current.desired.kind) {
-    case "none": {
-      const uuid = requireUuid(event.uuid);
-      assertFreshGeneration(state, uuid);
-      const withUuid = recordFreshUuid(state, event.projectKey, uuid);
-      const next = replaceSlot(withUuid, event.projectKey, {
-        ...current,
-        desired: {
-          kind: "editing",
-          uuid,
-          text: event.text,
-          entryPoint: current.defaults.entryPoint,
-          agent: current.defaults.agent,
-        },
-        formVersion: current.formVersion + 1,
-      });
-      return reconcileCore(next, event.projectKey);
-    }
-
-    case "editing": {
-      if (event.uuid !== undefined) {
-        throw new Error(
-          "Editing an existing generation must not supply a UUID",
-        );
-      }
-      if (current.desired.text === event.text) return { state, effects: [] };
-      const next = replaceSlot(state, event.projectKey, {
-        ...current,
-        desired: { ...current.desired, text: event.text },
-        formVersion: current.formVersion + 1,
-      });
-      return afterLocalFormChange(next, event.projectKey, {
-        entryPoint: false,
-        agent: false,
-      });
-    }
-
-    case "submitting":
-      throw new Error("A submitting draft cannot be edited");
-
-    default:
-      return assertNever(current.desired);
+  if (current.desired.kind !== "editing") {
+    throw new Error("Only an editing draft can change text");
   }
+  if (current.desired.text === event.text) return { state, effects: [] };
+  const next = replaceEditor(state, event.editorId, {
+    ...current,
+    desired: { ...current.desired, text: event.text },
+    formVersion: current.formVersion + 1,
+  });
+  return afterLocalFormChange(next, event.editorId, {
+    entryPoint: false,
+    agent: false,
+  });
 }
 
-function clearSlot(state: DraftState, projectKey: ProjectKey): DraftResult {
-  const current = getSlot(state, projectKey);
+function clearEditor(
+  state: DraftState,
+  editorId: EditorId,
+  successor: CompositionId | undefined,
+): DraftResult {
+  const current = getEditor(state, editorId);
   if (current.desired.kind === "none") return { state, effects: [] };
-  if (current.desired.kind === "submitting") {
+  if (current.desired.kind !== "editing") {
     throw new Error("A submitting draft cannot be cleared");
   }
-
-  const next = replaceSlot(state, projectKey, {
-    ...current,
-    defaults: defaultsOf(current.desired),
-    desired: { kind: "none" },
-    formVersion: current.formVersion + 1,
-    createSchedule: null,
-  });
-  const effects: DraftEffect[] = [];
-  if (current.createSchedule !== null) {
-    effects.push({
-      type: "cancel-create-schedule",
-      projectKey,
-      generation: current.createSchedule,
-    });
+  if (current.remote.kind === "absent" && current.desired.text === "") {
+    return { state, effects: [] };
   }
-
-  const reconciled = reconcileCore(next, projectKey);
+  if (current.remote.kind === "present")
+    return beginDeletion(state, editorId, current, current.remote.tid);
+  const next = replaceNewTask(state, editorId, successor);
   return {
-    state: reconciled.state,
-    effects: [...effects, ...reconciled.effects],
+    state:
+      current.remote.kind === "creating"
+        ? replaceEditor(next, editorId, {
+            ...current,
+            desired: { kind: "none" },
+          })
+        : removeEditor(next, editorId),
+    effects: cancelCreateEffect(current, editorId),
   };
 }
 
 function changeEntryPoint(
   state: DraftState,
-  projectKey: ProjectKey,
+  editorId: EditorId,
   entryPoint: string,
 ): DraftResult {
-  const current = getSlot(state, projectKey);
+  const current = getEditor(state, editorId);
+
+  if (!catalogLists(state, current.project, entryPoint)) {
+    throw new Error(`Unknown entry point: ${entryPoint}`);
+  }
 
   switch (current.desired.kind) {
     case "none":
@@ -586,7 +691,7 @@ function changeEntryPoint(
         return { state, effects: [] };
       }
       return {
-        state: replaceSlot(state, projectKey, {
+        state: replaceEditor(state, editorId, {
           ...current,
           defaults: { ...current.defaults, entryPoint },
         }),
@@ -597,13 +702,13 @@ function changeEntryPoint(
       if (current.desired.entryPoint === entryPoint) {
         return { state, effects: [] };
       }
-      const next = replaceSlot(state, projectKey, {
+      const next = replaceEditor(state, editorId, {
         ...current,
         defaults: { ...current.defaults, entryPoint },
         desired: { ...current.desired, entryPoint },
         formVersion: current.formVersion + 1,
       });
-      return afterLocalFormChange(next, projectKey, {
+      return afterLocalFormChange(next, editorId, {
         entryPoint: true,
         agent: false,
       });
@@ -619,16 +724,16 @@ function changeEntryPoint(
 
 function changeAgent(
   state: DraftState,
-  projectKey: ProjectKey,
+  editorId: EditorId,
   agent: string,
 ): DraftResult {
-  const current = getSlot(state, projectKey);
+  const current = getEditor(state, editorId);
 
   switch (current.desired.kind) {
     case "none":
       if (current.defaults.agent === agent) return { state, effects: [] };
       return {
-        state: replaceSlot(state, projectKey, {
+        state: replaceEditor(state, editorId, {
           ...current,
           defaults: { ...current.defaults, agent },
         }),
@@ -637,13 +742,13 @@ function changeAgent(
 
     case "editing": {
       if (current.desired.agent === agent) return { state, effects: [] };
-      const next = replaceSlot(state, projectKey, {
+      const next = replaceEditor(state, editorId, {
         ...current,
         defaults: { ...current.defaults, agent },
         desired: { ...current.desired, agent },
         formVersion: current.formVersion + 1,
       });
-      return afterLocalFormChange(next, projectKey, {
+      return afterLocalFormChange(next, editorId, {
         entryPoint: false,
         agent: true,
       });
@@ -661,84 +766,60 @@ function submit(
   state: DraftState,
   event: Extract<DraftEvent, { type: "submit" }>,
 ): DraftResult {
-  const current = getSlot(state, event.projectKey);
-  const images = [...event.images];
-
-  switch (current.desired.kind) {
-    case "editing": {
-      if (event.uuid !== undefined) {
-        throw new Error("Submitting an editing draft must not supply a UUID");
-      }
-      if (current.desired.text.trim().length === 0 && images.length === 0) {
-        throw new Error("Cannot submit an empty draft");
-      }
-      const next = replaceSlot(state, event.projectKey, {
-        ...current,
-        defaults: defaultsOf(current.desired),
-        desired: {
-          ...current.desired,
-          kind: "submitting",
-          images,
-          delivery: deliveryFor(current.remote, current.desired.uuid),
-        },
-        createSchedule: null,
-      });
-      const effects = cancelCreateEffect(current, event.projectKey);
-      const reconciled = reconcileCore(next, event.projectKey);
-      return {
-        state: reconciled.state,
-        effects: [...effects, ...reconciled.effects],
-      };
-    }
-
-    case "none": {
-      if (images.length === 0) throw new Error("Cannot submit an empty draft");
-      const uuid = requireUuid(event.uuid);
-      assertFreshGeneration(state, uuid);
-      const form: DraftForm = { text: "", ...current.defaults };
-      const withUuid = recordFreshUuid(state, event.projectKey, uuid);
-      const next = replaceSlot(withUuid, event.projectKey, {
-        ...current,
-        desired: {
-          kind: "submitting",
-          uuid,
-          ...form,
-          images,
-          delivery: deliveryFor(current.remote, uuid),
-        },
-        formVersion: current.formVersion + 1,
-      });
-      return reconcileCore(next, event.projectKey);
-    }
-
-    case "submitting":
-      throw new Error("A draft may only be submitted once");
-
-    default:
-      return assertNever(current.desired);
+  const current = getEditor(state, event.editorId);
+  if (current.desired.kind !== "editing") {
+    throw new Error("Only an editing draft can be submitted");
   }
+  if (!editorSubmittable(state, event.editorId))
+    throw new Error("Draft metadata does not allow submission");
+  const images = [...event.images];
+  if (current.desired.text.trim().length === 0 && images.length === 0) {
+    throw new Error("Cannot submit an empty draft");
+  }
+  const next = replaceEditor(state, event.editorId, {
+    ...current,
+    defaults: defaultsOf(current.desired),
+    desired: {
+      ...current.desired,
+      kind: "submitting",
+      images,
+      delivery:
+        current.remote.kind === "absent"
+          ? "atomic-create"
+          : "send-when-present",
+    },
+    createSchedule: null,
+  });
+  const reconciled = reconcileCore(next, event.editorId);
+  return {
+    state: reconciled.state,
+    effects: [
+      ...cancelCreateEffect(current, event.editorId),
+      ...reconciled.effects,
+    ],
+  };
 }
 
-function flush(state: DraftState, projectKey: ProjectKey): DraftResult {
-  const current = getSlot(state, projectKey);
-  if (!isCurrentPresentEditing(current)) return { state, effects: [] };
+function flush(state: DraftState, editorId: EditorId): DraftResult {
+  const current = getEditor(state, editorId);
+  if (!isPresentEditing(current) || current.saveSchedule === null)
+    return { state, effects: [] };
 
-  const next = replaceSlot(state, projectKey, {
+  const next = replaceEditor(state, editorId, {
     ...current,
     saveSchedule: null,
   });
   return {
     state: next,
     effects: [
-      ...cancelSaveEffect(current, projectKey),
+      ...cancelSaveEffect(current, editorId),
       {
         type: "set-draft",
-        projectKey,
+        editorId,
         tid: current.remote.tid,
         text: current.desired.text,
         formVersion: current.formVersion,
       },
-      projectEffect(projectKey, current.remote.tid, current),
     ],
   };
 }
@@ -747,25 +828,24 @@ function createTimerDue(
   state: DraftState,
   event: Extract<DraftEvent, { type: "create-timer-due" }>,
 ): DraftResult {
-  const current = getSlot(state, event.projectKey);
+  const current = getEditor(state, event.editorId);
   if (
-    current.createSchedule !== event.generation ||
+    current.createSchedule !== event.correlationId ||
     current.remote.kind !== "absent" ||
-    current.desired.kind !== "editing" ||
-    current.desired.uuid !== event.generation
+    current.desired.kind !== "editing"
   ) {
     return { state, effects: [] };
   }
   assertResolvedDraftForm(current.desired);
 
-  const next = replaceSlot(state, event.projectKey, {
+  const next = replaceEditor(state, event.editorId, {
     ...current,
     observed: {
       text: "",
       entryPoint: current.desired.entryPoint,
       agent: current.desired.agent,
     },
-    remote: { kind: "creating", correlationId: event.generation },
+    remote: { kind: "creating", correlationId: event.correlationId },
     createSchedule: null,
   });
   return {
@@ -773,8 +853,8 @@ function createTimerDue(
     effects: [
       {
         type: "create-task",
-        projectKey: event.projectKey,
-        correlationId: event.generation,
+        editorId: event.editorId,
+        correlationId: event.correlationId,
         entryPoint: current.desired.entryPoint,
         agent: current.desired.agent,
         content: null,
@@ -787,9 +867,9 @@ function saveTimerDue(
   state: DraftState,
   event: Extract<DraftEvent, { type: "save-timer-due" }>,
 ): DraftResult {
-  const current = getSlot(state, event.projectKey);
+  const current = getEditor(state, event.editorId);
   if (
-    !isCurrentPresentEditing(current) ||
+    !isPresentEditing(current) ||
     current.saveSchedule === null ||
     current.saveSchedule.tid !== event.tid ||
     current.saveSchedule.formVersion !== event.formVersion
@@ -797,7 +877,7 @@ function saveTimerDue(
     return { state, effects: [] };
   }
 
-  const next = replaceSlot(state, event.projectKey, {
+  const next = replaceEditor(state, event.editorId, {
     ...current,
     saveSchedule: null,
   });
@@ -806,7 +886,7 @@ function saveTimerDue(
     effects: [
       {
         type: "set-draft",
-        projectKey: event.projectKey,
+        editorId: event.editorId,
         tid: event.tid,
         text: current.desired.text,
         formVersion: event.formVersion,
@@ -819,118 +899,77 @@ function taskCreated(
   state: DraftState,
   event: Extract<DraftEvent, { type: "task-created" }>,
 ): DraftResult {
-  const projectKey = findCreatingProject(state, event.correlationId);
-  assertTaskId(event.tid);
-  const current = getSlot(state, projectKey);
-  assertTidUnowned(state, projectKey, event.tid);
-  const withAcknowledgedUuid =
-    current.desired.kind === "editing" &&
-    current.desired.uuid === event.correlationId
-      ? bindAcknowledgedUuid(state, projectKey, event.correlationId, event.tid)
-      : state;
-
-  const next = replaceSlot(withAcknowledgedUuid, projectKey, {
-    ...current,
-    remote: {
-      kind: "present",
-      tid: event.tid,
-      generation: event.correlationId,
-    },
-    createSchedule: null,
-  });
-  const reconciled = reconcileCore(next, projectKey);
-  const slot = getSlot(reconciled.state, projectKey);
-
+  const { editorId, correlationId, tid } = event;
+  const current = getEditor(state, editorId);
   if (
-    isCurrentPresentEditing(slot) &&
-    slot.remote.generation === event.correlationId &&
-    slot.desired.uuid === event.correlationId
+    current.remote.kind !== "creating" ||
+    current.remote.correlationId !== correlationId
   ) {
-    assertResolvedDraftForm(slot.desired);
-    return {
-      state: reconciled.state,
-      effects: [
-        ...reconciled.effects,
-        {
-          type: "set-entry-point",
-          projectKey,
-          tid: event.tid,
-          entryPoint: slot.desired.entryPoint,
-        },
-        {
-          type: "set-agent",
-          projectKey,
-          tid: event.tid,
-          agent: slot.desired.agent,
-        },
-        {
-          type: "set-draft",
-          projectKey,
-          tid: event.tid,
-          text: slot.desired.text,
-          formVersion: slot.formVersion,
-        },
-        projectEffect(projectKey, event.tid, slot),
-        {
-          type: "draft-ready",
-          projectKey,
-          tid: event.tid,
-          generation: event.correlationId,
-        },
-      ],
-    };
+    throw new Error("Create acknowledgement does not match the editor");
   }
+  assertTaskId(tid);
+  assertTidUnowned(state, tid);
+  const promoted =
+    current.desired.kind === "none"
+      ? state
+      : replaceNewTask(state, editorId, event.successor);
+  const next = replaceEditor(promoted, editorId, {
+    ...current,
+    remote: { kind: "present", tid },
+  });
+  const reconciled = reconcileCore(next, editorId);
+  if (current.desired.kind !== "editing") return reconciled;
 
-  return reconciled;
+  assertResolvedDraftForm(current.desired);
+  return {
+    state: reconciled.state,
+    effects: [
+      ...reconciled.effects,
+      {
+        type: "set-entry-point",
+        editorId,
+        tid,
+        entryPoint: current.desired.entryPoint,
+      },
+      { type: "set-agent", editorId, tid, agent: current.desired.agent },
+      {
+        type: "set-draft",
+        editorId,
+        tid,
+        text: current.desired.text,
+        formVersion: current.formVersion,
+      },
+      projectEffect(editorId, tid, {
+        desired: current.desired,
+        formVersion: current.formVersion,
+      }),
+    ],
+  };
 }
 
-function taskDeleted(state: DraftState, tid: number): DraftResult {
-  const projectKey = findOwnedTid(state, tid);
-  const current = getSlot(state, projectKey);
-
-  switch (current.remote.kind) {
-    case "deleting": {
-      const next = replaceSlot(state, projectKey, {
-        ...current,
-        remote: { kind: "absent" },
-        createSchedule: null,
-        saveSchedule: null,
-      });
-      return reconcileCore(next, projectKey);
-    }
-
-    case "present": {
-      const next = replaceSlot(state, projectKey, {
-        ...current,
-        remote: { kind: "absent" },
-        createSchedule: null,
-        saveSchedule: null,
-      });
-      const reconciled = reconcileCore(next, projectKey);
-      return {
-        state: reconciled.state,
-        effects: [
-          ...cancelSaveEffect(current, projectKey),
-          ...reconciled.effects,
-        ],
-      };
-    }
-
-    case "absent":
-    case "creating":
-      throw new Error("Only an owned task may be deleted");
-
-    default:
-      return assertNever(current.remote);
+function taskDeleted(
+  state: DraftState,
+  { editorId, tid }: Extract<DraftEvent, { type: "task-deleted" }>,
+): DraftResult {
+  const current = getEditor(state, editorId);
+  if (
+    (current.remote.kind !== "present" && current.remote.kind !== "deleting") ||
+    current.remote.tid !== tid
+  ) {
+    throw new Error("Deletion acknowledgement does not match the editor");
   }
+  return {
+    state: removeEditor(state, editorId),
+    effects: cancelSaveEffect(current, editorId),
+  };
 }
 
 function taskObserved(
   state: DraftState,
   event: Extract<DraftEvent, { type: "task-observed" }>,
 ): DraftResult {
-  const { projectKey, observation } = event;
-  const current = getSlot(state, projectKey);
+  const { editorId, observation } = event;
+  const current = getEditor(state, editorId);
   if (
     (current.remote.kind !== "present" && current.remote.kind !== "deleting") ||
     current.remote.tid !== observation.tid
@@ -941,38 +980,9 @@ function taskObserved(
   assertObservedActivityFactTypes(observation);
 
   if (isActiveObservation(observation)) {
-    if (current.remote.kind === "deleting") {
-      const next = replaceSlot(state, projectKey, {
-        ...current,
-        remote: { kind: "absent" },
-      });
-      const reconciled = reconcileCore(next, projectKey);
-      return {
-        state: reconciled.state,
-        effects: [
-          {
-            type: "release-task",
-            projectKey,
-            tid: observation.tid,
-            resetComposer: false,
-          },
-          ...reconciled.effects,
-        ],
-      };
-    }
-
-    const next = releaseOwnership(current);
     return {
-      state: replaceSlot(state, projectKey, next),
-      effects: [
-        ...cancelSaveEffect(current, projectKey),
-        {
-          type: "release-task",
-          projectKey,
-          tid: observation.tid,
-          resetComposer: true,
-        },
-      ],
+      state: removeEditor(state, editorId),
+      effects: [...cancelSaveEffect(current, editorId)],
     };
   }
 
@@ -986,7 +996,12 @@ function taskObserved(
   if (!hasObservedFormFields(observation)) {
     return {
       state,
-      effects: [projectEffect(projectKey, observation.tid, current)],
+      effects: [
+        projectEffect(editorId, observation.tid, {
+          desired: current.desired,
+          formVersion: current.formVersion,
+        }),
+      ],
     };
   }
 
@@ -1004,21 +1019,22 @@ function taskObserved(
     changed && current.saveSchedule !== null
       ? { tid: observation.tid, formVersion }
       : current.saveSchedule;
-  const next = replaceSlot(state, projectKey, {
+  const nextEditor = {
     ...current,
     defaults: mergeObservedDefaults(current.defaults, form, observation),
     observed: mergeObservedBaseline(current.observed, observation),
     desired: changed ? { ...current.desired, ...form } : current.desired,
     formVersion,
     saveSchedule,
-  });
+  };
+  const next = replaceEditor(state, editorId, nextEditor);
   const effects: DraftEffect[] = [
-    projectEffect(projectKey, observation.tid, getSlot(next, projectKey)),
+    projectEffect(editorId, observation.tid, nextEditor),
   ];
   if (changed && saveSchedule !== null) {
     effects.push({
       type: "ensure-draft-save",
-      projectKey,
+      editorId,
       tid: saveSchedule.tid,
       formVersion: saveSchedule.formVersion,
       delayMs: DRAFT_SAVE_DELAY_MS,
@@ -1027,152 +1043,78 @@ function taskObserved(
   return { state: next, effects };
 }
 
-function adoptPersisted(
+function openPersisted(
   state: DraftState,
-  event: Extract<DraftEvent, { type: "adopt-persisted" }>,
+  {
+    editorId,
+    project,
+    snapshot,
+  }: Extract<DraftEvent, { type: "open-persisted" }>,
 ): DraftResult {
-  const current = getSlot(state, event.projectKey);
-  const uuid = requireUuid(event.uuid);
-  assertPersistedSnapshot(event.snapshot);
-  if (
-    current.desired.kind !== "none" ||
-    current.remote.kind !== "absent" ||
-    current.createSchedule !== null ||
-    current.saveSchedule !== null
-  ) {
-    throw new Error("Only an idle slot can adopt a persisted draft");
+  assertPersistedSnapshot(snapshot);
+  assertNonEmptyPersistedText(snapshot.text);
+  if (editorId !== `task:${snapshot.tid}`) {
+    throw new Error("Persisted draft editor must match the task ID");
   }
-  assertTidUnowned(state, event.projectKey, event.snapshot.tid);
-  const withPersistedUuid = bindPersistedUuid(
-    state,
-    event.projectKey,
-    uuid,
-    event.snapshot.tid,
-  );
-
-  const form = formOf(event.snapshot);
-  return {
-    state: replaceSlot(withPersistedUuid, event.projectKey, {
-      ...current,
-      defaults: defaultsOf(form),
-      observed: form,
-      desired: { kind: "editing", uuid, ...form },
-      remote: { kind: "present", tid: event.snapshot.tid, generation: null },
-      formVersion: current.formVersion + 1,
-    }),
-    effects: [],
-  };
-}
-
-function switchPersisted(
-  state: DraftState,
-  event: Extract<DraftEvent, { type: "switch-persisted" }>,
-): DraftResult {
-  const current = getSlot(state, event.projectKey);
-  const uuid = requireUuid(event.uuid);
-  assertPersistedSnapshot(event.snapshot);
-  if (
-    current.desired.kind !== "editing" ||
-    current.remote.kind !== "present" ||
-    !belongsToCurrentGeneration(current)
-  ) {
-    throw new Error("Only a stable present draft can switch persisted tasks");
-  }
-  if (current.remote.tid === event.snapshot.tid) {
-    throw new Error("A persisted draft cannot switch to itself");
-  }
-  assertResolvedDraftForm(current.desired);
-  assertTidUnowned(state, event.projectKey, event.snapshot.tid);
-  const withPersistedUuid = bindPersistedUuid(
-    state,
-    event.projectKey,
-    uuid,
-    event.snapshot.tid,
-  );
-
-  const form = formOf(event.snapshot);
-  const next = replaceSlot(withPersistedUuid, event.projectKey, {
-    ...current,
-    defaults: defaultsOf(form),
+  assertTidUnowned(state, snapshot.tid);
+  const form = formOf(snapshot);
+  const next = insertEditor(state, editorId, {
+    ...createEditor(project, defaultsOf(form)),
     observed: form,
-    desired: { kind: "editing", uuid, ...form },
-    remote: { kind: "present", tid: event.snapshot.tid, generation: null },
-    formVersion: current.formVersion + 1,
-    createSchedule: null,
-    saveSchedule: null,
+    desired: { kind: "editing", ...form },
+    remote: { kind: "present", tid: snapshot.tid },
   });
-  return {
-    state: next,
-    effects: [
-      ...cancelSaveEffect(current, event.projectKey),
-      {
-        type: "set-entry-point",
-        projectKey: event.projectKey,
-        tid: current.remote.tid,
-        entryPoint: current.desired.entryPoint,
-      },
-      {
-        type: "set-agent",
-        projectKey: event.projectKey,
-        tid: current.remote.tid,
-        agent: current.desired.agent,
-      },
-      {
-        type: "set-draft",
-        projectKey: event.projectKey,
-        tid: current.remote.tid,
-        text: current.desired.text,
-        formVersion: current.formVersion,
-      },
-      projectEffect(event.projectKey, current.remote.tid, current),
-      {
-        type: "release-task",
-        projectKey: event.projectKey,
-        tid: current.remote.tid,
-        resetComposer: true,
-      },
-    ],
-  };
+  return resolveEditorDefaults(
+    next,
+    editorId,
+    projectDraftDefaults(state, project),
+  );
 }
 
 function afterLocalFormChange(
   state: DraftState,
-  projectKey: ProjectKey,
+  editorId: EditorId,
   changed: { entryPoint: boolean; agent: boolean },
 ): DraftResult {
-  const reconciled = reconcileCore(state, projectKey);
-  const current = getSlot(reconciled.state, projectKey);
-  if (!isCurrentPresentEditing(current)) return reconciled;
-  assertResolvedDraftForm(current.desired);
-
+  const reconciled = reconcileCore(state, editorId);
+  const current = getEditor(reconciled.state, editorId);
+  if (!isPresentEditing(current)) return reconciled;
   const effects: DraftEffect[] = [...reconciled.effects];
-  if (changed.entryPoint) {
-    effects.push({
-      type: "set-entry-point",
-      projectKey,
-      tid: current.remote.tid,
-      entryPoint: current.desired.entryPoint,
-    });
+  if (changed.entryPoint || changed.agent) {
+    assertResolvedDraftForm(current.desired);
+    if (changed.entryPoint) {
+      effects.push({
+        type: "set-entry-point",
+        editorId,
+        tid: current.remote.tid,
+        entryPoint: current.desired.entryPoint,
+      });
+    }
+    if (changed.agent) {
+      effects.push({
+        type: "set-agent",
+        editorId,
+        tid: current.remote.tid,
+        agent: current.desired.agent,
+      });
+    }
   }
-  if (changed.agent) {
-    effects.push({
-      type: "set-agent",
-      projectKey,
-      tid: current.remote.tid,
-      agent: current.desired.agent,
-    });
-  }
-  effects.push(projectEffect(projectKey, current.remote.tid, current));
+  effects.push(projectEffect(editorId, current.remote.tid, current));
 
-  const scheduled = ensureDraftSave(reconciled.state, projectKey);
+  const scheduled = ensureDraftSave(
+    reconciled.state,
+    editorId,
+    current,
+    current.remote.tid,
+  );
   return {
     state: scheduled.state,
     effects: [...effects, ...scheduled.effects],
   };
 }
 
-function reconcileCore(state: DraftState, projectKey: ProjectKey): DraftResult {
-  const current = getSlot(state, projectKey);
+function reconcileCore(state: DraftState, editorId: EditorId): DraftResult {
+  const current = getEditor(state, editorId);
 
   switch (current.remote.kind) {
     case "absent":
@@ -1180,34 +1122,34 @@ function reconcileCore(state: DraftState, projectKey: ProjectKey): DraftResult {
         case "none":
           return { state, effects: [] };
 
-        case "editing":
-          if (current.desired.entryPoint === null) {
+        case "editing": {
+          if (
+            current.desired.text.trim() === "" ||
+            current.desired.entryPoint === null ||
+            current.desired.agent === null ||
+            current.createSchedule !== null
+          ) {
             return { state, effects: [] };
           }
-          if (current.createSchedule === current.desired.uuid) {
-            return { state, effects: [] };
-          }
-          if (current.createSchedule !== null) {
-            throw new Error(
-              "A different create generation is already scheduled",
-            );
-          }
+          const correlationId = compositionCorrelation(editorId);
           return {
-            state: replaceSlot(state, projectKey, {
+            state: replaceEditor(state, editorId, {
               ...current,
-              createSchedule: current.desired.uuid,
+              createSchedule: correlationId,
             }),
             effects: [
               {
                 type: "schedule-create",
-                projectKey,
-                generation: current.desired.uuid,
+                editorId,
+                correlationId,
                 delayMs: CREATE_DELAY_MS,
               },
             ],
           };
+        }
 
         case "submitting": {
+          const correlationId = compositionCorrelation(editorId);
           assertResolvedDraftForm(current.desired);
           if (current.desired.delivery !== "atomic-create") {
             throw new Error("send-when-present cannot target an absent task");
@@ -1217,11 +1159,11 @@ function reconcileCore(state: DraftState, projectKey: ProjectKey): DraftResult {
               "Atomic submission must cancel its create schedule",
             );
           }
-          const next = replaceSlot(state, projectKey, {
+          const next = replaceEditor(state, editorId, {
             ...current,
             remote: {
               kind: "creating",
-              correlationId: current.desired.uuid,
+              correlationId,
             },
           });
           return {
@@ -1229,8 +1171,8 @@ function reconcileCore(state: DraftState, projectKey: ProjectKey): DraftResult {
             effects: [
               {
                 type: "create-task",
-                projectKey,
-                correlationId: current.desired.uuid,
+                editorId,
+                correlationId,
                 entryPoint: current.desired.entryPoint,
                 agent: current.desired.agent,
                 content: contentOf(current.desired),
@@ -1248,9 +1190,6 @@ function reconcileCore(state: DraftState, projectKey: ProjectKey): DraftResult {
       return { state, effects: [] };
 
     case "present":
-      if (!belongsToCurrentGeneration(current)) {
-        return beginDeletion(state, projectKey);
-      }
       switch (current.desired.kind) {
         case "editing":
           return { state, effects: [] };
@@ -1258,15 +1197,15 @@ function reconcileCore(state: DraftState, projectKey: ProjectKey): DraftResult {
         case "submitting":
           return submitPresent(
             state,
-            projectKey,
-            current as DraftSlotState & {
+            editorId,
+            current as EditorState & {
               desired: Extract<Desired, { kind: "submitting" }>;
               remote: Extract<Remote, { kind: "present" }>;
             },
           );
 
         case "none":
-          return beginDeletion(state, projectKey);
+          return beginDeletion(state, editorId, current, current.remote.tid);
 
         default:
           return assertNever(current.desired);
@@ -1277,49 +1216,43 @@ function reconcileCore(state: DraftState, projectKey: ProjectKey): DraftResult {
   }
 }
 
-function beginDeletion(state: DraftState, projectKey: ProjectKey): DraftResult {
-  const current = getSlot(state, projectKey);
-  if (current.remote.kind !== "present") {
-    throw new Error("Only a present task can begin deletion");
-  }
-
-  const next = replaceSlot(state, projectKey, {
+function beginDeletion(
+  state: DraftState,
+  editorId: EditorId,
+  current: EditorState,
+  tid: number,
+): DraftResult {
+  const next = replaceEditor(state, editorId, {
     ...current,
-    remote: { kind: "deleting", tid: current.remote.tid },
+    remote: { kind: "deleting", tid },
+    desired: { kind: "none" },
     createSchedule: null,
     saveSchedule: null,
   });
   return {
     state: next,
     effects: [
-      ...cancelCreateEffect(current, projectKey),
-      ...cancelSaveEffect(current, projectKey),
-      { type: "delete-task", projectKey, tid: current.remote.tid },
+      ...cancelCreateEffect(current, editorId),
+      ...cancelSaveEffect(current, editorId),
+      { type: "delete-task", editorId, tid },
     ],
   };
 }
 
 function submitPresent(
   state: DraftState,
-  projectKey: ProjectKey,
-  current: DraftSlotState & {
+  editorId: EditorId,
+  current: EditorState & {
     desired: Extract<Desired, { kind: "submitting" }>;
     remote: Extract<Remote, { kind: "present" }>;
   },
 ): DraftResult {
-  const next = replaceSlot(state, projectKey, releaseOwnership(current));
+  const next = removeEditor(state, editorId);
 
   if (current.desired.delivery === "atomic-create") {
     return {
       state: next,
-      effects: [
-        {
-          type: "release-task",
-          projectKey,
-          tid: current.remote.tid,
-          resetComposer: true,
-        },
-      ],
+      effects: [],
     };
   }
 
@@ -1333,44 +1266,38 @@ function submitPresent(
   return {
     state: next,
     effects: [
-      ...cancelSaveEffect(current, projectKey),
+      ...cancelSaveEffect(current, editorId),
       {
         type: "set-entry-point",
-        projectKey,
+        editorId,
         tid: current.remote.tid,
         entryPoint: current.desired.entryPoint,
       },
       {
         type: "set-agent",
-        projectKey,
+        editorId,
         tid: current.remote.tid,
         agent: current.desired.agent,
       },
       {
         type: "project-draft",
-        projectKey,
+        editorId,
         tid: current.remote.tid,
         form: clearedForm,
         formVersion: current.formVersion,
       },
       {
         type: "set-draft",
-        projectKey,
+        editorId,
         tid: current.remote.tid,
         text: "",
         formVersion: current.formVersion,
       },
       {
         type: "send-first-message",
-        projectKey,
+        editorId,
         tid: current.remote.tid,
         content: contentOf(current.desired),
-      },
-      {
-        type: "release-task",
-        projectKey,
-        tid: current.remote.tid,
-        resetComposer: true,
       },
     ],
   };
@@ -1378,14 +1305,12 @@ function submitPresent(
 
 function ensureDraftSave(
   state: DraftState,
-  projectKey: ProjectKey,
+  editorId: EditorId,
+  current: EditorState,
+  tid: number,
 ): DraftResult {
-  const current = getSlot(state, projectKey);
-  if (!isCurrentPresentEditing(current)) {
-    throw new Error("Only a current present draft can save");
-  }
   const schedule: SaveSchedule = {
-    tid: current.remote.tid,
+    tid,
     formVersion: current.formVersion,
   };
   if (
@@ -1396,14 +1321,14 @@ function ensureDraftSave(
     return { state, effects: [] };
   }
   return {
-    state: replaceSlot(state, projectKey, {
+    state: replaceEditor(state, editorId, {
       ...current,
       saveSchedule: schedule,
     }),
     effects: [
       {
         type: "ensure-draft-save",
-        projectKey,
+        editorId,
         tid: schedule.tid,
         formVersion: schedule.formVersion,
         delayMs: DRAFT_SAVE_DELAY_MS,
@@ -1412,46 +1337,29 @@ function ensureDraftSave(
   };
 }
 
-function releaseOwnership(current: DraftSlotState): DraftSlotState {
-  const defaults =
-    current.desired.kind === "none"
-      ? current.defaults
-      : defaultsOf(current.desired);
-  return {
-    ...current,
-    defaults,
-    observed: { text: "", ...defaults },
-    desired: { kind: "none" },
-    remote: { kind: "absent" },
-    formVersion: current.formVersion + 1,
-    createSchedule: null,
-    saveSchedule: null,
-  };
-}
-
 function cancelCreateEffect(
-  current: DraftSlotState,
-  projectKey: ProjectKey,
+  current: EditorState,
+  editorId: EditorId,
 ): DraftEffect[] {
   if (current.createSchedule === null) return [];
   return [
     {
       type: "cancel-create-schedule",
-      projectKey,
-      generation: current.createSchedule,
+      editorId,
+      correlationId: current.createSchedule,
     },
   ];
 }
 
 function cancelSaveEffect(
-  current: DraftSlotState,
-  projectKey: ProjectKey,
+  current: EditorState,
+  editorId: EditorId,
 ): DraftEffect[] {
   if (current.saveSchedule === null) return [];
   return [
     {
       type: "cancel-draft-save",
-      projectKey,
+      editorId,
       tid: current.saveSchedule.tid,
       formVersion: current.saveSchedule.formVersion,
     },
@@ -1459,65 +1367,27 @@ function cancelSaveEffect(
 }
 
 function projectEffect(
-  projectKey: ProjectKey,
+  editorId: EditorId,
   tid: number,
-  current: DraftSlotState,
+  current: { desired: DraftForm; formVersion: number },
 ): DraftEffect {
-  const form = selectDraftForm(
-    { slots: { [projectKey]: current }, uuidBindings: [] },
-    projectKey,
-  );
-  assertResolvedDraftForm(form);
+  const form = formOf(current.desired);
+  if (form.entryPoint === null)
+    throw new Error("Draft projection requires a resolved entry point");
   return {
     type: "project-draft",
-    projectKey,
+    editorId,
     tid,
-    form,
+    form: { ...form, entryPoint: form.entryPoint },
     formVersion: current.formVersion,
   };
 }
 
-function deliveryFor(
-  remote: Remote,
-  uuid: DraftId,
-): "atomic-create" | "send-when-present" {
-  switch (remote.kind) {
-    case "absent":
-    case "deleting":
-      return "atomic-create";
-
-    case "creating":
-      return remote.correlationId === uuid
-        ? "send-when-present"
-        : "atomic-create";
-
-    case "present":
-      return remote.generation === null || remote.generation === uuid
-        ? "send-when-present"
-        : "atomic-create";
-
-    default:
-      return assertNever(remote);
-  }
-}
-
-function belongsToCurrentGeneration(slot: DraftSlotState): boolean {
-  if (slot.remote.kind !== "present" || slot.desired.kind === "none") {
-    return false;
-  }
-  return (
-    slot.remote.generation === null ||
-    slot.remote.generation === slot.desired.uuid
-  );
-}
-
-function isCurrentPresentEditing(
-  slot: DraftSlotState,
-): slot is DraftSlotState & {
+function isPresentEditing(editor: EditorState): editor is EditorState & {
   desired: Extract<Desired, { kind: "editing" }>;
   remote: Extract<Remote, { kind: "present" }>;
 } {
-  return slot.desired.kind === "editing" && belongsToCurrentGeneration(slot);
+  return editor.desired.kind === "editing" && editor.remote.kind === "present";
 }
 
 function mergeObservedForm(
@@ -1635,7 +1505,7 @@ function acceptsObservedValue<T extends string | null>(
   return local === "" || local === observed ? incoming : local;
 }
 
-function isActiveSnapshot(snapshot: TaskSnapshot): boolean {
+function isActiveSnapshot(snapshot: PersistedSnapshot): boolean {
   return snapshot.active || snapshot.processing || snapshot.hasMessages;
 }
 
@@ -1651,18 +1521,18 @@ function isActiveObservation(observation: TaskObservation): boolean {
 
 function assertPersistedSnapshot(
   snapshot: unknown,
-): asserts snapshot is TaskSnapshot {
+): asserts snapshot is PersistedSnapshot {
   if (typeof snapshot !== "object" || snapshot === null) {
     throw new Error("Persisted task snapshot must be complete");
   }
 
-  const candidate = snapshot as Partial<TaskSnapshot>;
+  const candidate = snapshot as Partial<PersistedSnapshot>;
   assertPersistedSnapshotOwnProperties(candidate);
   assertTaskId(candidate.tid);
   if (
     typeof candidate.text !== "string" ||
     typeof candidate.entryPoint !== "string" ||
-    typeof candidate.agent !== "string" ||
+    (candidate.agent !== null && typeof candidate.agent !== "string") ||
     typeof candidate.active !== "boolean" ||
     typeof candidate.processing !== "boolean" ||
     typeof candidate.hasMessages !== "boolean"
@@ -1670,8 +1540,7 @@ function assertPersistedSnapshot(
     throw new Error("Persisted task snapshot must be complete");
   }
 
-  assertPendingSnapshot(candidate as TaskSnapshot);
-  assertNonEmptyPersistedSnapshot(candidate as TaskSnapshot);
+  assertPendingSnapshot(candidate as PersistedSnapshot);
 }
 
 function assertPersistedSnapshotOwnProperties(snapshot: object): void {
@@ -1693,169 +1562,59 @@ function assertTaskId(tid: unknown): asserts tid is number {
   }
 }
 
-function assertPendingSnapshot(snapshot: TaskSnapshot): void {
+function assertPendingSnapshot(snapshot: PersistedSnapshot): void {
   if (isActiveSnapshot(snapshot)) {
-    throw new Error("Only a pending task can be adopted as a draft");
+    throw new Error("Only a pending task can be opened as a draft");
   }
 }
 
-function requireUuid(uuid: DraftId | undefined): DraftId {
-  if (uuid === undefined || uuid.trim().length === 0) {
-    throw new Error("A browser UUID is required");
-  }
-  return uuid;
-}
-
-function assertNonEmptyPersistedSnapshot(snapshot: TaskSnapshot): void {
-  if (snapshot.text.trim().length === 0) {
+function assertNonEmptyPersistedText(text: string): void {
+  if (text.trim().length === 0) {
     throw new Error("A persisted draft must have non-empty text");
   }
 }
 
-function assertFreshGeneration(state: DraftState, uuid: DraftId): void {
-  if (state.uuidBindings.some((binding) => binding.uuid === uuid)) {
-    throw new Error("A fresh generation UUID must not reuse a prior UUID");
+function compositionCorrelation(editorId: EditorId): DraftId {
+  const prefix = "composition:";
+  const correlationId = editorId.slice(prefix.length);
+  if (!editorId.startsWith(prefix) || correlationId.trim() === "") {
+    throw new Error("A composition editor requires a browser UUID");
   }
-
-  assertUuidNotActive(state, uuid);
+  return correlationId;
 }
 
-function assertUuidNotActive(state: DraftState, uuid: DraftId): void {
-  for (const [, slot] of Object.entries(state.slots)) {
-    if (slot.desired.kind !== "none" && slot.desired.uuid === uuid) {
-      throw new Error("Draft UUID is already in use: " + uuid);
-    }
-    if (slot.remote.kind === "creating" && slot.remote.correlationId === uuid) {
-      throw new Error("Draft UUID is already in flight: " + uuid);
-    }
-    if (slot.remote.kind === "present" && slot.remote.generation === uuid) {
-      throw new Error("Draft UUID is already bound: " + uuid);
-    }
-  }
-}
-
-function recordFreshUuid(
-  state: DraftState,
-  projectKey: ProjectKey,
-  uuid: DraftId,
-): DraftState {
-  return {
-    ...state,
-    uuidBindings: [...state.uuidBindings, { uuid, projectKey, tid: null }],
-  };
-}
-
-function bindAcknowledgedUuid(
-  state: DraftState,
-  projectKey: ProjectKey,
-  uuid: DraftId,
-  tid: number,
-): DraftState {
-  const index = state.uuidBindings.findIndex(
-    (binding) => binding.uuid === uuid,
-  );
-  if (index === -1) {
-    throw new Error("Create acknowledgement has no fresh UUID binding");
-  }
-  const binding = state.uuidBindings[index]!;
-  if (
-    binding.projectKey !== projectKey ||
-    (binding.tid !== null && isTidOwned(state, binding.tid))
-  ) {
-    throw new Error("Create acknowledgement UUID binding is incompatible");
-  }
-  return {
-    ...state,
-    uuidBindings: state.uuidBindings.map((candidate, candidateIndex) =>
-      candidateIndex === index ? { ...candidate, tid } : candidate,
-    ),
-  };
-}
-
-function bindPersistedUuid(
-  state: DraftState,
-  projectKey: ProjectKey,
-  uuid: DraftId,
-  tid: number,
-): DraftState {
-  const binding = state.uuidBindings.find(
-    (candidate) => candidate.uuid === uuid,
-  );
-  if (binding !== undefined) {
-    if (binding.projectKey === projectKey && binding.tid === tid) {
-      return state;
-    }
-    throw new Error("Browser UUID is already bound to another task");
-  }
-  assertUuidNotActive(state, uuid);
-  return {
-    ...state,
-    uuidBindings: [...state.uuidBindings, { uuid, projectKey, tid }],
-  };
-}
-
-function assertTidUnowned(
-  state: DraftState,
-  target: ProjectKey,
-  tid: number,
-): void {
-  for (const [projectKey, slot] of Object.entries(state.slots)) {
-    if (projectKey === target) continue;
+function assertTidUnowned(state: DraftState, tid: number): void {
+  for (const editor of Object.values(state.editors)) {
     if (
-      (slot.remote.kind === "present" || slot.remote.kind === "deleting") &&
-      slot.remote.tid === tid
+      (editor.remote.kind === "present" || editor.remote.kind === "deleting") &&
+      editor.remote.tid === tid
     ) {
-      throw new Error(
-        "Task ID is already owned by another slot: " + String(tid),
-      );
+      throw new Error(`Task ID is already owned by another editor: ${tid}`);
     }
   }
 }
 
-function isTidOwned(state: DraftState, tid: number): boolean {
-  return Object.values(state.slots).some(
-    (slot) =>
-      (slot.remote.kind === "present" || slot.remote.kind === "deleting") &&
-      slot.remote.tid === tid,
-  );
-}
-
-function findCreatingProject(
+function insertEditor(
   state: DraftState,
-  correlationId: DraftId,
-): ProjectKey {
-  const matches = Object.entries(state.slots).filter(
-    ([, slot]) =>
-      slot.remote.kind === "creating" &&
-      slot.remote.correlationId === correlationId,
-  );
-  if (matches.length !== 1) {
-    throw new Error(
-      "Create acknowledgement does not match one owned generation",
-    );
-  }
-  return matches[0]![0];
-}
-
-function findOwnedTid(state: DraftState, tid: number): ProjectKey {
-  const matches = Object.entries(state.slots).filter(
-    ([, slot]) =>
-      (slot.remote.kind === "present" || slot.remote.kind === "deleting") &&
-      slot.remote.tid === tid,
-  );
-  if (matches.length !== 1) {
-    throw new Error("Task deletion does not match one owned task");
-  }
-  return matches[0]![0];
-}
-
-function replaceSlot(
-  state: DraftState,
-  projectKey: ProjectKey,
-  value: DraftSlotState,
+  editorId: EditorId,
+  value: EditorState,
 ): DraftState {
-  getSlot(state, projectKey);
-  return { ...state, slots: { ...state.slots, [projectKey]: value } };
+  if (state.editors[editorId])
+    throw new Error("Duplicate draft editor: " + editorId);
+  return { ...state, editors: { ...state.editors, [editorId]: value } };
+}
+
+function replaceEditor(
+  state: DraftState,
+  editorId: EditorId,
+  value: EditorState,
+): DraftState {
+  return { ...state, editors: { ...state.editors, [editorId]: value } };
+}
+
+function removeEditor(state: DraftState, editorId: EditorId): DraftState {
+  const { [editorId]: _removed, ...editors } = state.editors;
+  return { ...state, editors };
 }
 
 function defaultsOf(form: FormDefaults): FormDefaults {

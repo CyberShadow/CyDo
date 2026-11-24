@@ -30,16 +30,19 @@ const testState = vi.hoisted(() => {
   };
 });
 
+function renderedPath() {
+  const { workspace, project, tid } = testState.route;
+  return `/${workspace}/${project}/task/${tid}`;
+}
+
+vi.stubGlobal("location", {
+  get pathname() {
+    return renderedPath();
+  },
+});
+
 vi.mock("preact-iso", () => ({
-  useLocation: () => ({ route: testState.navigate }),
-  useRoute: () => ({
-    params: {
-      workspace: testState.route.workspace,
-      project: testState.route.project,
-      tid: testState.route.tid,
-    },
-    path: `/${testState.route.workspace}/${testState.route.project}/task/${testState.route.tid}`,
-  }),
+  useLocation: () => ({ route: testState.navigate, path: renderedPath() }),
 }));
 
 vi.mock("./connection", () => {

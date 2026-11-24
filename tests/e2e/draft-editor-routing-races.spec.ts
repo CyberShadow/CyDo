@@ -91,7 +91,10 @@ function tasksListFrame(frame: ControlFrame | null): TaskListFrame | null {
   };
 }
 
-function taskEntry(frame: ControlFrame | null, tid: number): TaskListEntry | null {
+function taskEntry(
+  frame: ControlFrame | null,
+  tid: number,
+): TaskListEntry | null {
   return tasksListFrame(frame)?.tasks.find((task) => task.tid === tid) ?? null;
 }
 
@@ -213,7 +216,9 @@ async function installInitialSnapshotHold(
     socketConnections++;
     const serverSocket = browserSocket.connectToServer();
 
-    const deliverServerFrame = (serverFrame: (typeof heldServerFrames)[number]) => {
+    const deliverServerFrame = (
+      serverFrame: (typeof heldServerFrames)[number],
+    ) => {
       const list = tasksListFrame(serverFrame.frame);
       if (list?.complete) deliveredTerminalPacket = true;
       if (taskEntry(serverFrame.frame, targetTid))
@@ -262,7 +267,8 @@ async function installInitialSnapshotHold(
     serverSocket.onMessage(relayServerFrame);
 
     release = () => {
-      if (state !== "holding") throw new Error("Target tasks_list was not held");
+      if (state !== "holding")
+        throw new Error("Target tasks_list was not held");
       state = "released";
       replaying = true;
       try {
@@ -294,7 +300,7 @@ async function installInitialSnapshotHold(
   };
 }
 
-test("direct persisted draft route adopts after its initial task snapshot", async ({
+test("direct task route opens its own editor after the initial snapshot", async ({
   page,
   browser,
   baseURL,
@@ -303,7 +309,8 @@ test("direct persisted draft route adopts after its initial task snapshot", asyn
   const seedContext = await browser.newContext({ baseURL });
   const seedPage = await seedContext.newPage();
   const seedRecorder = installPassiveRecorder(seedPage);
-  const persistedText = "adopt before tasks list\nwith complete persisted body";
+  const persistedText =
+    "direct editor from tasks list\nwith complete persisted body";
   const persistedAgent = agentType === "codex" ? "claude" : "codex";
 
   await seedPage.goto(baseURL!);
@@ -383,12 +390,6 @@ test("direct persisted draft route adopts after its initial task snapshot", asyn
   await expect(input).toHaveCount(1);
   await expect(input).toBeEnabled();
   await expect(input).toHaveValue("");
-  await expect(
-    page.locator(".task-type-row.selected .task-type-name"),
-  ).toHaveText("blank");
-  await expect(page.locator(".agent-picker:visible")).toHaveValue(
-    persistedAgent,
-  );
   expect(proxy.createRequests).toEqual([]);
   expect(proxy.deleteRequests).toEqual([tid]);
 });
@@ -413,18 +414,16 @@ test("held incremental bootstrap keeps an archived child route truthful", async 
     timeout: responseTimeout(agentType),
   });
 
-  const activeParent = seedPage.locator(
-    ".sidebar-item.active[data-tid]",
-  ).first();
+  const activeParent = seedPage
+    .locator(".sidebar-item.active[data-tid]")
+    .first();
   await expect(activeParent).toBeVisible();
   const parentTidText = await activeParent.getAttribute("data-tid");
-  if (!parentTidText) throw new Error("Top-level task did not have a numeric tid");
+  if (!parentTidText)
+    throw new Error("Top-level task did not have a numeric tid");
   const parentTid = Number(parentTidText);
 
-  await sendMessage(
-    seedPage,
-    `call task research reply with "${childMarker}"`,
-  );
+  await sendMessage(seedPage, `call task research reply with "${childMarker}"`);
   const seedMessages = seedPage.locator(
     '[style*="display: contents"] .message-list',
   );
@@ -442,9 +441,7 @@ test("held incremental bootstrap keeps an archived child route truthful", async 
         (task) =>
           task.parentTid === parentTid && task.relationType === "subtask",
       );
-  await expect
-    .poll(() => directChild()?.tid ?? null)
-    .not.toBeNull();
+  await expect.poll(() => directChild()?.tid ?? null).not.toBeNull();
   const childTid = directChild()?.tid;
   if (childTid === undefined)
     throw new Error("Task workflow did not create the direct child");
@@ -531,7 +528,8 @@ test("held incremental bootstrap keeps an archived child route truthful", async 
             const isConnected = record.target.matches(
               ".banner-status.connected",
             );
-            state.connectedStatuses += Number(isConnected) - Number(wasConnected);
+            state.connectedStatuses +=
+              Number(isConnected) - Number(wasConnected);
           } else if (record.target.textContent?.includes(notFoundText)) {
             state.sawNotFound = true;
           }
@@ -560,9 +558,7 @@ test("held incremental bootstrap keeps an archived child route truthful", async 
   const proxy = await installInitialSnapshotHold(page, childTid);
   await page.goto(childURL);
   await expect.poll(() => proxy.targetSnapshotHeld()).toBe(true);
-  await expect
-    .poll(() => proxy.heldFrameOrder().length > 1)
-    .toBe(true);
+  await expect.poll(() => proxy.heldFrameOrder().length > 1).toBe(true);
 
   expect(proxy.releaseState()).toBe("holding");
   expect(proxy.earlyTaskEntry(parentTid)).toMatchObject({
