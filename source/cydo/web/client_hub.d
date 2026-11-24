@@ -65,6 +65,21 @@ class ClientHub
 						ws.send(payload);
 	}
 
+	/// Send to one specific client, if it is still connected.
+	/// Membership in `clients` is the liveness signal: `remove()` prunes on
+	/// disconnect, so a socket absent here has gone away and must not be
+	/// sent to. Callers that hold a `ws` across an async continuation use
+	/// this instead of `ws.send` directly.
+	void sendTo(WebSocketAdapter ws, Data payload)
+	{
+		foreach (client; clients)
+			if (client is ws)
+			{
+				client.send(payload);
+				return;
+			}
+	}
+
 	void broadcastExcept(WebSocketAdapter excludedWs, Data payload)
 	{
 		foreach (ws; clients)

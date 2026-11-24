@@ -30,7 +30,8 @@ import cydo.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
 	ItemResultEvent, ItemStartedEvent, makeUnrecognizedEvent, ProcessExitEvent,
 	ProcessStderrEvent, SessionInitEvent, TranslatedEvent, TurnResultEvent,
 	TurnStopEvent, UsageInfo;
-import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork, MessageSource;
+import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork,
+	MessageSource, SubmissionHistoryCancelled;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
@@ -1374,7 +1375,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	void invalidatePendingSubmittedMessages()
 	{
-		rejectUnsettledMessages(new Exception(
+		rejectUnsettledMessages(new SubmissionHistoryCancelled(
 			"Copilot message submission was invalidated"));
 	}
 

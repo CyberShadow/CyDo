@@ -78,11 +78,14 @@ import cydo.agent.resolver : createConfiguredAgent, displayNameForDriver,
 	effectiveDefaultAgentName, isConfiguredAgentName, resolvePermissionSettings,
 	tryCreateConfiguredAgent;
 import cydo.agent.contract : Agent;
-import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
-	HistoryBoundary, ItemStartedEvent, SessionRateLimitEvent, TaskDiagnosticEvent, TaskDiagnosticSeverity,
-	TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
-	UnconfirmedUserEventEnvelope, UserMessageConsumedEvent, extractContentText;
-import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork, MessageSource;
+import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope,
+	BrowserSubmissionRejectedEvent, BrowserSubmissionRejectionKind, ContentBlock,
+	HistoryBoundary, ItemStartedEvent, SessionRateLimitEvent, TaskDiagnosticEvent,
+	TaskDiagnosticSeverity, TaskEventEnvelope, TaskEventSeqEnvelope,
+	TranslatedEvent, UnconfirmedUserEventEnvelope, UserMessageConsumedEvent,
+	extractContentText;
+import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork,
+	MessageSource, SubmissionHistoryCancelled;
 import cydo.agent.drivers.claude : ClaudeCodeSession;
 import cydo.agent.drivers.codex : CodexSession;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
@@ -190,7 +193,7 @@ class App
 	import cydo.workflow.history.jsonl_tracker : JsonlTracker;
 
 	private TransportAdapter transport;
-	private ClientHub clientHub = new ClientHub();
+	private ClientHub clientHub;
 	private TaskData[int] tasks;
 	private Persistence persistence;
 	private TaskLifecycle taskLifecycle;
@@ -224,6 +227,11 @@ class App
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
+	this()
+	{
+		clientHub = new ClientHub();
+	}
+
 	void start()
 	{
 		// Consume server-only settings before anything can spawn a child.
@@ -1312,7 +1320,7 @@ class App
 		{
 			case "create_task":       handleCreateTaskMsg(ws, json); break;
 			case "request_history":   handleRequestHistory(ws, json); break;
-			case "message":           handleUserMessage(json); break;
+			case "message":           handleUserMessage(ws, json); break;
 			case "resume":            handleResumeMsg(json); break;
 			case "interrupt":         handleInterruptMsg(json); break;
 			case "unsend_message":    handleUnsendMessage(ws, json); break;
@@ -1338,6 +1346,41 @@ class App
 			case "request_task_types": handleRequestTaskTypesMsg(ws, json); break;
 			default: break;
 		}
+	}
+
+	private static final class NativeUndoSubmissionRefusal : Exception
+	{
+		this(string reason)
+		{
+			super(reason);
+		}
+	}
+
+	private static BrowserSubmissionRejectionKind submissionRejectionKind(Exception failure)
+	{
+		if (auto rejection = cast(AgentSubmissionRejected) failure)
+			failure = cast(Exception) rejection.next;
+		if (cast(SubmissionHistoryCancelled) failure)
+			return BrowserSubmissionRejectionKind.history_cancelled;
+		if (cast(NativeUndoSubmissionRefusal) failure)
+			return BrowserSubmissionRejectionKind.native_undo_refused;
+		return BrowserSubmissionRejectionKind.delivery_failed;
+	}
+
+	/// Send a terminal submission disposition to its originating browser.
+	private void sendBrowserSubmissionRejected(WebSocketAdapter ws,
+		string correlationId, int tid, BrowserSubmissionRejectionKind kind,
+		string reason)
+	{
+		if (correlationId.length == 0)
+			return;
+		BrowserSubmissionRejectedEvent event;
+		event.correlation_id = correlationId;
+		if (tid >= 0)
+			event.tid = tid;
+		event.kind = kind;
+		event.reason = reason;
+		clientHub.sendTo(ws, Data(toJson(event).representation));
 	}
 
 	private void handleSetTaskTypeMsg(WsMessage json)
@@ -1392,8 +1435,10 @@ class App
 				projectPath = canonicalProjectPath(json.project_path);
 			catch (Exception)
 			{
-				ws.send(Data(toJson(ErrorMessage("error",
-					"Project path must be an existing directory")).representation));
+				auto reason = "Project path must be an existing directory";
+				ws.send(Data(toJson(ErrorMessage("error", reason)).representation));
+				sendBrowserSubmissionRejected(ws, json.correlation_id, -1,
+					BrowserSubmissionRejectionKind.validation, reason);
 				return;
 			}
 		}
@@ -1402,15 +1447,19 @@ class App
 		auto entryPoints = taskTypeCatalog.getEntryPointsForProject(projectPath);
 		if (json.entry_point.length == 0)
 		{
-			ws.send(Data(toJson(ErrorMessage("error",
-				"Top-level task creation requires an entry point")).representation));
+			auto reason = "Top-level task creation requires an entry point";
+			ws.send(Data(toJson(ErrorMessage("error", reason)).representation));
+			sendBrowserSubmissionRejected(ws, json.correlation_id, -1,
+				BrowserSubmissionRejectionKind.validation, reason);
 			return;
 		}
 		auto ep = entryPoints.byName(json.entry_point);
 		if (ep is null || ep.system)
 		{
-			ws.send(Data(toJson(ErrorMessage("error",
-				"Unknown entry point: " ~ json.entry_point)).representation));
+			auto reason = "Unknown entry point: " ~ json.entry_point;
+			ws.send(Data(toJson(ErrorMessage("error", reason)).representation));
+			sendBrowserSubmissionRejected(ws, json.correlation_id, -1,
+				BrowserSubmissionRejectionKind.validation, reason);
 			return;
 		}
 		auto tid = createEntryPointTask(json.workspace, projectPath, at, ep);
@@ -1426,7 +1475,10 @@ class App
 		if (json.content.json !is null)
 			blocks = jsonParse!(ContentBlock[])(json.content.json);
 		if (blocks.length > 0)
-			submitInitialMessage(tid, blocks, MessageSource.user).ignoreResult();
+			submitInitialMessage(tid, blocks, MessageSource.user).except((Exception failure) {
+				sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
+					submissionRejectionKind(failure), failure.msg);
+			}).ignoreResult();
 	}
 
 	/// Create a top-level task at an entry point. It has no session until it
@@ -1480,7 +1532,7 @@ class App
 		broadcastTaskUpdate(tid);
 		return submitInitialMessage(tid, [ContentBlock("text", readPromptFile(
 			"prompts/singleton_started_by_request.md", projectPath, null))],
-			MessageSource.harness).then((bool accepted) {
+			MessageSource.harness).then(() => true, (Exception) => false).then((bool accepted) {
 				enforce(accepted, format!"Could not start singleton %s (task %d): %s"(
 					name, tid, tasks[tid].error));
 				return tid;
@@ -1488,10 +1540,9 @@ class App
 	}
 
 	/// Start a new top-level task's session with its first message: `blocks`,
-	/// wrapped in the prompt of the task's entry point. Fulfills once the
-	/// agent has the message, with false if it could not be given it; the
-	/// task then says why.
-	private Promise!bool submitInitialMessage(int tid, ContentBlock[] blocks, MessageSource source)
+	/// wrapped in the prompt of the task's entry point. Record any failure
+	/// on the task before propagating it to the caller.
+	private Promise!void submitInitialMessage(int tid, ContentBlock[] blocks, MessageSource source)
 	{
 		auto td = &tasks[tid];
 		auto taskTypes = taskTypeCatalog.getTaskTypesForProject(td.projectPath);
@@ -1545,13 +1596,13 @@ class App
 		return tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
 			return sendTaskMessage(tid, messageToSend, msgContent, msgMeta,
 				null, true, &commitAcceptedInitialSubmission, source);
-		}).then(() => true, (Exception e) {
+		}).except((Exception e) {
 			auto failed = tid in tasks;
 			assert(failed !is null,
 				"Initial message submission task disappeared");
 			// TaskSessionRunner already owns a failed launch and its diagnostic.
 			if (failed.status == TaskStatus.failed)
-				return false;
+				throw e;
 			assert(failed.status == TaskStatus.active,
 				"Initial message submission failed outside an active task");
 			failed.error = e.msg;
@@ -1564,7 +1615,7 @@ class App
 			broadcastAppendedTaskEvent(tid, translated);
 			workflowTools.recordChildTerminal(tid);
 			broadcastTaskUpdate(tid);
-			return false;
+			throw e;
 		});
 	}
 
@@ -1728,12 +1779,28 @@ class App
 		}).ignoreResult();
 	}
 
-	private void handleUserMessage(WsMessage json)
+	private void handleUserMessage(WebSocketAdapter ws, WsMessage json)
 	{
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
+		{
+			sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
+				BrowserSubmissionRejectionKind.task_unavailable,
+				"Task is no longer available");
 			return;
+		}
 		auto td = &tasks[tid];
+		auto msgNonce = json.correlation_id;
+		auto submissionGeneration = td.history.generation;
+		if (msgNonce.length > 0)
+		{
+			if (msgNonce in td.recentNonces)
+				return;
+			if (auto leasedGeneration = msgNonce in td.inFlightUiNonceGeneration)
+				if (*leasedGeneration == submissionGeneration)
+					return;
+		}
+
 		// Refuse at the entry point so a blocked send performs no task
 		// materialization, nonce leasing, or process start on the way to the
 		// delivery funnel's fail-closed backstop. The blockage is a property of
@@ -1742,15 +1809,18 @@ class App
 		{
 			clientHub.sendToSubscribed(tid,
 				Data(toJson(ErrorMessage("error", refusal, tid)).representation));
+			sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
+				BrowserSubmissionRejectionKind.native_undo_refused, refusal);
 			return;
 		}
 		if (isArchiveTransitioning(tid))
+		{
+			sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
+				BrowserSubmissionRejectionKind.task_archiving,
+				"Task is being archived");
 			return;
+		}
 		assert(td.taskType.length > 0, "Task must have a task_type when receiving a message");
-
-		// Deduplicate accepted delivery and unresolved outbox replay independently.
-		if (json.correlation_id.length > 0 && json.correlation_id in td.recentNonces)
-			return;
 
 		ContentBlock[] blocks;
 		if (json.content.json !is null)
@@ -1798,15 +1868,8 @@ class App
 		}
 		if (initializesDescription)
 			materializePendingTask(tid);
-		auto msgNonce = json.correlation_id;
-		auto submissionGeneration = td.history.generation;
 		if (msgNonce.length > 0)
-		{
-			if (auto leasedGeneration = msgNonce in td.inFlightUiNonceGeneration)
-				if (*leasedGeneration == submissionGeneration)
-					return;
 			td.inFlightUiNonceGeneration[msgNonce] = submissionGeneration;
-		}
 		void commitAcceptedBrowserSubmission(TaskData* accepted)
 		{
 			if (initializesDescription && accepted.description.length == 0)
@@ -1842,31 +1905,28 @@ class App
 			assert(queued !is null,
 				"User message submission task disappeared before dispatch");
 			if (queued.history.generation != submissionGeneration)
-			{
-				if (msgNonce.length > 0)
-					if (auto leasedGeneration = msgNonce in queued.inFlightUiNonceGeneration)
-						if (*leasedGeneration == submissionGeneration)
-							queued.inFlightUiNonceGeneration.remove(msgNonce);
-				return resolve();
-			}
+				return reject!(void, Exception)(new SubmissionHistoryCancelled(
+					"Submission was cancelled because task history changed"));
 			return sendTaskMessage(tid, messageToSend, blocks, userMsgMeta, msgNonce,
 				userMsgMeta.length > 0, &commitAcceptedBrowserSubmission, MessageSource.user);
 		}).except((Exception e) {
 			auto rejected = tid in tasks;
 			assert(rejected !is null,
 				"User message submission task disappeared");
-			if (rejected.history.generation != submissionGeneration)
-				return;
 			if (msgNonce.length > 0)
 				if (auto leasedGeneration = msgNonce in rejected.inFlightUiNonceGeneration)
 					if (*leasedGeneration == submissionGeneration)
 						rejected.inFlightUiNonceGeneration.remove(msgNonce);
-			if (rejected.status == TaskStatus.failed)
-				return;
-			auto translated = historyPipeline.appendTaskDiagnostic(tid,
-				"Failed to submit message", e.msg);
-			broadcastAppendedTaskEvent(tid, translated);
-			broadcastTaskUpdate(tid);
+			if (rejected.history.generation == submissionGeneration
+				&& rejected.status != TaskStatus.failed)
+			{
+				auto translated = historyPipeline.appendTaskDiagnostic(tid,
+					"Failed to submit message", e.msg);
+				broadcastAppendedTaskEvent(tid, translated);
+				broadcastTaskUpdate(tid);
+			}
+			sendBrowserSubmissionRejected(ws, msgNonce, tid,
+				submissionRejectionKind(e), e.msg);
 		}).ignoreResult();
 	}
 
@@ -2127,7 +2187,8 @@ class App
 		// Fail-closed backstop for internal and already-scheduled sends: a
 		// refused submission was never accepted, so it must reject.
 		if (auto refusal = nativeUndoDeliveryRefusal(td))
-			return reject!(void, Exception)(new AgentSubmissionRejected(new Exception(refusal)));
+			return reject!(void, Exception)(
+				new AgentSubmissionRejected(new NativeUndoSubmissionRefusal(refusal)));
 
 		// --- send to agent ---
 		// Snapshot the JSONL before the agent processes the new message.
@@ -2165,7 +2226,8 @@ class App
 			assert(accepted !is null,
 				"Task disappeared while committing accepted message submission");
 			if (accepted.history.generation != submissionGeneration)
-				throw new Exception("Message submission invalidated by history lineage reset");
+				throw new SubmissionHistoryCancelled(
+					"Message submission invalidated by history lineage reset");
 			assert(sessionForTask(tid) is session,
 				"Task session changed while committing accepted message submission");
 
@@ -3969,9 +4031,9 @@ unittest
 
 	// The entry guard precedes idle-start/active-steer work. It rejects both
 	// paths to the task's subscribers without materializing a message.
-	app.handleUserMessage(WsMessage(type: "message", tid: tid));
+	app.handleUserMessage(ws, WsMessage(type: "message", tid: tid));
 	app.tasks[tid].isProcessing = true;
-	app.handleUserMessage(WsMessage(type: "message", tid: tid));
+	app.handleUserMessage(ws, WsMessage(type: "message", tid: tid));
 	assert(ws.sent.length == 2 && ws.sent[0].canFind("in progress")
 		&& ws.sent[1].canFind("in progress"));
 
@@ -4005,10 +4067,15 @@ unittest
 	assert(ws.sent.length == 2, "Funnel refusal must not emit a socket error");
 
 	app.tasks[tid].markNativeUndoUnverified();
-	app.handleUserMessage(WsMessage(type: "message", tid: tid));
-	assert(ws.sent.length == 3
-		&& ws.sent[$ - 1].canFind("may already have changed or lost history")
-		&& ws.sent[$ - 1].canFind("blocked only in this running CyDo process"));
+	app.handleUserMessage(ws, WsMessage(type: "message", tid: tid,
+		correlation_id: "native-undo-nonce"));
+	assert(ws.sent.length == 4
+		&& ws.sent[$ - 2].canFind("may already have changed or lost history")
+		&& ws.sent[$ - 2].canFind("blocked only in this running CyDo process")
+		&& ws.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
+		&& ws.sent[$ - 1].canFind(`"correlation_id":"native-undo-nonce"`)
+		&& parseJSON(ws.sent[$ - 1])["tid"].integer == tid
+		&& ws.sent[$ - 1].canFind(`"kind":"native_undo_refused"`));
 }
 
 /// Install robust logger implementation once.
@@ -4037,10 +4104,12 @@ package(cydo) void applyConfiguredLogLevel(string level)
 
 version (unittest)
 {
+	import std.json : parseJSON;
 	import configy.attributes : SetInfo;
 	import core.exception : AssertError;
 	import core.time : Duration;
-	import std.algorithm : canFind, countUntil;
+	import std.algorithm : canFind, count, countUntil;
+	import std.conv : to;
 	import std.exception : assertThrown;
 	import std.file : exists, mkdirRecurse, remove, rmdirRecurse, tempDir, write;
 	import std.path : buildPath;
@@ -4297,6 +4366,12 @@ version (unittest) private final class SubmissionCaptureWebSocket : WebSocketAda
 
 	override void send(scope Data[] data, int priority)
 	{
+		// Mirrors ae's own TcpConnection.send assert: a real disconnected
+		// socket would abort the process here, so the fake must too, or a
+		// caller that forgets to route through ClientHub's liveness check
+		// would pass this test suite while still crashing in production.
+		assert(state == ConnectionState.connected,
+			"Attempted to send on a disconnected fake socket");
 		auto payload = cast(string) data.joinData().toGC().as!string;
 		sent ~= payload;
 		if (onSend_)
@@ -4875,8 +4950,8 @@ unittest
 	fixture.app.tasks[fixture.tid].agentName = "claude";
 	auto message = testBrowserSubmission(fixture.tid, "browser submission",
 		"browser-nonce");
-	fixture.app.handleUserMessage(message);
-	fixture.app.handleUserMessage(message);
+	fixture.app.handleUserMessage(fixture.socket, message);
+	fixture.app.handleUserMessage(fixture.socket, message);
 
 	assert(("browser-nonce" in fixture.app.tasks[fixture.tid]
 		.inFlightUiNonceGeneration) !is null);
@@ -4894,7 +4969,7 @@ unittest
 		is null);
 	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 0);
 
-	fixture.app.handleUserMessage(message);
+	fixture.app.handleUserMessage(fixture.socket, message);
 	drainSubmissionNextTicks();
 	assert(fixture.session.sendCalls == 2 && fixture.session.gates.length == 2);
 	assert(("browser-nonce" in fixture.app.tasks[fixture.tid]
@@ -4945,7 +5020,7 @@ unittest
 	}
 	auto message = testBrowserSubmission(fixture.tid, "first browser message",
 		"first-browser-nonce");
-	fixture.app.handleUserMessage(message);
+	fixture.app.handleUserMessage(fixture.socket, message);
 	drainSubmissionNextTicks();
 
 	assert(fixture.session.sendCalls == 1);
@@ -4982,11 +5057,16 @@ unittest
 	assert(td.lastSuggestions == ["pending suggestion"]
 		&& td.suggestGenHandle is suggestionHandle && td.suggestGeneration == 41);
 	assert(readPersistedDraft() == "saved retry draft");
-	assert(fixture.socket.sent.length == 2);
+	assert(fixture.socket.sent.length == 3);
 	assert(fixture.socket.sent[0].canFind(`"type":"cydo/task_diagnostic"`)
 		&& fixture.socket.sent[0].canFind(`"subject":"Failed to submit message"`)
 		&& fixture.socket.sent[0].canFind(`"body":"first submission rejected"`));
 	assert(fixture.socket.sent[1].canFind(`"type":"task_updated"`));
+	assert(fixture.socket.sent[2].canFind(`"type":"cydo/submission_rejected"`)
+		&& fixture.socket.sent[2].canFind(`"correlation_id":"first-browser-nonce"`)
+		&& parseJSON(fixture.socket.sent[2])["tid"].integer == fixture.tid
+		&& fixture.socket.sent[2].canFind(`"kind":"delivery_failed"`)
+		&& fixture.socket.sent[2].canFind(`"reason":"first submission rejected"`));
 	foreach (payload; fixture.socket.sent)
 	{
 		assert(!payload.canFind(`"type":"task_reload"`));
@@ -4998,13 +5078,19 @@ unittest
 	fixture.submissionMessages = null;
 	fixture.submissionTids = null;
 	fixture.socket.sent = null;
-	fixture.app.handleUserMessage(message);
+	fixture.app.handleUserMessage(fixture.socket, message);
 	drainSubmissionNextTicks();
 	assert(fixture.session.sendCalls == 2);
 	assert(toJson(fixture.session.contents[0]) == toJson(fixture.session.contents[1]));
 	assert(td.status == TaskStatus.waiting && td.description.length == 0
 		&& td.title.length == 0 && td.draft == "saved retry draft");
 	assert(readPersistedDraft() == "saved retry draft");
+
+	td.archiving = true;
+	fixture.app.handleUserMessage(fixture.socket, message);
+	assert(fixture.socket.sent.length == 0,
+		"An in-flight nonce replay must not be refused while archiving");
+	td.archiving = false;
 
 	fixture.session.accept(1, AgentSubmissionReceipt.appServerAccepted);
 	drainSubmissionNextTicks();
@@ -5029,6 +5115,231 @@ unittest
 			sentDraftClear = true;
 		}
 	assert(sentDraftClear);
+
+	fixture.socket.sent = null;
+	fixture.app.handleUserMessage(fixture.socket, message);
+	drainSubmissionNextTicks();
+	assert(fixture.session.sendCalls == 2 && fixture.socket.sent.length == 0,
+		"An accepted nonce is a duplicate, not a submission rejection");
+
+	td.archiving = true;
+	fixture.app.handleUserMessage(fixture.socket, message);
+	drainSubmissionNextTicks();
+	assert(fixture.session.sendCalls == 2 && fixture.socket.sent.length == 0,
+		"Archiving must not turn an accepted duplicate into a rejection");
+}
+
+unittest
+{
+	// A browser can disconnect after submitting but before the async
+	// sendMessage continuation fires. The continuation still holds the now-
+	// stale ws it captured; sending a rejection to it must not crash the
+	// single-threaded backend (a bare ws.send would assert on a disconnected
+	// socket) and must not be delivered, since there is no longer a browser
+	// to receive it.
+	auto dbPath = buildPath(tempDir(),
+		"cydo-app-browser-submission-disconnect.sqlite");
+	if (exists(dbPath))
+		remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	auto td = &fixture.app.tasks[fixture.tid];
+	td.status = TaskStatus.waiting;
+	td.description = "";
+	td.title = "";
+
+	auto message = testBrowserSubmission(fixture.tid, "disconnecting message",
+		"disconnecting-nonce");
+	fixture.app.handleUserMessage(fixture.socket, message);
+	drainSubmissionNextTicks();
+	assert(fixture.session.sendCalls == 1);
+
+	// Wire disconnection the way transport.d wires every real socket, so
+	// disconnect() drives both the connection state and clientHub removal
+	// through the same path production uses.
+	fixture.socket.handleDisconnect = (string reason, DisconnectType type) {
+		fixture.app.onWebSocketDisconnected(fixture.socket, reason, type);
+	};
+	fixture.socket.disconnect();
+	fixture.socket.sent = null;
+	fixture.session.reject(0, "submission rejected after disconnect");
+	drainSubmissionNextTicks();
+
+	assert(fixture.socket.sent.length == 0,
+		"A disconnected client must not receive a submission rejection");
+	assert(td.status == TaskStatus.waiting);
+	assert(("disconnecting-nonce" in td.recentNonces) is null
+		&& ("disconnecting-nonce" in td.inFlightUiNonceGeneration) is null);
+}
+
+version (unittest) private size_t submissionRejectionCount(string[] frames)
+{
+	return frames.count!(frame => frame.canFind(`"type":"cydo/submission_rejected"`));
+}
+
+unittest
+{
+	auto dbPath = buildPath(tempDir(), "cydo-app-browser-history-cancelled.sqlite");
+	if (exists(dbPath))
+		remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	auto message = testBrowserSubmission(fixture.tid, "cancelled browser submission",
+		"history-cancelled-nonce");
+	fixture.app.handleUserMessage(fixture.socket, message);
+	fixture.app.resetHistoryWatermarkOnly(fixture.tid);
+	drainSubmissionNextTicks();
+
+	assert(fixture.session.sendCalls == 0);
+	assert(submissionRejectionCount(fixture.socket.sent) == 1);
+	assert(fixture.socket.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
+		&& fixture.socket.sent[$ - 1].canFind(`"correlation_id":"history-cancelled-nonce"`)
+		&& parseJSON(fixture.socket.sent[$ - 1])["tid"].integer == fixture.tid
+		&& fixture.socket.sent[$ - 1].canFind(`"kind":"history_cancelled"`));
+}
+
+unittest
+{
+	import cydo.agent.drivers.copilot : CopilotSession;
+
+	auto dbPath = buildPath(tempDir(), "cydo-app-driver-history-cancellation.sqlite");
+	if (exists(dbPath))
+		remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	AgentSession[] sessions = [
+		cast(AgentSession) new CodexSession(null, fixture.tid, SessionConfig.init),
+		new CopilotSession(null, fixture.tid, "copilot-undo", "", "."),
+	];
+	foreach (session; sessions)
+	{
+		// Both drivers buffer messages before app-server readiness. Undo
+		// invalidates those messages before stopping the session.
+		fixture.app.taskSessionRunner = new GatedSubmissionRunner(session);
+		fixture.socket.sent = null;
+		enum nonce = "undo-invalidated-send";
+		fixture.app.handleWsMessage(fixture.socket,
+			toJson(testBrowserSubmission(fixture.tid, "queued before undo", nonce)));
+		drainSubmissionNextTicks();
+		assert(submissionRejectionCount(fixture.socket.sent) == 0);
+		assert(nonce in fixture.app.tasks[fixture.tid].inFlightUiNonceGeneration);
+
+		session.invalidatePendingSubmittedMessages();
+		fixture.app.resetHistoryWatermarkOnly(fixture.tid);
+		drainSubmissionNextTicks();
+
+		assert(submissionRejectionCount(fixture.socket.sent) == 1);
+		auto receipt = parseJSON(fixture.socket.sent[$ - 1]);
+		assert(receipt["type"].str == "cydo/submission_rejected"
+			&& receipt["correlation_id"].str == nonce && receipt["tid"].integer == fixture.tid
+			&& receipt["kind"].str == "history_cancelled"
+			&& receipt["reason"].str.canFind("message submission was invalidated"));
+		assert(nonce !in fixture.app.tasks[fixture.tid].inFlightUiNonceGeneration);
+	}
+}
+
+unittest
+{
+	auto dbPath = buildPath(tempDir(), "cydo-app-browser-queued-native-undo.sqlite");
+	if (exists(dbPath))
+		remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	enum nonce = "queued-native-undo-nonce";
+	fixture.app.handleUserMessage(fixture.socket,
+		testBrowserSubmission(fixture.tid, "queued before undo", nonce));
+	fixture.app.tasks[fixture.tid].beginConfirmedNativeUndo();
+	drainSubmissionNextTicks();
+
+	assert(fixture.session.sendCalls == 0);
+	assert(nonce !in fixture.app.tasks[fixture.tid].inFlightUiNonceGeneration);
+	assert(submissionRejectionCount(fixture.socket.sent) == 1);
+	auto receipt = parseJSON(fixture.socket.sent[$ - 1]);
+	assert(receipt["type"].str == "cydo/submission_rejected" && receipt["correlation_id"].str == nonce
+		&& receipt["tid"].integer == fixture.tid
+		&& receipt["kind"].str == "native_undo_refused");
+}
+
+unittest
+{
+	// A tid supplied for a task that no longer exists — as opposed to the
+	// create-path's omitted tid, covered by the create-validation-nonce
+	// assertion — must still carry that tid back on the receipt.
+	auto dbPath = buildPath(tempDir(), "cydo-app-browser-task-unavailable.sqlite");
+	if (exists(dbPath))
+		remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	auto missingTid = fixture.tid + 1;
+	assert(missingTid !in fixture.app.tasks);
+	auto message = testBrowserSubmission(missingTid, "message for a missing task",
+		"task-unavailable-nonce");
+	fixture.app.handleUserMessage(fixture.socket, message);
+
+	assert(fixture.session.sendCalls == 0);
+	assert(submissionRejectionCount(fixture.socket.sent) == 1);
+	assert(fixture.socket.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
+		&& fixture.socket.sent[$ - 1].canFind(`"correlation_id":"task-unavailable-nonce"`)
+		&& parseJSON(fixture.socket.sent[$ - 1])["tid"].integer == missingTid
+		&& fixture.socket.sent[$ - 1].canFind(`"kind":"task_unavailable"`));
+}
+
+unittest
+{
+	auto dbPath = buildPath(tempDir(), "cydo-app-browser-task-archiving.sqlite");
+	if (exists(dbPath))
+		remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	fixture.app.tasks[fixture.tid].archiving = true;
+	auto message = testBrowserSubmission(fixture.tid, "message during archiving",
+		"task-archiving-nonce");
+	fixture.app.handleUserMessage(fixture.socket, message);
+
+	assert(fixture.session.sendCalls == 0);
+	assert(submissionRejectionCount(fixture.socket.sent) == 1);
+	assert(fixture.socket.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
+		&& fixture.socket.sent[$ - 1].canFind(`"correlation_id":"task-archiving-nonce"`)
+		&& parseJSON(fixture.socket.sent[$ - 1])["tid"].integer == fixture.tid
+		&& fixture.socket.sent[$ - 1].canFind(`"kind":"task_archiving"`));
+}
+
+unittest
+{
+	// Only the submitting client should receive the rejection: two clients
+	// subscribed to the same task, only one of them submits. Picks
+	// task_archiving specifically because native_undo_refused additionally
+	// broadcasts a separate "error" to all subscribers, which would make an
+	// absence-of-any-frame assertion ambiguous about which frame is meant.
+	auto dbPath = buildPath(tempDir(), "cydo-app-browser-sender-only.sqlite");
+	if (exists(dbPath))
+		remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	auto bystander = new SubmissionCaptureWebSocket();
+	fixture.app.clientHub.add(bystander);
+	fixture.app.clientHub.subscribe(bystander, fixture.tid);
+	fixture.app.tasks[fixture.tid].archiving = true;
+
+	auto message = testBrowserSubmission(fixture.tid, "message during archiving",
+		"sender-only-nonce");
+	fixture.app.handleUserMessage(fixture.socket, message);
+
+	assert(fixture.session.sendCalls == 0);
+	assert(submissionRejectionCount(fixture.socket.sent) == 1);
+	assert(fixture.socket.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
+		&& parseJSON(fixture.socket.sent[$ - 1])["tid"].integer == fixture.tid
+		&& fixture.socket.sent[$ - 1].canFind(`"correlation_id":"sender-only-nonce"`)
+		&& fixture.socket.sent[$ - 1].canFind(`"kind":"task_archiving"`));
+	assert(submissionRejectionCount(bystander.sent) == 0,
+		"A submission rejection must be sender-only");
 }
 
 unittest
@@ -5073,7 +5384,12 @@ unittest
 		~ "    worktree: require\n"
 		~ "task_types:\n"
 		~ "  direct_test:\n"
-		~ "    model_class: large\n");
+		~ "    model_class: large\n"
+		~ "singletons:\n"
+		~ "  internal:\n"
+		~ "    task_type: direct_test\n"
+		~ "    title: Internal\n"
+		~ "    prompt_template: prompts/start.md\n");
 
 	auto dbPath = buildPath(tempDir(), "cydo-app-create-submission-acceptance.sqlite");
 	if (exists(dbPath))
@@ -5197,7 +5513,7 @@ unittest
 		return result;
 	}
 
-	WsMessage createMessage(string content)
+	WsMessage createMessage(string content, string correlationId = "")
 	{
 		WsMessage message;
 		message.type = "create_task";
@@ -5206,15 +5522,71 @@ unittest
 		message.agent_name = "claude";
 		message.entry_point = "isolated";
 		message.content = JSONFragment(toJson([ContentBlock("text", content)]));
+		message.correlation_id = correlationId;
 		return message;
 	}
+
+	void assertCreateValidationRejected(WsMessage message, string reason)
+	{
+		auto previousTid = latestTid();
+		fixture.socket.sent = null;
+		fixture.app.handleCreateTaskMsg(fixture.socket, message);
+		assert(fixture.socket.sent.length == 2
+			&& fixture.socket.sent[0].canFind(`"type":"error"`)
+			&& fixture.socket.sent[1].canFind(`"type":"cydo/submission_rejected"`)
+			&& fixture.socket.sent[1].canFind(`"correlation_id":` ~ toJson(message.correlation_id))
+			&& fixture.socket.sent[1].canFind(`"kind":"validation"`)
+			&& fixture.socket.sent[1].canFind(`"reason":` ~ toJson(reason))
+			&& !fixture.socket.sent[1].canFind(`"tid":`));
+		assert(latestTid() == previousTid);
+	}
+
+	auto invalid = createMessage("invalid submission", "create-invalid-path-nonce");
+	invalid.project_path = buildPath(root, "missing-project");
+	assertCreateValidationRejected(invalid, "Project path must be an existing directory");
+
+	invalid = createMessage("invalid submission", "create-validation-nonce");
+	invalid.entry_point = "";
+	assertCreateValidationRejected(invalid, "Top-level task creation requires an entry point");
+
+	invalid = createMessage("invalid submission", "create-unknown-entry-point-nonce");
+	invalid.entry_point = "unknown";
+	assertCreateValidationRejected(invalid, "Unknown entry point: unknown");
+
+	auto systemEntryPoint = fixture.app.taskTypeCatalog.getEntryPointsForProject(projectPath)
+		.byName("internal");
+	assert(systemEntryPoint !is null && systemEntryPoint.system);
+	invalid = createMessage("invalid submission", "create-system-entry-point-nonce");
+	invalid.entry_point = "internal";
+	assertCreateValidationRejected(invalid, "Unknown entry point: internal");
+
+	fixture.socket.sent = null;
+	fixture.app.handleCreateTaskMsg(fixture.socket,
+		createMessage("cancelled direct first message", "create-history-nonce"));
+	auto cancelledTid = latestTid();
+	auto cancelled = &fixture.app.tasks[cancelledTid];
+	drainSubmissionNextTicks();
+	assert(fixture.session.sendCalls == 1);
+	// Master has no generation guard in this dispatch continuation: a reset
+	// landing before dispatch just proceeds under the new generation. This
+	// reset lands after the send, so it is caught by sendPreparedTaskMessage's
+	// own post-acceptance lineage check once the agent accepts.
+	fixture.app.resetHistoryWatermarkOnly(cancelledTid);
+	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
+	drainSubmissionNextTicks();
+	assert(submissionRejectionCount(fixture.socket.sent) == 1);
+	assert(cancelled.status == TaskStatus.failed && cancelled.history.length == 1
+		&& fixture.socket.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
+		&& fixture.socket.sent[$ - 1].canFind(`"correlation_id":"create-history-nonce"`)
+		&& parseJSON(fixture.socket.sent[$ - 1])["tid"].integer == cancelledTid
+		&& fixture.socket.sent[$ - 1].canFind(`"kind":"history_cancelled"`));
 
 	fixture.publicationOrder = null;
 	fixture.submissionMessages = null;
 	fixture.submissionTids = null;
 	fixture.socket.sent = null;
 	fixture.app.handleCreateTaskMsg(fixture.socket,
-		createMessage("rejected direct first message"));
+		createMessage("rejected direct first message", "create-rejection-nonce"));
 	auto rejectedTid = latestTid();
 	fixture.app.clientHub.subscribe(fixture.socket, rejectedTid);
 	auto rejected = &fixture.app.tasks[rejectedTid];
@@ -5234,7 +5606,7 @@ unittest
 	fixture.submissionTids = null;
 	fixture.socket.sent = null;
 	drainSubmissionNextTicks();
-	assert(launchSawAssignedWorktree && fixture.session.sendCalls == 1);
+	assert(launchSawAssignedWorktree && fixture.session.sendCalls == 2);
 	assert(rejected.status == TaskStatus.active && rejected.history.length == 0
 		&& rejected.nativeSubmissionCount == 1
 		&& rejected.pendingSteeringTexts.length == 0 && rejected.recentNonces.length == 0
@@ -5242,7 +5614,9 @@ unittest
 		&& fixture.titlePromptReads == 0 && fixture.socket.sent.length == 0
 		&& fixture.submissionMessages.length == 0 && fixture.publicationOrder.length == 0);
 
-	fixture.session.reject(0, "initial direct submission rejected");
+	// An agent can reject its outstanding delivery before exit resets history.
+	fixture.session.reject(1, "initial direct submission rejected");
+	fixture.app.resetHistoryWatermarkOnly(rejectedTid);
 	drainSubmissionNextTicks();
 	auto afterRejectedReceipt = rowFor(rejectedTid);
 	assert(rejected.status == TaskStatus.failed && rejected.history.length == 1
@@ -5252,13 +5626,46 @@ unittest
 		&& afterRejectedReceipt.title.length == 0
 		&& rejected.worktreeTid == rejectedTid
 		&& exists(fixture.app.taskPathResolver.worktreePath(rejected)));
+	assert(submissionRejectionCount(fixture.socket.sent) == 1);
+	assert(fixture.socket.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
+		&& fixture.socket.sent[$ - 1].canFind(`"correlation_id":"create-rejection-nonce"`)
+		&& parseJSON(fixture.socket.sent[$ - 1])["tid"].integer == rejectedTid
+		&& fixture.socket.sent[$ - 1].canFind(`"kind":"delivery_failed"`)
+		&& fixture.socket.sent[$ - 1].canFind(`"reason":"initial direct submission rejected"`));
+
+	// A failed, promoted task remains a valid draft target. This is what lets
+	// browser recovery persist its retained editor text before a retry/reload.
+	fixture.app.handleSetDraftMsg(fixture.socket, WsMessage(type: "set_draft",
+		tid: rejectedTid,
+		content: JSONFragment(toJson("rejected direct first message"))));
+	assert(rejected.draft == "rejected direct first message"
+		&& rowFor(rejectedTid).draft == "rejected direct first message");
 
 	fixture.publicationOrder = null;
 	fixture.submissionMessages = null;
 	fixture.submissionTids = null;
 	fixture.socket.sent = null;
+	fixture.app.handleUserMessage(fixture.socket, testBrowserSubmission(rejectedTid,
+		"rejected direct first message", "retry-rejected-create-nonce"));
+	drainSubmissionNextTicks();
+	assert(fixture.session.sendCalls == 3 && rejected.status == TaskStatus.failed);
+	fixture.session.accept(2, AgentSubmissionReceipt.appServerAccepted);
+	drainSubmissionNextTicks();
+	assert(rejected.status == TaskStatus.active
+		&& rejected.description == "rejected direct first message"
+		&& rejected.title == truncateTitle("rejected direct first message", 80)
+		&& rejected.draft.length == 0 && rowFor(rejectedTid).draft.length == 0
+		&& rejected.history.length == 2 && rejected.isProcessing
+		&& ("retry-rejected-create-nonce" in rejected.recentNonces) !is null);
+
+	fixture.publicationOrder = null;
+	fixture.submissionMessages = null;
+	fixture.submissionTids = null;
+	fixture.socket.sent = null;
+	fixture.titlePromptReads = 0;
+	fixture.titlePromptTids = null;
 	fixture.app.handleCreateTaskMsg(fixture.socket,
-		createMessage("accepted direct first message"));
+		createMessage("accepted direct first message", "create-acceptance-nonce"));
 	auto acceptedTid = latestTid();
 	fixture.app.clientHub.subscribe(fixture.socket, acceptedTid);
 	auto accepted = &fixture.app.tasks[acceptedTid];
@@ -5278,14 +5685,14 @@ unittest
 	fixture.submissionTids = null;
 	fixture.socket.sent = null;
 	drainSubmissionNextTicks();
-	assert(fixture.session.sendCalls == 2 && accepted.status == TaskStatus.active);
+	assert(fixture.session.sendCalls == 4 && accepted.status == TaskStatus.active);
 	assert(accepted.history.length == 0 && accepted.nativeSubmissionCount == 1
 		&& accepted.recentNonces.length == 0
 		&& accepted.pendingSteeringTexts.length == 0 && !accepted.isProcessing
 		&& accepted.lastSuggestions.length == 0 && fixture.titlePromptReads == 0
 		&& fixture.socket.sent.length == 0 && fixture.submissionMessages.length == 0
 		&& fixture.publicationOrder.length == 0);
-	fixture.session.accept(1, AgentSubmissionReceipt.appServerAccepted);
+	fixture.session.accept(3, AgentSubmissionReceipt.appServerAccepted);
 	drainSubmissionNextTicks();
 	auto afterAcceptedReceipt = rowFor(acceptedTid);
 	assert(accepted.description == "accepted direct first message"
@@ -5300,6 +5707,28 @@ unittest
 	foreach (payload; fixture.socket.sent)
 		assert(!payload.canFind(`"agentAck"`));
 
+	fixture.publicationOrder = null;
+	fixture.submissionMessages = null;
+	fixture.submissionTids = null;
+	fixture.socket.sent = null;
+	fixture.titlePromptReads = 0;
+	fixture.titlePromptTids = null;
+	auto orderedStart = fixture.session.sendCalls;
+	fixture.app.handleCreateTaskMsg(fixture.socket,
+		createMessage("ordered atomic first", "ordered-create-nonce"));
+	auto orderedTid = latestTid();
+	fixture.app.handleUserMessage(fixture.socket,
+		testBrowserSubmission(orderedTid, "ordered normal second", "ordered-normal-nonce"));
+	drainSubmissionNextTicks();
+	assert(fixture.session.sendCalls == orderedStart + 2);
+	assert(extractContentText(fixture.session.contents[orderedStart]).canFind("ordered atomic first"));
+	assert(extractContentText(fixture.session.contents[orderedStart + 1]).canFind("ordered normal second"));
+	fixture.session.accept(orderedStart, AgentSubmissionReceipt.appServerAccepted);
+	fixture.session.accept(orderedStart + 1, AgentSubmissionReceipt.appServerAccepted);
+	drainSubmissionNextTicks();
+	assert(fixture.app.tasks[orderedTid].description == "ordered atomic first");
+	assert(submissionRejectionCount(fixture.socket.sent) == 0);
+
 	auto browserTid = fixture.app.createTask("create", projectPath, "claude", "isolated");
 	fixture.app.tasks[browserTid].taskType = "direct_test";
 	fixture.app.persistence.setTaskType(browserTid, "direct_test");
@@ -5308,12 +5737,12 @@ unittest
 	fixture.app.clientHub.subscribe(fixture.socket, browserTid);
 	auto browserMessage = testBrowserSubmission(browserTid,
 		"browser worktree retry message", "browser-worktree-nonce");
-	fixture.app.handleUserMessage(browserMessage);
+	fixture.app.handleUserMessage(fixture.socket, browserMessage);
 	drainSubmissionNextTicks();
 	auto browser = &fixture.app.tasks[browserTid];
 	auto browserWorktreePath = fixture.app.taskPathResolver.worktreePath(browser);
 	auto beforeBrowserReceipt = rowFor(browserTid);
-	assert(fixture.session.sendCalls == 3 && browser.status == TaskStatus.active
+	assert(fixture.session.sendCalls == 7 && browser.status == TaskStatus.active
 		&& browser.worktreeTid == browserTid && exists(browserWorktreePath));
 	assert(browser.description.length == 0 && browser.title.length == 0
 		&& browser.draft == "browser worktree retry draft"
@@ -5322,7 +5751,7 @@ unittest
 		&& beforeBrowserReceipt.title.length == 0
 		&& beforeBrowserReceipt.draft == "browser worktree retry draft");
 
-	fixture.session.reject(2, "browser worktree submission rejected");
+	fixture.session.reject(6, "browser worktree submission rejected");
 	drainSubmissionNextTicks();
 	auto afterBrowserRejection = rowFor(browserTid);
 	assert(browser.status == TaskStatus.active && browser.worktreeTid == browserTid
@@ -5335,14 +5764,110 @@ unittest
 		&& afterBrowserRejection.draft == "browser worktree retry draft"
 		&& ("browser-worktree-nonce" in browser.recentNonces) is null
 		&& ("browser-worktree-nonce" in browser.inFlightUiNonceGeneration) is null);
+	assert(submissionRejectionCount(fixture.socket.sent) == 1);
+	assert(fixture.socket.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
+		&& fixture.socket.sent[$ - 1].canFind(`"correlation_id":"browser-worktree-nonce"`)
+		&& parseJSON(fixture.socket.sent[$ - 1])["tid"].integer == browserTid
+		&& fixture.socket.sent[$ - 1].canFind(`"kind":"delivery_failed"`));
 
-	fixture.app.handleUserMessage(browserMessage);
+	fixture.app.handleUserMessage(fixture.socket, browserMessage);
 	drainSubmissionNextTicks();
-	assert(fixture.session.sendCalls == 4
-		&& fixture.session.correlations[2] == fixture.session.correlations[3]
-		&& toJson(fixture.session.contents[2]) == toJson(fixture.session.contents[3])
+	assert(fixture.session.sendCalls == 8
+		&& fixture.session.correlations[6] == fixture.session.correlations[7]
+		&& toJson(fixture.session.contents[6]) == toJson(fixture.session.contents[7])
 		&& browser.worktreeTid == browserTid
 		&& fixture.app.taskPathResolver.worktreePath(browser) == browserWorktreePath);
+
+	// A client can disconnect after create_task dispatch but before the async
+	// failure surfaces. The captured ws in handleCreateTaskMsg's continuation is
+	// then stale; the rejection must not be delivered to it and must not crash
+	// (a bare ws.send would assert on a disconnected socket). Uses a throwaway
+	// socket rather than fixture.socket, since disconnecting the shared one
+	// would break every scenario after it in this test.
+	auto disconnectingSocket = new SubmissionCaptureWebSocket();
+	fixture.app.clientHub.add(disconnectingSocket);
+	disconnectingSocket.handleDisconnect = (string reason, DisconnectType type) {
+		fixture.app.onWebSocketDisconnected(disconnectingSocket, reason, type);
+	};
+	fixture.app.handleCreateTaskMsg(disconnectingSocket,
+		createMessage("disconnected direct first message", "create-disconnect-nonce"));
+	auto disconnectingTid = latestTid();
+	auto disconnecting = &fixture.app.tasks[disconnectingTid];
+	drainSubmissionNextTicks();
+	assert(fixture.session.sendCalls == 9);
+	disconnectingSocket.disconnect();
+	disconnectingSocket.sent = null;
+	fixture.session.reject(8, "disconnected direct first message rejected");
+	drainSubmissionNextTicks();
+	assert(disconnectingSocket.sent.length == 0,
+		"A disconnected client must not receive a submission rejection");
+	assert(disconnecting.status == TaskStatus.failed && disconnecting.history.length == 1);
+
+	// Keep the production runner's launch failure bookkeeping and diagnostic.
+	enum launchFailure = "test session launch failed";
+	static class FailingLaunchRunner : TaskSessionRunner
+	{
+		this(TaskSessionRunnerHost host)
+		{
+			super(host);
+		}
+
+		override TaskSessionLaunch prepareTaskSessionLaunch(int tid, Agent taskAgent,
+			TaskTypeDef* typeDef)
+		{
+			throw new Exception(launchFailure);
+		}
+	}
+
+	fixture.app.taskSessionRunner = new FailingLaunchRunner(TaskSessionRunnerHost(
+		getTask: (int tid) => tid in fixture.app.tasks,
+		agentForTask: (int tid) => fixture.app.agentsByName["claude"],
+		shuttingDown: () => false,
+		taskTypeCatalog: fixture.app.taskTypeCatalog,
+		persistResultText: (int tid, string result) {
+			fixture.app.persistence.setResultText(tid, result);
+		},
+		transitionTaskFrom: (int tid, TaskStatus[] from, TaskStatus to,
+			TaskNotificationChange notification) {
+			fixture.app.taskLifecycle.transitionTask(tid, from, to, notification);
+		},
+		appendTaskDiagnostic: &fixture.app.historyPipeline.appendTaskDiagnostic,
+		broadcastAppendedTaskEvent: &fixture.app.broadcastAppendedTaskEvent,
+		recordChildTerminal: (int tid) => false,
+	));
+
+	auto sendsBeforeLaunchFailures = fixture.session.sendCalls;
+	void assertLaunchRejected(int tid, string correlationId)
+	{
+		drainSubmissionNextTicks();
+		auto task = &fixture.app.tasks[tid];
+		assert(task.status == TaskStatus.failed && rowFor(tid).resultText == launchFailure);
+		assert(task.history.length == 1
+			&& task.history.lastEventContents().canFind(`"subject":"Failed to resume session"`));
+		assert(fixture.session.sendCalls == sendsBeforeLaunchFailures);
+		assert(submissionRejectionCount(fixture.socket.sent) == 1);
+		assert(fixture.socket.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
+			&& fixture.socket.sent[$ - 1].canFind(`"correlation_id":` ~ toJson(correlationId))
+			&& parseJSON(fixture.socket.sent[$ - 1])["tid"].integer == tid
+			&& fixture.socket.sent[$ - 1].canFind(`"kind":"delivery_failed"`)
+			&& fixture.socket.sent[$ - 1].canFind(`"reason":` ~ toJson(launchFailure)));
+	}
+
+	fixture.socket.sent = null;
+	fixture.app.handleCreateTaskMsg(fixture.socket,
+		createMessage("atomic launch failure", "create-launch-failure-nonce"));
+	assertLaunchRejected(latestTid(), "create-launch-failure-nonce");
+
+	auto normalTid = fixture.app.createTask("create", projectPath, "claude", "isolated");
+	fixture.app.tasks[normalTid].taskType = "direct_test";
+	fixture.app.persistence.setTaskType(normalTid, "direct_test");
+	fixture.app.clientHub.subscribe(fixture.socket, normalTid);
+	fixture.socket.sent = null;
+	enum normalLaunchNonce = "browser-launch-failure-nonce";
+	fixture.app.handleUserMessage(fixture.socket,
+		testBrowserSubmission(normalTid, "normal launch failure", normalLaunchNonce));
+	assertLaunchRejected(normalTid, normalLaunchNonce);
+	assert(normalLaunchNonce !in fixture.app.tasks[normalTid].inFlightUiNonceGeneration);
 }
 
 // Regression: a rejected initial Codex turn/start can settle before a later
@@ -5549,9 +6074,9 @@ unittest
 	foreach (index; 0 .. td.history.length)
 		historyPrefix ~= cast(string) td.history.opIndex(index).toGC().as!string;
 
-	fixture.app.handleUserMessage(testBrowserSubmission(fixture.tid,
+	fixture.app.handleUserMessage(fixture.socket, testBrowserSubmission(fixture.tid,
 		"rejected newer message", "rejected-newer-nonce"));
-	fixture.app.handleUserMessage(testBrowserSubmission(fixture.tid,
+	fixture.app.handleUserMessage(fixture.socket, testBrowserSubmission(fixture.tid,
 		"unrelated pending message", "unrelated-nonce"));
 	drainSubmissionNextTicks();
 	assert(fixture.session.sendCalls == 5);
@@ -5572,7 +6097,7 @@ unittest
 	assert(("rejected-newer-nonce" in td.recentNonces) is null);
 	assert(("unrelated-nonce" in td.inFlightUiNonceGeneration) !is null);
 
-	fixture.app.handleUserMessage(testBrowserSubmission(fixture.tid,
+	fixture.app.handleUserMessage(fixture.socket, testBrowserSubmission(fixture.tid,
 		"rejected newer message", "rejected-newer-nonce"));
 	drainSubmissionNextTicks();
 	assert(fixture.session.sendCalls == 6 && fixture.session.gates.length == 6);
@@ -5890,7 +6415,7 @@ unittest
 	}, (Exception error) {
 		oldReceiptRejected = true;
 	}).ignoreResult();
-	fixture.app.handleUserMessage(testBrowserSubmission(fixture.tid,
+	fixture.app.handleUserMessage(fixture.socket, testBrowserSubmission(fixture.tid,
 		"old rejected prompt", "old-rejection-nonce"));
 	drainSubmissionNextTicks();
 	assert(fixture.session.gates.length == 3);
@@ -5906,7 +6431,7 @@ unittest
 	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 0);
 	assert(fixture.app.tasks[fixture.tid].inFlightUiNonceGeneration.length == 0);
 
-	fixture.app.handleUserMessage(testBrowserSubmission(fixture.tid,
+	fixture.app.handleUserMessage(fixture.socket, testBrowserSubmission(fixture.tid,
 		"new generation prompt", "old-rejection-nonce"));
 	drainSubmissionNextTicks();
 	assert(fixture.session.gates.length == 4);
@@ -5916,6 +6441,12 @@ unittest
 	fixture.session.accept(1, AgentSubmissionReceipt.appServerAccepted);
 	fixture.session.reject(2, "old submission rejected");
 	drainSubmissionNextTicks();
+	assert(submissionRejectionCount(fixture.socket.sent) == 1);
+	assert(fixture.socket.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
+		&& fixture.socket.sent[$ - 1].canFind(`"correlation_id":"old-rejection-nonce"`)
+		&& parseJSON(fixture.socket.sent[$ - 1])["tid"].integer == fixture.tid
+		&& fixture.socket.sent[$ - 1].canFind(`"kind":"delivery_failed"`)
+		&& fixture.socket.sent[$ - 1].canFind(`"reason":"old submission rejected"`));
 	assert(oldReceiptRejected);
 	assert(fixture.app.tasks[fixture.tid].history.length == 0);
 	assert(("old-receipt-nonce" in fixture.app.tasks[fixture.tid].recentNonces)

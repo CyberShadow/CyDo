@@ -461,6 +461,35 @@ describe("Connection client behavior", () => {
     });
   });
 
+  it("routes correlated submission rejections as control messages", () => {
+    const conn = new Connection();
+    const controls: unknown[] = [];
+    conn.onControlMessage = (msg) => controls.push(msg);
+
+    const rejections = [
+      {
+        type: "cydo/submission_rejected",
+        correlation_id: "browser-nonce",
+        tid: 17,
+        kind: "delivery_failed",
+        reason: "Agent session rejected the message",
+      },
+      {
+        type: "cydo/submission_rejected",
+        correlation_id: "create-id",
+        kind: "validation",
+        reason: "Unknown entry point",
+      },
+    ];
+
+    conn.connect();
+    for (const rejection of rejections) {
+      MockWebSocket.instances[0]!.emitMessage(JSON.stringify(rejection));
+    }
+
+    expect(controls).toEqual(rejections);
+  });
+
   it("rejects malformed history operation policies", () => {
     const conn = new Connection();
     const errors: string[] = [];

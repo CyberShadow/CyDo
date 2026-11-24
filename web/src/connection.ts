@@ -186,6 +186,7 @@ export class Connection {
           raw.type === "task_types_list" ||
           raw.type === "project_task_types_list" ||
           raw.type === "agents_list" ||
+          raw.type === "cydo/submission_rejected" ||
           raw.type === "error" ||
           raw.type === "undo_preview" ||
           raw.type === "undo_result" ||

@@ -903,6 +903,28 @@ describe("submission acknowledgement routing", () => {
     expect(testState.outbox.remove).not.toHaveBeenCalled();
   });
 
+  it("does not surface a correlated submission rejection to the user", async () => {
+    await renderManager();
+
+    // The receipt is a correlation channel, not a reporting channel: every
+    // rejection kind is already reported by the server through an ErrorMessage
+    // or a task diagnostic, or is deliberately silent (a user-initiated stop).
+    // Displaying it here would double-report the former and mislabel the
+    // latter as a command failure.
+    expect(testState.connection!.onControlMessage).not.toBeNull();
+    await act(() => {
+      testState.connection!.onControlMessage!({
+        type: "cydo/submission_rejected",
+        correlation_id: "submission-uuid",
+        tid: 17,
+        kind: "delivery_failed",
+        reason: "Agent session closed before accepting message submission",
+      } satisfies ControlMessage);
+    });
+
+    expect(manager!.serverError).toBeNull();
+  });
+
   it("routes an attached project-root submission acknowledgement", async () => {
     await prepareSubmittingDraft();
 

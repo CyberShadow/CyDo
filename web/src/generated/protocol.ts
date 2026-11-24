@@ -2,6 +2,8 @@ export type TurnEndReason = "unspecified" | "completed" | "interrupted" | "hook_
 
 export type TaskDiagnosticSeverity = "info" | "warning" | "error";
 
+export type BrowserSubmissionRejectionKind = "validation" | "task_unavailable" | "task_archiving" | "native_undo_refused" | "history_cancelled" | "delivery_failed";
+
 export type ItemDenier = "classifier" | "settingsRule" | "backgroundAgent";
 
 export type ItemPermissionStage = "asked" | "answered" | "accepted" | "withdrawn";
@@ -198,6 +200,14 @@ export interface TurnRetractedEvent {
   type: "turn/retracted";
   uuids: string[];
   notice: TaskDiagnosticEvent;
+}
+
+export interface BrowserSubmissionRejectedEvent {
+  type: "cydo/submission_rejected";
+  correlation_id: string;
+  tid?: number;
+  kind: BrowserSubmissionRejectionKind;
+  reason: string;
 }
 
 export interface ItemStartedEvent {

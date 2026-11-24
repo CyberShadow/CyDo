@@ -37,7 +37,8 @@ public import cydo.agent.drivers.codex.rpc;
 public import cydo.agent.drivers.codex.thread_items;
 import cydo.protocol : ContentBlock, HistoryBoundary, HistoryBoundaryKind,
 	ProcessStderrEvent, TranslatedEvent;
-import cydo.agent.session : AbortedToolCallCorrection, AgentSession, AgentSubmissionReceipt, BackgroundWork, MessageSource;
+import cydo.agent.session : AbortedToolCallCorrection, AgentSession,
+	AgentSubmissionReceipt, BackgroundWork, MessageSource, SubmissionHistoryCancelled;
 import cydo.runtime.config : AgentDriver, ModelSpec, ModelSpecFields;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
@@ -2628,7 +2629,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 
 	void invalidatePendingSubmittedMessages()
 	{
-		rejectUnsettledMessages(new Exception(
+		rejectUnsettledMessages(new SubmissionHistoryCancelled(
 			"Codex message submission was invalidated"));
 	}
 

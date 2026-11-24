@@ -8,6 +8,8 @@
 // ---------------------------------------------------------------------------
 
 export type {
+  BrowserSubmissionRejectionKind,
+  BrowserSubmissionRejectedEvent,
   ContentBlock,
   HistoryBoundary,
   UsageInfo,
@@ -50,6 +52,7 @@ export type {
 } from "./generated/protocol";
 
 import type {
+  BrowserSubmissionRejectedEvent,
   UsageInfo,
   SessionInitEvent,
   SessionMetadataEvent,
@@ -441,6 +444,7 @@ export type ControlMessage =
   | ProjectTaskTypesListMessage
   | AgentsListMessage
   | HistoryOperationsMessage
+  | BrowserSubmissionRejectedEvent
   | ErrorMessage
   | UndoPreviewMessage
   | UndoResultMessage

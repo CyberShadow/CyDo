@@ -15,6 +15,15 @@ enum AgentSubmissionReceipt
 	appServerAccepted,
 }
 
+/// The pending submission was cancelled by a change to task history.
+final class SubmissionHistoryCancelled : Exception
+{
+	this(string reason)
+	{
+		super(reason);
+	}
+}
+
 /// Abstract agent session interface.
 /// Decouples the transport (WebSocket) from the agent implementation.
 /// Whom a message sent to the agent speaks for.

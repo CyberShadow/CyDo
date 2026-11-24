@@ -292,6 +292,31 @@ struct TurnRetractedEvent
 	TaskDiagnosticEvent notice;
 }
 
+/// Why a browser-initiated first submission reached a terminal non-accepted
+/// outcome. This is a delivery disposition, not a diagnostic subject.
+enum BrowserSubmissionRejectionKind : string
+{
+	validation = "validation",
+	task_unavailable = "task_unavailable",
+	task_archiving = "task_archiving",
+	native_undo_refused = "native_undo_refused",
+	history_cancelled = "history_cancelled",
+	delivery_failed = "delivery_failed",
+}
+
+/// cydo/submission_rejected — sender-only terminal disposition for a browser
+/// submission. `correlation_id` is the create_task correlation or message
+/// nonce supplied by the browser. `tid` is absent when create validation
+/// failed before a task was allocated.
+struct BrowserSubmissionRejectedEvent
+{
+	string type = "cydo/submission_rejected";
+	string correlation_id;
+	@JSONOptional int tid = -1;
+	BrowserSubmissionRejectionKind kind;
+	string reason;
+}
+
 /// item/started — a new content item begins streaming.
 enum HistoryBoundaryKind
 {
