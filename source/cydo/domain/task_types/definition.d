@@ -1644,15 +1644,40 @@ private string readFileForTemplate(string path)
 /// the given map, and `{{ read_file("path") }}` is the text of that file.
 string substituteVars(string text, string[string] vars)
 {
+	import djinja.ast.node : IdentNode;
 	import djinja.djinja : loadData, JinjaConfig;
 	import djinja.render : Render, registerFunction;
 	import uninode.serialization : serialize = serializeToUniNode;
 
-    enum JinjaConfig conf = { cmntOpInline: "$$", stmtOpInline: "$$$" };
-	auto tmpl = loadData!conf(text);
-	auto renderer = new Render(tmpl);
+	enum JinjaConfig conf = { cmntOpInline: "$$", stmtOpInline: "$$$" };
+	class StrictRenderer : Render
+	{
+		this() { super(loadData!conf(text)); }
+
+		override void visit(IdentNode node)
+		{
+			if (node.name.length != 0 && node.name !in vars)
+				throw new Exception("Unknown template variable: " ~ node.name ~ " in " ~ text);
+			super.visit(node);
+		}
+	}
+
+	auto renderer = new StrictRenderer;
 	renderer.registerFunction!readFileForTemplate("read_file");
 	return renderer.render(serialize(vars));
+}
+
+unittest
+{
+	import std.algorithm.searching : canFind;
+	import std.exception : collectException;
+	import std.string : replace;
+
+	enum templateText = "Before {{ missing_var }} after";
+	auto error = collectException(substituteVars(templateText, ["present_var": "value"]));
+	assert(error !is null, "Expected an exception for an undefined template variable");
+	assert(error.msg.canFind(templateText), error.msg);
+	assert(error.msg.replace(templateText, "").canFind("missing_var"), error.msg);
 }
 
 unittest
@@ -1665,6 +1690,7 @@ unittest
 	write(path, "literal {{not_a_var}}\n");
 	scope(exit) remove(path);
 
+	// Function calls parse as identifiers with an empty name.
 	assert(substituteVars("a {{x}}\n{{ read_file(path) }}b", ["x": "1", "path": path])
 		== "a 1\nliteral {{not_a_var}}\nb");
 	assertThrown(substituteVars(`{{ read_file("relative.md") }}`, null));
