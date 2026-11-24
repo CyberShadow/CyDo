@@ -2,7 +2,7 @@
  * E2E tests for the session import feature.
  *
  * Verifies that:
- * 1. External Claude sessions are discovered and shown in the Import group on
+ * 1. External sessions are discovered and shown in the Import group on
  *    backend startup (via the startup enumerateSessions() call).
  * 2. Clicking an importable session in the welcome-page project card loads
  *    its history in the session view.
@@ -13,13 +13,13 @@
  * conventions) so the test controls its own HOME directory and JSONL files,
  * independent of the worker-scoped backend fixture.
  *
- * All tests are agent-type-agnostic and run only under the "claude" project.
+ * Each test runs under the Playwright project for the native history it creates.
  */
 import { test, expect } from "@playwright/test";
 import { execFileSync, spawn } from "child_process";
 import type { ChildProcess } from "child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, symlinkSync } from "fs";
+import { copyFileSync, globSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from "fs";
 import { writeTestConfig } from "./test-config";
 
 // ---------------------------------------------------------------------------
@@ -68,6 +68,7 @@ async function waitForBackend(
 function spawnBackend(
   workDir: string,
   workerHome: string,
+  codexHome = process.env.CODEX_HOME,
 ): ChildProcess {
   return spawn(process.env.CYDO_BIN!, [], {
     detached: true,
@@ -76,6 +77,7 @@ function spawnBackend(
       ...process.env,
       HOME: workerHome,
       CLAUDE_CONFIG_DIR: `${workerHome}/.claude`,
+      CODEX_HOME: codexHome,
       XDG_DATA_HOME: `${workDir}/data`,
     },
     stdio: ["ignore", "inherit", "inherit"],
@@ -528,3 +530,157 @@ test(
     }
   },
 );
+
+test(
+  "a standalone Copilot session is offered for import in its project",
+  { tag: "@copilot-only" },
+  async ({ page }) => {
+    const { workDir, workerHome } = createWorkDir("native-copilot");
+    const profileRoot = `${workerHome}/.copilot`;
+    const prompt = "Native Copilot import check";
+    try {
+      expect(process.env.HTTPS_PROXY).toBe("http://127.0.0.1:9001");
+      expect(process.env.COPILOT_GITHUB_TOKEN).toBe("gho_mock_oauth_token");
+      execFileSync("copilot", ["-p", prompt], {
+        cwd: projectPath,
+        env: {
+          ...process.env,
+          HOME: workerHome,
+          XDG_CONFIG_HOME: `${workerHome}/.config`,
+          XDG_DATA_HOME: `${workDir}/data`,
+          COPILOT_HOME: profileRoot,
+        },
+        timeout: 120_000,
+      });
+
+      const stateDir = `${profileRoot}/session-state`;
+      const sessions = readdirSync(stateDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory());
+      expect(sessions).toHaveLength(1);
+      const history = readFileSync(`${stateDir}/${sessions[0].name}/events.jsonl`, "utf8")
+        .trimEnd().split("\n").map((line) => JSON.parse(line));
+      expect(history).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "user.message",
+          data: expect.objectContaining({ content: prompt }),
+        }),
+        expect.objectContaining({ type: "assistant.message" }),
+      ]));
+
+      writeTestConfig(
+        `${workerHome}/.config/cydo/config.yaml`,
+        `default_agent: copilot
+agents:
+  copilot:
+    driver: copilot
+    sandbox:
+      env:
+        COPILOT_HOME: ${profileRoot}
+workspaces:
+  testws:
+    root: ${projectPath}
+`,
+      );
+
+      const proc = spawnBackend(workDir, workerHome);
+      try {
+        await waitForBackend(proc);
+        await page.goto(BACKEND_URL + "/");
+
+        const project = page.locator(".project-card").filter({
+          has: page.locator(".project-card-title", { hasText: "cydo-test-workspace" }),
+        });
+        await expect(project).toBeVisible();
+        const entry = project.locator(".project-card-sessions .sidebar-label", {
+          hasText: prompt,
+        });
+        await expect(entry).toBeVisible({ timeout: 15_000 });
+        await entry.click();
+
+        await expect(page.locator(".message.user-message", { hasText: prompt })).toBeVisible();
+        const importButton = page.getByRole("button", { name: "Import Session" });
+        await expect(importButton).toBeVisible();
+        await importButton.click();
+        await expect(importButton).not.toBeVisible();
+        await expect(page.locator(".btn-banner-resume")).toBeVisible();
+      } finally {
+        await killBackend(proc);
+      }
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test("standalone Codex session appears under its project with its title and can be imported", {
+  tag: "@codex-only",
+}, async ({ page }) => {
+  const { workDir, workerHome } = createWorkDir("native-codex");
+  const codexHome = `${workerHome}/.codex`;
+  const marker = "Native Codex import test. Reply with OK.";
+  try {
+    mkdirSync(`${codexHome}/shell_snapshots`, { recursive: true });
+    copyFileSync(`${process.env.CODEX_HOME}/config.toml`, `${codexHome}/config.toml`);
+    const events = execFileSync("codex", ["exec", "--json", marker], {
+      cwd: projectPath,
+      env: { ...process.env, HOME: workerHome, CODEX_HOME: codexHome },
+      encoding: "utf8",
+      timeout: 120_000,
+    }).trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(events).toContainEqual(expect.objectContaining({ type: "turn.completed" }));
+
+    const rollouts = globSync("sessions/**/rollout-*.jsonl", { cwd: codexHome });
+    expect(rollouts).toHaveLength(1);
+    const history = readFileSync(`${codexHome}/${rollouts[0]}`, "utf8")
+      .trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(history[0]).toMatchObject({
+      type: "session_meta",
+      payload: { cwd: projectPath },
+    });
+    expect(history).toContainEqual(expect.objectContaining({
+      type: "response_item",
+      payload: expect.objectContaining({
+        type: "message",
+        role: "user",
+        content: expect.arrayContaining([
+          expect.objectContaining({ type: "input_text", text: marker }),
+        ]),
+      }),
+    }));
+
+    writeTestConfig(
+      `${workerHome}/.config/cydo/config.yaml`,
+      `default_agent: codex
+workspaces:
+  testws:
+    root: ${projectPath}
+`,
+    );
+    const proc = spawnBackend(workDir, workerHome, codexHome);
+    try {
+      await waitForBackend(proc);
+      await page.goto(BACKEND_URL + "/");
+
+      const projectCard = page.locator(".project-card").filter({
+        has: page.locator(".project-card-title", { hasText: "cydo-test-workspace" }),
+      });
+      await expect(projectCard).toBeVisible();
+      const importableLabel = projectCard.locator(".project-card-sessions .sidebar-label", {
+        hasText: marker,
+      });
+      await expect(importableLabel).toBeVisible({ timeout: 20_000 });
+      await importableLabel.click();
+
+      await expect(page.locator(".message.user-message", { hasText: marker })).toBeVisible();
+      const importBtn = page.locator(".btn-resume", { hasText: "Import Session" });
+      await expect(importBtn).toBeVisible();
+      await importBtn.click();
+      await expect(importBtn).not.toBeVisible();
+      await expect(page.locator(".btn-banner-resume")).toBeVisible();
+    } finally {
+      await killBackend(proc);
+    }
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
