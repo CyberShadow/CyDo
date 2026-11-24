@@ -1,0 +1,21 @@
+{
+  "all": "     1\tmodule a;\n     2\tint answer = 42;\n     1\tdef answer():\n     2\t    return 42\n",
+  "blanks-relocated": "       \n     1\tint answer = 42;\n       \n       \n     1\tdef answer():\n     2\t    return 42\n       \n",
+  "cat-alone": "     1\tint answer = 42;",
+  "cat-final": "     1\tint answer = 42;     1\tdef answer():\n     2\t    return 42\n",
+  "cat-glue-reset": "     1\tmodule a;\n     2\tint answer = 42;     1\tdef answer():\n     2\t    return 42\n",
+  "cat-operands": "     1\tmodule a;\n     2\tint answer = 42;\n     3\tdef answer():\n     4\t    return 42\n",
+  "cat": "     1\tmodule a;\n     2\tint answer = 42;\n     1\tdef answer():\n     2\t    return 42\n",
+  "default": "       \n     1\tint answer = 42;\n       \n       \n     1\tdef answer():\n     2\t    return 42\n       \n",
+  "empty-middle": "     1\tmodule a;\n     2\tint answer = 42;\n     1\tdef answer():\n     2\t    return 42\n",
+  "mixed": "     1\tmodule a;\n     2\tint answer = 42;\n     1\tdef answer():\n     2\t    return 42\n",
+  "nl-alone": "     1\tint answer = 42;\n",
+  "nl-final": "     1\tint answer = 42;\n     1\tdef answer():\n     2\t    return 42\n",
+  "nl-operands": "     1\tmodule a;\n     2\tint answer = 42;\n     3\tdef answer():\n     4\t    return 42\n",
+  "section": "     1\tone\n\n     1\ttwo\n     1\tdef answer():\n     2\t    return 42\n",
+  "tail-hidden-first-sliced": "     3\tthree\n     4\tfour\n     5\tfive\n     8\tthree\n     9\tfour\n    10\tfive\n",
+  "tail-hidden": "     1\tmodule a;\n     2\tint answer = 42;\n     3\tthree\n     4\tfour\n     5\tfive\n",
+  "tail-visible": "     3\tthree\n     4\tfour\n     5\tfive\n     1\tdef answer():\n     2\t    return 42\n",
+  "widths": "  1\tmodule a;\n  2\tint answer = 42;\n     1\tdef answer():\n     2\t    return 42\n",
+  "wrap": "1\tone\n2\ttwo\n3\tthree\n4\tfour\n5\tfive\n6\tone\n7\ttwo\n8\tthree\n9\tfour\n10\tfive\n11\tone\n12\ttwo\n13\tthree\n14\tfour\n15\tfive\n1\tdef answer():\n2\t    return 42\n"
+}

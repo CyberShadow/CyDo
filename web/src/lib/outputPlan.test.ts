@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import nlFixtures from "./nlRuns.test-fixtures.json";
 import {
   type OutputPlan,
   parseNlOutputRow,
+  splitNlRuns,
   splitOutputRows,
   parseNumberedOutputRow,
   type SpanValidatorId,
@@ -32,16 +34,17 @@ it("consumes CR only as part of CRLF", () => {
 
 describe("nl output rows", () => {
   it.each([
-    ["     1\ta", "     1\t", "a"],
-    ["     2\t", "     2\t", ""],
-    ["       ", "       ", ""],
-    ["       H", "       ", "H"],
-    ["", "", ""],
-    ["1234567\tx", "1234567\t", "x"],
-  ])("parses %j with the default gutter", (line, prefix, text) => {
+    ["     1\ta", "     1\t", "a", 1],
+    ["     2\t", "     2\t", "", 2],
+    ["       ", "       ", "", null],
+    ["       H", "       ", "H", null],
+    ["", "", "", null],
+    ["1234567\tx", "1234567\t", "x", 1234567],
+  ])("parses %j with the default gutter", (line, prefix, text, lineNumber) => {
     expect(parseNlOutputRow(line, { width: 6, separator: "\t" })).toEqual({
       prefix,
       text,
+      lineNumber,
     });
   });
 
@@ -56,10 +59,12 @@ describe("nl output rows", () => {
     const options = { width: 2, separator: ": " };
     expect(parseNlOutputRow(" 1: a", options)).toEqual({
       prefix: " 1: ",
+      lineNumber: 1,
       text: "a",
     });
     expect(parseNlOutputRow("    ", options)).toEqual({
       prefix: "    ",
+      lineNumber: null,
       text: "",
     });
     expect(parseNlOutputRow(" 1:a", options)).toBeNull();
@@ -69,10 +74,12 @@ describe("nl output rows", () => {
     const options = { width: 2, separator: "界" };
     expect(parseNlOutputRow("     H", options)).toEqual({
       prefix: "     ",
+      lineNumber: null,
       text: "H",
     });
     expect(parseNlOutputRow(" 1界a", options)).toEqual({
       prefix: " 1界",
+      lineNumber: 1,
       text: "a",
     });
   });
@@ -577,5 +584,51 @@ describe("outputPlan", () => {
     ]);
     expect(segmented.copyText).toBe(stdout);
     assertCoverage(stdout, segmented.pieces);
+  });
+});
+
+describe("GNU nl run splitting", () => {
+  const cases: Record<keyof typeof nlFixtures, number | null> = {
+    all: 41,
+    default: 48,
+    cat: 41,
+    mixed: 41,
+    "nl-final": 24,
+    "cat-final": null,
+    "cat-glue-reset": null,
+    "empty-middle": null,
+    "tail-visible": 37,
+    "tail-hidden": null,
+    "tail-hidden-first-sliced": null,
+    section: null,
+    widths: null,
+    "nl-operands": null,
+    "cat-operands": null,
+    "nl-alone": null,
+    "cat-alone": null,
+    "blanks-relocated": 48,
+    wrap: 108,
+  };
+
+  it.each(Object.entries(cases))("%s fixture", (name, boundary) => {
+    const stdout = nlFixtures[name as keyof typeof nlFixtures];
+    const content = { kind: "content", language: "text" } as const;
+    const spans = splitNlRuns(stdout, {
+      kind: "nl-runs",
+      width: name === "wrap" ? 1 : 6,
+      separator: "\t",
+      runs: Array.from(
+        { length: name === "empty-middle" ? 3 : 2 },
+        () => content,
+      ),
+    });
+    if (boundary === null) {
+      expect(spans).toBeNull();
+    } else {
+      expect(spans).toEqual([
+        { start: 0, end: boundary },
+        { start: boundary, end: stdout.length },
+      ]);
+    }
   });
 });

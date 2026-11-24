@@ -173,7 +173,11 @@ type ShellStream = RowsSegment | { kind: "diff" };
 type StageOp =
   | { kind: "identity" }
   | { kind: "slice"; range: SliceRange }
-  | { kind: "number-lines"; options: NlOptions }
+  | {
+      kind: "number-lines";
+      options: NlOptions;
+      lastRowMayBeUnterminated: boolean;
+    }
   | { kind: "search"; context: boolean }
   | { kind: "opaque"; commandName: string };
 
@@ -660,7 +664,11 @@ function parseStage(
       const { operands, numberLines } = parsed.value;
       return filter(
         numberLines
-          ? { kind: "number-lines", options: {} }
+          ? {
+              kind: "number-lines",
+              options: {},
+              lastRowMayBeUnterminated: true,
+            }
           : { kind: "identity" },
         operands,
       );
@@ -701,7 +709,11 @@ function parseStage(
       const parsed = parseNlArgs(cmd, first);
       if (!parsed.ok) return parsed;
       return filter(
-        { kind: "number-lines", options: parsed.value.options },
+        {
+          kind: "number-lines",
+          options: parsed.value.options,
+          lastRowMayBeUnterminated: false,
+        },
         parsed.value.operands,
       );
     }
@@ -855,29 +867,42 @@ function applySlice(
 function applyStage(
   stream: ShellStream,
   op: StageOp,
+  rowBound: number,
 ): ParseResult<ShellStream> {
   const unchanged = { ok: true, value: stream } as const;
   switch (op.kind) {
     case "identity":
       return unchanged;
     case "slice": {
-      if (
-        stream.kind === "diff" ||
-        stream.numbering?.kind === "grep" ||
-        stream.source.kind === "unpositioned"
-      )
+      if (stream.kind === "diff" || stream.numbering?.kind === "grep")
         return unchanged;
-      const range = applySlice(stream.source.range, op.range);
+
+      const keepsFirstRow =
+        op.range.type === "tail-count"
+          ? op.range.count >= rowBound
+          : toInterval(op.range).start === 1;
+      const numbering =
+        stream.numbering?.startsAtOne && !keepsFirstRow
+          ? { ...stream.numbering, startsAtOne: false }
+          : stream.numbering;
+      const source = stream.source;
+      if (source.kind === "unpositioned") {
+        return { ok: true, value: { ...stream, numbering } };
+      }
+      const range = applySlice(source.range, op.range);
       if (!range.ok) return range;
-      if (range.value === "unchanged") return unchanged;
+      if (range.value === "unchanged") {
+        return { ok: true, value: { ...stream, numbering } };
+      }
       return {
         ok: true,
         value: {
           ...stream,
+          numbering,
           source:
             range.value === "unpositioned"
-              ? { kind: "unpositioned", language: rowsLanguage(stream.source) }
-              : { ...stream.source, range: range.value },
+              ? { kind: "unpositioned", language: rowsLanguage(source) }
+              : { ...source, range: range.value },
         },
       };
     }
@@ -901,6 +926,8 @@ function applyStage(
           ...stream,
           numbering: {
             kind: "nl",
+            startsAtOne: true,
+            lastRowMayBeUnterminated: op.lastRowMayBeUnterminated,
             width: op.options.width ?? 6,
             separator: op.options.separator ?? "\t",
           },
@@ -953,6 +980,7 @@ function buildPipelineStream(
   if (stages.length === 0) return reject("empty", "empty pipeline");
   let rowBound = Infinity;
   function applyPipelineStage(stream: ShellStream, op: StageOp) {
+    const inputRowBound = rowBound;
     if (
       op.kind === "slice" &&
       stream.kind === "rows" &&
@@ -971,7 +999,7 @@ function buildPipelineStream(
         rowBound = Math.min(rowBound, end ?? Infinity) - (start - 1);
       }
     }
-    return applyStage(stream, op);
+    return applyStage(stream, op, inputRowBound);
   }
   const first = parseStage(stages[0]!, "first", cdPath);
   if (!first.ok) return first;

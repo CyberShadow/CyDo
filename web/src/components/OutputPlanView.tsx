@@ -13,6 +13,7 @@ import { FileContentPreview } from "./file-preview/FileContentPreview";
 import { detectRenderableFormat } from "../lib/fileFormats";
 import {
   parseNlOutputRows,
+  splitNlRuns,
   parseNumberedOutputRow,
   segmentOutput,
   splitOutputRows,
@@ -146,6 +147,27 @@ function InlineFormatted({
           linePrefixTestId={linePrefixTestId}
         />
       );
+    case "nl-runs": {
+      const spans = splitNlRuns(text, format);
+      if (!spans) throw new Error("invalid runs in structured nl output");
+      return (
+        <>
+          {spans.map(({ start, end }, index) => (
+            <NlNumberedRows
+              key={start}
+              text={text.slice(start, end)}
+              format={{
+                kind: "nl-line-number-prefixed",
+                width: format.width,
+                separator: format.separator,
+                format: format.runs[index]!,
+              }}
+              linePrefixTestId={linePrefixTestId}
+            />
+          ))}
+        </>
+      );
+    }
     case "individual-lines": {
       return (
         <>

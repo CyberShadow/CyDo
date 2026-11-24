@@ -21,7 +21,14 @@ import type {
 } from "./shellSemantic";
 
 const all = { type: "all" } as const;
-const nl = { kind: "nl", width: 6, separator: "	" } as const;
+const nl = {
+  kind: "nl",
+  width: 6,
+  separator: "\t",
+  startsAtOne: true,
+  lastRowMayBeUnterminated: false,
+} as const;
+const numberedCat = { ...nl, lastRowMayBeUnterminated: true } as const;
 const grep = { kind: "grep", context: false } as const;
 
 function fileRows(
@@ -229,17 +236,17 @@ describe("nl reads", () => {
 
 describe("numbered cat reads", () => {
   it.each(["cat -n f.d", "cat f.d | cat -n", "cat --number f.d", "cat f.d -n"])(
-    "%s produces the same numbered rows as nl -ba",
+    "%s produces numbered rows that may end without a newline",
     async (command) => {
       const result = await parseShellSemantic(command);
       const reference = await parseShellSemantic("nl -ba f.d");
       assert(result.ok);
       assert(reference.ok);
       expect(result.value.command).toBe(command);
-      expect(withoutCommand(result.value)).toEqual(
-        withoutCommand(reference.value),
-      );
-      expect(segmentsOf(result.value)).toEqual([fileRows("f.d", all, nl)]);
+      expect(segmentsOf(reference.value)).toEqual([fileRows("f.d", all, nl)]);
+      expect(segmentsOf(result.value)).toEqual([
+        fileRows("f.d", all, numberedCat),
+      ]);
     },
   );
 
@@ -514,7 +521,11 @@ describe("pipe reads (should succeed as Read)", () => {
     expect(r.ok).toBe(true);
     assert(r.ok);
     expect(segmentsOf(r.value)).toEqual([
-      fileRows("src/main.rs", { type: "lines", start: 1200, end: 1720 }, nl),
+      fileRows(
+        "src/main.rs",
+        { type: "lines", start: 1200, end: 1720 },
+        { ...nl, startsAtOne: false },
+      ),
     ]);
     expect(plan(r.value)?.blocks[0]?.format).toEqual({
       kind: "nl-line-number-prefixed",
@@ -860,12 +871,19 @@ describe("unpositioned rows", () => {
     ]);
   });
 
-  it.each(["tail f.d | head -2 | nl", "nl f.d | tail | head -2"])(
+  it.each([
+    ["tail f.d | head -2 | nl", true],
+    ["nl f.d | tail | head -2", false],
+    ["nl f.d g.d | head -2 | tail -2", true],
+    ["nl f.d g.d | tail -n +2 | tail -n +1", false],
+  ] as const)(
     "%s plans nl-numbered unpositioned rows",
-    async (command) => {
+    async (command, startsAtOne) => {
       const result = await parseShellSemantic(command);
       assert(result.ok);
-      expect(segmentsOf(result.value)).toEqual([unpositionedRows("d", nl)]);
+      expect(segmentsOf(result.value)).toEqual([
+        unpositionedRows("d", { ...nl, startsAtOne }),
+      ]);
       expect(plan(result.value)?.blocks).toEqual([
         {
           id: "0",
@@ -888,7 +906,11 @@ describe("unpositioned rows", () => {
     ["tail f.d | head -2 && echo done", unpositionedRows("d")],
     [
       "nl f.d | tail -n 3 && echo done",
-      fileRows("f.d", { type: "tail-count", count: 3 }, nl),
+      fileRows(
+        "f.d",
+        { type: "tail-count", count: 3 },
+        { ...nl, startsAtOne: false },
+      ),
     ],
   ] as const)(
     "%s preserves the literal after the rows",
@@ -1382,7 +1404,7 @@ describe("concatenated rows", () => {
 
   it.each([
     ["nl -ba a.d b.d", nl],
-    ["cat -n a.d b.d", nl],
+    ["cat -n a.d b.d", numberedCat],
     ["cat a.d b.d | grep -n x", grep],
   ] as const)("%s numbers unpositioned rows", async (command, numbering) => {
     const result = await parseShellSemantic(command);
@@ -1390,6 +1412,84 @@ describe("concatenated rows", () => {
     expect(segmentsOf(result.value)).toEqual([
       unpositionedRows("d", numbering),
     ]);
+  });
+
+  const mixedNlRuns = {
+    kind: "nl-runs",
+    width: 6,
+    separator: "\t",
+    runs: [
+      { kind: "content", language: "d" },
+      { kind: "content", language: "python" },
+    ],
+  };
+
+  it.each([
+    ["nl -ba a.d && nl -ba b.d", "d"],
+    ["nl -ba a.d && nl -ba b.py", "python"],
+    ["cat -n a.d && cat -n b.py", "python"],
+    ["nl a.d && cat -n b.py", "python"],
+    ["nl -ba a.d | tail -3 && nl b.py", "python"],
+    ["nl a.d | head -3 && nl b.py", "python"],
+    ["nl a.d && nl b.py | head -3", "python"],
+  ])("%s plans one numbered-runs block", async (command, secondLanguage) => {
+    const result = await parseShellSemantic(command);
+    assert(result.ok);
+    expect(plan(result.value)?.blocks).toEqual([
+      {
+        id: "0",
+        format: {
+          ...mixedNlRuns,
+          runs: [
+            { kind: "content", language: "d" },
+            { kind: "content", language: secondLanguage },
+          ],
+        },
+        location: {
+          kind: "from-cursor",
+          end: { kind: "end-of-output", requiresComplete: true },
+        },
+      },
+    ]);
+  });
+
+  it("plans mixed cat and nl runs before a literal", async () => {
+    const result = await parseShellSemantic(
+      "nl -ba a.d && cat -n b.py && echo done",
+    );
+    assert(result.ok);
+    expect(plan(result.value)?.blocks).toEqual([
+      {
+        id: "0",
+        format: mixedNlRuns,
+        location: {
+          kind: "from-cursor",
+          end: { kind: "before-block", blockId: "1" },
+        },
+      },
+      {
+        id: "1",
+        format: { kind: "content", language: "shell-output" },
+        location: { kind: "unique-literal", text: "done\n", include: "self" },
+      },
+    ]);
+  });
+
+  it.each([
+    ["cat -n a.d && nl b.py", "leading padding"],
+    ["cat -n a.d && nl -ba b.py", "a section delimiter"],
+    ["cat -n a.d && nl b.py && echo done", "leading padding before a literal"],
+    [
+      "nl a.d && cat -n b.py && nl c.d",
+      "an unnumbered row after the middle member",
+    ],
+  ])("rejects %s, whose next member can hide %s", async (command) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsupported_command",
+      reason:
+        "nl-numbered output that may end without a newline cannot precede numbered output that may begin with an unnumbered row",
+    });
   });
 
   it("uses the next block ID for the literal after concatenated rows", async () => {
@@ -1454,8 +1554,12 @@ describe("concatenated rows", () => {
       "search rows cannot be concatenated with file rows",
     ],
     [
-      "nl -ba a.d && nl -ba b.d",
-      "nl-numbered output cannot be concatenated with other nl-numbered output",
+      "nl a.d && nl b.py | tail -3",
+      "nl-numbered output that does not start at number 1 cannot follow other numbered output",
+    ],
+    [
+      "nl -w 3 a.d && nl b.py",
+      "nl-numbered outputs with different gutters cannot be concatenated",
     ],
     [
       "cd . && nl -ba f.svg | sed -n 1,20p && cat empty",

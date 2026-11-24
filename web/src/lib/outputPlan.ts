@@ -7,11 +7,14 @@ export type NlFormat = {
   format: ContentFormat;
 };
 
+type NlRunsFormat = NlRowOptions & { kind: "nl-runs"; runs: ContentFormat[] };
+
 export type OutputFormat =
   | ContentFormat
   | { kind: "line-number-prefixed"; format: OutputFormat }
   | { kind: "individual-lines"; format: OutputFormat }
-  | NlFormat;
+  | NlFormat
+  | NlRunsFormat;
 
 export type OutputPlan = {
   version: 1;
@@ -82,18 +85,18 @@ export function* splitOutputRows(
 }
 
 type NlRowOptions = { width: number; separator: string };
-type NlOutputRow = { prefix: string; text: string };
+type NlOutputRow = { prefix: string; text: string; lineNumber: number | null };
 
 export function parseNlOutputRow(
   line: string,
   { width, separator }: NlRowOptions,
   paddedWidth = width + new TextEncoder().encode(separator).length,
 ): NlOutputRow | null {
-  if (line.length === 0) return { prefix: "", text: "" };
+  if (line.length === 0) return { prefix: "", text: "", lineNumber: null };
 
   const padding = line.slice(0, paddedWidth);
   if (padding.length === paddedWidth && /^ +$/.test(padding)) {
-    return { prefix: padding, text: line.slice(paddedWidth) };
+    return { prefix: padding, text: line.slice(paddedWidth), lineNumber: null };
   }
 
   const match = /^( *)(\d+)/.exec(line);
@@ -106,7 +109,11 @@ export function parseNlOutputRow(
     return null;
   }
   const prefixEnd = field.length + separator.length;
-  return { prefix: line.slice(0, prefixEnd), text: line.slice(prefixEnd) };
+  return {
+    prefix: line.slice(0, prefixEnd),
+    text: line.slice(prefixEnd),
+    lineNumber: Number(digits),
+  };
 }
 
 export function* parseNlOutputRows(
@@ -124,7 +131,36 @@ export function* parseNlOutputRows(
   }
 }
 
+export function splitNlRuns(
+  text: string,
+  format: NlRunsFormat,
+): { start: number; end: number }[] | null {
+  if (format.runs.length < 2) return null;
+
+  const spans: { start: number; end: number }[] = [];
+  let start = 0;
+  let offset = 0;
+  let previousNumber: number | null = null;
+  for (const { row, terminator } of parseNlOutputRows(text, format)) {
+    // Section delimiters can reset numbering inside a single invocation.
+    if (!row?.prefix) return null;
+    if (row.lineNumber !== null) {
+      if (previousNumber !== null && row.lineNumber <= previousNumber) {
+        if (row.lineNumber !== 1) return null;
+        spans.push({ start, end: offset });
+        start = offset;
+      }
+      previousNumber = row.lineNumber;
+    }
+    offset += row.prefix.length + row.text.length + terminator.length;
+  }
+  if (spans.length + 1 !== format.runs.length) return null;
+  spans.push({ start, end: offset });
+  return spans;
+}
+
 function formatAccepts(text: string, format: OutputFormat): boolean {
+  if (format.kind === "nl-runs") return splitNlRuns(text, format) !== null;
   if (format.kind !== "nl-line-number-prefixed") return true;
   if (!text) return false;
   for (const { row } of parseNlOutputRows(text, format)) {

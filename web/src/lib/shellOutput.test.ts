@@ -2,7 +2,13 @@ import { assert, describe, expect, it } from "vitest";
 import { derivePlan, shellOutputView } from "./shellOutput";
 import type { FileOrigin, OutputSegment, RowsSegment } from "./shellOutput";
 
-const nl = { kind: "nl", width: 6, separator: "\t" } as const;
+const nl = {
+  kind: "nl",
+  width: 6,
+  separator: "\t",
+  startsAtOne: true,
+  lastRowMayBeUnterminated: false,
+} as const;
 const grep = { kind: "grep", context: false } as const;
 const summary = { kind: "summary-line" } as const;
 const separator = { kind: "literal", text: "\n--- sep ---\n" } as const;

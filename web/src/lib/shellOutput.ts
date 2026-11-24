@@ -1,5 +1,6 @@
 import { langFromPath } from "../highlight";
 import type {
+  ContentFormat,
   OutputPlan,
   OutputBlockPlan,
   OutputFormat,
@@ -18,7 +19,13 @@ export type RowSource =
   | { kind: "file"; origin: FileOrigin; range: ReadRange }
   | { kind: "unpositioned"; language: string };
 export type NumberingLayer =
-  | { kind: "nl"; width: number; separator: string }
+  | {
+      kind: "nl";
+      width: number;
+      separator: string;
+      startsAtOne: boolean;
+      lastRowMayBeUnterminated: boolean;
+    }
   | { kind: "grep"; context: boolean };
 export type RowsSegment = {
   kind: "rows";
@@ -138,7 +145,11 @@ export function derivePlan(
         break;
       case "rows": {
         const language = rowsLanguage(segment.source);
+        const content: ContentFormat = { kind: "content", language };
         const numbering = segment.numbering;
+        const runs = [content];
+        let previousLastRowMayBeUnterminated =
+          numbering?.kind === "nl" && numbering.lastRowMayBeUnterminated;
         const rowKind = numbering?.kind ?? "file";
         let next = output[index];
         const single = next?.kind !== "rows";
@@ -150,32 +161,53 @@ export function derivePlan(
               reason: `${rowLabels[rowKind]} cannot be concatenated with ${rowLabels[nextKind]}`,
             };
           }
-          if (rowKind === "nl") {
-            return {
-              ok: false,
-              reason:
-                "nl-numbered output cannot be concatenated with other nl-numbered output",
-            };
-          }
-          if (rowKind === "grep") {
+          if (numbering?.kind === "nl" && next.numbering?.kind === "nl") {
+            if (
+              numbering.width !== next.numbering.width ||
+              numbering.separator !== next.numbering.separator
+            ) {
+              return {
+                ok: false,
+                reason:
+                  "nl-numbered outputs with different gutters cannot be concatenated",
+              };
+            }
+            if (!next.numbering.startsAtOne) {
+              return {
+                ok: false,
+                reason:
+                  "nl-numbered output that does not start at number 1 cannot follow other numbered output",
+              };
+            }
+            if (
+              previousLastRowMayBeUnterminated &&
+              !next.numbering.lastRowMayBeUnterminated
+            ) {
+              return {
+                ok: false,
+                reason:
+                  "nl-numbered output that may end without a newline cannot precede numbered output that may begin with an unnumbered row",
+              };
+            }
+            previousLastRowMayBeUnterminated =
+              next.numbering.lastRowMayBeUnterminated;
+            runs.push({ kind: "content", language: rowsLanguage(next.source) });
+          } else if (rowKind === "grep") {
             return {
               ok: false,
               reason:
                 "search output cannot be concatenated with other search output",
             };
+          } else {
+            const mismatch = rowsLanguageMismatch(
+              language,
+              rowsLanguage(next.source),
+            );
+            if (mismatch) return mismatch;
           }
-          const mismatch = rowsLanguageMismatch(
-            language,
-            rowsLanguage(next.source),
-          );
-          if (mismatch) return mismatch;
           next = output[++index];
         }
         if (next && next.kind !== "literal") return ambiguous;
-        const content: OutputFormat = {
-          kind: "content",
-          language,
-        };
         const location: Extract<
           OutputBlockPlan["location"],
           { kind: "from-cursor" }
@@ -189,12 +221,14 @@ export function derivePlan(
         let validator: SpanValidatorId | undefined;
         if (numbering?.kind === "nl") {
           const { width, separator } = numbering;
-          format = {
-            kind: "nl-line-number-prefixed",
-            width,
-            separator,
-            format: content,
-          };
+          format = single
+            ? {
+                kind: "nl-line-number-prefixed",
+                width,
+                separator,
+                format: content,
+              }
+            : { kind: "nl-runs", width, separator, runs };
         } else if (numbering?.kind === "grep") {
           format = {
             kind: "individual-lines",
