@@ -1679,19 +1679,22 @@ describe("MCP tool headers", () => {
 });
 
 describe("CreateTask", () => {
+  const roots = ownedRoots();
+
+  function createTask(result?: ToolResult) {
+    return h(ToolCall, {
+      name: "CreateTask",
+      toolServer: "cydo",
+      toolUseId: "create",
+      input: { title: "Fix the widget", prompt: "Inspect the widget" },
+      result,
+      getTaskHref: (tid) => `/task/${tid}`,
+    });
+  }
+
   function render(result?: ToolResult) {
-    const html = renderToString(
-      h(ToolCall, {
-        name: "CreateTask",
-        toolServer: "cydo",
-        toolUseId: "create",
-        input: { title: "Fix the widget", prompt: "Inspect the widget" },
-        result,
-        getTaskHref: (tid) => `/task/${tid}`,
-      }),
-    );
     const container = document.createElement("div");
-    container.innerHTML = html;
+    container.innerHTML = renderToString(createTask(result));
     return container.querySelector('a[data-testid="cydo-create-task-open"]');
   }
 
@@ -1711,6 +1714,29 @@ describe("CreateTask", () => {
     const link = render(createdTask);
     expect(link?.textContent).toBe("Open task →");
     expect(link?.getAttribute("href")).toBe("/task/7");
+  });
+
+  it("lets the header's Open task click bubble without opening tool input", async () => {
+    const root = roots.create();
+    roots.render(createTask(createdTask), root);
+    const link = root.querySelector<HTMLAnchorElement>(
+      '.tool-header a[data-testid="cydo-create-task-open"]',
+    )!;
+    const onClick = vi.fn((event: MouseEvent) => {
+      event.preventDefault();
+    });
+
+    expect(root.textContent).not.toContain("Inspect the widget");
+    window.addEventListener("click", onClick);
+    try {
+      await act(() => {
+        link.click();
+      });
+      expect(onClick).toHaveBeenCalledOnce();
+      expect(root.textContent).not.toContain("Inspect the widget");
+    } finally {
+      window.removeEventListener("click", onClick);
+    }
   });
 
   it("omits the link while pending and on error", () => {

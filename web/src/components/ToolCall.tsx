@@ -3116,14 +3116,7 @@ function OpenTaskLink({
   testId?: string;
 }) {
   return (
-    <a
-      class="cydo-task-spec-open"
-      data-testid={testId}
-      href={href}
-      onClick={(e) => {
-        e.stopPropagation();
-      }}
-    >
+    <a class="cydo-task-spec-open" data-testid={testId} href={href}>
       Open task →
     </a>
   );
@@ -3397,7 +3390,8 @@ export const ToolCall = memo(
       >
         <div
           class="tool-header"
-          onClick={() => {
+          onClick={(e) => {
+            if ((e.target as Element).closest("a")) return;
             userToggledInput.current = true;
             setInputOpen(!inputOpen);
           }}
