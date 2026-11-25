@@ -5,6 +5,7 @@ import cydo.runtime.config.yaml : parseYamlConfigFile;
 
 import dyaml.node : NodeID;
 
+import core.time : Duration;
 import std.typecons : Nullable;
 
 public import cydo.runtime.config.paths : configPath;
@@ -133,6 +134,12 @@ struct PermissionsConfig
 	@Optional SetInfo!uint prompt_timeout;
 }
 
+struct UsagePollingPeriod
+{
+	@Optional SetInfo!uint turns;
+	@Optional SetInfo!Duration timespan;
+}
+
 struct AgentConfig
 {
 	@Optional SetInfo!AgentDriver driver;
@@ -140,6 +147,7 @@ struct AgentConfig
 	@Optional PermissionsConfig permissions;
 	@Optional ModelSpec[string] model_aliases;
 	@Optional string display_name;
+	@Optional SetInfo!UsagePollingPeriod usage_polling_period;
 }
 
 struct ProjectDiscoveryConfig
@@ -218,6 +226,19 @@ struct CydoConfig
 			// An unresolvable driver is resolveConfig's error to report.
 			if (driver.isNull)
 				continue;
+			if (ac.usage_polling_period.set)
+			{
+				auto period = ac.usage_polling_period.value;
+				auto source = format("agents['%s'].usage_polling_period", name);
+				if (driver.get != AgentDriver.claude)
+					throw new Exception(source ~ ": only the claude driver reports usage");
+				if (!period.turns.set && !period.timespan.set)
+					throw new Exception(source ~ ": set turns or timespan");
+				if (period.turns.set && period.turns.value == 0)
+					throw new Exception(source ~ ": turns must be positive");
+				if (period.timespan.set && period.timespan.value <= Duration.zero)
+					throw new Exception(source ~ ": timespan must be positive");
+			}
 			if (driver.get != AgentDriver.claude
 				&& (ac.permissions.policy.set || ac.permissions.auto_mode.set))
 				throw new Exception(format(
@@ -680,6 +701,98 @@ unittest
 	assert(settings.agents["codex"].permissions.prompt_timeout.value == 30);
 	assert(collectException(parseYamlConfigString!CydoConfig(
 		"workspaces: {}\nagents: {codex: {permissions: {policy: ask}}}\n", "config.yaml")));
+}
+
+unittest // Claude usage polling accepts both a turn count and a duration.
+{
+	import core.time : minutes;
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	auto config = parseYamlConfigString!CydoConfig(
+		"workspaces: {}\nagents: {claude: {usage_polling_period: {turns: 3, timespan: {minutes: 20}}}}\n",
+		"config.yaml");
+	auto period = config.agents["claude"].usage_polling_period;
+	assert(period.set);
+	assert(period.value.turns.set && period.value.turns.value == 3);
+	assert(period.value.timespan.set && period.value.timespan.value == 20.minutes);
+}
+
+unittest // A custom agent can opt in through its explicit Claude driver.
+{
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	auto config = parseYamlConfigString!CydoConfig(
+		"workspaces: {}\nagents: {my-claude: {driver: claude, usage_polling_period: {turns: 1}}}\n",
+		"config.yaml");
+	auto period = config.agents["my-claude"].usage_polling_period;
+	assert(period.set);
+	assert(period.value.turns.set && period.value.turns.value == 1);
+	assert(!period.value.timespan.set);
+}
+
+unittest // Usage polling is opt-in.
+{
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	auto config = parseYamlConfigString!CydoConfig(
+		"workspaces: {}\nagents: {claude: {}}\n", "config.yaml");
+	assert(!config.agents["claude"].usage_polling_period.set);
+}
+
+unittest // Only Claude agents can enable usage polling.
+{
+	import std.algorithm : canFind;
+	import std.exception : collectException;
+	import std.format : format;
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	foreach (agent; ["codex", "copilot"])
+	{
+		auto error = collectException(parseYamlConfigString!CydoConfig(format(
+			"workspaces: {}\nagents: {%s: {usage_polling_period: {turns: 1}}}\n", agent),
+			"config.yaml"));
+		assert(error, agent);
+		assert(error.toString().canFind(format("agents['%s'].usage_polling_period", agent)),
+			error.toString());
+		assert(error.toString().canFind("only the claude driver"), error.toString());
+	}
+}
+
+unittest // A polling period must specify at least one positive interval.
+{
+	import std.algorithm : canFind;
+	import std.exception : collectException;
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	foreach (testCase; [
+		["{}", "set turns or timespan"],
+		["{turns: 0}", "turns must be positive"],
+		["{timespan: {seconds: 0}}", "timespan must be positive"],
+	])
+	{
+		auto error = collectException(parseYamlConfigString!CydoConfig(
+			"workspaces: {}\nagents: {claude: {usage_polling_period: " ~ testCase[0] ~ "}}\n",
+			"config.yaml"));
+		assert(error, testCase[0]);
+		assert(error.toString().canFind("agents['claude'].usage_polling_period")
+			&& error.toString().canFind(testCase[1]), error.toString());
+	}
+}
+
+unittest // A polling duration must be a mapping of known units.
+{
+	import std.algorithm : canFind;
+	import std.exception : collectException;
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	foreach (timespan; ["soon", "{fortnights: 1}"])
+	{
+		auto error = collectException(parseYamlConfigString!CydoConfig(
+			"workspaces: {}\nagents: {claude: {usage_polling_period: {timespan: " ~ timespan ~ "}}}\n",
+			"config.yaml"));
+		assert(error, timespan);
+		assert(error.toString().canFind("usage_polling_period.timespan"), error.toString());
+	}
 }
 
 unittest

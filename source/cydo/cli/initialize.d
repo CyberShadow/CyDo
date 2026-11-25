@@ -358,7 +358,7 @@ unittest
 	}
 	assertKeys!ProjectDiscoveryConfig(at(root, ["workspaces", "example-project", "project_discovery"]));
 	assertKeys!PermissionsConfig(at(root, ["permissions"]));
-	assertKeys!AgentConfig(at(root, ["agents", "custom-codex"]), ["permissions"]);
+	assertKeys!AgentConfig(at(root, ["agents", "custom-codex"]), ["permissions", "usage_polling_period"]);
 	assertKeys!AgentConfig(at(root, ["agents", "claude-auto"]), ["sandbox", "model_aliases"]);
 	assertKeys!ModelSpecFields(at(root, ["agents", "custom-codex", "model_aliases", "large"]));
 	assert(config.workspaces[0].sandbox.isolate_filesystem.set);

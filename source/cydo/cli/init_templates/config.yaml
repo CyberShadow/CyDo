@@ -565,6 +565,17 @@ workspaces: {}
 #     driver: claude
 #     display_name: Claude with auto mode
 
+## usage_polling_period
+## Purpose: Refresh account usage through running Claude sessions.
+## Type: Mapping with turns (positive completed-turn count) and/or timespan
+##   (positive duration mapping). Available for Claude agents.
+## Default: Unset. Usage refresh is opt-in.
+# agents:
+#   claude:
+#     usage_polling_period:
+#       turns: 1
+#       timespan: {minutes: 20}
+
 ## sandbox
 ## Purpose: Overrides sandbox settings for this agent.
 ## Type: Sandbox mapping.
@@ -677,6 +688,9 @@ workspaces: {}
 #     display_name: Claude with auto mode
 #     permissions:
 #       auto_mode: true
+#     usage_polling_period:
+#       turns: 1
+#       timespan: {minutes: 20}
 #   codex:
 #     display_name: Codex
 #   custom-codex:
