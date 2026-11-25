@@ -6,6 +6,7 @@ import std.json : parseJSON;
 
 import ae.utils.json : JSONOptional, JSONPartial, jsonParse;
 
+import cydo.domain.usage.claude_usage : UsageSource;
 import cydo.domain.usage.tracker : AgentUsageTracker;
 import cydo.protocol : SessionRateLimitEvent;
 
@@ -13,6 +14,7 @@ class ClaudeUsageService
 {
 	private struct Registration
 	{
+		UsageSource source;
 		string profile;
 		string agentName;
 	}
@@ -27,9 +29,9 @@ class ClaudeUsageService
 		broadcast_ = broadcast;
 	}
 
-	void sessionStarted(int tid, string profile, string agentName)
+	void sessionStarted(int tid, UsageSource source, string profile, string agentName)
 	{
-		sessions_[tid] = Registration(profile, agentName);
+		sessions_[tid] = Registration(source, profile, agentName);
 	}
 
 	void sessionEnded(int tid)

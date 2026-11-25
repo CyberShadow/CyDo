@@ -22,6 +22,7 @@ import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
 	checkToolDescriptionViolations;
 import cydo.protocol : ContentBlock, ItemDeltaEvent, ItemStartedEvent, ProcessExitEvent,
 	ProcessStderrEvent, TranslatedEvent;
+import cydo.domain.usage.claude_usage : UsageSource;
 import cydo.runtime.config : AgentDriver, CydoConfig, PathMode, SandboxConfig, UnsandboxedCommandExecution;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
@@ -181,7 +182,7 @@ struct TaskSessionLaunch
 
 struct TaskSessionRunnerHost
 {
-	void delegate(int, string, string) usageSessionStarted;
+	void delegate(int, UsageSource, string, string) usageSessionStarted;
 	void delegate(int) usageSessionEnded;
 	string delegate(int) usageProfileForSession;
 	void delegate(int, string) observeUsageEvent;
@@ -1215,7 +1216,7 @@ public:
 		if (auto claude = cast(ClaudeCodeSession) session)
 		{
 			if (host_.usageSessionStarted !is null)
-				host_.usageSessionStarted(tid, launch.processLaunch.nativeHistoryProfile.root,
+				host_.usageSessionStarted(tid, claude, launch.processLaunch.nativeHistoryProfile.root,
 					td.agentName);
 			claude.onToolPermissionRequest = (PermissionPrompt prompt,
 				PermissionEscalation escalation) =>

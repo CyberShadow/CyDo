@@ -21,6 +21,7 @@ import cydo.agent.contract : Agent, HistoryReplay, DiscoveredSession, Interrupte
 	PersistedHistoryBoundary, PersistedHistoryBoundaryKind, OneShotHandle,
 	RewindResult, SessionConfig, SessionMeta;
 import cydo.protocol;
+import cydo.domain.usage.claude_usage : ClaudeUsageReport, UsageSource, parseClaudeUsageReport;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	ToolCallDecision, ToolCallRuling;
 import cydo.agent.process : AgentProcess, FramingMode;
@@ -1539,7 +1540,7 @@ struct ToolPermissionRequest
 }
 
 /// Claude Code session using stream-json protocol.
-class ClaudeCodeSession : AgentSession
+class ClaudeCodeSession : AgentSession, UsageSource
 {
 	private AgentProcess process;
 	private string nativeSessionId_;
@@ -1567,6 +1568,7 @@ class ClaudeCodeSession : AgentSession
 	private bool[string] queuedCommands_;
 	/// Control requests we sent and await the CLI's answer to, by request_id.
 	private Promise!JSONFragment[string] pendingControlRequests_;
+	private Promise!void initialized_;
 	/// Whether this CLI version supports in-process `rewind_conversation`.
 	/// Unknown until the version is known and, for an unseen version, the
 	/// capability probe answered.
@@ -1793,12 +1795,25 @@ class ClaudeCodeSession : AgentSession
 		}
 		static struct Hooks { Matcher[] PreToolUse; }
 		static struct Request { string subtype; Hooks hooks; }
-		sendControlRequest(Request("initialize",
+		initialized_ = sendControlRequest(Request("initialize",
 			Hooks([Matcher([preToolUseCallbackId], "block")])))
-			.then((JSONFragment) {}, (Exception e) {
-				reportLineHandlerError("initialize response", new Exception(
-					"Claude did not register the permission policy hook: " ~ e.msg));
-			}).ignoreResult();
+			.then((JSONFragment) {});
+		initialized_.then(() {}, (Exception e) {
+			reportLineHandlerError("initialize response", new Exception(
+				"Claude did not register the permission policy hook: " ~ e.msg));
+		}).ignoreResult();
+	}
+
+	Promise!ClaudeUsageReport requestUsage()
+	{
+		static struct Request
+		{
+			string subtype;
+			bool skip_behaviors;
+			bool detached;
+		}
+		return initialized_.then(() => sendControlRequest(Request("get_usage", true, true)))
+			.then((JSONFragment fragment) => parseClaudeUsageReport(fragment.json));
 	}
 
 	private enum preToolUseCallbackId = "cydo-permission-policy";
@@ -3559,6 +3574,152 @@ unittest
 	test.expectText(answer, "cc-block-0", "text", "No response requested.");
 	test.result("No response requested.");
 	test.expectStop(test.expect("turn/stop", "turn/result")[0], "synthetic", 0);
+}
+
+version (unittest)
+{
+	import cydo.foundation.testing : drainNextTicks;
+
+	private string pendingUsageTestRequestId(ClaudeCodeSession session)
+	{
+		assert(session.pendingControlRequests_.length == 1);
+		return session.pendingControlRequests_.keys[0];
+	}
+
+	private void answerUsageTestRequest(ClaudeCodeSession session, string body)
+	{
+		session.translateLiveLine(`{"type":"control_response","response":{"request_id":"`
+			~ pendingUsageTestRequestId(session) ~ `",` ~ body ~ `}}`);
+		drainNextTicks();
+	}
+
+	private void assertUsageTestRejection(Promise!ClaudeUsageReport usage, string expected)
+	{
+		string message;
+		usage.then((ClaudeUsageReport) {
+			assert(false, "Usage request should have rejected");
+		}, (Exception error) {
+			message = error.msg;
+		}).ignoreResult();
+		drainNextTicks();
+		assert(message == expected, message);
+	}
+}
+
+unittest
+{
+	import ae.net.asockets : socketManager;
+	import std.file : mkdir, readText, rmdirRecurse, tempDir;
+	import std.path : buildPath;
+	import std.string : splitLines;
+	import std.uuid : randomUUID;
+
+	// Record stdin so the assertions can inspect the actual framed request.
+	auto root = buildPath(tempDir(), "cydo-claude-usage-" ~ randomUUID().toString());
+	mkdir(root);
+	scope(exit) rmdirRecurse(root);
+	auto transcript = buildPath(root, "stdin.jsonl");
+	auto session = new ClaudeCodeSession("cat",
+		cmdPrefix: ["sh", "-c", `exec cat > "$1"`, "record-stdin", transcript]);
+	scope(exit) session.stop();
+	auto initializeId = pendingUsageTestRequestId(session);
+	auto usage = session.requestUsage();
+	drainNextTicks();
+	assert(pendingUsageTestRequestId(session) == initializeId);
+
+	answerUsageTestRequest(session, `"subtype":"success","response":{}`);
+	auto usageId = pendingUsageTestRequestId(session);
+	assert(usageId != initializeId);
+
+	// Captured Claude CLI response from the research fixture scoped.jsonl, line 2.
+	session.translateLiveLine(`{"type":"control_response","response":{"subtype":"success",` ~
+		`"request_id":"` ~ usageId ~ `","response":{"session":{"total_cost_usd":0,"total_api_duration_ms":0,` ~
+		`"total_duration_ms":994,"total_lines_added":0,"total_lines_removed":0,"model_usage":{}},` ~
+		`"subscription_type":"max","rate_limits_available":true,` ~
+		`"rate_limits":{"five_hour":{"utilization":12.5,"resets_at":"2026-11-27T00:00:00Z"},` ~
+		`"seven_day":{"utilization":34.5,"resets_at":"2026-11-27T00:00:00Z"},` ~
+		`"seven_day_sonnet":{"utilization":56.5,"resets_at":"2026-11-27T00:00:00Z"},` ~
+		`"limits":[{"kind":"weekly_scoped","group":"weekly","percent":42.5,"resets_at":1795737600,` ~
+		`"scope":{"model":{"display_name":"Fable"}}}],"model_scoped":[{"display_name":"Fable",` ~
+		`"utilization":42.5,"resets_at":"2026-11-27T00:00:00.000Z"}]},"behaviors":null}}}`);
+	Nullable!ClaudeUsageReport report;
+	usage.then((ClaudeUsageReport value) { report = value; }).ignoreResult();
+	drainNextTicks();
+	assert(!report.isNull);
+	assert(report.get.rate_limits_available);
+	auto limits = report.get.rate_limits.get;
+	assert(limits.five_hour.get.utilization.get == 12.5);
+	assert(limits.seven_day.get.utilization.get == 34.5);
+	auto models = limits.model_scoped.get;
+	assert(models.length == 1);
+	assert(models[0].display_name == "Fable");
+	assert(models[0].utilization.get == 42.5);
+
+	session.closeStdin();
+	socketManager.loop();
+	auto sent = readText(transcript).splitLines();
+	assert(sent.length == 2);
+	assert(parseJSON(sent[0])["request"]["subtype"].str == "initialize");
+	assert(parseJSON(sent[1]) == parseJSON(`{"type":"control_request","request_id":"`
+		~ usageId ~ `","request":{"subtype":"get_usage","skip_behaviors":true,"detached":true}}`));
+}
+
+unittest
+{
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	answerUsageTestRequest(session, `"subtype":"success","response":{}`);
+
+	ClaudeUsageReport readReport(string body)
+	{
+		Nullable!ClaudeUsageReport report;
+		session.requestUsage().then((ClaudeUsageReport value) {
+			report = value;
+		}).ignoreResult();
+		drainNextTicks();
+		answerUsageTestRequest(session, `"subtype":"success","response":` ~ body);
+		return report.get;
+	}
+
+	assert(readReport(`{"rate_limits_available":true,"rate_limits":{}}`)
+		.rate_limits.get.model_scoped.isNull);
+
+	auto empty = readReport(`{"rate_limits_available":true,"rate_limits":{"model_scoped":[]}}`)
+		.rate_limits.get.model_scoped;
+	assert(!empty.isNull);
+	assert(empty.get.length == 0);
+
+	auto unavailable = readReport(`{"rate_limits_available":false,"rate_limits":null}`);
+	assert(!unavailable.rate_limits_available);
+	assert(unavailable.rate_limits.isNull);
+}
+
+unittest
+{
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	answerUsageTestRequest(session, `"subtype":"success","response":{}`);
+
+	auto usage = session.requestUsage();
+	drainNextTicks();
+	answerUsageTestRequest(session, `"subtype":"error","error":"usage unavailable"`);
+	assertUsageTestRejection(usage, "Claude refused the control request: usage unavailable");
+}
+
+unittest
+{
+	import ae.net.asockets : socketManager;
+
+	auto session = new ClaudeCodeSession("cat", cmdPrefix: ["sh", "-c", "exec cat >/dev/null"]);
+	scope(exit) session.stop();
+	answerUsageTestRequest(session, `"subtype":"success","response":{}`);
+
+	auto usage = session.requestUsage();
+	drainNextTicks();
+	assert(session.pendingControlRequests_.length == 1);
+	session.closeStdin();
+	socketManager.loop();
+	assertUsageTestRejection(usage, "Claude exited before answering");
 }
 
 // A message replayed while another message's turn is running was absorbed
