@@ -118,6 +118,7 @@ string exportTaskData(Persistence.TaskRow[] taskRows, ref CydoConfig config,
 		string workspace;
 		string project_path;
 		string task_type;
+		string entry_point;
 		string agent_name;
 		string driver;  // resolved runtime driver; empty for orphaned agents
 		long created_at;
@@ -147,7 +148,7 @@ string exportTaskData(Persistence.TaskRow[] taskRows, ref CydoConfig config,
 		auto agent = getAgent(t.agentName);
 		taskExports ~= TaskExport(t.tid, t.title, t.status, t.parentTid,
 			t.relationType, t.workspace, t.projectPath, t.taskType,
-			t.agentName, agent is null ? "" : to!string(agent.driver),
+			t.entryPoint, t.agentName, agent is null ? "" : to!string(agent.driver),
 			stdTimeToUnixMillis(t.createdAt), stdTimeToUnixMillis(t.lastActive));
 	}
 
@@ -244,11 +245,13 @@ unittest
 
 	Persistence.TaskRow row;
 	row.tid = 1;
+	row.entryPoint = "agentic";
 	row.createdAt = SysTime.fromUnixTime(1_700_000_000, UTC()).stdTime + 1_230_000;
 	row.lastActive = SysTime.fromUnixTime(1_700_000_001, UTC()).stdTime + 4_560_000;
 
 	CydoConfig config;
 	auto task = parseJSON(exportTaskData([row], config, null, null))["tasks"].array[0];
+	assert(task["entry_point"].str == "agentic");
 	assert(task["created_at"].integer == 1_700_000_000_123);
 	assert(task["last_active"].integer == 1_700_000_001_456);
 
