@@ -19,8 +19,11 @@ import {
   type ParsedShellUnit,
 } from "./shellParser";
 import { ownsWholeCommand } from "./shellInvocationOwnership";
-import type { ShellRedirectStateResult } from "./shellRedirectState";
-import { reduceShellRedirectState } from "./shellRedirectState";
+import {
+  redirectEffect,
+  shellArgumentWords,
+  shellFdTable,
+} from "./shellFdTable";
 
 // Public types
 // ---------------------------------------------------------------------------
@@ -110,18 +113,12 @@ type SimpleCommand = {
   id: number;
   name: string | null;
   args: CommandArg[];
-  redirects: Redirect[];
+  redirects: ParsedShellRedirect[];
 };
 
 type CommandArg =
   | { kind: "flag"; text: string }
   | { kind: "value"; text: string };
-
-type Redirect = {
-  op: ParsedShellRedirect["operator"];
-  descriptor: string | null;
-  destination: string | null | undefined;
-};
 
 type ShellAST =
   | { type: "simple"; command: SimpleCommand }
@@ -600,39 +597,6 @@ function openFile(origin: FileOrigin): RowsSegment {
     source: { kind: "file", origin, range: { type: "all" } },
     numbering: null,
   };
-}
-
-function redirectEffect(
-  redirect: Redirect,
-): "stdin" | "stdout" | "stderr-into-stdout" | null {
-  const { op, descriptor, destination } = redirect;
-  if (op === "&>" || op === "&>>") return "stdout";
-  // Bash treats a descriptor above INT_MAX as an argument and uses the default fd.
-  const fd =
-    descriptor !== null && Number(descriptor) <= 2147483647
-      ? descriptor
-      : op.startsWith("<")
-        ? "0"
-        : "1";
-  if (fd === "0") return "stdin";
-  if (fd === "1") return "stdout";
-
-  const duplicatesDescriptor = op === ">&" || op === "<&";
-  const duplicatesStdout =
-    duplicatesDescriptor &&
-    typeof destination === "string" &&
-    /^0*1$/.test(destination);
-  if (duplicatesStdout) return fd === "2" ? "stderr-into-stdout" : "stdout";
-  if (
-    !duplicatesDescriptor &&
-    (destination === null ||
-      (destination !== undefined &&
-        destination.startsWith("/") &&
-        destination !== "/dev/null"))
-  ) {
-    return fd === "2" ? "stderr-into-stdout" : "stdout";
-  }
-  return null;
 }
 
 function rejectRedirectEffect(
@@ -1332,19 +1296,6 @@ function redirectForId(
   return document.redirects[redirectId]!;
 }
 
-function adaptRedirect(redirect: ParsedShellRedirect): Redirect {
-  return {
-    op: redirect.operator,
-    descriptor: redirect.descriptor?.value ?? null,
-    destination:
-      redirect.kind !== "file"
-        ? undefined
-        : redirect.destination?.kind === "literal"
-          ? redirect.destination.value
-          : null,
-  };
-}
-
 function adaptCommand(
   document: ParsedShellDocument,
   commandId: number,
@@ -1352,17 +1303,17 @@ function adaptCommand(
   const command = commandForId(document, commandId);
   if (command.assignments.length > 0 || command.name.kind !== "literal")
     return null;
+  const redirects = command.redirectIds.map((id) =>
+    redirectForId(document, id),
+  );
   const args: CommandArg[] = [];
-  for (const argument of command.arguments) {
-    if (argument.word.kind !== "literal") return null;
+  for (const word of shellArgumentWords(command.arguments, redirects)) {
+    if (word.kind !== "literal") return null;
     args.push({
-      kind: argument.word.value.startsWith("-") ? "flag" : "value",
-      text: argument.word.value,
+      kind: word.value.startsWith("-") ? "flag" : "value",
+      text: word.value,
     });
   }
-  const redirects = command.redirectIds.map((id) =>
-    adaptRedirect(redirectForId(document, id)),
-  );
   return {
     id: command.id,
     name: basename(command.name.value),
@@ -1507,7 +1458,7 @@ function parseCdArgs(command: SimpleCommand): ParseResult<string> {
   if (command.redirects.length > 0) {
     return reject(
       "unsafe_shell_syntax",
-      `unsupported cd redirection ${command.redirects[0]!.op}`,
+      `unsupported cd redirection ${command.redirects[0]!.operator}`,
     );
   }
   return { ok: true, value: target.text };
@@ -1857,13 +1808,12 @@ function classifyCatHeredoc(
     return reject("invalid_heredoc", "unexpected arguments in heredoc command");
   if (redirect.header.arguments.length > 0 || redirect.header.continuation)
     return reject("invalid_heredoc", "unsupported heredoc header");
-  const state: ShellRedirectStateResult = reduceShellRedirectState(
-    document,
-    redirect.ownerId,
-  );
-  if (state.effectiveStdinRedirectId !== redirect.id)
+  const fds = shellFdTable(document, redirect.ownerId);
+  const stdin = fds.get(0);
+  const stdout = fds.get(1);
+  if (stdin?.kind !== "source" || stdin.redirectId !== redirect.id)
     return reject("invalid_heredoc", "heredoc is not effective stdin");
-  if (state.literalStdoutPath === null)
+  if (stdout?.kind !== "file")
     return reject(
       "missing_path",
       "heredoc write requires a literal stdout path",
@@ -1898,7 +1848,7 @@ function classifyCatHeredoc(
       kind: "write",
       command: originalCommand,
       commandName: "cat",
-      filePath: state.literalStdoutPath,
+      filePath: stdout.path,
       heredoc: {
         delimiter: redirect.delimiter.value,
         quoted: redirect.delimiter.quoted,
@@ -1912,12 +1862,7 @@ function classifyCatHeredoc(
           redirect.terminatorSpan.end,
         ),
       },
-      segments: catHeredocSegments(
-        document,
-        redirect,
-        content,
-        state.literalStdoutPath,
-      ),
+      segments: catHeredocSegments(document, redirect, content, stdout.path),
       output: output.length > 0 ? output : undefined,
     },
   };
@@ -1937,11 +1882,11 @@ function classifyScriptHeredoc(
     redirect.header.continuation ||
     command.redirects.some(
       (redirect) =>
-        redirect.op === ">" ||
-        redirect.op === ">>" ||
-        redirect.op === ">|" ||
-        redirect.op === "&>" ||
-        redirect.op === "&>>",
+        redirect.operator === ">" ||
+        redirect.operator === ">>" ||
+        redirect.operator === ">|" ||
+        redirect.operator === "&>" ||
+        redirect.operator === "&>>",
     )
   )
     return reject("invalid_heredoc", "unsupported interpreter heredoc header");
@@ -2004,9 +1949,7 @@ function classifyInlineInvocation(
         invocation.prefix.kind === "env"
           ? "env"
           : invocation.interpreter.basename,
-      redirects: command.redirectIds.map((id) =>
-        adaptRedirect(redirectForId(document, id)),
-      ),
+      redirects: command.redirectIds.map((id) => redirectForId(document, id)),
     });
     return classifyNormalizedDocument(
       invocation.child!,

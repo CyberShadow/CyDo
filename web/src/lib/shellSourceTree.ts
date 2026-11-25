@@ -10,7 +10,7 @@ import {
   type ParsedShellEmbeddedInvocation,
   type ParsedShellHeredocRedirect,
 } from "./shellParser";
-import { reduceShellRedirectState } from "./shellRedirectState";
+import { shellArgumentWords, shellFdTable } from "./shellFdTable";
 import { ownsWholeCommand } from "./shellInvocationOwnership";
 import type {
   SourceSegment,
@@ -28,13 +28,20 @@ function heredocSinks(
   const owner = document.commands[redirect.ownerId]!;
   if (owner.name.kind !== "literal") return [{ kind: "unknown" }];
   if (owner.name.value.split("/").pop() !== "cat") return [{ kind: "unknown" }];
-  if (redirect.header.arguments.length > 0 || redirect.header.continuation)
+  if (
+    redirect.header.continuation ||
+    shellArgumentWords(
+      redirect.header.arguments,
+      owner.redirectIds.map((id) => document.redirects[id]!),
+    ).length > 0
+  )
     return [{ kind: "unknown" }];
-  const { effectiveStdinRedirectId, literalStdoutPath } =
-    reduceShellRedirectState(document, redirect.ownerId);
-  if (effectiveStdinRedirectId !== redirect.id) return [{ kind: "unknown" }];
-  if (literalStdoutPath === null) return [{ kind: "unknown" }];
-  return [{ kind: "file", path: literalStdoutPath, mode: "overwrite" }];
+  const fds = shellFdTable(document, redirect.ownerId);
+  const stdin = fds.get(0);
+  const stdout = fds.get(1);
+  if (stdin?.kind !== "source" || stdin.redirectId !== redirect.id)
+    return [{ kind: "unknown" }];
+  return stdout?.kind === "file" ? [stdout] : [{ kind: "unknown" }];
 }
 
 function heredocOrigin(
