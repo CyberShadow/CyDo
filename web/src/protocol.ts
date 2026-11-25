@@ -409,9 +409,15 @@ export interface UiConfig {
   usage?: UsageUiConfig;
 }
 
+export interface HeicConversionStatus {
+  available: boolean;
+  reason?: string;
+}
+
 export interface ServerStatusMessage {
   type: "server_status";
   ui: UiConfig;
+  heic_conversion: HeicConversionStatus;
   auth_enabled: boolean;
   dev_mode?: boolean;
   build_id?: string;

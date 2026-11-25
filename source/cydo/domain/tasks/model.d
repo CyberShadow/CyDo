@@ -21,6 +21,7 @@ import cydo.domain.policy.permissions : PermissionPrompt;
 import cydo.protocol : ContentBlock, ItemStartedEvent;
 import cydo.runtime.launch.types : ProcessLaunch;
 import cydo.runtime.config : UiConfig, UnsandboxedCommandExecution;
+import cydo.runtime.image.converter : HeicConversionStatus;
 import cydo.domain.storage.persistence : LoadedHistory, noSourceLine;
 import cydo.domain.tasks.yield_gate : NaggedYieldGates;
 
@@ -1316,6 +1317,7 @@ struct ServerStatusMessage
 	bool dev_mode;
 	string build_id;
 	UiConfig ui;
+	HeicConversionStatus heic_conversion;
 }
 
 struct ScanStatusMessage

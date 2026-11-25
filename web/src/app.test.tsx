@@ -114,6 +114,7 @@ vi.mock("./useSessionManager", () => ({
       dismissServerError: state.dismissServerError,
       devMode: false,
       ui: {},
+      heicConversion: { available: false, reason: "not configured" },
       navigateHome: vi.fn(),
       navigateToProject: vi.fn(),
       getProjectHref: vi.fn(),

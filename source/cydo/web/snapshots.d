@@ -17,6 +17,7 @@ import cydo.domain.task_types.definition : TaskTypeDef, UserEntryPointDef, byNam
 	resolveModelClass;
 
 import cydo.runtime.config : UiConfig;
+import cydo.runtime.image.converter : HeicConversionStatus;
 
 TaskListEntry buildTaskEntry(ref TaskData td, size_t childCount, bool alive,
 	bool canStop, string driver, string usageProfile)
@@ -205,7 +206,8 @@ string readBuildId(string webDistDir)
 	return m[1].idup;
 }
 
-string buildServerStatus(bool authEnabled, bool devMode, string webDistDir, UiConfig ui)
+string buildServerStatus(bool authEnabled, bool devMode, string webDistDir, UiConfig ui,
+	HeicConversionStatus heicConversion)
 {
 	return toJson(ServerStatusMessage(
 		"server_status",
@@ -213,6 +215,7 @@ string buildServerStatus(bool authEnabled, bool devMode, string webDistDir, UiCo
 		devMode,
 		readBuildId(webDistDir),
 		ui,
+		heicConversion,
 	));
 }
 
@@ -220,8 +223,14 @@ unittest
 {
 	import std.algorithm : canFind;
 
-	auto status = buildServerStatus(false, false, "/nonexistent", UiConfig.init);
+	auto status = buildServerStatus(false, false, "/nonexistent", UiConfig.init,
+		HeicConversionStatus(false, "not configured"));
 	assert(status.canFind(`"ui":{"usage":{"coloring":"pace","remaining":false}}`), status);
+	assert(status.canFind(`"heic_conversion":{"available":false,"reason":"not configured"}`), status);
+
+	status = buildServerStatus(false, false, "/nonexistent", UiConfig.init,
+		HeicConversionStatus(true));
+	assert(status.canFind(`"heic_conversion":{"available":true}`), status);
 }
 
 string buildNoticesList(Notice[string] activeNotices)

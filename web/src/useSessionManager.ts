@@ -24,6 +24,7 @@ import type {
   Notice,
   TaskListEntry,
   UiConfig,
+  HeicConversionStatus,
 } from "./protocol";
 import {
   resetControlledImageStore,
@@ -275,6 +276,7 @@ export interface TaskManager {
   dismissServerError: () => void;
   devMode: boolean;
   ui: UiConfig;
+  heicConversion: HeicConversionStatus;
   exportLoadError?: string | null;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
@@ -792,6 +794,10 @@ export function useTaskManager(
   } | null>(null);
   const [devMode, setDevMode] = useState(false);
   const [ui, setUi] = useState<UiConfig>({});
+  const [heicConversion, setHeicConversion] = useState<HeicConversionStatus>({
+    available: false,
+    reason: "waiting for server status",
+  });
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
   const prevNoticeIdsRef = useRef<Set<string>>(new Set());
@@ -2298,6 +2304,7 @@ export function useTaskManager(
         case "server_status": {
           setDevMode(msg.dev_mode ?? false);
           setUi(msg.ui);
+          setHeicConversion(msg.heic_conversion);
           const serverBuildId = msg.build_id ?? "";
           if (
             serverBuildId.length > 0 &&
@@ -3451,6 +3458,7 @@ export function useTaskManager(
     },
     devMode,
     ui,
+    heicConversion,
     exportLoadError: null,
     navigateHome,
     navigateToProject,

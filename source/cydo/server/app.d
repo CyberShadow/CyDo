@@ -96,6 +96,8 @@ import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, San
 import cydo.domain.storage.persistence : LoadedHistory, Persistence, openDatabase;
 import cydo.server.config_resolution : loadRuntimeConfig;
 import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
+import cydo.runtime.image.converter : HeicConverter, createHeicConverter;
+version (unittest) import cydo.runtime.image.converter : UnavailableHeicConverter;
 import cydo.server.environment : consumeServerEnvironment;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir, sharedTmpBaseDir;
 import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule;
@@ -235,6 +237,7 @@ class App
 	private Agent[string] agentsByName;
 	private TaskTypeCatalog taskTypeCatalog;
 	private string webDistDir;
+	private HeicConverter heicConverter;
 	// JSONL file tracking state
 	private JsonlTracker jsonlTracker;
 	// HTTP basic auth credentials (from environment)
@@ -278,6 +281,7 @@ class App
 	{
 		// Consume server-only settings before anything can spawn a child.
 		auto serverEnv = consumeServerEnvironment();
+		heicConverter = createHeicConverter(serverEnv.heicConverter);
 		initLogger();
 		applyConfiguredLogLevel("info");
 
@@ -1159,6 +1163,7 @@ class App
 			config.dev_mode,
 			webDistDir,
 			config.ui,
+			heicConverter.status,
 		).representation));
 		ws.send(Data(buildNoticesList(activeNotices).representation));
 		if (discoveryService.scanInProgress)
@@ -3894,6 +3899,7 @@ class App
 			config.dev_mode,
 			webDistDir,
 			config.ui,
+			heicConverter.status,
 		));
 		infof("Config reloaded successfully");
 		discoveryService.endScan();
@@ -4767,6 +4773,7 @@ unittest
 	app.agentsByName["claude"] = new TestClaudePromptAgent;
 	app.taskTypeCatalog = new TaskTypeCatalog(defs, definitions, (string) => true);
 	app.discoveryService = new DiscoveryService(DiscoveryServiceHost.init);
+	app.heicConverter = new UnavailableHeicConverter("not configured");
 	auto runner = new GatedSubmissionRunner(new GatedSubmissionSession);
 	app.taskSessionRunner = runner;
 

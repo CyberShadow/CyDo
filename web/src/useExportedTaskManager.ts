@@ -266,6 +266,7 @@ export function useExportedTaskManager(): TaskManager {
     dismissServerError: noop,
     devMode: false,
     ui: {},
+    heicConversion: { available: false, reason: "exported view" },
     exportLoadError,
     navigateHome: noop,
     navigateToProject: noop,
