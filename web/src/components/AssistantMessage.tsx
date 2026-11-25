@@ -9,7 +9,7 @@ import { TaskDiagnosticView } from "./TaskDiagnosticView";
 import { ToolCall } from "./ToolCall";
 import { UserMessage } from "./UserMessage";
 import { hasAnsi, renderAnsi } from "../ansi";
-import { StickyScrollPre } from "./StickyScrollPre";
+import { StickyScroll } from "./StickyScroll";
 import { SourceView } from "./SourceView";
 import { useDevMode } from "../devMode";
 import viewSourceIcon from "../icons/view-source.svg?raw";
@@ -388,21 +388,27 @@ export const AssistantMessage = memo(
                       />
                     )}
                     {block.stdin && (
-                      <StickyScrollPre class="tool-result streaming-stdin">
+                      <StickyScroll
+                        as="pre"
+                        class="tool-result streaming-stdin"
+                      >
                         {block.stdin}
-                      </StickyScrollPre>
+                      </StickyScroll>
                     )}
                     {typeof block.output === "string" &&
                       block.output &&
                       !block.result && (
-                        <StickyScrollPre class="tool-result streaming-output">
+                        <StickyScroll
+                          as="pre"
+                          class="tool-result streaming-output"
+                        >
                           {hasAnsi(block.output)
                             ? renderAnsi(block.output)
                             : block.output}
-                        </StickyScrollPre>
+                        </StickyScroll>
                       )}
                     {nested && nested.length > 0 && block.completed && (
-                      <div class="sub-agent-messages">
+                      <StickyScroll as="div" class="sub-agent-messages">
                         {nested.map((child) => {
                           if (child.type === "assistant") {
                             return (
@@ -441,7 +447,7 @@ export const AssistantMessage = memo(
                           }
                           return null;
                         })}
-                      </div>
+                      </StickyScroll>
                     )}
                   </ToolCall>
                   {blockExtraEl}

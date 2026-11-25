@@ -2810,12 +2810,18 @@ body,
 
 /* Nested sub-agent messages inside a tool call */
 .sub-agent-messages {
+  max-height: 50vh;
+  overflow-y: auto;
   margin: 8px 0;
   padding-left: 12px;
   border-left: 2px solid rgba(136, 160, 176, 0.3);
 }
 
-.sub-agent-messages > .message {
+.sticky-scroll-content {
+  display: flow-root;
+}
+
+.sub-agent-messages > .sticky-scroll-content > .message {
   margin: 4px 0;
 }
 

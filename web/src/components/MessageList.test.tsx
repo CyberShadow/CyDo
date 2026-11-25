@@ -1135,6 +1135,14 @@ describe("native task status in tool headers", () => {
       is_backgrounded: false,
     } as const;
 
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+
     try {
       apply(
         {
@@ -1217,6 +1225,7 @@ describe("native task status in tool headers", () => {
       await act(() => {
         render(null, root);
       });
+      vi.unstubAllGlobals();
     }
   });
 });
