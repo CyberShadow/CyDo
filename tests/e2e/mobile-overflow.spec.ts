@@ -15,7 +15,7 @@ test.use({
 });
 
 test(
-  "the usage banner and background command fit on mobile",
+  "the task bar, account usage, and background command fit on mobile",
   { tag: "@claude-only" },
   async ({ page }) => {
     await enterSession(page);
@@ -24,19 +24,34 @@ test(
     await sendMessage(page, "usage headers fixture 7d");
     await expect(assistantText(page, "usage-headers-7d")).toBeVisible();
 
-    const banner = page.locator(".system-banner");
-    await expect(banner.locator(".banner-usage-value")).toHaveText([
+    const documentWidth = () =>
+      page.evaluate(() => document.documentElement.scrollWidth);
+    const bar = page.locator(".task-bar:visible");
+    await expect(bar).toHaveAttribute("data-connection", "connected");
+    await bar.locator(".hamburger-btn").click();
+    const account = page.locator(".sidebar .sidebar-account");
+    await expect(account).toBeVisible();
+    await expect(account.locator(".account-usage-value")).toHaveText([
       "42%",
       "71%",
     ]);
-    await expect(banner.locator(".banner-status.connected")).toBeVisible();
-    await expect(banner.locator(".btn-banner-end")).toBeVisible();
-    await expect(banner.locator(".btn-banner-stop")).toBeVisible();
-    await expect(banner.locator(".theme-toggle")).toBeVisible();
+    expect(await documentWidth(), "document with sidebar open").toBe(390);
+    await page.locator(".sidebar-backdrop").click({
+      position: { x: 345, y: 400 },
+    });
+    await expect(account).toBeHidden();
+    await expect(bar.locator(".btn-banner-end")).toBeVisible();
+    await expect(bar.locator(".btn-banner-stop")).toBeHidden();
+    await expect(bar.locator(".theme-toggle")).toBeVisible();
 
-    const documentWidth = () =>
-      page.evaluate(() => document.documentElement.scrollWidth);
-    expect(await documentWidth(), "document with usage banner").toBe(390);
+    const barWidth = await bar.evaluate((element) => ({
+      scroll: element.scrollWidth,
+      client: element.clientWidth,
+    }));
+    expect(barWidth.scroll, "task bar scroll width").toBeLessThanOrEqual(
+      barWidth.client,
+    );
+    expect(await documentWidth(), "document with task bar").toBe(390);
 
     const path = `/tmp/${"longbackgroundcommandpath".repeat(5)}output`;
     await sendMessage(

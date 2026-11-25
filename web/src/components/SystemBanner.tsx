@@ -1,31 +1,34 @@
-import type { CreatedByLink } from "../createdByLink";
-import { useState } from "preact/hooks";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { SessionInfo } from "../types";
-import type {
-  AgentUsageLimitWindow,
-  AgentUsageMessage,
-  UiConfig,
-} from "../protocol";
 import type { Theme } from "../useTheme";
-import sunIcon from "../icons/sun.svg?raw";
-import moonIcon from "../icons/moon.svg?raw";
+import filesIcon from "../icons/copy.svg?raw";
 import hamburgerIcon from "../icons/hamburger.svg?raw";
+import { TaskId, TaskPanel } from "./TaskPanel";
+import { ThemeToggle } from "./ThemeToggle";
 
 interface Props {
-  sessionInfo: SessionInfo | null;
-  defaultAgent?: string;
-  sessionStatus?: string | null;
+  sessionInfo?: SessionInfo | null;
+  tid?: number;
+  title?: string;
+  agentName?: string;
+  agentDisplayName?: string;
+  agentDriver?: string;
+  trackedFileCount?: number;
+  onToggleFiles?: () => void;
+  filesOpen?: boolean;
+  cost?: number;
+  entryPoint?: string;
+  createdAt?: number;
+  lastActive?: number;
   connected: boolean;
   tasksLoading: boolean;
-  totalCost: number;
-  isProcessing: boolean;
-  stdinClosed: boolean;
-  alive: boolean;
-  canStop: boolean;
+  stdinClosed?: boolean;
+  alive?: boolean;
+  canStop?: boolean;
   theme: Theme;
   onToggleTheme: () => void;
-  onStop: () => void;
-  onCloseStdin: () => void;
+  onStop?: () => void;
+  onCloseStdin?: () => void;
   taskType?: string;
   onToggleSidebar?: () => void;
   hasGlobalAttention?: boolean;
@@ -35,26 +38,6 @@ interface Props {
   resumable?: boolean;
   onResume?: () => void;
   exportMode?: boolean;
-  claudeUsage?: AgentUsageMessage;
-  ui?: UiConfig;
-  createdBy?: CreatedByLink;
-}
-
-/** How far ahead to warn that the login expires (as the Claude CLI does). */
-const loginExpiryWarningDays = 10;
-
-/** A warning that the account login is about to expire, if it is. */
-export function loginExpiryWarning(
-  expiresAt: string | undefined,
-  nowMs: number,
-): string | null {
-  if (expiresAt === undefined) return null;
-  const msLeft = Date.parse(expiresAt) - nowMs;
-  const dayMs = 24 * 60 * 60 * 1000;
-  if (msLeft > loginExpiryWarningDays * dayMs) return null;
-  if (msLeft <= 0) return "Login expired";
-  const days = Math.ceil(msLeft / dayMs);
-  return `Login expires in ${days} ${days === 1 ? "day" : "days"}`;
 }
 
 export function normalizeSessionStatus(status?: string | null): string | null {
@@ -68,97 +51,22 @@ export function isCompactingStatus(status: string): boolean {
   return lower.includes("compact") && !lower.includes("compacted");
 }
 
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  if (value < 0) return 0;
-  if (value > 1) return 1;
-  return value;
-}
-
-export function usagePercent(utilization?: number): number | null {
-  if (!Number.isFinite(utilization)) return null;
-  let pct = utilization as number;
-  if (pct < 0) pct = 0;
-  if (pct > 100) pct = 100;
-  return pct;
-}
-
-function isWindowExpired(
-  window: AgentUsageLimitWindow | undefined,
-  nowSeconds: number,
-): boolean {
-  return (
-    Number.isFinite(window?.resetsAt) &&
-    (window!.resetsAt as number) < nowSeconds
-  );
-}
-
-export function computeUsagePaceRatio(
-  utilizationPercent: number,
-  resetsAtSeconds: number | undefined,
-  windowSeconds: number,
-  nowSeconds: number,
-): number {
-  const usageFraction = clamp01(utilizationPercent / 100);
-  if (!Number.isFinite(resetsAtSeconds) || !windowSeconds) {
-    return usageFraction / 0.05;
-  }
-  const remaining = (resetsAtSeconds as number) - nowSeconds;
-  const timeProgress = clamp01((windowSeconds - remaining) / windowSeconds);
-  return usageFraction / Math.max(timeProgress, 0.05);
-}
-
-export function usageFillColor(
-  utilizationPercent: number,
-  resetsAtSeconds: number | undefined,
-  windowSeconds: number,
-  nowSeconds: number,
-): string {
-  const usageFraction = clamp01(utilizationPercent / 100);
-  if (usageFraction <= 0.01) return "rgb(76, 175, 80)";
-  const ratio = computeUsagePaceRatio(
-    utilizationPercent,
-    resetsAtSeconds,
-    windowSeconds,
-    nowSeconds,
-  );
-  if (ratio >= 1.5) return "rgb(220, 67, 67)";
-  if (ratio >= 1.0) return "rgb(242, 153, 74)";
-  return "rgb(173, 186, 73)";
-}
-
-export function percentUsageFillColor(utilizationPercent: number): string {
-  const pct = clamp01(utilizationPercent / 100) * 100;
-  const red = Math.round(255 * Math.min(1, pct / 50));
-  const green = Math.round(255 * Math.min(1, (100 - pct) / 50));
-  return `rgb(${red}, ${green}, 0)`;
-}
-
-function usageTitle(
-  label: string,
-  window: AgentUsageLimitWindow | undefined,
-  pct: number | null,
-  remaining: boolean,
-): string {
-  const status = window?.status ? `, status: ${window.status}` : "";
-  const resetTs = window?.resetsAt;
-  const reset =
-    Number.isFinite(resetTs) && resetTs
-      ? `, resets: ${new Date(resetTs * 1000).toLocaleString()}`
-      : "";
-  if (pct === null) return `${label}: unknown${status}${reset}`;
-  const suffix = remaining ? " remaining" : "";
-  return `${label}: ${pct.toFixed(1)}%${suffix}${status}${reset}`;
-}
-
 export function SystemBanner({
   sessionInfo,
-  defaultAgent,
-  sessionStatus,
+  tid,
+  title,
+  agentName,
+  agentDisplayName,
+  agentDriver,
+  trackedFileCount = 0,
+  onToggleFiles,
+  filesOpen,
+  cost,
+  entryPoint,
+  createdAt,
+  lastActive,
   connected,
   tasksLoading,
-  totalCost,
-  isProcessing,
   stdinClosed,
   alive,
   canStop,
@@ -175,199 +83,58 @@ export function SystemBanner({
   resumable,
   onResume,
   exportMode,
-  claudeUsage,
-  ui,
-  createdBy,
 }: Props) {
-  const remaining = ui?.usage?.remaining ?? false;
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const liveStatus = normalizeSessionStatus(sessionStatus);
-  let processingText: string | null = null;
-  if (alive && stdinClosed) {
-    processingText = "Ending...";
-  } else if (liveStatus) {
-    if (isCompactingStatus(liveStatus)) {
-      processingText = "Compacting...";
-    } else if (liveStatus.trim().toLowerCase() === "requesting") {
-      processingText = "Requesting...";
-    } else {
-      processingText = liveStatus;
-    }
-  } else if (isProcessing && !stdinClosed) {
-    processingText = "Processing...";
-  }
-  const nowSeconds = Date.now() / 1000;
-  const fiveHour = isWindowExpired(claudeUsage?.limits.five_hour, nowSeconds)
-    ? undefined
-    : claudeUsage?.limits.five_hour;
-  const week = isWindowExpired(claudeUsage?.limits.seven_day, nowSeconds)
-    ? undefined
-    : claudeUsage?.limits.seven_day;
-  const weekSeconds = 7 * 24 * 60 * 60;
-  const usageRows = [
-    { label: "5h", window: fiveHour, windowSeconds: 5 * 60 * 60 },
-    { label: "Week", window: week, windowSeconds: weekSeconds },
-    ...(claudeUsage?.model_weekly ?? [])
-      .filter((window) => !isWindowExpired(window, nowSeconds))
-      .map((window) => ({
-        label: window.label,
-        window,
-        windowSeconds: weekSeconds,
-      })),
-  ];
-  const loginWarning = loginExpiryWarning(
-    claudeUsage?.credential_expires_at,
-    Date.now(),
-  );
-  const showClaudeUsage = usageRows.some((row) =>
-    Number.isFinite(row.window?.utilization),
-  );
-  const connectionStatus = exportMode
-    ? {
-        className: connected ? "connected" : "disconnected",
-        text: "Exported",
+  const [panelOpen, setPanelOpen] = useState(false);
+  const panelRef = useRef<HTMLElement>(null);
+  const panelToggleRef = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (!panelOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPanelOpen(false);
+    };
+    const onClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        !panelRef.current?.contains(target) &&
+        !panelToggleRef.current?.contains(target)
+      ) {
+        setPanelOpen(false);
       }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("click", onClick, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("click", onClick, true);
+    };
+  }, [panelOpen]);
+  const connection = exportMode
+    ? undefined
     : !connected
-      ? { className: "disconnected", text: "Disconnected" }
+      ? "disconnected"
       : tasksLoading
-        ? { className: "loading", text: "Loading…" }
-        : { className: "connected", text: "Connected" };
-
-  return (
-    <div class="system-banner">
-      <div class="banner-left">
-        {onToggleSidebar && (
+        ? "loading"
+        : "connected";
+  const connectionLabel =
+    connection === "disconnected"
+      ? "Disconnected"
+      : connection === "loading"
+        ? "Loading…"
+        : undefined;
+  const barTitle = title || (tid === undefined ? connectionLabel : undefined);
+  const secondaryAction =
+    !exportMode &&
+    (alive
+      ? canStop && (
           <button
-            class={`hamburger-btn${hasGlobalAttention ? " has-attention" : ""}`}
-            onClick={onToggleSidebar}
-            title={
-              hasGlobalAttention
-                ? "Toggle sidebar — sessions need attention"
-                : "Toggle sidebar"
-            }
+            class="btn-banner-stop"
+            onClick={onStop}
+            title="Force-stop task execution"
           >
-            {hasGlobalAttention ? (
-              <span class="task-type-icon task-type-icon-check alive" />
-            ) : (
-              <span
-                class="action-icon"
-                dangerouslySetInnerHTML={{ __html: hamburgerIcon }}
-              />
-            )}
+            Kill
           </button>
-        )}
-        <span class="banner-title">CyDo</span>
-        {createdBy && (
-          <a class="banner-created-by" href={createdBy.href}>
-            {createdBy.title
-              ? `Created by “${createdBy.title}”`
-              : `Created by task ${createdBy.tid}`}
-          </a>
-        )}
-        {sessionInfo && (
-          <span
-            class="banner-model clickable"
-            onClick={() => {
-              setDetailsOpen(!detailsOpen);
-            }}
-            title="Click for session details"
-          >
-            {sessionInfo.agent_name &&
-              sessionInfo.agent_name !== defaultAgent && (
-                <span class="banner-agent">{sessionInfo.agent_name}</span>
-              )}
-            {sessionInfo.model}
-          </span>
-        )}
-        {sessionInfo?.permission_mode && (
-          <span class="banner-perms">{sessionInfo.permission_mode}</span>
-        )}
-        {taskType && <span class="banner-task-type">{taskType}</span>}
-      </div>
-      <div class="banner-right">
-        {loginWarning && (
-          <span
-            class="banner-login-expiry"
-            title={`The Claude login expires ${claudeUsage!.credential_expires_at!}. Run /login in Claude Code to renew it.`}
-          >
-            {loginWarning}
-          </span>
-        )}
-        {showClaudeUsage && (
-          <div class="banner-usage" title="Claude account usage">
-            {usageRows.map((row) => {
-              const pct = usagePercent(row.window?.utilization);
-              const color =
-                pct === null
-                  ? "var(--border)"
-                  : ui?.usage?.coloring === "percent"
-                    ? percentUsageFillColor(pct)
-                    : usageFillColor(
-                        pct,
-                        row.window?.resetsAt,
-                        row.windowSeconds,
-                        nowSeconds,
-                      );
-              const shownPct = pct !== null && remaining ? 100 - pct : pct;
-              const valueText =
-                shownPct === null ? "--" : `${shownPct.toFixed(0)}%`;
-              return (
-                <div
-                  key={row.label}
-                  class="banner-usage-row"
-                  title={usageTitle(row.label, row.window, shownPct, remaining)}
-                >
-                  <span class="banner-usage-label">{row.label}</span>
-                  <span class="banner-usage-bar">
-                    <span
-                      class="banner-usage-fill"
-                      style={{
-                        width: `${shownPct ?? 0}%`,
-                        backgroundColor: color,
-                      }}
-                    />
-                  </span>
-                  <span class="banner-usage-value">{valueText}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {processingText && (
-          <span class="banner-processing">{processingText}</span>
-        )}
-        {alive && (
-          <>
-            {!stdinClosed && (
-              <button
-                class="btn-banner-end"
-                onClick={onCloseStdin}
-                title="End session gracefully (Ctrl+Shift+E)"
-              >
-                End
-              </button>
-            )}
-            {canStop && (
-              <button
-                class="btn-banner-stop"
-                onClick={onStop}
-                title="Force-stop task execution"
-              >
-                Kill
-              </button>
-            )}
-          </>
-        )}
-        {!alive && resumable && onResume && (
-          <button
-            class="btn-banner-resume"
-            onClick={onResume}
-            title="Resume session"
-          >
-            Resume
-          </button>
-        )}
-        {!alive && onSetArchived && (
+        )
+      : onSetArchived && (
           <button
             class={`btn-banner-archive${archived ? " archived" : ""}`}
             onClick={onSetArchived}
@@ -388,99 +155,125 @@ export function SystemBanner({
                 ? "Unarchive"
                 : "Archive"}
           </button>
-        )}
-        {totalCost > 0 && (
-          <span class="banner-cost">${totalCost.toFixed(4)}</span>
-        )}
-        <span class={`banner-status ${connectionStatus.className}`}>
-          {connectionStatus.text}
-        </span>
+        ));
+  return (
+    <div class="task-bar" data-connection={connection}>
+      {onToggleSidebar && (
         <button
-          class="theme-toggle"
-          onClick={onToggleTheme}
-          title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+          class={`hamburger-btn${hasGlobalAttention ? " has-attention" : ""}`}
+          onClick={onToggleSidebar}
+          title={
+            hasGlobalAttention
+              ? "Toggle sidebar — sessions need attention"
+              : "Toggle sidebar"
+          }
+        >
+          {hasGlobalAttention ? (
+            <span class="task-type-icon task-type-icon-check alive" />
+          ) : (
+            <span
+              class="action-icon"
+              dangerouslySetInnerHTML={{ __html: hamburgerIcon }}
+            />
+          )}
+        </button>
+      )}
+      {agentName && (
+        <span
+          class="task-bar-agent banner-agent"
+          data-driver={agentDriver}
+          title={connectionLabel ?? agentDisplayName}
+        >
+          {agentName}
+        </span>
+      )}
+      {sessionInfo?.model && (
+        <span class="banner-model">{sessionInfo.model}</span>
+      )}
+      {tid !== undefined && (
+        <span class="task-bar-desktop">
+          <TaskId tid={tid} />
+        </span>
+      )}
+      <span class="task-bar-title" title={barTitle}>
+        {barTitle}
+      </span>
+      {trackedFileCount > 0 && (
+        <button
+          type="button"
+          class="task-bar-files"
+          onClick={onToggleFiles}
+          aria-label={`Files ${trackedFileCount}`}
+          aria-pressed={filesOpen}
         >
           <span
             class="action-icon"
-            dangerouslySetInnerHTML={{
-              __html: theme === "dark" ? sunIcon : moonIcon,
-            }}
+            aria-hidden="true"
+            dangerouslySetInnerHTML={{ __html: filesIcon }}
           />
+          <span class="task-bar-desktop">Files {trackedFileCount}</span>
         </button>
-      </div>
-      {detailsOpen && sessionInfo && (
-        <div class="banner-details">
-          {sessionInfo.agent && (
-            <div class="banner-detail-row">
-              <span class="detail-label">Agent:</span> {sessionInfo.agent}
-            </div>
-          )}
-          <div class="banner-detail-row">
-            <span class="detail-label">Session:</span> {sessionInfo.sessionId}
-          </div>
-          <div class="banner-detail-row">
-            <span class="detail-label">Version:</span> {sessionInfo.version}
-          </div>
-          <div class="banner-detail-row">
-            <span class="detail-label">Directory:</span> {sessionInfo.cwd}
-          </div>
-          <div class="banner-detail-row">
-            <span class="detail-label">Permissions:</span>{" "}
-            {sessionInfo.permission_mode}
-          </div>
-          {sessionInfo.api_key_source && (
-            <div class="banner-detail-row">
-              <span class="detail-label">API Key:</span>{" "}
-              {sessionInfo.api_key_source}
-            </div>
-          )}
-          {sessionInfo.fast_mode_state &&
-            sessionInfo.fast_mode_state !== "off" && (
-              <div class="banner-detail-row">
-                <span class="detail-label">Fast mode:</span>{" "}
-                {sessionInfo.fast_mode_state}
-              </div>
-            )}
-          {sessionInfo.tools.length > 0 && (
-            <div class="banner-detail-row">
-              <span class="detail-label">
-                Tools ({sessionInfo.tools.length}):
-              </span>
-              <span class="detail-tools">{sessionInfo.tools.join(", ")}</span>
-            </div>
-          )}
-          {sessionInfo.skills && sessionInfo.skills.length > 0 && (
-            <div class="banner-detail-row">
-              <span class="detail-label">Skills:</span>{" "}
-              {sessionInfo.skills.join(", ")}
-            </div>
-          )}
-          {sessionInfo.mcp_servers && sessionInfo.mcp_servers.length > 0 && (
-            <div class="banner-detail-row">
-              <span class="detail-label">MCP:</span>{" "}
-              <pre class="detail-json">
-                {JSON.stringify(sessionInfo.mcp_servers, null, 2)}
-              </pre>
-            </div>
-          )}
-          {sessionInfo.agents && sessionInfo.agents.length > 0 && (
-            <div class="banner-detail-row">
-              <span class="detail-label">Agents:</span>{" "}
-              <pre class="detail-json">
-                {JSON.stringify(sessionInfo.agents, null, 2)}
-              </pre>
-            </div>
-          )}
-          {sessionInfo.plugins && sessionInfo.plugins.length > 0 && (
-            <div class="banner-detail-row">
-              <span class="detail-label">Plugins:</span>{" "}
-              <pre class="detail-json">
-                {JSON.stringify(sessionInfo.plugins, null, 2)}
-              </pre>
-            </div>
-          )}
-        </div>
       )}
+      {exportMode ? (
+        <span class="task-bar-exported">Exported</span>
+      ) : (
+        <>
+          {alive && !stdinClosed && (
+            <button
+              class="btn-banner-end"
+              onClick={onCloseStdin}
+              title="End session gracefully (Ctrl+Shift+E)"
+            >
+              End
+            </button>
+          )}
+          {!alive && resumable && onResume && (
+            <button
+              class="btn-banner-resume"
+              onClick={onResume}
+              title="Resume session"
+            >
+              Resume
+            </button>
+          )}
+          {secondaryAction && (
+            <span class="task-bar-desktop">{secondaryAction}</span>
+          )}
+        </>
+      )}
+      {tid !== undefined && (
+        <button
+          type="button"
+          ref={panelToggleRef}
+          class="task-bar-panel-toggle"
+          aria-label="Task details"
+          aria-expanded={panelOpen}
+          onClick={() => {
+            setPanelOpen(!panelOpen);
+          }}
+        >
+          ▾
+        </button>
+      )}
+      {panelOpen && tid !== undefined && (
+        <TaskPanel
+          tid={tid}
+          panelRef={panelRef}
+          agentName={agentName}
+          agentDisplayName={agentDisplayName}
+          sessionInfo={sessionInfo}
+          taskType={taskType}
+          entryPoint={entryPoint}
+          cost={cost}
+          createdAt={createdAt}
+          lastActive={lastActive}
+          mobileAction={secondaryAction}
+          onClose={() => {
+            setPanelOpen(false);
+          }}
+        />
+      )}
+      <ThemeToggle theme={theme} onToggle={onToggleTheme} />
     </div>
   );
 }

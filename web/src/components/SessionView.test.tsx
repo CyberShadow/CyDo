@@ -7,7 +7,6 @@ import { reduceMessage } from "../sessionReducer";
 import { resetTaskForHistoryReplay } from "../historyReplayReset";
 import { makeTaskState, type TaskState } from "../types";
 import { createOrdinaryDraftStore } from "../ordinaryDraftStore";
-import type { AgentUsageMessage } from "../protocol";
 
 vi.hoisted(() => {
   vi.stubGlobal(
@@ -33,14 +32,12 @@ function session(
   undoPending: TaskState["undoPending"],
   state: Partial<TaskState> = {},
   exportMode = false,
-  agentUsage?: Record<string, AgentUsageMessage>,
 ) {
   return (
     <SessionView
       heicConversion={{ available: false }}
       getHeicConversion={() => ({ available: false })}
       task={{ ...makeTaskState(7), undoPending, ...state }}
-      agentUsage={agentUsage}
       connected={true}
       tasksLoading={false}
       isActive={true}
@@ -70,35 +67,9 @@ function session(
 function renderSession(
   undoPending: TaskState["undoPending"],
   state: Partial<TaskState> = {},
-  agentUsage?: Record<string, AgentUsageMessage>,
 ) {
-  return renderToString(session(undoPending, state, false, agentUsage));
+  return renderToString(session(undoPending, state));
 }
-
-describe("SessionView usage", () => {
-  const usage = (profile: string, utilization: number): AgentUsageMessage => ({
-    type: "agent_usage",
-    profile,
-    updated_at: 1,
-    limits: { five_hour: { utilization } },
-  });
-  const profile = "/profiles/work";
-  const agentUsage = {
-    claude: usage("claude", 71),
-    [profile]: usage(profile, 42),
-  };
-
-  it("shows usage only for the task's matching profile", () => {
-    const html = renderSession(null, { usageProfile: profile }, agentUsage);
-
-    expect(html).toContain('class="banner-usage-value">42%</span>');
-    expect(html).not.toContain('class="banner-usage-value">71%</span>');
-  });
-
-  it("omits the usage widget for a task without a profile", () => {
-    expect(renderSession(null, {}, agentUsage)).not.toContain("banner-usage");
-  });
-});
 
 it("keeps raw inspection but hides history mutations on import offers", () => {
   const state: Partial<TaskState> = {
@@ -124,8 +95,12 @@ it("keeps raw inspection but hides history mutations on import offers", () => {
       edit_raw_event: true,
     },
   };
-  const imported = renderSession(null, { ...state, status: "completed" });
-  const offer = renderSession(null, { ...state, status: "importable" });
+  const imported = renderToString(
+    session(null, { ...state, status: "completed" }),
+  );
+  const offer = renderToString(
+    session(null, { ...state, status: "importable" }),
+  );
 
   for (const action of ["fork-btn", "undo-btn", "Edit message"]) {
     expect(imported).toContain(action);
@@ -470,5 +445,76 @@ describe("SessionView linked files", () => {
     expect(
       root.querySelector(".content-viewer-tabs .active")?.textContent,
     ).toBe("Live");
+  });
+});
+
+describe("tracked files", () => {
+  it("opens and closes the tracked-files viewer from the task bar", async () => {
+    const root = roots.create();
+    const paths = [
+      "/project/z.txt",
+      "/project/dir/b.txt",
+      "/project/dir/a.txt",
+    ];
+    const trackedFiles: TaskState["trackedFiles"] = new Map(
+      paths.map((path) => [
+        path,
+        {
+          path,
+          edits: [
+            {
+              toolUseId: path,
+              messageId: "write",
+              filePath: path,
+              type: "write",
+              status: "applied",
+              payload: { mode: "full_content", content: "tracked text" },
+            },
+          ],
+        },
+      ]),
+    );
+    roots.render(session(null, { trackedFiles }), root);
+
+    const files = root.querySelector<HTMLButtonElement>(
+      '[aria-label="Files 3"]',
+    )!;
+    expect(root.querySelector(".file-viewer")).toBeNull();
+    await act(() => {
+      files.click();
+    });
+    expect(files.getAttribute("aria-pressed")).toBe("true");
+    expect(
+      root.querySelector(".file-tree-item.selected")?.getAttribute("title"),
+    ).toBe("/project/dir/a.txt");
+    expect(
+      root.querySelector(".content-viewer-tabs button.active")?.textContent,
+    ).toBe("Cumulative");
+    const file = trackedFiles.get("/project/dir/a.txt")!;
+    const updatedFiles = new Map(trackedFiles);
+    updatedFiles.set(file.path, {
+      ...file,
+      edits: [
+        ...file.edits,
+        {
+          ...file.edits[0]!,
+          toolUseId: "later-write",
+          payload: { mode: "full_content", content: "newly tracked text" },
+        },
+      ],
+    });
+    expect(root.querySelector(".content-viewer-body")?.textContent).toContain(
+      "tracked text",
+    );
+    roots.render(session(null, { trackedFiles: updatedFiles }), root);
+    expect(root.querySelector(".content-viewer-body")?.textContent).toContain(
+      "newly tracked text",
+    );
+
+    await act(() => {
+      files.click();
+    });
+    expect(files.getAttribute("aria-pressed")).toBe("false");
+    expect(root.querySelector(".file-viewer")).toBeNull();
   });
 });

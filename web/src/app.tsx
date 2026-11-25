@@ -1,3 +1,4 @@
+import { ThemeToggle } from "./components/ThemeToggle";
 import {
   useCallback,
   useEffect,
@@ -205,7 +206,12 @@ function AppContent() {
   ]);
 
   // Ctrl+K: open search popup
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (!connected) {
+      setShowSearch(false);
+      return;
+    }
+
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
@@ -216,7 +222,7 @@ function AppContent() {
     return () => {
       document.removeEventListener("keydown", handler);
     };
-  }, []);
+  }, [connected]);
 
   const handleSearchSelect = useCallback(
     (tid: number) => {
@@ -252,6 +258,7 @@ function AppContent() {
       <DevModeContext.Provider value={devMode}>
         <ThemeContext.Provider value={theme}>
           <div class="app welcome-page-container">
+            <ThemeToggle corner theme={theme} onToggle={toggleTheme} />
             {connected ? (
               <WelcomePage
                 workspaces={workspaces}
@@ -446,17 +453,23 @@ function AppContent() {
     <span>Loading task…</span>
   );
 
+  const placeholderBar = (
+    <SystemBanner
+      connected={connected}
+      tasksLoading={tasksLoading}
+      theme={theme}
+      onToggleTheme={toggleTheme}
+      onToggleSidebar={toggleSidebar}
+      hasGlobalAttention={attention.size > 0}
+    />
+  );
+
   return (
     <DevModeContext.Provider value={devMode}>
       <ThemeContext.Provider value={theme}>
         <div class={`app has-sidebar${sidebarOpen ? " sidebar-open" : ""}`}>
           {sidebarOpen && (
             <div class="sidebar-backdrop" onClick={handleCloseSidebar} />
-          )}
-          {!connected && (
-            <div class="connection-overlay">
-              <span>Connecting…</span>
-            </div>
           )}
           <Sidebar
             tasks={sidebarTasks}
@@ -482,168 +495,168 @@ function AppContent() {
             getTaskHref={getTaskHref}
             taskTypes={typeInfo}
             visible={sidebarOpen}
-            onOpenSearch={handleOpenSearch}
+            onOpenSearch={connected ? handleOpenSearch : undefined}
             onArchive={handleSidebarArchive}
             hasGlobalAttention={hasOtherProjectAttention}
+            claudeUsage={
+              active?.usageProfile ? agentUsage[active.usageProfile] : undefined
+            }
+            ui={ui}
           />
-          {draftView && (
-            <div key={draftView.viewKey} style={{ display: "contents" }}>
-              <DraftSessionView
-                heicConversion={heicConversion}
-                getHeicConversion={getHeicConversion}
-                draftView={draftView}
-                createdBy={createdByLink(
-                  draftView.kind === "resolved" && draftView.remoteTid !== null
-                    ? getByTid(draftView.remoteTid)
-                    : undefined,
-                  getByTid,
-                  getTaskHref,
-                )}
-                connected={connected}
-                tasksLoading={tasksLoading}
-                entryPoints={entryPoints}
-                agents={agents}
-                defaultAgent={effectiveDefaultAgent}
-                notices={mergedNotices}
-                theme={theme}
-                onToggleTheme={toggleTheme}
-                onToggleSidebar={toggleSidebar}
-                hasGlobalAttention={attention.size > 0}
-                imageStore={controlledImageStore}
-              />
-            </div>
-          )}
-          {Array.from(tasks.values())
-            .filter((t) => {
-              if (
-                draftView?.kind === "resolved" &&
-                draftView.remoteTid === t.tid
-              )
-                return false;
-              if (
-                t.status === "pending" &&
-                t.messages.length === 0 &&
-                !t.isProcessing
-              )
-                return false;
-              return (
-                t.everLoaded ||
-                t.historyLoaded ||
-                String(t.tid) === activeTaskId ||
-                String(t.tid) === browserTaskId
-              );
-            })
-            .map((task) => {
-              if (task.tid === null) {
-                throw new Error("Task pane requires a numeric tid");
-              }
-              const isActive =
-                String(task.tid) === activeTaskId ||
-                String(task.tid) === browserTaskId;
-              const resultParentTid = tasksLoaded
-                ? subtaskResultParent(
-                    {
-                      tid: task.tid,
-                      status: task.status,
-                      parentTid: task.parentTid,
-                      relationType: task.relationType,
-                    },
-                    continuationPredecessors,
-                    getByTid,
-                  )
-                : undefined;
-              return (
-                <div
-                  key={task.uuid}
-                  data-tid={task.tid}
-                  style={{ display: isActive ? "contents" : "none" }}
-                >
-                  <SessionView
+          {connected ? (
+            <>
+              {draftView && (
+                <div key={draftView.viewKey} style={{ display: "contents" }}>
+                  <DraftSessionView
                     heicConversion={heicConversion}
                     getHeicConversion={getHeicConversion}
-                    task={task}
-                    createdBy={createdByLink(task, getByTid, getTaskHref)}
+                    draftView={draftView}
+                    createdBy={createdByLink(
+                      draftView.kind === "resolved" &&
+                        draftView.remoteTid !== null
+                        ? getByTid(draftView.remoteTid)
+                        : undefined,
+                      getByTid,
+                      getTaskHref,
+                    )}
                     connected={connected}
                     tasksLoading={tasksLoading}
-                    isActive={isActive}
-                    onSend={send}
-                    onInterrupt={interrupt}
-                    onStop={stop}
-                    onCloseStdin={closeStdin}
-                    onResume={resume}
-                    onPromote={promote}
-                    onFork={fork}
-                    onUndo={undoPreview}
-                    onUnsend={unsendMessage}
-                    onApproveRetry={approveRetry}
-                    onUndoConfirm={undoConfirm}
-                    onUndoDismiss={undoDismiss}
-                    onClearInputDraft={clearInputDraft}
-                    ordinaryDraftStore={ordinaryDraftStore}
-                    onSaveDraft={saveDraft}
+                    entryPoints={entryPoints}
+                    agents={agents}
+                    defaultAgent={effectiveDefaultAgent}
+                    notices={mergedNotices}
                     theme={theme}
                     onToggleTheme={toggleTheme}
                     onToggleSidebar={toggleSidebar}
                     hasGlobalAttention={attention.size > 0}
-                    onSetArchived={setArchived}
-                    onAskUserResponse={sendAskUserResponse}
-                    onPermissionPromptResponse={sendPermissionPromptResponse}
-                    onEditMessage={editMessage}
-                    onEditRawEvent={editRawEvent}
-                    defaultAgent={effectiveDefaultAgent}
-                    agentUsage={agentUsage}
-                    ui={ui}
-                    getTaskHref={getTaskHref}
-                    subtaskEnd={
-                      resultParentTid === undefined
-                        ? undefined
-                        : {
-                            parentHref: getTaskHref(String(resultParentTid)),
-                            parentTitle: getByTid(resultParentTid)?.title,
-                            failed: task.status === "failed",
-                          }
-                    }
+                    imageStore={controlledImageStore}
                   />
                 </div>
-              );
-            })}
-          {!draftView && !activeTaskPaneRenderable && (
-            <>
-              <SystemBanner
-                sessionInfo={null}
-                defaultAgent={effectiveDefaultAgent}
-                connected={connected}
-                tasksLoading={tasksLoading}
-                totalCost={0}
-                isProcessing={false}
-                stdinClosed={false}
-                alive={false}
-                canStop={false}
-                theme={theme}
-                onToggleTheme={toggleTheme}
-                onStop={() => {}}
-                onCloseStdin={() => {}}
-                taskType={undefined}
-                onToggleSidebar={toggleSidebar}
-                hasGlobalAttention={attention.size > 0}
+              )}
+              {Array.from(tasks.values())
+                .filter((t) => {
+                  if (
+                    draftView?.kind === "resolved" &&
+                    draftView.remoteTid === t.tid
+                  )
+                    return false;
+                  if (
+                    t.status === "pending" &&
+                    t.messages.length === 0 &&
+                    !t.isProcessing
+                  )
+                    return false;
+                  return (
+                    t.everLoaded ||
+                    t.historyLoaded ||
+                    String(t.tid) === activeTaskId ||
+                    String(t.tid) === browserTaskId
+                  );
+                })
+                .map((task) => {
+                  if (task.tid === null) {
+                    throw new Error("Task pane requires a numeric tid");
+                  }
+                  const isActive =
+                    String(task.tid) === activeTaskId ||
+                    String(task.tid) === browserTaskId;
+                  const resultParentTid = tasksLoaded
+                    ? subtaskResultParent(
+                        {
+                          tid: task.tid,
+                          status: task.status,
+                          parentTid: task.parentTid,
+                          relationType: task.relationType,
+                        },
+                        continuationPredecessors,
+                        getByTid,
+                      )
+                    : undefined;
+                  const agent = agents.find(
+                    ({ name }) =>
+                      name === (task.agentName || task.sessionInfo?.agent_name),
+                  );
+                  return (
+                    <div
+                      key={task.uuid}
+                      data-tid={task.tid}
+                      style={{ display: isActive ? "contents" : "none" }}
+                    >
+                      <SessionView
+                        heicConversion={heicConversion}
+                        getHeicConversion={getHeicConversion}
+                        task={task}
+                        createdBy={createdByLink(task, getByTid, getTaskHref)}
+                        connected={connected}
+                        tasksLoading={tasksLoading}
+                        isActive={isActive}
+                        onSend={send}
+                        onInterrupt={interrupt}
+                        onStop={stop}
+                        onCloseStdin={closeStdin}
+                        onResume={resume}
+                        onPromote={promote}
+                        onFork={fork}
+                        onUndo={undoPreview}
+                        onUnsend={unsendMessage}
+                        onApproveRetry={approveRetry}
+                        onUndoConfirm={undoConfirm}
+                        onUndoDismiss={undoDismiss}
+                        onClearInputDraft={clearInputDraft}
+                        ordinaryDraftStore={ordinaryDraftStore}
+                        onSaveDraft={saveDraft}
+                        theme={theme}
+                        onToggleTheme={toggleTheme}
+                        onToggleSidebar={toggleSidebar}
+                        hasGlobalAttention={attention.size > 0}
+                        onSetArchived={setArchived}
+                        onAskUserResponse={sendAskUserResponse}
+                        onPermissionPromptResponse={
+                          sendPermissionPromptResponse
+                        }
+                        onEditMessage={editMessage}
+                        onEditRawEvent={editRawEvent}
+                        agentDisplayName={agent?.display_name ?? agent?.driver}
+                        getTaskHref={getTaskHref}
+                        subtaskEnd={
+                          resultParentTid === undefined
+                            ? undefined
+                            : {
+                                parentHref: getTaskHref(
+                                  String(resultParentTid),
+                                ),
+                                parentTitle: getByTid(resultParentTid)?.title,
+                                failed: task.status === "failed",
+                              }
+                        }
+                      />
+                    </div>
+                  );
+                })}
+              {!draftView && !activeTaskPaneRenderable && (
+                <>
+                  {placeholderBar}
+                  <div class="session-empty">
+                    <div class="session-empty-inner">{placeholderContent}</div>
+                  </div>
+                </>
+              )}
+              {searchPopup}
+              {serverError && (
+                <CommandErrorDialog
+                  message={serverError.message}
+                  onDismiss={dismissServerError}
+                />
+              )}
+              <Toast
+                toasts={toasts}
+                onDismiss={dismissToast}
+                onClearAll={clearToasts}
               />
-              <div class="session-empty">
-                <div class="session-empty-inner">{placeholderContent}</div>
-              </div>
             </>
+          ) : (
+            placeholderBar
           )}
-          {searchPopup}
-          {serverError && (
-            <CommandErrorDialog
-              message={serverError.message}
-              onDismiss={dismissServerError}
-            />
-          )}
-          <Toast
-            toasts={toasts}
-            onDismiss={dismissToast}
-            onClearAll={clearToasts}
-          />
         </div>
       </ThemeContext.Provider>
     </DevModeContext.Provider>

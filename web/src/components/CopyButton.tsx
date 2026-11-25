@@ -3,7 +3,7 @@ import type { ComponentChildren } from "preact";
 import copyIcon from "../icons/copy.svg?raw";
 import checkIcon from "../icons/check.svg?raw";
 
-export function CopyButton({ text }: { text: string }) {
+export function useCopyFeedback(text: string) {
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
 
@@ -35,6 +35,11 @@ export function CopyButton({ text }: { text: string }) {
       });
   }, [setCopiedBriefly, setCopyFailedBriefly, text]);
 
+  return { copied, copyFailed, onClick };
+}
+
+export function CopyButton({ text }: { text: string }) {
+  const { copied, copyFailed, onClick } = useCopyFeedback(text);
   return (
     <button
       class={`btn-copy${copied ? " copied" : ""}${copyFailed ? " failed" : ""}`}

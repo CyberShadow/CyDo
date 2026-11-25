@@ -509,6 +509,12 @@ function buildFileTree(paths: string[]): TreeNode[] {
   return rootChildren;
 }
 
+export function firstTreePath(paths: string[]): string | undefined {
+  let node = buildFileTree(paths)[0];
+  while (node && !node.isLeaf) node = node.children[0];
+  return node?.fullPath;
+}
+
 function FileTreeNode({
   node,
   depth,

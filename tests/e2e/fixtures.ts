@@ -157,6 +157,10 @@ export function lastAssistantText(
   return assistantText(page, textOrRegex).last();
 }
 
+export function activeStatusBand(page: Page) {
+  return page.locator("[style*='display: contents'] .status-band");
+}
+
 /** Kill the active session and wait for it to become inactive. */
 export async function killSession(page: Page, agentType: AgentType) {
   await page.locator(".btn-banner-stop").click();

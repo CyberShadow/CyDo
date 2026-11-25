@@ -192,9 +192,9 @@ for (const theme of ['dark', 'light'] as const) {
         .waitFor({ state: 'visible', timeout: 30_000 });
 
       // Reopen sidebar for the screenshot
-      await page.locator('.system-banner .hamburger-btn')
+      await page.locator('.task-bar:visible .hamburger-btn')
         .waitFor({ state: 'visible', timeout: 5_000 });
-      await page.locator('.system-banner .hamburger-btn').click();
+      await page.locator('.task-bar:visible .hamburger-btn').click();
       await page.locator('.sidebar').waitFor({ state: 'visible', timeout: 5_000 });
 
       await page.screenshot({ path: `${OUTPUT_DIR}/mobile-sidebar-${theme}.png` });

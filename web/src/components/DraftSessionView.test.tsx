@@ -110,6 +110,10 @@ describe("DraftSessionView draft availability", () => {
   const mount = (
     draftView: DraftView,
     imageStore?: ReturnType<typeof createControlledImageStore>,
+    connection: { connected: boolean; tasksLoading: boolean } = {
+      connected: true,
+      tasksLoading: false,
+    },
   ) => {
     roots.render(
       <DraftSessionView
@@ -118,8 +122,7 @@ describe("DraftSessionView draft availability", () => {
         key={draftView.viewKey}
         draftView={draftView}
         imageStore={imageStore}
-        connected={true}
-        tasksLoading={false}
+        {...connection}
         entryPoints={entryPoints}
         agents={agents}
         defaultAgent="codex"
@@ -157,6 +160,43 @@ describe("DraftSessionView draft availability", () => {
   beforeEach(() => {
     container = roots.create();
   });
+
+  it.each([
+    [false, true, "disconnected", "Disconnected"],
+    [true, true, "loading", "Loading…"],
+    [true, false, "connected", "codex"],
+  ] as const)(
+    "shows the default agent on a %s/%s draft",
+    (connected, tasksLoading, status, tooltip) => {
+      mount(
+        {
+          kind: "unresolved",
+          viewKey: "composition:loading",
+          workspace: "workspace",
+          projectName: "project",
+          projectPath: "/project",
+          remoteTid: null,
+          text: "",
+          entryPoint: "",
+          agent: "",
+          lifecycle: "idle",
+          disabled: true,
+          metadataReady: false,
+          submitReady: false,
+          composerResetToken: 0,
+        },
+        undefined,
+        { connected, tasksLoading },
+      );
+
+      const bar = container.querySelector(".task-bar")!;
+      const agent = bar.querySelector(".task-bar-agent")!;
+      expect(bar.getAttribute("data-connection")).toBe(status);
+      expect(agent.textContent).toBe("codex");
+      expect(agent.getAttribute("title")).toBe(tooltip);
+      expect(bar.lastElementChild?.matches(".theme-toggle")).toBe(true);
+    },
+  );
 
   it("discards a pending image read from the retired editor after clear", async () => {
     const reader = mockImageReader();

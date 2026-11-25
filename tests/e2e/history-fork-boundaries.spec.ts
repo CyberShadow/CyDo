@@ -1,4 +1,5 @@
 import {
+  activeStatusBand,
   test,
   expect,
   enterSession,
@@ -253,10 +254,8 @@ test(
 
     const earlierAssistant = message(page, ".assistant-message", earlierReply);
     const forkButton = earlierAssistant.locator(".fork-btn");
-    const processing = page.locator(
-      "[style*='display: contents'] .banner-processing",
-    );
-    await expect(processing).toBeHidden();
+    const statusBand = activeStatusBand(page);
+    await expect(statusBand).toHaveAttribute("data-status", "idle");
     await earlierAssistant.hover();
     await expect(forkButton).toBeVisible();
 
@@ -264,7 +263,7 @@ test(
     await expect(
       page.locator(".user-message", { hasText: "stall session" }),
     ).toBeVisible();
-    await expect(processing).toBeVisible();
+    await expect(statusBand).toHaveAttribute("data-status", /^(working|requesting)$/);
     await earlierAssistant.hover();
 
     if (agentType === "codex") {

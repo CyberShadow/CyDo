@@ -18,7 +18,7 @@ test(
       timeout: responseTimeout(agentType),
     });
 
-    const headerModel = page.locator(".banner-model");
+    const headerModel = page.locator(".task-bar:visible .banner-model");
     await expect(headerModel).toHaveText("gpt-5.6-sol");
 
     await sendMessage(page, "call switchmode plan");

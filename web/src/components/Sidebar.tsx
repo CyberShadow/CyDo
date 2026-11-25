@@ -1,3 +1,5 @@
+import type { AgentUsageMessage, UiConfig } from "../protocol";
+import { AccountUsage } from "./AccountUsage";
 import { memo } from "preact/compat";
 import {
   useCallback,
@@ -680,6 +682,8 @@ interface Props {
   onOpenSearch?: () => void;
   onArchive?: (tid: number) => void;
   hasGlobalAttention?: boolean;
+  claudeUsage?: AgentUsageMessage;
+  ui?: UiConfig;
 }
 
 export const Sidebar = memo(function Sidebar({
@@ -701,6 +705,8 @@ export const Sidebar = memo(function Sidebar({
   onOpenSearch,
   onArchive,
   hasGlobalAttention,
+  claudeUsage,
+  ui,
 }: Props) {
   const tree = useMemo(() => buildTree(tasks), [tasks]);
   const flatItems = useMemo(
@@ -934,6 +940,7 @@ export const Sidebar = memo(function Sidebar({
           )}
         </div>
       </div>
+      <AccountUsage claudeUsage={claudeUsage} ui={ui} />
       <div
         class="sidebar-list-wrapper"
         data-glow-above={glowAbove === "none" ? undefined : glowAbove}

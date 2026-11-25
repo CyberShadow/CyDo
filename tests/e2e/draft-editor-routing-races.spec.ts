@@ -491,12 +491,12 @@ test("held incremental bootstrap keeps an archived child route truthful", async 
       observerWindow.__cydoHeldBootstrapObserver?.observer?.disconnect();
       const count = (node: Element, selector: string) =>
         Number(node.matches(selector)) + node.querySelectorAll(selector).length;
+      const connectedBar = '.task-bar[data-connection="connected"]';
       const state: HeldBootstrapObserverState = {
         sawNotFound: false,
         sawConnectedWithPlaceholder: false,
         loadingItems: document.querySelectorAll(".sidebar-loading-item").length,
-        connectedStatuses: document.querySelectorAll(".banner-status.connected")
-          .length,
+        connectedStatuses: document.querySelectorAll(connectedBar).length,
         observer: null,
       };
       const inspect = () => {
@@ -510,7 +510,7 @@ test("held incremental bootstrap keeps an archived child route truthful", async 
         if (!(node instanceof Element)) return;
         state.loadingItems += direction * count(node, ".sidebar-loading-item");
         state.connectedStatuses +=
-          direction * count(node, ".banner-status.connected");
+          direction * count(node, connectedBar);
       };
       const observer = new MutationObserver((records) => {
         for (const record of records) {
@@ -521,13 +521,8 @@ test("held incremental bootstrap keeps an archived child route truthful", async 
             record.type === "attributes" &&
             record.target instanceof Element
           ) {
-            const oldClasses = record.oldValue?.split(/\s+/) ?? [];
-            const wasConnected =
-              oldClasses.includes("banner-status") &&
-              oldClasses.includes("connected");
-            const isConnected = record.target.matches(
-              ".banner-status.connected",
-            );
+            const wasConnected = record.oldValue === "connected";
+            const isConnected = record.target.matches(connectedBar);
             state.connectedStatuses +=
               Number(isConnected) - Number(wasConnected);
           } else if (record.target.textContent?.includes(notFoundText)) {
@@ -542,7 +537,7 @@ test("held incremental bootstrap keeps an archived child route truthful", async 
         subtree: true,
         characterData: true,
         attributes: true,
-        attributeFilter: ["class"],
+        attributeFilter: ["data-connection"],
         attributeOldValue: true,
       });
       observerWindow.__cydoHeldBootstrapObserver = state;
@@ -600,9 +595,12 @@ test("held incremental bootstrap keeps an archived child route truthful", async 
   await parentRow.click();
   await expect(page).toHaveURL(parentURL);
   expect(proxy.connectionCount()).toBe(initialSocketCount);
-  const loadingBanner = page.locator(".banner-status.loading:visible");
+  const loadingBanner = page.locator('.task-bar[data-connection="loading"]:visible');
   await expect(loadingBanner).toHaveCount(1);
-  await expect(loadingBanner).toHaveText("Loading…");
+  await expect(loadingBanner.locator(".task-bar-agent")).toHaveAttribute(
+    "title",
+    "Loading…",
+  );
   await expect(
     page.locator(".sidebar").getByText("Loading…", { exact: true }),
   ).toHaveCount(0);
@@ -644,9 +642,8 @@ test("held incremental bootstrap keeps an archived child route truthful", async 
   });
   await expect(parentPlaceholder).toHaveCount(0);
   await expect(page.locator(".sidebar-loading-item")).toHaveCount(0);
-  const connectedBanner = page.locator(".banner-status.connected:visible");
+  const connectedBanner = page.locator('.task-bar[data-connection="connected"]:visible');
   await expect(connectedBanner).toHaveCount(1);
-  await expect(connectedBanner).toHaveText("Connected");
   await expect(taskLoading).toHaveCount(0);
   await expect(
     page.getByText(`Task ${childTid} not found`, { exact: true }),

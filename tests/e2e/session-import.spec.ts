@@ -21,6 +21,7 @@ import type { ChildProcess } from "child_process";
 import { randomUUID } from "node:crypto";
 import { copyFileSync, globSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from "fs";
 import { writeTestConfig } from "./test-config";
+import { activeStatusBand } from "./fixtures";
 
 // ---------------------------------------------------------------------------
 // Helpers (following discover.spec.ts pattern)
@@ -390,7 +391,7 @@ test("import replay shows a real Claude compact boundary", { tag: "@claude-only"
     await expect(page.locator(".compact-boundary-message")).toBeVisible();
 
     // Completed imported sessions should not resurrect transient banners.
-    await expect(page.locator(".banner-processing")).not.toBeVisible();
+    await expect(activeStatusBand(page)).toHaveAttribute("data-status", "idle");
   } finally {
     await killBackend(proc);
     rmSync(workDir, { recursive: true, force: true });

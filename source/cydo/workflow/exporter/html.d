@@ -10,7 +10,7 @@ import cydo.agent.resolver : tryCreateConfiguredAgent;
 import cydo.runtime.config : AgentDriver, CydoConfig;
 import cydo.protocol : TaskEventSeqEnvelope, TranslatedEvent;
 import cydo.domain.storage.persistence : Persistence;
-import cydo.domain.tasks.model : TaskData, TypeInfoEntry;
+import cydo.domain.tasks.model : TaskData, TypeInfoEntry, stdTimeToUnixMillis;
 import cydo.workflow.history.jsonl_store : loadTaskHistory;
 import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 	HistoryAccess, ResolvedNativeHistoryContext, resolveNativeHistoryContext;
@@ -148,7 +148,7 @@ string exportTaskData(Persistence.TaskRow[] taskRows, ref CydoConfig config,
 		taskExports ~= TaskExport(t.tid, t.title, t.status, t.parentTid,
 			t.relationType, t.workspace, t.projectPath, t.taskType,
 			t.agentName, agent is null ? "" : to!string(agent.driver),
-			t.createdAt, t.lastActive);
+			stdTimeToUnixMillis(t.createdAt), stdTimeToUnixMillis(t.lastActive));
 	}
 
 	// Load history events for each task
@@ -235,6 +235,26 @@ string exportTaskData(Persistence.TaskRow[] taskRows, ref CydoConfig config,
 
 	return `{"tasks":` ~ toJson(taskExports) ~ `,"events":` ~ eventsJson
 		~ `,"typeInfo":` ~ toJson(typeInfo) ~ `}`;
+}
+
+unittest
+{
+	import std.datetime : SysTime, UTC;
+	import std.json : parseJSON;
+
+	Persistence.TaskRow row;
+	row.tid = 1;
+	row.createdAt = SysTime.fromUnixTime(1_700_000_000, UTC()).stdTime + 1_230_000;
+	row.lastActive = SysTime.fromUnixTime(1_700_000_001, UTC()).stdTime + 4_560_000;
+
+	CydoConfig config;
+	auto task = parseJSON(exportTaskData([row], config, null, null))["tasks"].array[0];
+	assert(task["created_at"].integer == 1_700_000_000_123);
+	assert(task["last_active"].integer == 1_700_000_001_456);
+
+	row.lastActive = 0;
+	task = parseJSON(exportTaskData([row], config, null, null))["tasks"].array[0];
+	assert(task["last_active"].integer == 0);
 }
 
 /// Read the export HTML template and inject jsonData by replacing

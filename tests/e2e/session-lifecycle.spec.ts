@@ -1,4 +1,5 @@
 import {
+  activeStatusBand,
   test,
   expect,
   enterSession,
@@ -88,7 +89,7 @@ test("resumed session starts in idle state", async ({ page, agentType }) => {
   await expect(page.locator(".btn-banner-stop")).toBeVisible();
 
   // After resume completes, the session must be idle — not in processing state
-  await expect(page.locator(".banner-processing")).not.toBeVisible();
+  await expect(activeStatusBand(page)).toHaveAttribute("data-status", "idle");
   await expect(page.locator(".btn-stop")).not.toBeVisible();
 
   const input = page.locator(".input-textarea").first();

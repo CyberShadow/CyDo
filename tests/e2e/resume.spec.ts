@@ -877,7 +877,7 @@ test(
 
     await expect(assistantText(page, "deferred-history-check")).toBeVisible();
 
-    const modelBeforeRestart = await page.locator(".banner-model").textContent();
+    const modelBeforeRestart = await page.locator(".task-bar:visible .banner-model").textContent();
     expect(modelBeforeRestart).toBeTruthy();
 
     // Brief pause for JSONL to finish writing before killing.
@@ -950,7 +950,7 @@ test(
     expect(sessionMetadataInReplay).toContainEqual(
       expect.objectContaining({ model: modelBeforeRestart }),
     );
-    await expect(page.locator(".banner-model")).toHaveText(modelBeforeRestart!);
+    await expect(page.locator(".task-bar:visible .banner-model")).toHaveText(modelBeforeRestart!);
   },
 );
 

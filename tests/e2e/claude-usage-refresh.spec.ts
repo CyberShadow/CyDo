@@ -1,6 +1,7 @@
 import { writeFileSync } from "fs";
 import type { Page } from "@playwright/test";
 import {
+  activeStatusBand,
   assistantText,
   enterSession,
   expect,
@@ -51,9 +52,9 @@ async function usageRequests(): Promise<number> {
 
 function usageValue(page: Page, label: string) {
   return page
-    .locator(".banner-usage .banner-usage-row")
+    .locator(".sidebar-account .account-usage-row")
     .filter({ has: page.getByText(label, { exact: true }) })
-    .locator(".banner-usage-value");
+    .locator(".account-usage-value");
 }
 
 test.beforeEach(() => {
@@ -120,9 +121,9 @@ idleTest("timer refresh updates usage while idle", { tag: "@claude-only" }, asyn
   await expect(assistantText(page, "hello")).toHaveCount(1, {
     timeout: responseTimeout(agentType),
   });
-  await expect(page.locator(".banner-processing")).toHaveCount(0);
+  await expect(activeStatusBand(page)).toHaveAttribute("data-status", "idle");
   await expect.poll(usageRequests).toBeGreaterThanOrEqual(1);
-  await expect(page.locator(".banner-usage")).toHaveCount(0);
+  await expect(page.locator(".sidebar-account .account-usage")).toHaveCount(0);
 
   await setUsage(200, usageWindows(61.25, 81.25));
   await expect(usageValue(page, "5h")).toHaveText("61%");

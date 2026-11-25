@@ -21,12 +21,7 @@ import type {
   AgentInfo,
   DraftView,
 } from "../useSessionManager";
-import type {
-  AgentUsageMessage,
-  HeicConversionStatus,
-  Notice,
-  UiConfig,
-} from "../protocol";
+import type { HeicConversionStatus, Notice } from "../protocol";
 import type { OrdinaryDraftStore } from "../ordinaryDraftStore";
 import { NoticeBar } from "./NoticeBar";
 import { SystemBanner, normalizeSessionStatus } from "./SystemBanner";
@@ -38,8 +33,10 @@ import { SessionConfig } from "./SessionConfig";
 import { AgentPicker } from "./AgentPicker";
 import { AskUserForm } from "./AskUserForm";
 import { PermissionPromptForm } from "./PermissionPromptForm";
+import { TaskOrigin } from "./TaskOrigin";
 import {
   FileViewer,
+  firstTreePath,
   fileViewerModeForSelection,
   type ViewMode,
 } from "./FileViewer";
@@ -83,13 +80,11 @@ interface Props {
   onSetArchived?: (tid: number, archived: boolean) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
   onEditRawEvent?: (tid: number, seq: number, content: string) => void;
-  defaultAgent?: string;
+  agentDisplayName?: string;
   exportMode?: boolean;
   getTaskHref?: (id: string) => string;
   subtaskEnd?: SubtaskEnd;
   createdBy?: CreatedByLink;
-  agentUsage?: Record<string, AgentUsageMessage>;
-  ui?: UiConfig;
   heicConversion: HeicConversionStatus;
   getHeicConversion: () => HeicConversionStatus;
 }
@@ -123,13 +118,11 @@ function SessionViewInner({
   onSetArchived,
   onEditMessage,
   onEditRawEvent,
-  defaultAgent,
+  agentDisplayName,
   exportMode,
   getTaskHref,
   subtaskEnd,
   createdBy,
-  agentUsage,
-  ui,
   heicConversion,
   getHeicConversion,
 }: Props) {
@@ -185,7 +178,9 @@ function SessionViewInner({
         open: true,
         selectedFile: absolutePath,
         selectedEditIndex:
-          tracked && tracked.edits.length > 0 ? tracked.edits.length - 1 : null,
+          mode !== "cumulative" && tracked && tracked.edits.length > 0
+            ? tracked.edits.length - 1
+            : null,
         viewMode: fileViewerModeForSelection(
           mode ?? prev?.viewMode,
           absolutePath,
@@ -397,9 +392,14 @@ function SessionViewInner({
     };
   }, [isActive]);
 
-  const claudeUsage = task.usageProfile
-    ? agentUsage?.[task.usageProfile]
-    : undefined;
+  const toggleTaskChanges = () => {
+    if (fileViewerState) {
+      closeFileViewer();
+    } else {
+      const path = firstTreePath([...task.trackedFiles.keys()]);
+      if (path !== undefined) openFileViewer(path, "cumulative");
+    }
+  };
 
   const baseDir = task.sessionInfo?.cwd || null;
   const fileAccess = useMemo(
@@ -415,14 +415,25 @@ function SessionViewInner({
   const view = (
     <>
       <SystemBanner
-        createdBy={createdBy}
+        tid={task.tid ?? undefined}
+        title={task.title}
+        agentName={
+          task.agentName ||
+          task.sessionInfo?.agent_name ||
+          task.sessionInfo?.agent
+        }
+        agentDisplayName={agentDisplayName ?? task.sessionInfo?.agent}
+        agentDriver={task.driver}
         sessionInfo={task.sessionInfo}
-        defaultAgent={defaultAgent}
-        sessionStatus={task.sessionStatus}
+        entryPoint={task.entryPoint}
+        createdAt={task.createdAt}
+        lastActive={task.lastActive}
+        trackedFileCount={task.trackedFiles.size}
+        filesOpen={fileViewerState !== null}
+        onToggleFiles={toggleTaskChanges}
         connected={connected}
         tasksLoading={tasksLoading}
-        totalCost={task.totalCost}
-        isProcessing={task.isProcessing}
+        cost={task.totalCost}
         stdinClosed={task.stdinClosed}
         alive={task.alive}
         canStop={task.canStop}
@@ -445,8 +456,6 @@ function SessionViewInner({
           onResume(task.uuid);
         }}
         exportMode={exportMode}
-        claudeUsage={claudeUsage}
-        ui={ui}
       />
       {fileViewerState && (
         <FileViewer
@@ -492,6 +501,7 @@ function SessionViewInner({
       ) : (
         <MessageList
           taskTid={tid}
+          createdBy={createdBy}
           messages={task.messages}
           replacementEvents={task.replacementEvents}
           historyOperations={task.historyOperations}
@@ -725,9 +735,8 @@ export function DraftSessionView({
     };
   }, [disabled]);
 
-  const taskType = entryPoints.find(
-    (entryPoint) => entryPoint.name === draftView.entryPoint,
-  )?.task_type;
+  const agentName = draftView.agent || defaultAgent;
+  const agent = agents.find((entry) => entry.name === agentName);
   const changeText = (text: string) => {
     if (draftView.kind === "resolved") draftView.onTextChange(text);
   };
@@ -747,26 +756,20 @@ export function DraftSessionView({
   return (
     <>
       <SystemBanner
-        createdBy={createdBy}
-        sessionInfo={null}
-        defaultAgent={defaultAgent}
+        title="New task"
+        agentName={agentName}
+        agentDisplayName={agent?.display_name ?? agent?.driver}
+        agentDriver={agent?.driver}
         connected={connected}
         tasksLoading={tasksLoading}
-        totalCost={0}
-        isProcessing={false}
-        stdinClosed={false}
-        alive={false}
-        canStop={false}
         theme={theme}
         onToggleTheme={onToggleTheme}
-        onStop={() => {}}
-        onCloseStdin={() => {}}
-        taskType={taskType}
         onToggleSidebar={onToggleSidebar}
         hasGlobalAttention={hasGlobalAttention}
       />
       <div class="welcome-prompt">
         <div class="session-empty-inner">
+          {createdBy && <TaskOrigin creator={createdBy} />}
           <div class="welcome-page-header">
             <LogoBanner />
           </div>

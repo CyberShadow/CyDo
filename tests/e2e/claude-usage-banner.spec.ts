@@ -16,7 +16,7 @@ test.use({
   },
 });
 
-test("usage banner reflects pushed rate_limit_event headers", async ({
+test("sidebar account usage reflects pushed rate_limit_event headers", async ({
   page,
   agentType,
 }) => {
@@ -35,23 +35,23 @@ test("usage banner reflects pushed rate_limit_event headers", async ({
     timeout,
   });
 
-  const usageWidget = page.locator(".banner-usage");
-  await expect(usageWidget).toBeVisible({ timeout });
+  const account = page.locator(".sidebar .sidebar-account");
+  await expect(account).toBeVisible({ timeout });
 
-  const fiveHourRow = usageWidget
-    .locator(".banner-usage-row")
+  const fiveHourRow = account
+    .locator(".account-usage-row")
     .filter({ hasText: "5h" })
     .first();
-  await expect(fiveHourRow.locator(".banner-usage-value")).toHaveText("42%");
+  await expect(fiveHourRow.locator(".account-usage-value")).toHaveText("42%");
 
-  const weekRow = usageWidget
-    .locator(".banner-usage-row")
+  const weekRow = account
+    .locator(".account-usage-row")
     .filter({ hasText: "Week" })
     .first();
-  await expect(weekRow.locator(".banner-usage-value")).toHaveText("71%");
+  await expect(weekRow.locator(".account-usage-value")).toHaveText("71%");
 });
 
-test("usage banner updates when display settings are reloaded", { tag: "@claude-only" }, async ({
+test("sidebar account usage updates when display settings are reloaded", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -69,10 +69,10 @@ test("usage banner updates when display settings are reloaded", { tag: "@claude-
   });
 
   const fiveHourRow = page
-    .locator(".banner-usage-row")
+    .locator(".sidebar .sidebar-account .account-usage-row")
     .filter({ has: page.getByText("5h", { exact: true }) });
-  const value = fiveHourRow.locator(".banner-usage-value");
-  const fill = fiveHourRow.locator(".banner-usage-fill");
+  const value = fiveHourRow.locator(".account-usage-value");
+  const fill = fiveHourRow.locator(".account-usage-fill");
   const width = () => fill.evaluate((element) => element.style.width);
 
   await expect(value).toHaveText("42%");
@@ -101,7 +101,7 @@ ui:
   await expect(fill).toHaveCSS("background-color", "rgb(220, 67, 67)");
 });
 
-test("custom Claude-backed agent still updates the Claude usage banner", { tag: "@claude-only" }, async ({
+test("custom Claude-backed agent still updates the Claude sidebar account usage", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -134,20 +134,20 @@ workspaces:
     timeout,
   });
 
-  await expect(page.locator(".banner-agent")).toContainText("work-claude");
+  await expect(page.locator(".task-bar-agent")).toContainText("work-claude");
 
-  const usageWidget = page.locator(".banner-usage");
-  await expect(usageWidget).toBeVisible({ timeout });
+  const account = page.locator(".sidebar .sidebar-account");
+  await expect(account).toBeVisible({ timeout });
 
-  const fiveHourRow = usageWidget
-    .locator(".banner-usage-row")
+  const fiveHourRow = account
+    .locator(".account-usage-row")
     .filter({ hasText: "5h" })
     .first();
-  await expect(fiveHourRow.locator(".banner-usage-value")).toHaveText("42%");
+  await expect(fiveHourRow.locator(".account-usage-value")).toHaveText("42%");
 
-  const weekRow = usageWidget
-    .locator(".banner-usage-row")
+  const weekRow = account
+    .locator(".account-usage-row")
     .filter({ hasText: "Week" })
     .first();
-  await expect(weekRow.locator(".banner-usage-value")).toHaveText("71%");
+  await expect(weekRow.locator(".account-usage-value")).toHaveText("71%");
 });

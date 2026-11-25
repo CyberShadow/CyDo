@@ -39,7 +39,7 @@ test("CreateTask leaves a draft linked to its creator", async ({
   await expect(page.locator(".input-textarea:visible")).toHaveValue(
     "reply with widget-fixed",
   );
-  const provenance = page.locator(".banner-created-by:visible");
+  const provenance = page.locator(".task-origin:visible a");
   await expect(provenance).toHaveAttribute("href", creatorHref);
   await provenance.click();
   await expect(creator).toHaveClass(/\bactive\b/);

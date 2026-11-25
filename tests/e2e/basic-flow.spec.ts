@@ -51,6 +51,9 @@ test("basic message and response", async ({ page, agentType }) => {
   await expect(lastAssistantText(page, "OK")).toBeVisible({
     timeout: responseTimeout(agentType),
   });
+  await expect(page.locator(".task-bar:visible .task-bar-agent")).toHaveText(
+    agentType,
+  );
 });
 
 test("tool call flow", async ({ page, agentType }) => {
@@ -96,7 +99,7 @@ test("codex tool call renders output content", { tag: "@codex-only" }, async ({ 
 
 test("codex agent type indicator", { tag: "@codex-only" }, async ({ page, agentType }) => {
   // Configure default_agent: claude so codex is a non-default agent.
-  // The banner indicator shows only when agent_name differs from the default.
+  // Verify the chip shows the selected agent when it differs from the default.
   writeTestConfig(
     "/tmp/playwright-home/.config/cydo/config.yaml",
     `default_agent: claude
@@ -122,8 +125,8 @@ workspaces:
     timeout: responseTimeout(agentType),
   });
   // codex is not the default agent (claude is), so the banner should show "codex".
-  await expect(page.locator(".banner-agent")).toBeVisible();
-  await expect(page.locator(".banner-agent")).toContainText("codex", {
+  await expect(page.locator(".task-bar-agent")).toBeVisible();
+  await expect(page.locator(".task-bar-agent")).toContainText("codex", {
     ignoreCase: true,
   });
 });

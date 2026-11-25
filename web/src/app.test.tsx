@@ -20,6 +20,8 @@ import { createOrdinaryDraftStore } from "./ordinaryDraftStore";
 const state = vi.hoisted(() => ({
   serverError: null as TaskManager["serverError"],
   dismissServerError: vi.fn(),
+  toggleTheme: vi.fn(),
+  agentUsage: {} as TaskManager["agentUsage"],
   sendPermissionPromptResponse: vi.fn(),
   draftView: null as TaskManager["draftView"],
   activeTaskId: null as string | null,
@@ -37,7 +39,11 @@ const state = vi.hoisted(() => ({
 }));
 
 const componentProps = vi.hoisted(() => ({
-  sidebar: [] as Array<{ tasksLoading: boolean; propNames: string[] }>,
+  sidebar: [] as Array<{
+    tasksLoading: boolean;
+    propNames: string[];
+    claudeUsage?: TaskManager["agentUsage"][string];
+  }>,
   sessionView: [] as Array<{ tasksLoading: boolean; tid: number | null }>,
   draftSessionView: [] as Array<{ tasksLoading: boolean }>,
   searchPopup: [] as Array<{ tasksLoaded: boolean }>,
@@ -69,6 +75,7 @@ vi.mock("./useSessionManager", () => ({
   useTaskManager: () =>
     ({
       tasks: state.tasks,
+      agentUsage: state.agentUsage,
       ordinaryDraftStore: (state.ordinaryDraftStore ??=
         createOrdinaryDraftStore()),
       activeTaskId: state.activeTaskId,
@@ -109,7 +116,6 @@ vi.mock("./useSessionManager", () => ({
       activeProject: state.activeProject,
       notices: {},
       localNotices: {},
-      agentUsage: {},
       serverError: state.serverError,
       dismissServerError: state.dismissServerError,
       devMode: false,
@@ -150,10 +156,13 @@ vi.mock("preact-iso", () => ({
 }));
 
 vi.mock("./components/Sidebar", () => ({
-  Sidebar: (props: { tasksLoading: boolean }) => {
+  Sidebar: (
+    props: Parameters<typeof import("./components/Sidebar").Sidebar>[0],
+  ) => {
     componentProps.sidebar.push({
       tasksLoading: props.tasksLoading,
       propNames: Object.keys(props),
+      claudeUsage: props.claudeUsage,
     });
     return null;
   },
@@ -201,7 +210,7 @@ vi.mock("./useTheme", () => ({
   ThemeContext: {
     Provider: ({ children }: { children: ComponentChildren }) => children,
   },
-  useTheme: () => ({ theme: "dark", toggleTheme: vi.fn() }),
+  useTheme: () => ({ theme: "dark", toggleTheme: state.toggleTheme }),
 }));
 
 vi.mock("./useToast", () => ({
@@ -228,6 +237,8 @@ beforeEach(() => {
   state.serverError = null;
   state.dismissServerError.mockReset();
   state.draftView = null;
+  state.toggleTheme.mockClear();
+  state.agentUsage = {};
   state.activeTaskId = null;
   state.activeWorkspace = null;
   state.activeProject = null;
@@ -280,11 +291,25 @@ function makeDraftView(): DraftViewSnapshot {
   };
 }
 
-function expectPlaceholderFrame(html: string): void {
+function expectPlaceholderFrame(
+  html: string,
+  connection: "connected" | "loading" | "disconnected" = "connected",
+): void {
   const root = document.createElement("div");
   root.innerHTML = html;
-  expect(root.querySelectorAll(".system-banner")).toHaveLength(1);
-  expect(root.querySelectorAll(".session-empty")).toHaveLength(1);
+  const bars = root.querySelectorAll(".task-bar");
+  expect(bars).toHaveLength(1);
+  expect(bars[0]?.getAttribute("data-connection")).toBe(connection);
+  expect(bars[0]?.querySelector(".task-bar-agent")).toBeNull();
+  expect(bars[0]?.querySelector(".task-bar-title")?.textContent ?? "").toBe(
+    { connected: "", loading: "Loading…", disconnected: "Disconnected" }[
+      connection
+    ],
+  );
+  expect(bars[0]?.lastElementChild?.matches(".theme-toggle")).toBe(true);
+  expect(root.querySelectorAll(".session-empty")).toHaveLength(
+    connection === "disconnected" ? 0 : 1,
+  );
 }
 
 describe("permission prompt responses", () => {
@@ -1526,19 +1551,31 @@ describe("missing numeric tasks", () => {
 
     const html = renderToString(h(App, {}));
 
-    expectPlaceholderFrame(html);
+    expectPlaceholderFrame(html, "loading");
     expect(html).toContain("Loading task…");
     expect(html).not.toContain(`Task ${tid} not found`);
   });
 
-  it("keeps loading while disconnected", () => {
-    // A real disconnect resets tasksListEpoch, so tasksLoaded goes false too.
-    state.activeTaskId = String(tid);
-    state.connected = false;
-    state.tasksLoaded = false;
+  it.each([String(tid), "archive-123", "import", null])(
+    "renders only the disconnected bar in the main area for route %s",
+    (activeTaskId) => {
+      state.activeTaskId = activeTaskId;
+      state.activeWorkspace = "workspace";
+      state.activeProject = "project";
+      state.draftView = activeTaskId === null ? makeDraftView() : null;
+      state.connected = false;
+      state.tasksLoaded = false;
 
-    expect(renderToString(h(App, {}))).toContain("Loading task…");
-  });
+      const html = renderToString(h(App, {}));
+
+      expectPlaceholderFrame(html, "disconnected");
+      expect(html).not.toMatch(
+        /Loading task…|Archived tasks|Importable sessions/,
+      );
+      expect(componentProps.draftSessionView).toHaveLength(0);
+      expect(componentProps.sessionView).toHaveLength(0);
+    },
+  );
 
   it("shows a not-found message for a malformed task id", () => {
     const task = makeTaskState(tid, false, false, "Known task 123");
@@ -1553,6 +1590,32 @@ describe("missing numeric tasks", () => {
     expect(state.getByTid).not.toHaveBeenCalled();
   });
 });
+
+it.each(["/profiles/work", undefined])(
+  "passes only the selected task's profile usage to the sidebar (%s)",
+  (usageProfile) => {
+    const usage = (profile: string, utilization: number) => ({
+      type: "agent_usage" as const,
+      profile,
+      updated_at: 1,
+      limits: { five_hour: { utilization } },
+    });
+    const workUsage = usage("/profiles/work", 42);
+    state.agentUsage = {
+      claude: usage("claude", 71),
+      "/profiles/work": workUsage,
+    };
+    const active = { ...makeTaskState(41), usageProfile };
+    state.activeTaskId = "41";
+    state.tasks = new Map([[active.uuid, active]]);
+
+    renderToString(h(App, {}));
+
+    expect(latest(componentProps.sidebar).claudeUsage).toEqual(
+      usageProfile ? workUsage : undefined,
+    );
+  },
+);
 
 describe("completion-aware task loading", () => {
   const roots = ownedRoots();
@@ -1610,7 +1673,7 @@ describe("completion-aware task loading", () => {
     });
   });
 
-  it("does not call disconnected task state loading while preserving the overlay", () => {
+  it("shows the task layout without a connection overlay when disconnected", () => {
     const active = {
       ...makeTaskState(42, false, false, "Disconnected task"),
       status: "completed" as const,
@@ -1623,12 +1686,49 @@ describe("completion-aware task loading", () => {
     const html = renderToString(h(App, {}));
 
     expect(latest(componentProps.sidebar).tasksLoading).toBe(false);
-    expect(latest(componentProps.sessionView)).toEqual({
-      tasksLoading: false,
-      tid: 42,
-    });
-    expect(html).toContain("connection-overlay");
-    expect(html).toContain("Connecting…");
+    expect(componentProps.sessionView).toHaveLength(0);
+    expectPlaceholderFrame(html, "disconnected");
+    expect(html).not.toContain("connection-overlay");
+    expect(html).not.toContain("Connecting…");
+  });
+
+  it("closes search on disconnect and ignores its shortcut until reconnect", async () => {
+    const container = roots.create();
+    state.activeWorkspace = "workspace";
+    state.activeProject = "project";
+    const pressSearch = () => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          ctrlKey: true,
+          key: "k",
+        }),
+      );
+    };
+
+    roots.render(h(App, {}), container);
+    await act(pressSearch);
+    expect(componentProps.searchPopup).toHaveLength(1);
+
+    state.serverError = { message: "Pending command error" };
+    roots.render(h(App, {}), container);
+    expect(container.querySelector(".command-error-dialog")).not.toBeNull();
+
+    state.connected = false;
+    state.tasksLoaded = false;
+    componentProps.searchPopup.length = 0;
+    roots.render(h(App, {}), container);
+    expectPlaceholderFrame(container.innerHTML, "disconnected");
+    expect(container.querySelector(".command-error-dialog")).toBeNull();
+    await act(pressSearch);
+    expect(componentProps.searchPopup).toHaveLength(0);
+
+    state.connected = true;
+    state.serverError = null;
+    roots.render(h(App, {}), container);
+    expect(componentProps.searchPopup).toHaveLength(0);
+    await act(pressSearch);
+    expect(componentProps.searchPopup).toHaveLength(1);
   });
 
   it("updates search and welcome components from partial to complete task lists", async () => {
@@ -1697,4 +1797,36 @@ describe("completion-aware task loading", () => {
     expect(completeHtml).toContain(`Task ${tid} not found`);
     expect(completeHtml).not.toContain("Loading task…");
   });
+});
+
+describe("welcome theme toggle", () => {
+  const roots = ownedRoots();
+
+  it.each([true, false])(
+    "offers theme switching without an account strip when connected is %s",
+    async (connected) => {
+      state.connected = connected;
+      state.agentUsage = {
+        claude: {
+          type: "agent_usage",
+          profile: "claude",
+          updated_at: 1_700_000_000,
+          limits: { five_hour: { utilization: 42 } },
+        },
+      };
+      const root = roots.create();
+      roots.render(h(App, {}), root);
+
+      const welcome = root.querySelector(".welcome-page-container")!;
+      expect(welcome.querySelector(".sidebar-account")).toBeNull();
+      const toggle = welcome.querySelector<HTMLButtonElement>(
+        ".theme-toggle.theme-toggle-corner",
+      )!;
+      expect(toggle.title).toBe("Switch to light theme");
+      await act(() => {
+        toggle.click();
+      });
+      expect(state.toggleTheme).toHaveBeenCalledOnce();
+    },
+  );
 });

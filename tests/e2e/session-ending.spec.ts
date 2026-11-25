@@ -1,4 +1,5 @@
 import {
+  activeStatusBand,
   test,
   expect,
   enterSession,
@@ -61,7 +62,9 @@ test("End button shows ending state then session exits", { tag: "@no-codex" }, a
   // The End button should disappear (or be hidden)
   await expect(page.locator(".btn-banner-end")).not.toBeVisible();
 
-  const ending = page.locator(".banner-processing", { hasText: "Ending..." });
+  const ending = activeStatusBand(page).and(
+    page.locator('[data-status="ending"]'),
+  );
   const stop = page.locator(".btn-banner-stop");
   const archive = page.locator(".btn-banner-archive");
 
@@ -94,8 +97,8 @@ test("End button shows ending state then session exits", { tag: "@no-codex" }, a
   // Eventually the session should exit and show the Archive button
   await expect(page.locator(".btn-banner-archive")).toBeVisible();
 
-  // "Ending..." should no longer be visible
-  await expect(page.locator(".banner-processing")).not.toBeVisible();
+  // The status band returns to idle once the task ends.
+  await expect(activeStatusBand(page)).toHaveAttribute("data-status", "idle");
 });
 
 test("background command output re-enters processing state", { tag: "@no-copilot" }, async ({
@@ -166,7 +169,9 @@ test("repro: ending capability matches Stop visibility", { tag: "@copilot-only" 
   await page.locator(".btn-banner-end").click();
   await expect(page.locator(".btn-banner-end")).not.toBeVisible();
 
-  const ending = page.locator(".banner-processing", { hasText: "Ending..." });
+  const ending = activeStatusBand(page).and(
+    page.locator('[data-status="ending"]'),
+  );
   const stop = page.locator(".btn-banner-stop");
   const archive = page.locator(".btn-banner-archive");
 

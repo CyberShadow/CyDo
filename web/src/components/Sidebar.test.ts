@@ -500,3 +500,48 @@ describe("Sidebar loading marker markup", () => {
     expect(container.textContent).not.toContain("(loading…)");
   });
 });
+
+describe("Sidebar account strip", () => {
+  const roots = ownedRoots();
+  const props = {
+    tasks: [],
+    tasksLoading: false,
+    activeTaskId: null,
+    attention: new Set<number>(),
+    onSelectTask: vi.fn(),
+    getTaskHref: (id: string) => `/task/${id}`,
+    taskTypes: [],
+  };
+
+  it("omits the account strip without account data and has no sidebar theme toggle", () => {
+    const root = roots.create();
+    roots.render(h(Sidebar, props), root);
+    expect(root.querySelector(".sidebar")).not.toBeNull();
+    expect(root.querySelector(".sidebar-account")).toBeNull();
+    expect(root.querySelector(".sidebar .theme-toggle")).toBeNull();
+  });
+
+  it("places Claude usage and the login warning in the sidebar account strip", () => {
+    const root = roots.create();
+    roots.render(
+      h(Sidebar, {
+        ...props,
+        claudeUsage: {
+          type: "agent_usage",
+          profile: "claude",
+          updated_at: 1_700_000_000,
+          credential_expires_at: "2020-01-01T00:00:00Z",
+          limits: { five_hour: { utilization: 42 } },
+        },
+      }),
+      root,
+    );
+    const account = root.querySelector(".sidebar .sidebar-account")!;
+    expect(account.querySelector(".account-usage-value")?.textContent).toBe(
+      "42%",
+    );
+    expect(account.querySelector(".account-login-expiry")?.textContent).toBe(
+      "Login expired",
+    );
+  });
+});

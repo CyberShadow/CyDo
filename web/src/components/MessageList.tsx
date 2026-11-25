@@ -1,3 +1,5 @@
+import type { CreatedByLink } from "../createdByLink";
+import { TaskOrigin } from "./TaskOrigin";
 import { memo } from "preact/compat";
 import {
   useEffect,
@@ -31,6 +33,7 @@ import errorIcon from "../icons/error.svg?raw";
 import closeIcon from "../icons/close.svg?raw";
 
 interface Props {
+  createdBy?: CreatedByLink;
   taskTid: number;
   messages: DisplayMessage[];
   replacementEvents: Map<number, import("../protocol").AgnosticEvent>;
@@ -963,6 +966,7 @@ function historyBoundaryOf(
 }
 
 export function MessageList({
+  createdBy,
   taskTid,
   messages,
   replacementEvents,
@@ -1192,6 +1196,7 @@ export function MessageList({
       <div class="message-list" ref={containerRef}>
         <StatusBand status={bandStatus} />
         <div class="message-list-inner">
+          {createdBy && <TaskOrigin creator={createdBy} />}
           {topLevelMessages.map((msg) => {
             const resolvedBlocks =
               msg.type === "assistant"
