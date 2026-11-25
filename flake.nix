@@ -618,8 +618,8 @@ EOF
       checks = forAllSystems (system:
         let
           pkgs = pkgsFor system;
-          cydo = self.packages.${system}.default;
-          cydoDebug = self.packages.${system}.cydoTest;
+          cydoDebug = self.packages.${system}.cydoDebug;
+          cydoTest = self.packages.${system}.cydoTest;
           backendDebug = self.packages.${system}.backendDebug;
           codex = self.packages.${system}.codex-cli;
           copilot = self.packages.${system}.copilot-cli;
@@ -868,7 +868,7 @@ EOF
               ''}
               CYDO_CFG
 
-              export CYDO_BIN="${cydoDebug}/bin/cydo"
+              export CYDO_BIN="${cydoTest}/bin/cydo"
               ${lib.optionalString (agentType == "codex" && (
                   lib.hasPrefix "e2e/codex-compaction.spec.ts:" testMatch
                   || lib.hasPrefix "e2e/undo-codex-compaction.spec.ts:" testMatch)) ''
@@ -1075,10 +1075,11 @@ EOF
               runHook postInstall
             '';
           };
+          release-build = self.packages.${system}.default;
           sandbox-init = pkgs.runCommand "cydo-sandbox-init-test" {
             nativeBuildInputs = [ pkgs.bubblewrap pkgs.python3 ];
           } ''
-            python3 ${./tests/sandbox-init.py} ${cydo}/bin/cydo
+            python3 ${./tests/sandbox-init.py} ${cydoDebug}/bin/cydo
             touch "$out"
           '';
           tool-descriptions = pkgs.stdenv.mkDerivation {
@@ -1088,7 +1089,7 @@ EOF
 
             buildPhase = ''
               runHook preBuild
-              ${cydo}/bin/cydo check-tool-descriptions
+              ${cydoDebug}/bin/cydo check-tool-descriptions
               runHook postBuild
             '';
 
