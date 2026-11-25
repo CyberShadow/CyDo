@@ -2,6 +2,7 @@
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { actPoll, ownedRoots } from "../../test-support/preactAct";
+import { LocalFileContext } from "../LocalFileContext";
 import { LiveFilePreview } from "./LiveFilePreview";
 
 describe("LiveFilePreview", () => {
@@ -34,10 +35,19 @@ describe("LiveFilePreview", () => {
     return fetchMock;
   }
 
-  async function mountPreview(path: string) {
+  async function mountPreview(path: string, withContext = true) {
     const root = roots.create();
     await act(() => {
-      roots.render(<LiveFilePreview tid={7} path={path} />, root);
+      roots.render(
+        <LocalFileContext.Provider
+          value={
+            withContext ? { tid: 7, baseDir: null, ancestorPaths: [] } : null
+          }
+        >
+          <LiveFilePreview path={path} />
+        </LocalFileContext.Provider>,
+        root,
+      );
     });
     return root;
   }
@@ -47,6 +57,20 @@ describe("LiveFilePreview", () => {
       notifyIntersection([{ isIntersecting }]);
     });
   }
+
+  it.each([
+    ["/image.png", false],
+    ["image.png", true],
+  ] as const)(
+    "does not observe or fetch %s with context=%s when live access is unavailable",
+    async (path, withContext) => {
+      const fetchMock = stubFetch();
+      const root = await mountPreview(path, withContext);
+      expect(root.childElementCount).toBe(0);
+      expect(observe).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("renders a PNG response inline as a data URL", async () => {
     const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);

@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import type { AskUserQuestionItem } from "../protocol";
+import { LocalFileContext } from "./LocalFileContext";
 import { Markdown } from "./Markdown";
 
 interface Props {
@@ -81,7 +82,13 @@ export function AskUserForm({ questions, onSubmit, onAbort }: Props) {
                 >
                   <span class="ask-option-label">{opt.label}</span>
                   {opt.description && (
-                    <Markdown text={opt.description} class="ask-option-desc" />
+                    <LocalFileContext.Provider value={null}>
+                      <Markdown
+                        text={opt.description}
+                        class="ask-option-desc"
+                        enableSourceToggle={false}
+                      />
+                    </LocalFileContext.Provider>
                   )}
                 </button>
               );

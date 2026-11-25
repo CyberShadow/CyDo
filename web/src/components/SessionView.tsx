@@ -1,9 +1,11 @@
+import { LocalFileContext } from "./LocalFileContext";
 import type { CreatedByLink } from "../createdByLink";
 import { memo } from "preact/compat";
 import {
   useRef,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useState,
   useCallback,
 } from "preact/hooks";
@@ -392,7 +394,13 @@ function SessionViewInner({
     ? agentUsage?.[task.usageProfile]
     : undefined;
 
-  return (
+  const baseDir = task.sessionInfo?.cwd || null;
+  const fileAccess = useMemo(
+    () => ({ tid, baseDir, ancestorPaths: [] }),
+    [tid, baseDir],
+  );
+
+  const view = (
     <>
       <SystemBanner
         createdBy={createdBy}
@@ -582,6 +590,13 @@ function SessionViewInner({
         </>
       )}
     </>
+  );
+  return exportMode ? (
+    view
+  ) : (
+    <LocalFileContext.Provider value={fileAccess}>
+      {view}
+    </LocalFileContext.Provider>
   );
 }
 

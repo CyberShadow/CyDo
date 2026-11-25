@@ -1,3 +1,6 @@
+// @vitest-environment jsdom
+import { act } from "preact/test-utils";
+import { ownedRoots } from "../test-support/preactAct";
 import { describe, expect, it, vi } from "vitest";
 import renderToString from "preact-render-to-string";
 import { makeTaskState, type TaskState } from "../types";
@@ -6,22 +9,31 @@ import type { AgentUsageMessage } from "../protocol";
 
 vi.hoisted(() => {
   vi.stubGlobal("CSS", { supports: () => false });
+  vi.stubGlobal("matchMedia", () => ({
+    matches: true,
+    addEventListener() {},
+    removeEventListener() {},
+  }));
 });
 
 import { SessionView, UndoConfirmDialog } from "./SessionView";
 
-function renderSession(
+const roots = ownedRoots();
+
+function session(
   undoPending: TaskState["undoPending"],
   state: Partial<TaskState> = {},
+  exportMode = false,
   agentUsage?: Record<string, AgentUsageMessage>,
 ) {
-  return renderToString(
+  return (
     <SessionView
       task={{ ...makeTaskState(7), undoPending, ...state }}
       agentUsage={agentUsage}
       connected={true}
       tasksLoading={false}
       isActive={true}
+      exportMode={exportMode}
       onSend={() => {}}
       onInterrupt={() => {}}
       onStop={() => {}}
@@ -40,8 +52,16 @@ function renderSession(
       theme="dark"
       onToggleTheme={() => {}}
       onToggleSidebar={() => {}}
-    />,
+    />
   );
+}
+
+function renderSession(
+  undoPending: TaskState["undoPending"],
+  state: Partial<TaskState> = {},
+  agentUsage?: Record<string, AgentUsageMessage>,
+) {
+  return renderToString(session(undoPending, state, false, agentUsage));
 }
 
 describe("SessionView usage", () => {
@@ -182,3 +202,73 @@ describe("SessionView undo pending", () => {
     expect(html).toContain("2 whole turns will be removed.");
   });
 });
+
+it.each([
+  ["an exported session", true, "/w/report.md", "/w/app.d"],
+  ["a session with an empty cwd", false, "report.md", "app.d"],
+] as const)(
+  "renders assistant local embeds inert in %s",
+  async (_name, exported, report, source) => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => new Promise(() => {}));
+    const root = roots.create();
+
+    try {
+      await act(() => {
+        roots.render(
+          session(
+            null,
+            {
+              historyLoaded: true,
+              status: "completed",
+              sessionInfo: {
+                sessionId: "sid",
+                model: "claude-sonnet",
+                version: "1.0.0",
+                cwd: exported ? "/w" : "",
+                tools: [],
+                permission_mode: "default",
+                supports_file_revert: false,
+              },
+              messages: [
+                {
+                  id: "reply",
+                  type: "assistant",
+                  content: [],
+                  blockIds: ["text"],
+                },
+              ],
+              blocks: new Map([
+                [
+                  "text",
+                  {
+                    itemId: "text",
+                    type: "text",
+                    text: `![Local report](${report}) [Source](${source})`,
+                    completed: true,
+                    creationOrder: 0,
+                  },
+                ],
+              ]),
+            },
+            exported,
+          ),
+          root,
+        );
+      });
+
+      const markdown = root.querySelector(".assistant-message .markdown")!;
+      expect(
+        Array.from(
+          markdown.querySelectorAll("span.local-file-link-inert"),
+          (span) => span.textContent,
+        ),
+      ).toEqual(["Local report", "Source"]);
+      expect(markdown.querySelector("a, img, button, figure")).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  },
+);

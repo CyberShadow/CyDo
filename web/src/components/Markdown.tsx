@@ -31,6 +31,7 @@ export const Markdown: FunctionComponent<Props> = memo(
     }
 
     const prevTextRef = useRef("");
+    const revision = useRef(0);
 
     const ast = useMemo(() => {
       const parser = parserRef.current!;
@@ -47,6 +48,7 @@ export const Markdown: FunctionComponent<Props> = memo(
       } else {
         // Full re-render (text changed non-incrementally)
         parser.reset();
+        revision.current++;
         const update = parser.append(text);
         prevTextRef.current = text;
         return update.ast;
@@ -58,7 +60,7 @@ export const Markdown: FunctionComponent<Props> = memo(
     if (!enableSourceToggle) {
       return (
         <div class={`markdown ${className ?? ""}`} {...rest}>
-          <MdastRenderer ast={ast} />
+          <MdastRenderer key={revision.current} ast={ast} />
         </div>
       );
     }
@@ -85,7 +87,7 @@ export const Markdown: FunctionComponent<Props> = memo(
           </CodePre>
         ) : (
           <div class={`markdown ${className ?? ""}`} {...rest}>
-            <MdastRenderer ast={ast} />
+            <MdastRenderer key={revision.current} ast={ast} />
           </div>
         )}
       </div>

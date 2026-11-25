@@ -1710,6 +1710,66 @@ body,
   text-decoration: underline;
 }
 
+.local-file-link-label {
+  color: var(--filepath);
+}
+
+.local-file-link-inert {
+  color: var(--text-dim);
+}
+
+.local-file-link-controls {
+  display: inline-flex;
+  margin-left: 4px;
+  vertical-align: text-bottom;
+}
+
+.local-file-link-controls > .msg-action-btn {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  appearance: none;
+  border-radius: 0;
+}
+
+.local-file-expansions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  margin: 0.5em 0;
+}
+
+.local-file-expansion {
+  margin: 0;
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+
+.local-file-expansion-caption {
+  padding: 4px 12px;
+  background: var(--tool-bg);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--filepath);
+  overflow-wrap: anywhere;
+}
+
+.local-file-expansion-body {
+  padding: 8px 12px;
+}
+
+.local-file-expansion-body .markdown-diff-wrap,
+.local-file-expansion-body .diff-view,
+.local-file-expansion-body .filechange-list {
+  margin-top: 0;
+}
+
+.local-file-expansion-body .tool-result-images,
+.local-file-expansion-body .tool-result-image {
+  margin-bottom: 0;
+}
+
 .markdown table {
   border-collapse: collapse;
   margin: 0.5em 0;
@@ -3108,6 +3168,12 @@ body,
   margin-top: 6px;
   padding: 8px;
   background: var(--overlay-faint);
+}
+
+.local-file-expansion-body .write-content-markdown {
+  margin-top: 0;
+  padding: 0;
+  background: transparent;
 }
 
 .source-tree-blocks {

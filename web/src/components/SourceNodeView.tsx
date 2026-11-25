@@ -14,6 +14,7 @@ import {
   renderHighlightedSource,
 } from "../highlight";
 import { CodePre, CopyButton } from "./CopyButton";
+import { LocalFileDocument } from "./LocalFileContext";
 import { Markdown } from "./Markdown";
 import { FileContentPreview } from "./file-preview/FileContentPreview";
 import { SourceRenderedToggle } from "./file-preview/SourceRenderedToggle";
@@ -79,6 +80,13 @@ export function SourceRichEmbedView({
   const blockClassName = blockClass ? ` ${blockClass}` : "";
 
   if (piece.mode === "rich-markdown") {
+    const markdown = (
+      <Markdown
+        text={piece.text}
+        class="text-content"
+        enableSourceToggle={false}
+      />
+    );
     return (
       <div class={`source-tree-rich-block${blockClassName}`}>
         <SourceRenderedToggle
@@ -89,11 +97,13 @@ export function SourceRichEmbedView({
             </CodePre>
           }
           renderedView={
-            <Markdown
-              text={piece.text}
-              class="text-content"
-              enableSourceToggle={false}
-            />
+            piece.document ? (
+              <LocalFileDocument filePath={piece.document.filePath}>
+                {markdown}
+              </LocalFileDocument>
+            ) : (
+              markdown
+            )
           }
         />
       </div>

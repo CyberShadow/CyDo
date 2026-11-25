@@ -1,8 +1,21 @@
-import { h, Fragment, type VNode } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import {
+  h,
+  Fragment,
+  createContext,
+  type ComponentChildren,
+  type VNode,
+} from "preact";
+import { useContext, useEffect, useRef, useState } from "preact/hooks";
 import { useHighlight, renderHighlightedSource } from "../highlight";
 import { useCurrentTheme } from "../useTheme";
 import { CopyButton, CodePre } from "./CopyButton";
+import { LocalFileContext } from "./LocalFileContext";
+import { LiveFilePreview } from "./file-preview/LiveFilePreview";
+import {
+  collectLocalFileLinks,
+  type FileLinkNode,
+  type LinkTarget,
+} from "../lib/localFileLinks";
 
 import type {
   Root,
@@ -34,16 +47,15 @@ function isParent(
 // Render a block-level node
 function BlockNode({ node }: { node: RootContent }): VNode | null {
   switch (node.type) {
-    case "heading": {
-      const tag: `h${typeof node.depth}` = `h${node.depth}`;
-      return h(tag, null, <InlineChildren nodes={node.children} />);
-    }
-    case "paragraph":
+    case "heading":
+    case "paragraph": {
+      const tag = node.type === "heading" ? (`h${node.depth}` as const) : "p";
       return (
-        <p>
-          <InlineChildren nodes={node.children} />
-        </p>
+        <LinkHost nodes={node.children}>
+          {h(tag, null, <InlineChildren nodes={node.children} />)}
+        </LinkHost>
       );
+    }
     case "code":
       if (node.lang === "mermaid") {
         return <MermaidBlock code={node.value} />;
@@ -111,16 +123,22 @@ function ListItemNode({
   if (isTask && node.checked != null) {
     return (
       <li class="task-list-item">
-        <label>
-          <input type="checkbox" checked={node.checked} disabled />
-          {node.children.map((child, i) => {
-            // For task items, paragraphs are rendered inline (unwrap the <p>)
-            if (child.type === "paragraph") {
-              return <InlineChildren key={i} nodes={child.children} />;
-            }
-            return <BlockNode key={i} node={child} />;
-          })}
-        </label>
+        <LinkHost
+          nodes={node.children.flatMap((child) =>
+            child.type === "paragraph" ? child.children : [],
+          )}
+        >
+          <label>
+            <input type="checkbox" checked={node.checked} disabled />
+            {node.children.map((child, i) => {
+              // For task items, paragraphs are rendered inline (unwrap the <p>)
+              if (child.type === "paragraph") {
+                return <InlineChildren key={i} nodes={child.children} />;
+              }
+              return <BlockNode key={i} node={child} />;
+            })}
+          </label>
+        </LinkHost>
       </li>
     );
   }
@@ -146,32 +164,34 @@ function TableNode({ node }: { node: Table }): VNode {
   };
 
   return (
-    <table>
-      {headerRow && (
-        <thead>
-          <tr>
-            {headerRow.children.map((cell: TableCell, i: number) => (
-              <th key={i} style={alignStyle(i)}>
-                <InlineChildren nodes={cell.children} />
-              </th>
-            ))}
-          </tr>
-        </thead>
-      )}
-      {bodyRows.length > 0 && (
-        <tbody>
-          {bodyRows.map((row: TableRow, ri: number) => (
-            <tr key={ri}>
-              {row.children.map((cell: TableCell, ci: number) => (
-                <td key={ci} style={alignStyle(ci)}>
+    <LinkHost nodes={rows.flatMap((row) => row.children)}>
+      <table>
+        {headerRow && (
+          <thead>
+            <tr>
+              {headerRow.children.map((cell: TableCell, i: number) => (
+                <th key={i} style={alignStyle(i)}>
                   <InlineChildren nodes={cell.children} />
-                </td>
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      )}
-    </table>
+          </thead>
+        )}
+        {bodyRows.length > 0 && (
+          <tbody>
+            {bodyRows.map((row: TableRow, ri: number) => (
+              <tr key={ri}>
+                {row.children.map((cell: TableCell, ci: number) => (
+                  <td key={ci} style={alignStyle(ci)}>
+                    <InlineChildren nodes={cell.children} />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        )}
+      </table>
+    </LinkHost>
   );
 }
 
@@ -211,24 +231,8 @@ function InlineNode({ node }: { node: PhrasingContent }): VNode | null {
     case "inlineCode":
       return <code>{node.value}</code>;
     case "link":
-      return (
-        <a
-          href={node.url}
-          title={node.title ?? undefined}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <InlineChildren nodes={node.children} />
-        </a>
-      );
     case "image":
-      return (
-        <img
-          src={node.url}
-          alt={node.alt ?? ""}
-          title={node.title ?? undefined}
-        />
-      );
+      return <InlineLink node={node} />;
     case "break":
       return <br />;
     case "html":
@@ -243,6 +247,192 @@ function InlineNode({ node }: { node: PhrasingContent }): VNode | null {
       }
       return null;
   }
+}
+
+type HostedLink =
+  | Extract<LinkTarget, { kind: "unresolved" }>
+  | (Extract<LinkTarget, { kind: "local" }> & {
+      expanded: boolean;
+      toggle: () => void;
+    });
+
+interface LinkHostState {
+  links: ReadonlyMap<FileLinkNode, HostedLink>;
+  controlsByAnchor: ReadonlyMap<FileLinkNode, readonly VNode[]>;
+}
+
+const LinkHostContext = createContext<LinkHostState | null>(null);
+const InsideAnchorContext = createContext(false);
+
+function useLinkHost(nodes: readonly (PhrasingContent | TableCell)[]) {
+  const access = useContext(LocalFileContext);
+  const [overrides, setOverrides] = useState<ReadonlyMap<string, boolean>>(
+    () => new Map(),
+  );
+  const links = new Map<FileLinkNode, HostedLink>();
+  const controlsByAnchor = new Map<FileLinkNode, VNode[]>();
+  const panels: VNode[] = [];
+  const occurrences = new Map<string, number>();
+  for (const { node, target, anchor } of collectLocalFileLinks(
+    nodes,
+    access?.baseDir ?? null,
+  )) {
+    if (target.kind === "unresolved") {
+      links.set(node, target);
+      continue;
+    }
+
+    const { path } = target;
+    const group = JSON.stringify([node.type, path]);
+    const occurrence = occurrences.get(group) ?? 0;
+    occurrences.set(group, occurrence + 1);
+    const key = `${group}:${occurrence}`;
+    const expanded =
+      overrides.get(key) ??
+      (node.type === "image" && !access?.ancestorPaths.includes(path));
+    const toggle = () => {
+      setOverrides((previous) => new Map(previous).set(key, !expanded));
+    };
+    links.set(node, { ...target, expanded, toggle });
+    if (access && anchor) {
+      const controls = controlsByAnchor.get(anchor) ?? [];
+      controls.push(
+        <LocalFileControls
+          key={key}
+          path={path}
+          expanded={expanded}
+          toggle={toggle}
+        />,
+      );
+      controlsByAnchor.set(anchor, controls);
+    }
+    if (access && expanded) {
+      panels.push(
+        <figure key={key} class="local-file-expansion">
+          <figcaption class="local-file-expansion-caption" title={path}>
+            {path}
+          </figcaption>
+          <div class="local-file-expansion-body">
+            <LiveFilePreview path={path} />
+          </div>
+        </figure>,
+      );
+    }
+  }
+  return { links, controlsByAnchor, panels };
+}
+
+function LinkHost({
+  nodes,
+  children,
+}: {
+  nodes: readonly (PhrasingContent | TableCell)[];
+  children: ComponentChildren;
+}) {
+  const { panels, ...host } = useLinkHost(nodes);
+  return (
+    <>
+      <LinkHostContext.Provider value={host}>
+        {children}
+      </LinkHostContext.Provider>
+      {panels.length > 0 && <div class="local-file-expansions">{panels}</div>}
+    </>
+  );
+}
+
+function InlineLink({ node }: { node: FileLinkNode }) {
+  const access = useContext(LocalFileContext);
+  const host = useContext(LinkHostContext);
+  if (!host) throw new Error("Markdown link has no host");
+  const insideAnchor = useContext(InsideAnchorContext);
+  const link = host.links.get(node);
+  const label =
+    node.type === "link" ? (
+      <InlineChildren nodes={node.children} />
+    ) : (
+      (node.alt ?? "")
+    );
+  if (!link) {
+    if (node.type === "image") {
+      return (
+        <img
+          src={node.url}
+          alt={node.alt ?? ""}
+          title={node.title ?? undefined}
+        />
+      );
+    }
+    if (insideAnchor) return <>{label}</>;
+    return (
+      <>
+        <a
+          href={node.url}
+          title={node.title ?? undefined}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <InsideAnchorContext.Provider value={true}>
+            {label}
+          </InsideAnchorContext.Provider>
+        </a>
+        {host.controlsByAnchor.get(node)}
+      </>
+    );
+  }
+  if (!access || link.kind === "unresolved") {
+    const title =
+      access && link.kind === "unresolved"
+        ? link.reason
+        : `${link.kind === "local" ? link.path : node.url} (not available here)`;
+    return (
+      <span class="local-file-link local-file-link-inert" title={title}>
+        {label}
+      </span>
+    );
+  }
+  const { path, expanded, toggle } = link;
+  return (
+    <span class="local-file-link">
+      <span class="local-file-link-label" title={node.title ?? path}>
+        {label}
+      </span>
+      {!insideAnchor && (
+        <LocalFileControls path={path} expanded={expanded} toggle={toggle} />
+      )}
+    </span>
+  );
+}
+
+function LocalFileControls({
+  path,
+  expanded,
+  toggle,
+}: {
+  path: string;
+  expanded: boolean;
+  toggle: () => void;
+}) {
+  const action = expanded ? "Collapse" : "Expand";
+  return (
+    <span class="local-file-link-controls">
+      <button
+        type="button"
+        class="msg-action-btn"
+        aria-expanded={expanded}
+        aria-label={`${action} ${path}`}
+        title={action}
+        onClick={toggle}
+      >
+        <span class="action-icon" aria-hidden="true">
+          <svg viewBox="0 0 12 12" fill="currentColor">
+            <path
+              d={expanded ? "M2 3.5L6 8.5L10 3.5Z" : "M3.5 2L8.5 6L3.5 10Z"}
+            />
+          </svg>
+        </span>
+      </button>
+    </span>
+  );
 }
 
 // Mermaid diagram — lazy-loads the mermaid library on first use

@@ -6,6 +6,7 @@ import {
   renderHighlightedSource,
   renderHighlightedRow,
 } from "../highlight";
+import { LocalFileDocument } from "./LocalFileContext";
 import { Markdown } from "./Markdown";
 import { CodePre, CopyButton } from "./CopyButton";
 import { SourceRenderedToggle } from "./file-preview/SourceRenderedToggle";
@@ -229,11 +230,13 @@ function StructuredContent({
             </CodePre>
           }
           renderedView={
-            <Markdown
-              text={text}
-              class="text-content"
-              enableSourceToggle={false}
-            />
+            <LocalFileDocument filePath={document.filePath}>
+              <Markdown
+                text={text}
+                class="text-content"
+                enableSourceToggle={false}
+              />
+            </LocalFileDocument>
           }
         />
       );

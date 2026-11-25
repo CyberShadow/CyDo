@@ -5,6 +5,7 @@ import {
 } from "../../highlight";
 import { detectRenderableFormat } from "../../lib/fileFormats";
 import { CodePre } from "../CopyButton";
+import { LocalFileDocument } from "../LocalFileContext";
 import { Markdown } from "../Markdown";
 import { SourceRenderedToggle } from "./SourceRenderedToggle";
 
@@ -42,16 +43,25 @@ export function FileContentPreview({
   );
 
   if (format === "markdown") {
+    const markdown = (
+      <Markdown
+        text={content}
+        class="write-content-markdown"
+        enableSourceToggle={false}
+      />
+    );
     return (
       <SourceRenderedToggle
         defaultSource={defaultSource}
         sourceView={sourceView}
         renderedView={
-          <Markdown
-            text={content}
-            class="write-content-markdown"
-            enableSourceToggle={false}
-          />
+          filePath ? (
+            <LocalFileDocument filePath={filePath}>
+              {markdown}
+            </LocalFileDocument>
+          ) : (
+            markdown
+          )
         }
       />
     );

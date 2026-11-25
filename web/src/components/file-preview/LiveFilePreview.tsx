@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { isPatchPath } from "../../lib/fileFormats";
+import { useLiveFileAccess } from "../LocalFileContext";
 import { DiffResult } from "../diff/DiffResult";
 import { ResultImages } from "../ResultImages";
 import { FileContentPreview } from "./FileContentPreview";
@@ -75,7 +76,12 @@ function useLiveFile(tid: number, path: string) {
   return { placeholder, state };
 }
 
-export function LiveFilePreview({ tid, path }: { tid: number; path: string }) {
+export function LiveFilePreview({ path }: { path: string }) {
+  const access = useLiveFileAccess(path);
+  return access ? <LiveFileContent tid={access.tid} path={path} /> : null;
+}
+
+function LiveFileContent({ tid, path }: { tid: number; path: string }) {
   const { placeholder, state } = useLiveFile(tid, path);
 
   return (

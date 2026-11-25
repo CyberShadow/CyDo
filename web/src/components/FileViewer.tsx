@@ -16,6 +16,7 @@ import { composeHunks } from "../lib/composeHunks";
 import type { PatchHunk } from "../lib/patches";
 import { parsePatchHunksFromText, toUnifiedPatch } from "../lib/patches";
 import { isMarkdownPath } from "../lib/fileFormats";
+import { LocalFileDocument } from "./LocalFileContext";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 
@@ -680,14 +681,6 @@ function FragmentMarkdownView({
     return <FragmentSourceView source={source} filePath={filePath} />;
   }
 
-  // Full content: single Markdown render (no gaps)
-  if (complete && fragments.length === 1) {
-    return (
-      <Markdown text={fragments[0]!.lines.join("\n")} class="text-content" />
-    );
-  }
-
-  // Partial: render each fragment through Markdown with gap indicators
   const elements: preact.JSX.Element[] = [];
   let prevEnd = 0;
 
@@ -727,7 +720,16 @@ function FragmentMarkdownView({
     );
   }
 
-  return <>{elements}</>;
+  const layout = complete
+    ? "complete"
+    : fragments
+        .map(({ startLine, lines }) => `${startLine}:${lines.length}`)
+        .join(",");
+  return (
+    <LocalFileDocument key={layout} filePath={filePath}>
+      {elements}
+    </LocalFileDocument>
+  );
 }
 
 const ContentViewer = memo(function ContentViewer({
