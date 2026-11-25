@@ -793,12 +793,12 @@ class ClaudeCodeAgent : Agent
 	PersistedHistoryBoundary[] extractPersistedHistoryBoundaries(string content, int lineOffset = 0)
 	{
 		PersistedHistoryBoundary[] boundaries;
-		visitPersistedHistoryRows(content, lineOffset, (boundary, index, joined) { boundaries ~= boundary; });
+		visitPersistedHistoryRows(content, lineOffset, (boundary, first, last, joined) { boundaries ~= boundary; });
 		return boundaries;
 	}
 
 	package(cydo) void visitPersistedHistoryRows(string content, int lineOffset,
-		scope void delegate(PersistedHistoryBoundary, int apiBlockIndex, bool joinedApiReply) visitBoundary,
+		scope void delegate(PersistedHistoryBoundary, int firstBlockIndex, int lastBlockIndex, bool joinedApiReply) visitBoundary,
 		scope void delegate() endMessage = null)
 	{
 		import std.string : lineSplitter;
@@ -813,7 +813,16 @@ class ClaudeCodeAgent : Agent
 				endMessage();
 			auto boundary = historyBoundary(row, kind, lineNum);
 			if (!boundary.isNull)
-				visitBoundary(boundary.get, row.apiBlockIndex, row.joinedApiReply);
+			{
+				auto last = row.apiBlockIndex;
+				if (row.apiBlockIndex >= 0)
+				{
+					auto blocks = jsonParse!(JSONFragment[])(row.message.content.json);
+					assert(blocks.length > 0, "Claude indexed assistant row requires content");
+					last += cast(int) blocks.length - 1;
+				}
+				visitBoundary(boundary.get, row.apiBlockIndex, last, row.joinedApiReply);
+			}
 		}
 	}
 
@@ -6770,22 +6779,24 @@ unittest
 	import std.array : join;
 	auto agent = new ClaudeCodeAgent();
 	auto rows = claudeHistoryAgreementFixture("ordinary");
-	int[] indexes;
+	int[] firstIndexes, lastIndexes;
 	agent.visitPersistedHistoryRows([rows[3], rows[10],
 		`{"type":"assistant","message":{"id":"older"}}`].join("\n"), 0,
-		(boundary, index, joined) { indexes ~= index; });
-	assert(indexes == [0, 1, -1]);
+		(boundary, first, last, joined) { firstIndexes ~= first; lastIndexes ~= last; });
+	assert(firstIndexes == [0, 1, -1] && lastIndexes == firstIndexes);
 
 	// Pinned CLI captures: cap-edge (signature-only thinking),
 	// cap-int-between, and cap-int-mid.
-	indexes = null;
+	firstIndexes = lastIndexes = null;
 	agent.visitPersistedHistoryRows([
 		`{"type":"assistant","apiBlockIndex":3,"message":{"id":"signature","content":[{"type":"thinking","signature":"sig"}]}}`,
 		`{"type":"assistant","apiBlockIndex":0,"message":{"id":"between","content":[{"type":"text","text":"done"}]}}`,
 		`{"type":"assistant","apiBlockIndex":0,"message":{"id":"mid","content":[{"type":"text","text":"done"}]}}`,
 		`{"type":"assistant","apiBlockIndex":1,"message":{"id":"mid","content":[{"type":"text","text":"interrupted"}]}}`,
-	].join("\n"), 0, (boundary, index, joined) { indexes ~= index; });
-	assert(indexes == [3, 0, 0, 1]);
+		`{"type":"assistant","apiBlockIndex":0,"message":{"id":"packed","content":[{"type":"thinking"},{"type":"text","text":"done"}]}}`,
+	].join("\n"), 0, (boundary, first, last, joined) { firstIndexes ~= first; lastIndexes ~= last; });
+	assert(firstIndexes == [3, 0, 0, 1, 0]);
+	assert(lastIndexes == [3, 0, 0, 1, 1]);
 }
 
 @("Claude replay closes the open message at every queue operation")

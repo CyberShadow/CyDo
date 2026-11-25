@@ -254,17 +254,17 @@ struct JsonlTracker
 	}
 
 	private static void absorbClaudeMember(ref PersistedBoundaryCandidate candidate,
-		int apiBlockIndex, bool joined)
+		int firstBlockIndex, int lastBlockIndex, bool joined)
 	{
 		if (joined)
 			candidate.joined = true;
-		else if (apiBlockIndex < 0)
+		else if (firstBlockIndex < 0)
 			candidate.unindexed = true;
 		else
 		{
-			assert(apiBlockIndex > candidate.lastBlockIndex,
+			assert(firstBlockIndex > candidate.lastBlockIndex,
 				"Claude persisted block indexes must strictly increase");
-			candidate.lastBlockIndex = apiBlockIndex;
+			candidate.lastBlockIndex = lastBlockIndex;
 		}
 	}
 
@@ -580,7 +580,7 @@ struct JsonlTracker
 					onJsonlLine(tid, line, n);
 			}
 		}
-		void processBoundary(PersistedHistoryBoundary boundary, int apiBlockIndex = -1, bool joinedApiReply = false)
+		void processBoundary(PersistedHistoryBoundary boundary, int firstBlockIndex = -1, int lastBlockIndex = -1, bool joinedApiReply = false)
 		{
 			if (claude !is null && boundary.kind == PersistedHistoryBoundaryKind.provisional_user)
 				return;
@@ -596,7 +596,7 @@ struct JsonlTracker
 						if (candidate.boundary.anchor != boundary.anchor
 							|| candidate.generation != historyGeneration(tid))
 							continue;
-						absorbClaudeMember(candidate, apiBlockIndex, joinedApiReply);
+						absorbClaudeMember(candidate, firstBlockIndex, lastBlockIndex, joinedApiReply);
 						drainLiveBoundaries(tid, boundary.kind);
 						return;
 					}
@@ -612,7 +612,7 @@ struct JsonlTracker
 				(boundary.anchor in state.queueCanonicalIdentities) !is null,
 				historyGeneration(tid));
 			if (claude !is null && boundary.kind == PersistedHistoryBoundaryKind.agent_turn)
-				absorbClaudeMember(candidate, apiBlockIndex, joinedApiReply);
+				absorbClaudeMember(candidate, firstBlockIndex, lastBlockIndex, joinedApiReply);
 			state.persistedByKind[boundary.kind] ~= candidate;
 			drainLiveBoundaries(tid, boundary.kind);
 		}
@@ -1674,8 +1674,8 @@ unittest
 	import std.file : remove, write;
 	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 
-	enum assistant1 = `{"type":"assistant","uuid":"a1","apiBlockIndex":0,"message":{"id":"X"}}`;
-	enum assistant2 = `{"type":"assistant","uuid":"a2","apiBlockIndex":1,"message":{"id":"X"}}`;
+	enum assistant1 = `{"type":"assistant","uuid":"a1","apiBlockIndex":0,"message":{"id":"X","content":[{"type":"text","text":"fixture"}]}}`;
+	enum assistant2 = `{"type":"assistant","uuid":"a2","apiBlockIndex":1,"message":{"id":"X","content":[{"type":"text","text":"fixture"}]}}`;
 	enum toolResult = `{"type":"user","uuid":"tool-result","message":{"content":[{"type":"tool_result","content":"ok"}]}}`;
 	foreach (liveFirst; [true, false])
 	{
@@ -1894,9 +1894,9 @@ unittest
 	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 
 	enum path = "/tmp/cydo-tracker-invalid-claude-index.jsonl";
-	enum member0 = `{"type":"assistant","apiBlockIndex":0,"message":{"id":"X"}}` ~ "\n";
-	enum member1 = `{"type":"assistant","apiBlockIndex":1,"message":{"id":"X"}}` ~ "\n";
-	enum member2 = `{"type":"assistant","apiBlockIndex":2,"message":{"id":"X"}}` ~ "\n";
+	enum member0 = `{"type":"assistant","apiBlockIndex":0,"message":{"id":"X","content":[{"type":"text","text":"fixture"}]}}` ~ "\n";
+	enum member1 = `{"type":"assistant","apiBlockIndex":1,"message":{"id":"X","content":[{"type":"text","text":"fixture"}]}}` ~ "\n";
+	enum member2 = `{"type":"assistant","apiBlockIndex":2,"message":{"id":"X","content":[{"type":"text","text":"fixture"}]}}` ~ "\n";
 	enum stop1 = `{"type":"turn/stop","uuid":"X","api_block_count":1}`;
 	enum stop2 = `{"type":"turn/stop","uuid":"X","api_block_count":2}`;
 	foreach (testCase; [
@@ -1983,7 +1983,7 @@ unittest
 	import cydo.agent.drivers.claude : ClaudeCodeAgent, claudeParentLinkedQueueFixture;
 
 	enum path = "/tmp/cydo-tracker-claude-queue-contiguity.jsonl";
-	write(path, `{"type":"assistant","apiBlockIndex":0,"message":{"id":"X"}}` ~ "\n" ~
+	write(path, `{"type":"assistant","apiBlockIndex":0,"message":{"id":"X","content":[{"type":"text","text":"fixture"}]}}` ~ "\n" ~
 		claudeParentLinkedQueueFixture("queue-operation") ~ "\n");
 	scope(exit) remove(path);
 
@@ -1994,8 +1994,68 @@ unittest
 	tracker.getTask = (int) => &task;
 	tracker.historyGeneration = (int) => task.history.generation;
 	tracker.processNewJsonlContent(1, path);
-	File(path, "a").write(`{"type":"assistant","apiBlockIndex":1,"message":{"id":"X"}}` ~ "\n");
+	File(path, "a").write(`{"type":"assistant","apiBlockIndex":1,"message":{"id":"X","content":[{"type":"text","text":"fixture"}]}}` ~ "\n");
 	assertThrown!AssertError(tracker.processNewJsonlContent(1, path));
+}
+
+@("Claude tracker reconciles the full span of a packed assistant row")
+unittest
+{
+	import core.exception : AssertError;
+	import std.exception : assertThrown;
+	import std.file : remove, write;
+	import std.format : format;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	enum path = "/tmp/cydo-tracker-claude-packed-row.jsonl";
+	enum packedRow = `{"parentUuid":"c7a629c2-7ec3-4cf2-830d-10aee543cefa","isSidechain":false,"message":{"id":"msg_mock_00011","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"thinking","thinking":"Completed thinking before disconnect.","signature":"CAQSEgoQCBMYAjgBQgh0aGlua2luZxgB"},{"type":"text","text":"fallback-thinking-answer"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":10,"output_tokens_details":{"thinking_tokens":0},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard","fallback_credit":null}},"apiBlockIndex":0,"requestRef":"cafcfec9-c578-4e15-9e1c-0cad87906d8c","requestedModel":"claude-opus-5-5","promptCacheRequested":"5m","type":"assistant","uuid":"5f38d797-c80a-42a8-be1d-7f6a0c370392","timestamp":"2026-11-25T14:37:03.708Z","effort":"medium","perTurnEffort":"medium","madeBy":"model","userType":"external","entrypoint":"sdk-cli","cwd":"/tmp/cydo-test-workspace","sessionId":"36d95b4d-959c-445a-a663-d47b2a8c9130","version":"2.1.330","gitBranch":"master"}`;
+	enum overlappingRow = `{"type":"assistant","uuid":"overlapping-row","apiBlockIndex":1,"message":{"id":"msg_mock_00011","content":[{"type":"text","text":"overlap"}]}}`;
+	foreach (liveFirst; [true, false])
+	{
+		foreach (liveCount; [2, 3, 1])
+		{
+			write(path, packedRow ~ "\n");
+			scope(exit) remove(path);
+
+			TaskData task = TaskData(1, "", "");
+			task.history.reset(Watermark.none());
+			JsonlTracker tracker;
+			setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+			tracker.getTask = (int) => &task;
+			tracker.historyGeneration = (int) => task.history.generation;
+			string[] resolved;
+			tracker.onBoundaryResolved = (int, size_t, HistoryBoundary boundary, bool, ulong) {
+				resolved ~= boundary.anchor;
+			};
+
+			auto stop = format!`{"type":"turn/stop","uuid":"msg_mock_00011","api_block_count":%s}`(liveCount);
+			void noteStop() { tracker.noteLiveBoundaryCandidate(1, 1, stop); }
+			void readRows() { tracker.processNewJsonlContent(1, path); }
+
+			if (liveFirst) noteStop();
+			else readRows();
+			assert(resolved.length == 0, "one arrival alone must not publish a boundary");
+
+			auto reconcile = liveFirst ? &readRows : &noteStop;
+			if (liveCount == 1)
+				assertThrown!AssertError(reconcile());
+			else
+				reconcile();
+
+			if (liveCount == 2)
+				assert(resolved == ["msg_mock_00011"]);
+			else
+				assert(resolved.length == 0);
+
+			// Keep the candidate pending so the next row is checked against its span.
+			if (liveCount == 3)
+			{
+				File(path, "a").write(overlappingRow ~ "\n");
+				assertThrown!AssertError(readRows());
+				assert(resolved.length == 0);
+			}
+		}
+	}
 }
 
 @("Claude tracker rejects a missing block index in both arrival orders")
@@ -2013,7 +2073,7 @@ unittest
 	foreach (liveFirst; [true, false])
 	{
 		write(path, `{"type":"assistant","message":{"id":"X"}}` ~ "\n" ~
-			`{"type":"assistant","apiBlockIndex":1,"message":{"id":"X"}}` ~ "\n");
+			`{"type":"assistant","apiBlockIndex":1,"message":{"id":"X","content":[{"type":"text","text":"fixture"}]}}` ~ "\n");
 		scope(exit) remove(path);
 
 		TaskData task = TaskData(1, "", "");
@@ -2057,7 +2117,7 @@ unittest
 
 	enum path = "/tmp/cydo-tracker-claude-retirement.jsonl";
 	enum kind = PersistedHistoryBoundaryKind.agent_turn;
-	enum successor = `{"type":"assistant","apiBlockIndex":0,"message":{"id":"Z"}}` ~ "\n";
+	enum successor = `{"type":"assistant","apiBlockIndex":0,"message":{"id":"Z","content":[{"type":"text","text":"fixture"}]}}` ~ "\n";
 	enum successorStop = `{"type":"turn/stop","uuid":"Z","api_block_count":1}`;
 	struct Scenario
 	{
@@ -2071,7 +2131,7 @@ unittest
 			`{"type":"turn/stop","uuid":"R2","api_block_count":1}`,
 		], ""),
 		Scenario("interrupted stream", [`{"type":"turn/stop","uuid":"X","api_block_count":2}`],
-			`{"type":"assistant","apiBlockIndex":0,"message":{"id":"X"}}` ~ "\n"),
+			`{"type":"assistant","apiBlockIndex":0,"message":{"id":"X","content":[{"type":"text","text":"fixture"}]}}` ~ "\n"),
 		Scenario("synthetic reply", [],
 			`{"type":"assistant","message":{"id":"535a0cf3-a555-4b47-a2db-e41463b473df","model":"<synthetic>"}}` ~ "\n"),
 	];

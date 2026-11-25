@@ -462,7 +462,8 @@ struct TurnStopEvent
 	/// Claude uses the API message id for this stop identity.
 	@JSONOptional string uuid;
 	/// Claude live stops carry the exclusive upper bound on persisted
-	/// apiBlockIndex: blocks started, capped by abandoned_blocks.from_block_index.
+	/// indexes, compared with the last index covered by the persisted rows.
+	/// For streams, blocks started are capped by abandoned_blocks.from_block_index.
 	/// Zero publishes no live boundary.
 	@JSONOptional int api_block_count = -1;
 	@JSONOptional HistoryBoundary history_boundary;
