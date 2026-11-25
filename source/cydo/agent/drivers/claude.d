@@ -1544,6 +1544,7 @@ class ClaudeCodeSession : AgentSession, UsageSource
 {
 	private AgentProcess process;
 	private string nativeSessionId_;
+	private string resumeSessionId_;
 	private void delegate(string sessionId) nativeSessionStartedHandler_;
 	private void delegate(string sessionId, string cwd) historyPathRegistrar_;
 	private void delegate(TranslatedEvent) outputHandler;
@@ -1575,6 +1576,7 @@ class ClaudeCodeSession : AgentSession, UsageSource
 	private Nullable!bool rewindSupported_;
 	private Promise!bool rewindProbe_;
 	private void delegate() rewindAvailabilityChangedHandler_;
+	private void delegate(const(string)[]) transcriptRowsHandler_;
 	/// Probe outcomes by CLI version, shared by all sessions of this process.
 	private static bool[string] rewindSupportByVersion_;
 
@@ -1629,6 +1631,8 @@ class ClaudeCodeSession : AgentSession, UsageSource
 			// Opt back into thinking content on Opus 4.7 (omitted by default since 4.7).
 			"--thinking-display", "summarized",
 			"--settings", `{"fileCheckpointingEnabled": true}`,
+			// Hidden SDK flag providing live persisted rows, covered by the unittest canary.
+			"--session-mirror",
 		];
 
 		// The permission policy rules on every tool call first, through a
@@ -1702,6 +1706,7 @@ class ClaudeCodeSession : AgentSession, UsageSource
 
 		SessionConfig config; // .init: no model, no effort, no cmdPrefix
 		auto args = buildSessionArgs("claude", null, null, null, config);
+		assert(args.canFind("--session-mirror"));
 		assert(!args.canFind("--model"));
 		assert(!args.canFind("--effort"));
 
@@ -1749,6 +1754,7 @@ class ClaudeCodeSession : AgentSession, UsageSource
 		executablePath_ = executablePath;
 		agentName_ = config.agentName;
 		historyPathRegistrar_ = historyPathRegistrar;
+		resumeSessionId_ = resumeSessionId;
 
 		auto args = buildSessionArgs(executablePath, resumeSessionId, cmdPrefix,
 			mcpConfigPath, config);
@@ -1937,16 +1943,23 @@ class ClaudeCodeSession : AgentSession, UsageSource
 			nativeSessionStartedHandler_(nativeSessionId_);
 	}
 
-	private void notifyNativeSessionStarted(string sessionId)
+	private void validateNativeSessionId(string sessionId)
 	{
 		enforce(sessionId.length > 0,
 			"Claude session initialization did not provide a native session ID");
+		enforce(resumeSessionId_ is null || sessionId == resumeSessionId_,
+			"Claude resumed under a different native session ID");
+		enforce(nativeSessionId_ is null || nativeSessionId_ == sessionId,
+			"Claude session reported conflicting native session IDs");
+	}
+
+	private void notifyNativeSessionStarted(string sessionId, string cwd)
+	{
+		// Registration makes the history path available to the callback.
+		if (historyPathRegistrar_)
+			historyPathRegistrar_(sessionId, cwd);
 		if (nativeSessionId_ !is null)
-		{
-			enforce(nativeSessionId_ == sessionId,
-				"Claude session reported conflicting native session IDs");
 			return;
-		}
 		nativeSessionId_ = sessionId;
 		if (nativeSessionStartedHandler_)
 			nativeSessionStartedHandler_(sessionId);
@@ -2212,6 +2225,11 @@ class ClaudeCodeSession : AgentSession, UsageSource
 		rewindAvailabilityChangedHandler_ = dg;
 	}
 
+	@property void onTranscriptRows(void delegate(const(string)[]) dg)
+	{
+		transcriptRowsHandler_ = dg;
+	}
+
 	/// Whether an in-process `rewind_conversation` can be issued now: the
 	/// CLI supports it and has no turn running or queued. The CLI re-checks
 	/// the latter itself and refuses a rewind racing a submission.
@@ -2465,18 +2483,14 @@ class ClaudeCodeSession : AgentSession, UsageSource
 				tracef("Claude native session init parse error: %s", e.msg);
 				return;
 			}
+			validateNativeSessionId(init.session_id);
 			if (claudeMcpStartupFailed(init.mcp_servers))
 			{
 				startupFailure_ = "Claude reported that the CyDo MCP server failed to connect.";
 				killAfterTimeout(0.seconds);
 				return;
 			}
-			// Register before the native-ID notification so the live binding
-			// and JSONL watch set up by that callback can already resolve
-			// this session's history path.
-			if (historyPathRegistrar_)
-				historyPathRegistrar_(init.session_id, init.cwd);
-			notifyNativeSessionStarted(init.session_id);
+			notifyNativeSessionStarted(init.session_id, init.cwd);
 			resolveRewindSupport(init.claude_code_version);
 		}
 
@@ -2503,6 +2517,9 @@ class ClaudeCodeSession : AgentSession, UsageSource
 			case "command_lifecycle":
 				observeCommandLifecycle(rawLine);
 				return;
+			case "transcript_mirror":
+				handleTranscriptMirror(rawLine);
+				return;
 			case "control_response":
 				if (settleControlResponse(rawLine))
 					return;
@@ -2514,6 +2531,68 @@ class ClaudeCodeSession : AgentSession, UsageSource
 					emitEvent(t);
 				return;
 		}
+	}
+
+	private void handleTranscriptMirror(string rawLine)
+	{
+		import std.algorithm.searching : startsWith;
+		import std.path : baseName, isAbsolute;
+
+		@JSONPartial static struct Frame
+		{
+			JSONFragment type;
+			JSONFragment filePath;
+			JSONFragment entries;
+		}
+		@JSONPartial static struct RowProbe
+		{
+			string type;
+			@JSONOptional string uuid;
+		}
+
+		auto sessionId = nativeSessionId_ !is null ? nativeSessionId_ : resumeSessionId_;
+		enforce(sessionId !is null,
+			"Claude transcript mirror arrived before session init in a fresh session");
+		auto frame = jsonParse!Frame(rawLine);
+		enforce(frame.type.json.startsWith('"'), "Claude transcript mirror type must be a string");
+		enforce(frame.filePath.json.startsWith('"'), "Claude transcript mirror filePath must be a string");
+		enforce(frame.entries.json.startsWith('['), "Claude transcript mirror entries must be an array");
+		auto filePath = jsonParse!string(frame.filePath.json);
+		enforce(isAbsolute(filePath), "Claude transcript mirror path must be absolute");
+		auto entries = jsonParse!(JSONFragment[])(frame.entries.json);
+		// Stdout line framing guarantees single-line entries.
+		foreach (entry; entries)
+			enforce(entry.json.startsWith('{'), "Claude transcript mirror entry must be a JSON object");
+
+		if (baseName(filePath) != sessionId ~ ".jsonl")
+		{
+			auto parent = dirName(filePath);
+			enforce(baseName(parent) == "subagents" && baseName(dirName(parent)) == sessionId,
+				"Claude transcript mirror path belongs to another session: " ~ filePath);
+			return;
+		}
+
+		auto rows = new string[entries.length];
+		foreach (i, entry; entries)
+		{
+			auto row = jsonParse!RowProbe(entry.json);
+			// A resumed process can mirror intake bookkeeping during turn
+			// setup or flush metadata on idle exit before init. A UUID-bearing
+			// row would be silently skipped by the attach baseline.
+			enforce(nativeSessionId_ !is null || row.uuid.length == 0,
+				"Claude transcript mirror carried a conversation row before session init");
+			switch (row.type)
+			{
+				case "user", "assistant", "attachment", "system":
+					enforce(row.uuid.length > 0, "Claude transcript mirror " ~ row.type ~ " row has no UUID");
+					break;
+				default:
+					break;
+			}
+			rows[i] = entry.json;
+		}
+		if (transcriptRowsHandler_)
+			transcriptRowsHandler_(rows);
 	}
 
 	private void translateStreamEventLive(string rawLine)
@@ -3105,6 +3184,167 @@ unittest
 	string delivered;
 	lateSession.onNativeSessionStarted = (string sessionId) { delivered = sessionId; };
 	assert(delivered == "claude-late-id");
+}
+
+// Main transcript rows are delivered in the order they appeared in the frame.
+unittest
+{
+	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.translateLiveLine(
+		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
+
+	const(string)[] received;
+	session.onTranscriptRows = (const(string)[] rows) { received ~= rows; };
+	enum first = `{"type":"user","uuid":"user-row"}`;
+	enum second = `{"type":"queue-operation"}`;
+	enum third = `{"type":"assistant","uuid":"assistant-row"}`;
+	session.translateLiveLine(
+		`{"type":"transcript_mirror","filePath":"/project/mirror-session.jsonl","entries":[`
+		~ first ~ "," ~ second ~ "," ~ third ~ "]}");
+	assert(received == [first, second, third]);
+}
+
+// Subagent transcripts and metadata are silently dropped.
+unittest
+{
+	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.translateLiveLine(
+		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
+	size_t deliveries;
+	session.onTranscriptRows = (const(string)[] rows) { ++deliveries; };
+
+	session.translateLiveLine(
+		`{"type":"transcript_mirror","filePath":"/project/mirror-session/subagents/agent-x.jsonl",`
+		~ `"entries":[{"type":"assistant","uuid":"subagent-row"},{"type":"agent_metadata"}]}`);
+	assert(deliveries == 0);
+	session.translateLiveLine(
+		`{"type":"transcript_mirror","filePath":"/project/mirror-session/subagents/agent-x.meta.json",`
+		~ `"entries":[{"type":"agent_metadata"}]}`);
+	assert(deliveries == 0);
+}
+
+@("Claude resume accepts UUID-less main rows before init")
+unittest
+{
+	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
+	auto session = new ClaudeCodeSession("true", "resumed-id");
+	scope(exit) session.stop();
+	const(string)[] received;
+	session.onTranscriptRows = (const(string)[] rows) { received ~= rows; };
+
+	enum frame = `{"type":"transcript_mirror","filePath":"/p/resumed-id.jsonl","entries":[`;
+	enum mode = `{"type":"mode","mode":"normal","sessionId":"resumed-id"}`;
+	enum enqueue = `{"type":"queue-operation","operation":"enqueue","sessionId":"resumed-id","content":"hello"}`;
+	enum dequeue = `{"type":"queue-operation","operation":"dequeue","sessionId":"resumed-id"}`;
+	enum tools = `{"type":"tools-used","sessionId":"resumed-id","tools":[]}`;
+	session.translateLiveLine(frame ~ mode ~ "]}");
+	session.translateLiveLine(frame ~ enqueue ~ "," ~ dequeue ~ "," ~ tools ~ "]}");
+	session.translateLiveLine(
+		`{"type":"transcript_mirror","filePath":"/p/resumed-id/subagents/agent-x.jsonl",`
+		~ `"entries":[{"type":"agent_metadata"}]}`);
+	assert(received == [mode, enqueue, dequeue, tools]);
+
+	session.translateLiveLine(
+		`{"type":"system","subtype":"init","session_id":"resumed-id","claude_code_version":"fixture"}`);
+	enum user = `{"type":"user","uuid":"prompt"}`;
+	session.translateLiveLine(frame ~ user ~ "]}");
+	assert(received == [mode, enqueue, dequeue, tools, user]);
+}
+
+@("Claude resume rejects pre-init conversation rows, foreign paths and a mismatched init")
+unittest
+{
+	import std.exception : collectException;
+
+	bool registered;
+	auto session = new ClaudeCodeSession("true", "resumed-id",
+		historyPathRegistrar: (string id, string cwd) { registered = true; });
+	scope(exit) session.stop();
+	session.onTranscriptRows = (const(string)[] rows) {
+		assert(false, "Rejected resume mirror rows must not reach the handler");
+	};
+
+	auto conversation = collectException(session.translateLiveLine(
+		`{"type":"transcript_mirror","filePath":"/p/resumed-id.jsonl",`
+		~ `"entries":[{"type":"user","uuid":"prompt"}]}`));
+	assert(conversation && conversation.msg ==
+		"Claude transcript mirror carried a conversation row before session init");
+	auto foreign = collectException(session.translateLiveLine(
+		`{"type":"transcript_mirror","filePath":"/p/other-id.jsonl",`
+		~ `"entries":[{"type":"mode","mode":"normal","sessionId":"other-id"}]}`));
+	assert(foreign && foreign.msg ==
+		"Claude transcript mirror path belongs to another session: /p/other-id.jsonl");
+	auto mismatch = collectException(session.translateLiveLine(
+		`{"type":"system","subtype":"init","session_id":"other-id","cwd":"/p","claude_code_version":"fixture"}`));
+	assert(mismatch && mismatch.msg == "Claude resumed under a different native session ID");
+	assert(!registered);
+}
+
+@("Claude fresh mirror frames require init")
+unittest
+{
+	import std.exception : collectException;
+
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.onTranscriptRows = (const(string)[] rows) {
+		assert(false, "A fresh mirror frame before init cannot reach the handler");
+	};
+	auto failure = collectException(session.translateLiveLine(
+		`{"type":"transcript_mirror","filePath":"/project/mirror-session.jsonl",`
+		~ `"entries":[{"type":"mode","mode":"normal"}]}`));
+	assert(failure && failure.msg ==
+		"Claude transcript mirror arrived before session init in a fresh session");
+}
+
+// The frame must identify a file in the current session and contain object rows.
+unittest
+{
+	import std.exception : assertThrown;
+
+	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.translateLiveLine(
+		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
+
+	assertThrown(session.translateLiveLine(
+		`{"type":"transcript_mirror","filePath":"/project/foreign-session.jsonl",`
+		~ `"entries":[{"type":"user","uuid":"user-row"}]}`));
+	assertThrown(session.translateLiveLine(
+		`{"type":"transcript_mirror","entries":[{"type":"user","uuid":"user-row"}]}`));
+	assertThrown(session.translateLiveLine(`{"type":"transcript_mirror","filePath":null,"entries":[]}`));
+	assertThrown(session.translateLiveLine(
+		`{"type":"transcript_mirror","filePath":"/project/mirror-session.jsonl","entries":[42]}`));
+	foreach (path; ["/project/mirror-session.jsonl", "/project/mirror-session/subagents/agent-x.jsonl"])
+	{
+		auto frame = `{"type":"transcript_mirror","filePath":"` ~ path ~ `"`;
+		assertThrown(session.translateLiveLine(frame ~ `}`));
+		assertThrown(session.translateLiveLine(frame ~ `,"entries":null}`));
+		assertThrown(session.translateLiveLine(frame ~ `,"entries":{}}`));
+		session.translateLiveLine(frame ~ `,"entries":[]}`);
+	}
+}
+
+// Each main conversation row must carry its own UUID.
+unittest
+{
+	import std.exception : assertThrown;
+
+	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.translateLiveLine(
+		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
+
+	foreach (rowType; ["user", "assistant", "attachment", "system"])
+		assertThrown(session.translateLiveLine(
+			`{"type":"transcript_mirror","filePath":"/project/mirror-session.jsonl","entries":[{"type":"`
+			~ rowType ~ `"}]}`), "Expected a missing UUID to be rejected for " ~ rowType);
 }
 
 // can_use_tool requests reach the permission handler; a cancel for a pending
@@ -6290,6 +6530,12 @@ unittest
 	auto heartbeat = locate(`("tool_progress")`);
 	enum schemaRadius = 300_000;
 	auto schemas = ascii(heartbeat - schemaRadius, stdoutAnchor + schemaRadius);
+	locate(`"--session-mirror"`);
+	enum mirrorSchemaAnchor = `type:E("transcript_mirror"),filePath:`;
+	enum mirrorSchema = mirrorSchemaAnchor ~ `n(),entries:A(ie())}`;
+	auto mirrorAnchor = locate(mirrorSchemaAnchor);
+	assert(ascii(mirrorAnchor, mirrorAnchor + mirrorSchema.length) == mirrorSchema,
+		"unexpected Claude transcript mirror schema");
 	enum ident = `[A-Za-z_$][\w$]*`;
 	enum eventName = `[\w-]+`;
 	auto eventNameShape = regex(`^` ~ eventName ~ `$`);
@@ -6617,6 +6863,9 @@ unittest
 					~ `"content":[{"type":"text","text":"Fixture reply"}]}}`;
 			case "attachment":
 				return `{"type":"attachment","attachment":{"type":"fixture"}}`;
+			case "transcript_mirror":
+				return `{"type":"transcript_mirror","filePath":"/project/fixture.jsonl",`
+					~ `"entries":[{"type":"user","uuid":"fixture-row"}]}`;
 			case "system":
 				switch (subtype)
 				{
@@ -6666,6 +6915,7 @@ unittest
 			checkOutput("history", subtype.length ? type ~ "/" ~ subtype : type, output);
 	}
 
+	session.translateLiveLine(eventLine("system", "init"));
 	foreach (type; stdoutTypes.keys)
 		if (type != "system")
 			checkStdout(type);
