@@ -96,8 +96,6 @@ function resetTaskTimeline(
     trackedFiles: new Map(),
     blocks: new Map(),
     itemIdMap: new Map(),
-    pendingCydoTaskItemIds: [],
-    spawnedTidsByItemId: new Map(),
     itemEnrichments: new Map(),
     ...lifecycle,
   };

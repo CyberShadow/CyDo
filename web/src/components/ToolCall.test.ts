@@ -19,7 +19,7 @@ import * as shellParser from "../lib/shellParser";
 import type { ParseResult } from "../lib/shellParser";
 import { configureShellParserAssets } from "../lib/shellParser";
 import { loadParsedShellDocument } from "../lib/shellParser";
-import type { ToolResult } from "../types";
+import type { ItemEnrichment, ToolResult } from "../types";
 import { actPoll, ownedRoots } from "../test-support/preactAct";
 import bashEditDiff from "../testFixtures/claude-bash-edit-diff.json";
 import {
@@ -543,7 +543,7 @@ describe("codex/commandExecution command fidelity", () => {
 
 function renderCydoTaskInput(
   tasks: Array<Record<string, unknown>>,
-  spawnedTids?: Map<number, number>,
+  enrichment?: ItemEnrichment,
   getTaskHref?: (id: string) => string,
 ): string {
   return renderToString(
@@ -554,7 +554,7 @@ function renderCydoTaskInput(
       toolUseId: "tool-t1",
       input: { tasks },
       result: undefined,
-      spawnedTids,
+      enrichment,
       getTaskHref,
     }),
   );
@@ -607,10 +607,10 @@ function renderCydoAskUserQuestionResult(
 describe("cydo:Task ToolCall Open task link", () => {
   const getHref = (id: string) => `/task/${id}`;
 
-  it("renders Open task link when spawnedTids has entry for spec", () => {
+  it("renders Open task link when the spec has a child enrichment", () => {
     const html = renderCydoTaskInput(
       [{ task_type: "research", description: "ping", prompt: "ping" }],
-      new Map([[0, 42]]),
+      { spawnedTids: new Map([[0, 42]]) },
       getHref,
     );
     expect(html).toContain('data-testid="cydo-task-spec-open"');
@@ -618,10 +618,10 @@ describe("cydo:Task ToolCall Open task link", () => {
     expect(html).toContain("Open task");
   });
 
-  it("does not render link when spawnedTids is empty", () => {
+  it("does not render link when the spec has no child enrichment", () => {
     const html = renderCydoTaskInput(
       [{ task_type: "research", description: "ping", prompt: "ping" }],
-      new Map(),
+      undefined,
       getHref,
     );
     expect(html).not.toContain('data-testid="cydo-task-spec-open"');
@@ -630,7 +630,7 @@ describe("cydo:Task ToolCall Open task link", () => {
   it("does not render link when getTaskHref is absent", () => {
     const html = renderCydoTaskInput(
       [{ task_type: "research", description: "ping", prompt: "ping" }],
-      new Map([[0, 42]]),
+      { spawnedTids: new Map([[0, 42]]) },
       undefined,
     );
     expect(html).not.toContain('data-testid="cydo-task-spec-open"');
@@ -642,7 +642,7 @@ describe("cydo:Task ToolCall Open task link", () => {
         { task_type: "research", description: "ping0", prompt: "p0" },
         { task_type: "implement", description: "ping1", prompt: "p1" },
       ],
-      new Map([[1, 99]]),
+      { spawnedTids: new Map([[1, 99]]) },
       getHref,
     );
     // Only spec index 1 has a link — href for task 99 appears once

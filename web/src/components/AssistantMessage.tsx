@@ -142,7 +142,6 @@ interface Props {
   onApproveRetry?: (toolName: string, input: unknown) => void;
   sessionId?: number | null;
   semanticSelectors?: boolean;
-  spawnedTidsByItemId?: Map<string, Map<number, number>>;
   itemEnrichments?: Map<string, ItemEnrichment>;
   getTaskHref?: (id: string) => string;
 }
@@ -198,7 +197,6 @@ export const AssistantMessage = memo(
     onApproveRetry,
     sessionId,
     semanticSelectors = true,
-    spawnedTidsByItemId,
     itemEnrichments,
     getTaskHref,
   }: Props) {
@@ -367,7 +365,6 @@ export const AssistantMessage = memo(
                     result={block.completed ? block.result : undefined}
                     permission={block.permission}
                     onViewFile={onViewFile}
-                    spawnedTids={spawnedTidsByItemId?.get(block.itemId)}
                     enrichment={itemEnrichments?.get(
                       itemBlockKey(message.id, block.itemId),
                     )}
@@ -420,7 +417,6 @@ export const AssistantMessage = memo(
                                   onApproveRetry={onApproveRetry}
                                   sessionId={sessionId}
                                   semanticSelectors={false}
-                                  spawnedTidsByItemId={spawnedTidsByItemId}
                                   itemEnrichments={itemEnrichments}
                                   getTaskHref={getTaskHref}
                                 />
@@ -509,7 +505,6 @@ export const AssistantMessage = memo(
     prev.message === next.message &&
     shallowArrayEqual(prev.resolvedBlocks, next.resolvedBlocks) &&
     prev.childrenByParent === next.childrenByParent &&
-    prev.spawnedTidsByItemId === next.spawnedTidsByItemId &&
     prev.itemEnrichments === next.itemEnrichments &&
     prev.getTaskHref === next.getTaskHref &&
     prev.resolvedBlocksByMsg === next.resolvedBlocksByMsg &&

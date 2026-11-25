@@ -495,7 +495,6 @@ function SessionViewInner({
             canMutateHistory && !task.alive ? onEditRawEvent : undefined
           }
           onViewFile={openFileViewer}
-          spawnedTidsByItemId={task.spawnedTidsByItemId}
           itemEnrichments={task.itemEnrichments}
           getTaskHref={getTaskHref}
           subtaskEnd={subtaskEnd}

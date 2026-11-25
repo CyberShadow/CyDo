@@ -37,7 +37,7 @@ import cydo.mcp : McpResult, ToolCallCancellation;
 import cydo.mcp.payloads : CreatedTaskResult, TaskResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend,
 	ToolCallEnricher, ValidatedTask;
-import cydo.protocol : AnswerResult, BatchResultEnvelope, ContentBlock, CydoItemEnrichedEvent, QuestionResult, decomposeToolName;
+import cydo.protocol : AnswerResult, BatchResultEnvelope, ContentBlock, CydoItemEnrichedEvent, ItemEnrichmentSpawnedChild, QuestionResult, decomposeToolName;
 import cydo.runtime.config : UnsandboxedCommandExecution;
 import cydo.workflow.batch.registry : BatchHandle, BatchRegistry;
 import cydo.workflow.mailbox : Mailbox, MailboxEvent;
@@ -152,7 +152,6 @@ struct WorkflowToolsHost
 	void delegate(int tid) clearAskUserQuestionPrompt;
 	void delegate(int tid, const PendingPermission pending) sendPermissionPrompt;
 	void delegate(int tid) clearPermissionPrompt;
-	void delegate(int parentTid, int childTid, int specIndex) appendTaskSpawnedEvent;
 	void delegate(TaskCreatedMessage message) broadcastTaskCreated;
 
 	PermissionSettings delegate(string agentName, string workspaceName) permissionSettings;
@@ -272,7 +271,6 @@ unittest
 		clearAskUserQuestionPrompt: (int tid) {},
 		sendPermissionPrompt: (int tid, const PendingPermission pending) {},
 		clearPermissionPrompt: (int tid) {},
-		appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
 		broadcastTaskCreated: (TaskCreatedMessage message) {}, permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 		onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); }, generateTitle: (int tid, string prompt) {},
 	));
@@ -342,7 +340,7 @@ public:
 
 	}
 
-	ValidatedTask handleCreateTask(string callerTid, int specIndex,
+	ValidatedTask handleCreateTask(string callerTid, ToolCallEnricher call, int specIndex,
 		string description, string taskType, string prompt)
 	{
 		import std.algorithm : canFind, map;
@@ -436,7 +434,7 @@ public:
 				childTid, pd.workspace, pd.projectPath, parentTid, "subtask"));
 			host_.broadcastTaskUpdate(childTid);
 			host_.broadcastFocusHint(parentTid, childTid);
-			host_.appendTaskSpawnedEvent(parentTid, childTid, specIndex);
+			call.enrich(CydoItemEnrichedEvent(spawned_child: ItemEnrichmentSpawnedChild(specIndex, childTid)));
 
 			void failLaunch(TaskData* child, string message)
 			{
@@ -2635,7 +2633,6 @@ unittest
 		clearAskUserQuestionPrompt: (int tid) {},
 		sendPermissionPrompt: (int tid, const PendingPermission pending) {},
 		clearPermissionPrompt: (int tid) {},
-		appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
 		broadcastTaskCreated: (TaskCreatedMessage message) {
 			foreach (batch; persistence.loadTaskDeps())
 				assert(!batch.childTids.canFind(message.tid));
@@ -2737,7 +2734,7 @@ unittest
 	host.isConfiguredAgentName = (string agentName) => agentName == "work-claude";
 
 	auto backend = new WorkflowToolsBackend(host);
-	auto validated = backend.handleCreateTask("1", 0, "Child task", "child",
+	auto validated = backend.handleCreateTask("1", new RecordingEnricher, 0, "Child task", "child",
 		"Implement it");
 	assert(validated.launch !is null);
 	assert(!validated.error.isError);
@@ -3013,7 +3010,6 @@ version (unittest)
 				clearAskUserQuestionPrompt: (int tid) {},
 				sendPermissionPrompt: (int tid, const PendingPermission pending) {},
 				clearPermissionPrompt: (int tid) {},
-				appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
 				permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 				onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); },
 				generateTitle: (int tid, string prompt) {},
@@ -3276,8 +3272,8 @@ unittest
 		auto f = new BatchInvariantFixture;
 		f.tasks[1].isProcessing = true;
 		auto b = f.makeBackend();
-		auto first = b.handleCreateTask("1", 0, "first", "child", "first prompt").launch();
-		auto second = b.handleCreateTask("1", 1, "second", "child", "second prompt").launch();
+		auto first = b.handleCreateTask("1", new RecordingEnricher, 0, "first", "child", "first prompt").launch();
+		auto second = b.handleCreateTask("1", new RecordingEnricher, 1, "second", "child", "second prompt").launch();
 		final switch (wait)
 		{
 		case ParentWait.beforeRegistration:
@@ -5267,7 +5263,7 @@ unittest
 		persistWorktreeTid: (int, int) { throw ownerFailure; },
 	));
 	b.host_.setupWorktreeForEdge = &failingAllocator.setupForEdge;
-	auto launch = b.handleCreateTask("1", 0, "write failure", "child", "prompt");
+	auto launch = b.handleCreateTask("1", new RecordingEnricher, 0, "write failure", "child", "prompt");
 	assert(collectException(launch.launch()) is ownerFailure);
 	assert(f.tasks[5].status == TaskStatus.pending && f.tasks[5].worktreeTid == 0);
 }
@@ -5370,8 +5366,8 @@ unittest
 	{
 		auto f = new BatchInvariantFixture;
 		auto b = f.makeBackend();
-		auto first = b.handleCreateTask("1", 0, "first", "child", "first prompt").launch();
-		auto second = b.handleCreateTask("1", 1, "second", "child", "second prompt").launch();
+		auto first = b.handleCreateTask("1", new RecordingEnricher, 0, "first", "child", "first prompt").launch();
+		auto second = b.handleCreateTask("1", new RecordingEnricher, 1, "second", "child", "second prompt").launch();
 		assert(f.tasks[first.childTid].status == TaskStatus.active);
 		assert(f.tasks[second.childTid].status == TaskStatus.active);
 		assert(f.tasks[1].status == TaskStatus.active);
@@ -5386,6 +5382,30 @@ unittest
 		assert(f.tasks[1].status == TaskStatus.active);
 		assert(f.persistence.loadTaskDeps().length == 0);
 	}
+}
+
+// Interleaved child launches announce each child to its own call.
+unittest
+{
+	auto f = new BatchInvariantFixture;
+	auto b = f.makeBackend();
+	auto firstCall = new RecordingEnricher;
+	auto secondCall = new RecordingEnricher;
+	auto first = b.handleCreateTask("1", firstCall, 0, "first", "child", "first prompt");
+	auto second = b.handleCreateTask("1", secondCall, 0, "second", "child", "second prompt");
+	auto third = b.handleCreateTask("1", firstCall, 1, "third", "child", "third prompt");
+	assert(firstCall.events.length == 0 && secondCall.events.length == 0);
+
+	auto firstChild = first.launch().childTid;
+	auto secondChild = second.launch().childTid;
+	auto thirdChild = third.launch().childTid;
+	assert(firstCall.events == [
+		CydoItemEnrichedEvent(spawned_child: ItemEnrichmentSpawnedChild(0, firstChild)),
+		CydoItemEnrichedEvent(spawned_child: ItemEnrichmentSpawnedChild(1, thirdChild)),
+	]);
+	assert(secondCall.events == [
+		CydoItemEnrichedEvent(spawned_child: ItemEnrichmentSpawnedChild(0, secondChild)),
+	]);
 }
 
 // A question handed to an answerer whose session ends fails the Ask once.

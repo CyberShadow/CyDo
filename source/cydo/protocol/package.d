@@ -512,16 +512,6 @@ string makeUnrecognizedEvent(string reason)
 	return toJson(ev);
 }
 
-/// cydo/task_spawned — emitted when CyDo spawns a child task in response
-/// to a parent's mcp__cydo__Task tool call. Lands in the parent's task
-/// event stream; replays on F5 in the same position.
-struct CydoTaskSpawnedEvent
-{
-	string type = "cydo/task_spawned";
-	int child_tid;   // tid of the newly created child task
-	int spec_index;  // 0-based index within the parent call's tasks[] array
-}
-
 /// One child task created for a cydo:Task call.
 struct ItemEnrichmentSpawnedChild
 {

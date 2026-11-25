@@ -47,7 +47,6 @@ interface Props {
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
   onEditRawEvent?: (tid: number, seq: number, content: string) => void;
   onViewFile?: (filePath: string) => void;
-  spawnedTidsByItemId?: Map<string, Map<number, number>>;
   itemEnrichments?: Map<string, ItemEnrichment>;
   getTaskHref?: (id: string) => string;
   subtaskEnd?: SubtaskEnd;
@@ -575,7 +574,6 @@ const MessageView = memo(
     onEditRaw,
     actionUuid,
     actionBoundary,
-    spawnedTidsByItemId,
     itemEnrichments,
     getTaskHref,
   }: {
@@ -596,7 +594,6 @@ const MessageView = memo(
       kind: "user" | "provisional_user" | "agent_turn";
       checkpointUuid?: string;
     };
-    spawnedTidsByItemId?: Map<string, Map<number, number>>;
     itemEnrichments?: Map<string, ItemEnrichment>;
     getTaskHref?: (id: string) => string;
   }) {
@@ -675,7 +672,6 @@ const MessageView = memo(
             onViewFile={onViewFile}
             onApproveRetry={onApproveRetry}
             sessionId={tid}
-            spawnedTidsByItemId={spawnedTidsByItemId}
             itemEnrichments={itemEnrichments}
             getTaskHref={getTaskHref}
           />
@@ -916,7 +912,6 @@ const MessageView = memo(
     prev.actionBoundary?.checkpointUuid ===
       next.actionBoundary?.checkpointUuid &&
     prev.actionUuid === next.actionUuid &&
-    prev.spawnedTidsByItemId === next.spawnedTidsByItemId &&
     prev.itemEnrichments === next.itemEnrichments &&
     prev.getTaskHref === next.getTaskHref,
 );
@@ -986,7 +981,6 @@ export function MessageList({
   onEditMessage,
   onEditRawEvent,
   onViewFile,
-  spawnedTidsByItemId,
   itemEnrichments,
   getTaskHref,
   subtaskEnd,
@@ -1244,7 +1238,6 @@ export function MessageList({
                       }
                     : undefined
                 }
-                spawnedTidsByItemId={spawnedTidsByItemId}
                 itemEnrichments={itemEnrichments}
                 getTaskHref={getTaskHref}
               />

@@ -44,7 +44,6 @@ import type {
   TurnDeltaEvent,
   UserMessageConsumedEvent,
   StderrMessage,
-  CydoTaskSpawnedEvent,
   CydoItemEnrichedEvent,
 } from "./protocol";
 import {
@@ -1303,16 +1302,6 @@ export function reduceItemStarted(
   const blockKey = itemBlockKey(msg.id, event.item_id);
   const isDuplicateBlockKey = msg.blockIds?.includes(blockKey) ?? false;
 
-  let pendingCydoTaskItemIds = s.pendingCydoTaskItemIds;
-  if (
-    !isDuplicateBlockKey &&
-    event.item_type === "tool_use" &&
-    event.tool_server === "cydo" &&
-    event.name === "Task"
-  ) {
-    pendingCydoTaskItemIds = [...s.pendingCydoTaskItemIds, event.item_id];
-  }
-
   if (event.parent_tool_use_id) {
     msg.parentToolUseId = event.parent_tool_use_id;
   }
@@ -1323,7 +1312,7 @@ export function reduceItemStarted(
   const itemIdMap = new Map(s.itemIdMap);
   itemIdMap.set(event.item_id, blockKey);
   if (isDuplicateBlockKey) {
-    return { ...s, messages, blocks, itemIdMap, pendingCydoTaskItemIds };
+    return { ...s, messages, blocks, itemIdMap };
   }
 
   const creationOrder = msg.nextCreationOrder ?? 0;
@@ -1353,7 +1342,7 @@ export function reduceItemStarted(
   msg.blockIds = [...(msg.blockIds || []), blockKey];
   blocks.set(blockKey, block);
 
-  let state = { ...s, messages, blocks, itemIdMap, pendingCydoTaskItemIds };
+  let state = { ...s, messages, blocks, itemIdMap };
 
   if (event.item_type === "tool_use") {
     if (
@@ -1478,10 +1467,7 @@ function reduceItemAbandoned(
     const blockIds = message.blockIds.filter((id) => id !== blockKey);
     return blockIds.length > 0 ? [{ ...message, blockIds }] : [];
   });
-  const pendingCydoTaskItemIds = s.pendingCydoTaskItemIds.filter(
-    (id) => id !== event.item_id,
-  );
-  return { ...s, blocks, itemIdMap, messages, pendingCydoTaskItemIds };
+  return { ...s, blocks, itemIdMap, messages };
 }
 
 function reduceItemDenied(
@@ -1546,18 +1532,7 @@ export function reduceItemResult(
     }
   }
 
-  let pendingCydoTaskItemIds = s.pendingCydoTaskItemIds;
-  if (block.toolServer === "cydo" && block.name === "Task") {
-    const idx = pendingCydoTaskItemIds.indexOf(event.item_id);
-    if (idx >= 0) {
-      pendingCydoTaskItemIds = [
-        ...pendingCydoTaskItemIds.slice(0, idx),
-        ...pendingCydoTaskItemIds.slice(idx + 1),
-      ];
-    }
-  }
-
-  let state = { ...s, blocks, messages, pendingCydoTaskItemIds };
+  let state = { ...s, blocks, messages };
   state = trackResultFileEdits(state, [
     {
       tool_use_id: event.item_id,
@@ -1967,9 +1942,6 @@ export function reduceMessage(
     case "cydo/item_enriched":
       return reduceItemEnriched(s, msg);
 
-    case "cydo/task_spawned":
-      return reduceCydoTaskSpawned(s, msg);
-
     default:
       return reduceParseError(
         s,
@@ -1986,34 +1958,33 @@ export function reduceItemEnriched(
   s: SessionState,
   event: CydoItemEnrichedEvent,
 ): SessionState {
-  const { item_id, target_tid } = event;
+  const { item_id, target_tid, spawned_child } = event;
   const blockKey = s.itemIdMap.get(item_id);
   if (blockKey === undefined || s.blocks.get(blockKey)?.type !== "tool_use") {
     throw new Error(`Cannot enrich unknown or non-tool item ${item_id}`);
   }
-  if (target_tid === undefined) {
+  if (target_tid === undefined && spawned_child === undefined) {
     throw new Error(`Empty enrichment for item ${item_id}`);
   }
-  const existing = s.itemEnrichments.get(blockKey);
-  if (existing?.targetTid !== undefined) {
-    throw new Error(`Duplicate target task enrichment for item ${item_id}`);
+  const enrichment = { ...s.itemEnrichments.get(blockKey) };
+  if (target_tid !== undefined) {
+    if (enrichment.targetTid !== undefined) {
+      throw new Error(`Duplicate target task enrichment for item ${item_id}`);
+    }
+    enrichment.targetTid = target_tid;
+  }
+  if (spawned_child !== undefined) {
+    const { spec_index, child_tid } = spawned_child;
+    if (enrichment.spawnedTids?.has(spec_index)) {
+      throw new Error(
+        `Duplicate spawned child enrichment for item ${item_id} at spec index ${spec_index}`,
+      );
+    }
+    const spawnedTids = new Map(enrichment.spawnedTids);
+    spawnedTids.set(spec_index, child_tid);
+    enrichment.spawnedTids = spawnedTids;
   }
   const itemEnrichments = new Map(s.itemEnrichments);
-  itemEnrichments.set(blockKey, { ...existing, targetTid: target_tid });
+  itemEnrichments.set(blockKey, enrichment);
   return { ...s, itemEnrichments };
-}
-
-export function reduceCydoTaskSpawned(
-  s: SessionState,
-  event: CydoTaskSpawnedEvent,
-): SessionState {
-  const frontItemId = s.pendingCydoTaskItemIds[0];
-  if (!frontItemId) return s;
-  const existing =
-    s.spawnedTidsByItemId.get(frontItemId) ?? new Map<number, number>();
-  const updated = new Map(existing);
-  updated.set(event.spec_index, event.child_tid);
-  const spawnedTidsByItemId = new Map(s.spawnedTidsByItemId);
-  spawnedTidsByItemId.set(frontItemId, updated);
-  return { ...s, spawnedTidsByItemId };
 }

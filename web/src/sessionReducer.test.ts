@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   reduceMessage,
   reduceAgentAck,
-  reduceCydoTaskSpawned,
   replaceHistoryBoundary,
   rejectOrdinarySubmission,
 } from "./sessionReducer";
@@ -1776,213 +1775,88 @@ describe("cydo/item_enriched reducer", () => {
   });
 });
 
-describe("cydo/task_spawned reducer", () => {
-  it("pushes to pendingCydoTaskItemIds on cydo:Task item/started", () => {
-    const s = makeState();
-    const next = reduceMessage(
-      s,
-      asEvent({
-        type: "item/started",
-        item_type: "tool_use",
-        item_id: "t1",
-        name: "Task",
-        tool_server: "cydo",
-      }),
+describe("spawned child enrichment", () => {
+  function startTask(s: TaskState, itemId: string) {
+    return reduceMessage(s, {
+      type: "item/started",
+      item_type: "tool_use",
+      item_id: itemId,
+      name: "Task",
+      tool_server: "cydo",
+    });
+  }
+
+  function recordChild(
+    s: TaskState,
+    itemId: string,
+    specIndex: number,
+    childTid: number,
+  ) {
+    return reduceMessage(s, {
+      type: "cydo/item_enriched",
+      item_id: itemId,
+      spawned_child: { spec_index: specIndex, child_tid: childTid },
+    });
+  }
+
+  it("attributes interleaved children to parallel Task calls by item id", () => {
+    const started = startTask(startTask(makeState(), "first"), "second");
+    const secondChild = recordChild(started, "second", 0, 20);
+    expect(
+      secondChild.itemEnrichments.get(secondChild.itemIdMap.get("first")!),
+    ).toBeUndefined();
+    expect(
+      secondChild.itemEnrichments.get(secondChild.itemIdMap.get("second")!)
+        ?.spawnedTids,
+    ).toEqual(new Map([[0, 20]]));
+
+    const firstChild = recordChild(secondChild, "first", 0, 10);
+    const bothChildren = recordChild(firstChild, "second", 1, 21);
+
+    expect(
+      bothChildren.itemEnrichments.get(bothChildren.itemIdMap.get("first")!)
+        ?.spawnedTids,
+    ).toEqual(new Map([[0, 10]]));
+    expect(
+      bothChildren.itemEnrichments.get(bothChildren.itemIdMap.get("second")!)
+        ?.spawnedTids,
+    ).toEqual(
+      new Map([
+        [0, 20],
+        [1, 21],
+      ]),
     );
-    expect(next.pendingCydoTaskItemIds).toEqual(["t1"]);
+    expect(
+      firstChild.itemEnrichments.get(firstChild.itemIdMap.get("second")!)
+        ?.spawnedTids,
+    ).toEqual(new Map([[0, 20]]));
   });
 
-  it("does not push for non-cydo tools", () => {
-    const s = makeState();
-    const next = reduceMessage(
-      s,
-      asEvent({
-        type: "item/started",
-        item_type: "tool_use",
-        item_id: "b1",
-        name: "Bash",
-      }),
+  it("rejects a second child for the same spec in one Task call", () => {
+    const s = recordChild(startTask(makeState(), "task"), "task", 0, 42);
+    expect(() => recordChild(s, "task", 0, 43)).toThrow(
+      /Duplicate spawned child enrichment for item task at spec index 0/,
     );
-    expect(next.pendingCydoTaskItemIds).toEqual([]);
   });
 
-  it("attaches spawn event to front-of-FIFO item", () => {
-    const s = makeState();
-    const afterPush = reduceMessage(
-      s,
-      asEvent({
-        type: "item/started",
-        item_type: "tool_use",
-        item_id: "t1",
-        name: "Task",
-        tool_server: "cydo",
-      }),
-    );
-    const afterSpawn = reduceCydoTaskSpawned(afterPush, {
-      type: "cydo/task_spawned",
-      child_tid: 42,
-      spec_index: 0,
+  it("retains child links when replay reaches the Task result", () => {
+    const completed = reduceMessage(startTask(makeState(), "task"), {
+      type: "item/completed",
+      item_id: "task",
+      is_error: false,
     });
-    expect(afterSpawn.spawnedTidsByItemId.get("t1")?.get(0)).toBe(42);
-  });
-
-  it("handles multi-spec single call", () => {
-    const s = makeState();
-    const afterPush = reduceMessage(
-      s,
-      asEvent({
-        type: "item/started",
-        item_type: "tool_use",
-        item_id: "t1",
-        name: "Task",
-        tool_server: "cydo",
-      }),
-    );
-    const afterSpawn0 = reduceCydoTaskSpawned(afterPush, {
-      type: "cydo/task_spawned",
-      child_tid: 42,
-      spec_index: 0,
+    const enriched = recordChild(completed, "task", 0, 77);
+    const withResult = reduceMessage(enriched, {
+      type: "item/result",
+      item_id: "task",
+      content: [],
+      is_error: false,
     });
-    const afterSpawn1 = reduceCydoTaskSpawned(afterSpawn0, {
-      type: "cydo/task_spawned",
-      child_tid: 43,
-      spec_index: 1,
-    });
-    expect(afterSpawn1.spawnedTidsByItemId.get("t1")?.get(0)).toBe(42);
-    expect(afterSpawn1.spawnedTidsByItemId.get("t1")?.get(1)).toBe(43);
-  });
 
-  it("handles two sequential cydo:Task calls correctly", () => {
-    let s: TaskState = makeState();
-    // Push t1, spawn for t1, item/result for t1 (pop t1)
-    s = reduceMessage(
-      s,
-      asEvent({
-        type: "item/started",
-        item_type: "tool_use",
-        item_id: "t1",
-        name: "Task",
-        tool_server: "cydo",
-      }),
-    );
-    s = reduceCydoTaskSpawned(s, {
-      type: "cydo/task_spawned",
-      child_tid: 10,
-      spec_index: 0,
-    });
-    s = reduceMessage(
-      s,
-      asEvent({
-        type: "item/result",
-        item_id: "t1",
-        content: [],
-        is_error: false,
-      }),
-    );
-    expect(s.pendingCydoTaskItemIds).toEqual([]);
-
-    // Push t2, spawn for t2
-    s = reduceMessage(
-      s,
-      asEvent({
-        type: "item/started",
-        item_type: "tool_use",
-        item_id: "t2",
-        name: "Task",
-        tool_server: "cydo",
-      }),
-    );
-    s = reduceCydoTaskSpawned(s, {
-      type: "cydo/task_spawned",
-      child_tid: 20,
-      spec_index: 0,
-    });
-    expect(s.spawnedTidsByItemId.get("t2")?.get(0)).toBe(20);
-    // t1 entry is unaffected
-    expect(s.spawnedTidsByItemId.get("t1")?.get(0)).toBe(10);
-  });
-
-  it("drops spawn silently when no in-flight cydo:Task", () => {
-    const s = makeState();
-    const next = reduceCydoTaskSpawned(s, {
-      type: "cydo/task_spawned",
-      child_tid: 99,
-      spec_index: 0,
-    });
-    expect(next).toBe(s);
-    expect(next.spawnedTidsByItemId.size).toBe(0);
-  });
-
-  it("pops by item_id not blind shift (parallel case)", () => {
-    let s: TaskState = makeState();
-    // Push t1 then t2
-    s = reduceMessage(
-      s,
-      asEvent({
-        type: "item/started",
-        item_type: "tool_use",
-        item_id: "t1",
-        name: "Task",
-        tool_server: "cydo",
-      }),
-    );
-    s = reduceMessage(
-      s,
-      asEvent({
-        type: "item/started",
-        item_type: "tool_use",
-        item_id: "t2",
-        name: "Task",
-        tool_server: "cydo",
-      }),
-    );
-    expect(s.pendingCydoTaskItemIds).toEqual(["t1", "t2"]);
-
-    // item/result for t2 removes only t2
-    s = reduceMessage(
-      s,
-      asEvent({
-        type: "item/result",
-        item_id: "t2",
-        content: [],
-        is_error: false,
-      }),
-    );
-    expect(s.pendingCydoTaskItemIds).toEqual(["t1"]);
-  });
-
-  it("replay sequence item/started → item/completed → cydo/task_spawned → item/result", () => {
-    let s: TaskState = makeState();
-    s = reduceMessage(
-      s,
-      asEvent({
-        type: "item/started",
-        item_type: "tool_use",
-        item_id: "t1",
-        name: "Task",
-        tool_server: "cydo",
-      }),
-    );
-    s = reduceMessage(
-      s,
-      asEvent({ type: "item/completed", item_id: "t1", is_error: false }),
-    );
-    s = reduceCydoTaskSpawned(s, {
-      type: "cydo/task_spawned",
-      child_tid: 77,
-      spec_index: 0,
-    });
-    s = reduceMessage(
-      s,
-      asEvent({
-        type: "item/result",
-        item_id: "t1",
-        content: [],
-        is_error: false,
-      }),
-    );
-    expect(s.spawnedTidsByItemId.get("t1")?.get(0)).toBe(77);
-    expect(s.pendingCydoTaskItemIds).toEqual([]);
+    expect(
+      withResult.itemEnrichments.get(withResult.itemIdMap.get("task")!)
+        ?.spawnedTids,
+    ).toEqual(new Map([[0, 77]]));
   });
 });
 
@@ -2348,28 +2222,6 @@ describe("item/abandoned reducer", () => {
     );
     expect(stopped.messages).toEqual(completed.messages);
     expect(stopped.blocks).toEqual(completed.blocks);
-  });
-
-  it("prunes the abandoned cydo Task from the pending queue", () => {
-    const streamed = ["kept", "discarded"].reduce<TaskState>(
-      (state, item_id) =>
-        reduceMessage(
-          state,
-          asEvent({
-            type: "item/started",
-            item_type: "tool_use",
-            item_id,
-            name: "Task",
-            tool_server: "cydo",
-          }),
-        ),
-      makeState(),
-    );
-    expect(streamed.pendingCydoTaskItemIds).toEqual(["kept", "discarded"]);
-
-    expect(abandon(streamed, "discarded").pendingCydoTaskItemIds).toEqual([
-      "kept",
-    ]);
   });
 
   it("throws for an unknown item ID", () => {

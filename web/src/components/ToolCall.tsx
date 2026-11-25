@@ -260,7 +260,6 @@ interface Props {
   streaming?: boolean;
   children?: ComponentChildren;
   onViewFile?: (filePath: string) => void;
-  spawnedTids?: Map<number, number>;
   enrichment?: ItemEnrichment;
   getTaskHref?: (id: string) => string;
 }
@@ -1193,7 +1192,7 @@ function formatTaskGetResult(
 
 function formatTaskSpecsInput(
   tasks: Array<Record<string, unknown>>,
-  spawnedTids?: Map<number, number>,
+  spawnedTids?: ReadonlyMap<number, number>,
   getTaskHref?: (id: string) => string,
 ): h.JSX.Element {
   return (
@@ -2419,7 +2418,7 @@ function formatInput(
   driver: string | undefined,
   input: Record<string, unknown>,
   result?: ToolResult,
-  spawnedTids?: Map<number, number>,
+  spawnedTids?: ReadonlyMap<number, number>,
   getTaskHref?: (id: string) => string,
 ): h.JSX.Element {
   if (
@@ -3141,7 +3140,6 @@ export const ToolCall = memo(
     streaming,
     children,
     onViewFile,
-    spawnedTids,
     enrichment,
     getTaskHref,
   }: Props) {
@@ -3541,7 +3539,7 @@ export const ToolCall = memo(
             driver,
             input,
             result,
-            spawnedTids,
+            enrichment?.spawnedTids,
             getTaskHref,
           )}
         {children}
@@ -3733,7 +3731,6 @@ export const ToolCall = memo(
     prev.toolUseId === next.toolUseId &&
     prev.input === next.input &&
     prev.result === next.result &&
-    prev.spawnedTids === next.spawnedTids &&
     prev.enrichment === next.enrichment &&
     prev.getTaskHref === next.getTaskHref &&
     prev.permission === next.permission &&

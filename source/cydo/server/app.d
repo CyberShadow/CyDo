@@ -622,18 +622,6 @@ class App
 					PermissionPromptMessage("permission_prompt", tid,
 						"", "", JSONFragment("{}"))).representation));
 			},
-			appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {
-				import cydo.protocol : CydoTaskSpawnedEvent, TranslatedEvent;
-				import ae.utils.time.types : AbsTime;
-				import std.datetime : Clock;
-
-				CydoTaskSpawnedEvent spawnEv;
-				spawnEv.child_tid = childTid;
-				spawnEv.spec_index = specIndex;
-				historyPipeline.appendAndBroadcastTaskEvent(parentTid,
-					TranslatedEvent(toJson(spawnEv), null,
-						AbsTime(Clock.currStdTime)));
-			},
 			broadcastTaskCreated: (TaskCreatedMessage message) {
 				clientHub.broadcast(toJson(message));
 			},

@@ -75,7 +75,11 @@ it("shows the child task link when its id arrives before the tool result", async
       render(
         <AssistantMessage
           {...props}
-          spawnedTidsByItemId={new Map([[itemId, new Map([[0, 7]])]])}
+          itemEnrichments={
+            new Map([
+              [`task-message:${itemId}`, { spawnedTids: new Map([[0, 7]]) }],
+            ])
+          }
         />,
         container,
       );

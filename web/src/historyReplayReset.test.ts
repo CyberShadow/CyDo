@@ -462,8 +462,6 @@ describe("history replay reset", () => {
     expect(reset.trackedFiles.size).toBe(0);
     expect(reset.blocks.size).toBe(0);
     expect(reset.itemIdMap.size).toBe(0);
-    expect(reset.pendingCydoTaskItemIds).toEqual([]);
-    expect(reset.spawnedTidsByItemId.size).toBe(0);
     expect(reset.historyTotal).toBe(12);
     expect(reset.historyReceived).toBe(0);
     expect(reset.historyLoaded).toBe(false);
