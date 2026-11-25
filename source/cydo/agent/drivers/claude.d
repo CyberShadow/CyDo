@@ -631,6 +631,7 @@ class ClaudeCodeAgent : Agent
 		@JSONOptional bool isSidechain;
 		@JSONOptional bool isMeta;
 		@JSONOptional bool isApiErrorMessage;
+		@JSONOptional bool is_api_error_message;
 
 		@property HistoryRowKind kind() const
 		{
@@ -649,7 +650,7 @@ class ClaudeCodeAgent : Agent
 			switch (type)
 			{
 				case "assistant":
-					return isApiErrorMessage ? HistoryRowKind.end : HistoryRowKind.assistant;
+					return isApiErrorMessage || is_api_error_message ? HistoryRowKind.end : HistoryRowKind.assistant;
 				case "user":
 					return !isMeta && hasPromptContent(message.content)
 						? HistoryRowKind.prompt : HistoryRowKind.inside;
@@ -1572,6 +1573,24 @@ class ClaudeCodeSession : AgentSession
 		JSONFragment extras;
 		bool isNarration;
 	}
+	private struct CompleteMessage
+	{
+		string id;
+		int blockCount;
+		bool synthetic;
+	}
+	private CompleteMessage completeMessage_;
+
+	private void stopCompleteMessage()
+	{
+		import cydo.protocol : TurnStopEvent;
+		TurnStopEvent stop;
+		stop.uuid = completeMessage_.id;
+		stop.api_block_count = completeMessage_.synthetic ? 0 : completeMessage_.blockCount;
+		completeMessage_ = CompleteMessage.init;
+		emitEvent(TranslatedEvent(toJson(stop), null));
+	}
+
 	private BlockCompletion[string] blockCompletions_; // item_id → from assistant event
 	private AbsTime lineReceiptTs_;    // receipt time captured at start of each live line
 	/// The background tasks (commands, monitors, agents) the CLI reports as
@@ -2383,6 +2402,15 @@ class ClaudeCodeSession : AgentSession
 			return;
 		}
 
+		if (completeMessage_.id.length > 0)
+		{
+			auto row = ClaudeCodeAgent.parseHistoryRow(rawLine);
+			auto kind = row.kind;
+			if (ClaudeCodeAgent.endsHistoryMessage(kind)
+				|| (kind == ClaudeCodeAgent.HistoryRowKind.assistant && row.message.id != completeMessage_.id))
+				stopCompleteMessage();
+		}
+
 		// Queue operations must pass through raw so broadcastTask can intercept them.
 		import cydo.domain.tasks.model : isQueueOperationType;
 		if (isQueueOperationType(probe.type))
@@ -2636,6 +2664,8 @@ class ClaudeCodeSession : AgentSession
 				@JSONPartial static struct MessageProbe { string id; }
 				@JSONPartial static struct StartProbe { MessageProbe message; }
 				auto start = jsonParse!StartProbe(innerEvent);
+				if (completeMessage_.id.length > 0)
+					stopCompleteMessage();
 				assert(currentMessageId_.length == 0 && activeItemIds_.length == 0,
 					"Claude message_start while another message is open");
 				assert(start.message.id.length > 0, "Claude message_start without message.id");
@@ -2650,10 +2680,8 @@ class ClaudeCodeSession : AgentSession
 		}
 	}
 
-	/// Translate an assistant NDJSON event to a turn/delta metadata event.
-	/// Content promotion is handled by content_block_stop → item/completed.
-	/// Exception: sub-agent messages (parent_tool_use_id set) arrive as complete
-	/// messages even in the live stream, so they are processed like history.
+	/// Attach metadata to streamed blocks or materialize complete assistant
+	/// frames (subagent replies and non-streaming API retries).
 	private void translateAssistantLive(string rawLine)
 	{
 		import cydo.protocol : TurnDeltaEvent, UsageInfo;
@@ -2749,19 +2777,14 @@ class ClaudeCodeSession : AgentSession
 			return;
 		}
 
-		// Sub-agent messages arrive as complete messages with parent_tool_use_id
-		// set even in the live stream.  Emitting a TurnDeltaEvent for them would
-		// corrupt the main streaming turn (M_main) by setting its parentToolUseId.
-		// Process them like history messages instead (ItemStarted+Completed+TurnStop).
-		if (raw.parent_tool_use_id.length > 0)
+		void emitCompleteItems(string prefix, int offset)
 		{
-			import cydo.protocol : ItemStartedEvent, ItemCompletedEvent,
-				TurnStopEvent, decomposeToolName;
+			import cydo.protocol : ItemStartedEvent, ItemCompletedEvent, decomposeToolName;
 
 			foreach (idx, ref b; raw.message.content)
 			{
 				auto itemId = b.type == "tool_use" && b.id.length > 0
-					? b.id : "cc-subagent-" ~ to!string(idx);
+					? b.id : prefix ~ to!string(offset + idx);
 
 				ItemStartedEvent startEv;
 				startEv.item_id              = itemId;
@@ -2793,6 +2816,17 @@ class ClaudeCodeSession : AgentSession
 				compEv.extras = extrasToFragment(b._extras);
 				emitEvent(TranslatedEvent(toJson(compEv), rawLine));
 			}
+		}
+
+		// Sub-agent messages arrive as complete messages with parent_tool_use_id
+		// set even in the live stream.  Emitting a TurnDeltaEvent for them would
+		// corrupt the main streaming turn (M_main) by setting its parentToolUseId.
+		// Process them like history messages instead (ItemStarted+Completed+TurnStop).
+		if (raw.parent_tool_use_id.length > 0)
+		{
+			import cydo.protocol : TurnStopEvent;
+
+			emitCompleteItems("cc-subagent-", 0);
 
 			UsageInfo subUsage;
 			if (raw.message.usage.json !is null && raw.message.usage.json.length > 0)
@@ -2831,24 +2865,32 @@ class ClaudeCodeSession : AgentSession
 			catch (Exception) {}
 		}
 
-		// Hold what the frame says about each block for its content_block_stop.
-		// A live frame carries the blocks most recently started on the stream
-		// (in practice one, sent just before that block's stop), so its
-		// content indexes are relative to the frame, not the stream. A frame
-		// with more blocks than were started was not streamed (a synthetic
-		// message), so no stop will come to pick anything up.
-		if (raw.message.content.length <= activeItemIds_.length)
+		if (currentMessageId_.length > 0)
 		{
-			auto firstStreamIdx = activeItemIds_.length - raw.message.content.length;
-			foreach (idx, ref b; raw.message.content)
+			assert(raw.message.id == currentMessageId_, "Claude assistant frame names a different API message");
+			// Frame indexes are relative to the most recently started blocks.
+			// The CLI can also append plugin blocks that were never streamed.
+			if (raw.message.content.length <= activeItemIds_.length)
 			{
-				BlockCompletion completion;
-				completion.extras = extrasToFragment(b._extras);
-				completion.isNarration = isNarration(idx);
-				auto itemId = activeItemIds_[firstStreamIdx + idx];
-				enforce(itemId !is null, "assistant frame block has no started stream block");
-				blockCompletions_[itemId] = completion;
+				auto firstStreamIdx = activeItemIds_.length - raw.message.content.length;
+				foreach (idx, ref b; raw.message.content)
+				{
+					BlockCompletion completion;
+					completion.extras = extrasToFragment(b._extras);
+					completion.isNarration = isNarration(idx);
+					auto itemId = activeItemIds_[firstStreamIdx + idx];
+					enforce(itemId !is null, "assistant frame block has no started stream block");
+					blockCompletions_[itemId] = completion;
+				}
 			}
+		}
+		else
+		{
+			assert(raw.message.id.length > 0, "Claude complete-only message requires an ID");
+			completeMessage_.id = raw.message.id;
+			completeMessage_.synthetic = raw.message.model == "<synthetic>";
+			emitCompleteItems("cc-block-", completeMessage_.blockCount);
+			completeMessage_.blockCount += cast(int) raw.message.content.length;
 		}
 
 		TurnDeltaEvent ev;
@@ -3271,6 +3313,210 @@ unittest
 	assert(!ClaudeCodeSession.rewindSupportByVersion_["probe-unsupported"]);
 }
 
+version (unittest)
+private class ClaudeLiveReplyTest
+{
+	import cydo.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent;
+
+	ClaudeCodeSession session;
+	TranslatedEvent[] events;
+
+	this()
+	{
+		session = new ClaudeCodeSession("true");
+		session.onOutput = (TranslatedEvent event) { events ~= event; };
+	}
+
+	TranslatedEvent[] expect(string[] types...)
+	{
+		@JSONPartial static struct EventType { string type; }
+		import std.algorithm : map;
+		import std.array : array;
+		auto actual = events.map!(event => jsonParse!EventType(event.translated).type).array;
+		assert(actual == types, format("Expected %s, got %s", types, actual));
+		auto batch = events;
+		events = null;
+		return batch;
+	}
+
+	static void expectText(TranslatedEvent[] batch, string id, string kind, string text)
+	{
+		auto start = jsonParse!ItemStartedEvent(batch[0].translated);
+		auto completed = jsonParse!ItemCompletedEvent(batch[1].translated);
+		assert(start.item_id == id && start.item_type == kind && start.text == text);
+		assert(completed.item_id == id && completed.text == text);
+	}
+
+	static void expectStop(TranslatedEvent event, string id, int count)
+	{
+		auto stop = jsonParse!TurnStopEvent(event.translated);
+		assert(stop.type == "turn/stop" && stop.uuid == id && stop.api_block_count == count);
+		assert(event.raw is null);
+	}
+
+	void assistant(string id, string block, string model = "claude-opus-5-5")
+	{
+		session.translateLiveLine(`{"type":"assistant","message":{"id":` ~ toJson(id)
+			~ `,"model":` ~ toJson(model) ~ `,"content":[` ~ block ~ "]}}");
+	}
+
+	void stream(string event)
+	{
+		session.translateLiveLine(`{"type":"stream_event","event":` ~ event ~ "}");
+	}
+
+	void startStream(string id)
+	{
+		stream(`{"type":"message_start","message":{"id":` ~ toJson(id) ~ "}}");
+	}
+
+	void result(string text)
+	{
+		session.translateLiveLine(`{"type":"result","subtype":"success","is_error":false,`
+			~ `"num_turns":1,"duration_ms":754,"total_cost_usd":0.00076,"result":` ~ toJson(text) ~ "}");
+	}
+
+	enum textStart = `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`;
+	enum blockStop = `{"type":"content_block_stop","index":0}`;
+}
+
+// Captured stdout L8–L21: two cut streams precede a complete-only answer.
+unittest
+{
+	auto test = new ClaudeLiveReplyTest;
+	scope(exit) test.session.stop();
+
+	void cutStream(string id)
+	{
+		test.startStream(id);
+		test.stream(test.textStart);
+		test.stream(`{"type":"content_block_delta","index":0,"delta":`
+			~ `{"type":"text_delta","text":"Abandoned text before disconnect."}}`);
+		test.stream(test.blockStop);
+		test.session.translateLiveLine(`{"type":"stream_event","event":{"type":"message_stop"},`
+			~ `"abandoned_blocks":{"api_message_id":` ~ toJson(id) ~ `,"from_block_index":0}}`);
+	}
+	cutStream("msg_mock_00001");
+	test.session.translateLiveLine(`{"type":"system","subtype":"api_retry","attempt":1,`
+		~ `"max_retries":10,"error_status":null,"error":"unknown"}`);
+	cutStream("msg_mock_00003");
+	// The assertions below cover the fallback, independently of retraction.
+	test.events = null;
+
+	test.assistant("msg_mock_00004", `{"type":"text","text":"fallback-text-answer"}`);
+	auto answer = test.expect("item/started", "item/completed", "turn/delta");
+	test.expectText(answer, "cc-block-0", "text", "fallback-text-answer");
+	test.result("fallback-text-answer");
+	test.expectStop(test.expect("turn/stop", "turn/result")[0], "msg_mock_00004", 1);
+}
+
+// Captured stdout L66–L68: separate thinking and text frames share one API ID.
+unittest
+{
+	auto test = new ClaudeLiveReplyTest;
+	scope(exit) test.session.stop();
+
+	test.assistant("msg_mock_00011",
+		`{"type":"thinking","thinking":"Completed thinking before disconnect."}`);
+	auto thinking = test.expect("item/started", "item/completed", "turn/delta");
+	test.expectText(thinking, "cc-block-0", "thinking", "Completed thinking before disconnect.");
+
+	test.assistant("msg_mock_00011", `{"type":"text","text":"fallback-thinking-answer"}`);
+	auto answer = test.expect("item/started", "item/completed", "turn/delta");
+	test.expectText(answer, "cc-block-1", "text", "fallback-thinking-answer");
+	test.result("fallback-thinking-answer");
+	test.expectStop(test.expect("turn/stop", "turn/result")[0], "msg_mock_00011", 2);
+}
+
+// Captured stdout L103–L114: the result stays inside the tool message,
+// which closes when the next API message starts streaming.
+unittest
+{
+	import cydo.protocol : ItemStartedEvent, ItemCompletedEvent, ItemResultEvent, TurnStopEvent;
+
+	auto test = new ClaudeLiveReplyTest;
+	scope(exit) test.session.stop();
+
+	enum toolId = "toolu_mock_00003";
+	enum input = `{"command":"echo fallback-tool-ran"}`;
+	test.assistant("msg_mock_00017", `{"type":"tool_use","id":"` ~ toolId
+		~ `","name":"Bash","input":` ~ input ~ "}");
+	auto tool = test.expect("item/started", "item/completed", "turn/delta");
+	auto start = jsonParse!ItemStartedEvent(tool[0].translated);
+	auto completed = jsonParse!ItemCompletedEvent(tool[1].translated);
+	assert(start.item_type == "tool_use" && start.item_id == toolId);
+	assert(start.name == "Bash" && start.input.json == input);
+	assert(completed.item_id == toolId && completed.input.json == input);
+
+	test.session.translateLiveLine(`{"type":"user","message":{"content":[{"type":"tool_result",`
+		~ `"tool_use_id":"` ~ toolId ~ `","content":"fallback-tool-ran","is_error":false}]}}`);
+	auto result = jsonParse!ItemResultEvent(test.expect("item/result")[0].translated);
+	assert(result.item_id == toolId && !result.is_error);
+	assert(result.content.json == `[{"type":"text","text":"fallback-tool-ran"}]`);
+
+	test.startStream("msg_mock_00018");
+	test.expectStop(test.expect("turn/stop")[0], "msg_mock_00017", 1);
+	test.stream(test.textStart);
+	test.stream(`{"type":"content_block_delta","index":0,"delta":`
+		~ `{"type":"text_delta","text":"streamed-after-tool"}}`);
+	test.assistant("msg_mock_00018", `{"type":"text","text":"streamed-after-tool"}`);
+	test.stream(test.blockStop);
+	test.stream(`{"type":"message_stop"}`);
+	auto streamed = test.expect("item/started", "item/delta", "turn/delta", "item/completed", "turn/stop");
+	auto stop = jsonParse!TurnStopEvent(streamed[$ - 1].translated);
+	assert(stop.uuid == "msg_mock_00018" && stop.api_block_count == 1);
+}
+
+// A different assistant ID and a replay-class prompt both close the
+// pending complete-only message before translating the boundary line.
+unittest
+{
+	import cydo.protocol : ItemStartedEvent;
+
+	auto test = new ClaudeLiveReplyTest;
+	scope(exit) test.session.stop();
+
+	test.assistant("first", `{"type":"text","text":"first answer"}`);
+	test.expect("item/started", "item/completed", "turn/delta");
+	test.assistant("second", `{"type":"text","text":"second answer"}`);
+	auto second = test.expect("turn/stop", "item/started", "item/completed", "turn/delta");
+	test.expectStop(second[0], "first", 1);
+	test.expectText(second[1 .. $], "cc-block-0", "text", "second answer");
+
+	test.session.translateLiveLine(`{"type":"user","message":{"content":"next prompt"}}`);
+	auto prompt = test.expect("turn/stop", "item/started");
+	test.expectStop(prompt[0], "second", 1);
+	auto user = jsonParse!ItemStartedEvent(prompt[1].translated);
+	assert(user.item_type == "user_message" && user.content.length == 1);
+	assert(user.content[0].text == "next prompt");
+}
+
+unittest
+{
+	import core.exception : AssertError;
+	import std.exception : assertThrown;
+
+	auto test = new ClaudeLiveReplyTest;
+	scope(exit) test.session.stop();
+
+	test.startStream("streamed");
+	assertThrown!AssertError(test.assistant("different", `{"type":"text","text":"wrong reply"}`));
+	test.expect();
+}
+
+// Synthetic placeholders render live with zero persisted API blocks.
+unittest
+{
+	auto test = new ClaudeLiveReplyTest;
+	scope(exit) test.session.stop();
+
+	test.assistant("synthetic", `{"type":"text","text":"No response requested."}`, "<synthetic>");
+	auto answer = test.expect("item/started", "item/completed", "turn/delta");
+	test.expectText(answer, "cc-block-0", "text", "No response requested.");
+	test.result("No response requested.");
+	test.expectStop(test.expect("turn/stop", "turn/result")[0], "synthetic", 0);
+}
+
 // A message replayed while another message's turn is running was absorbed
 // as steering; a turn opener is replayed after its own `started` report.
 unittest
@@ -3445,7 +3691,7 @@ unittest
 		auto i = to!string(index);
 		session.translateLiveLine(streamEvent(`{"type":"content_block_start","index":` ~ i
 			~ `,"content_block":{"type":"` ~ type ~ `"}}`));
-		session.translateLiveLine(`{"type":"assistant","message":{"content":[` ~ frameBlock ~ `]}`
+		session.translateLiveLine(`{"type":"assistant","message":{"id":"narration-message","content":[` ~ frameBlock ~ `]}`
 			~ frameFields ~ `}`);
 		session.translateLiveLine(streamEvent(`{"type":"content_block_stop","index":` ~ i ~ `}`));
 	}
@@ -6127,6 +6373,9 @@ unittest
 				return `{"type":"control_cancel_request","request_id":"fixture"}`;
 			case "control_response":
 				return `{"type":"control_response","response":{"subtype":"success","request_id":"fixture","response":{}}}`;
+			case "assistant":
+				return `{"type":"assistant","message":{"id":"msg_fixture","model":"claude-opus-5-5",`
+					~ `"content":[{"type":"text","text":"Fixture reply"}]}}`;
 			case "attachment":
 				return `{"type":"attachment","attachment":{"type":"fixture"}}`;
 			case "system":

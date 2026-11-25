@@ -169,6 +169,90 @@ function streamNarrationResponse(res, reasoning, narration, text, model) {
   res.end();
 }
 
+function interruptedReplyPrompt(text) {
+  return text?.replace(
+    /^\[SYSTEM: Session start: blank\]\n\n([\s\S]*)\n\n\n\[\/SYSTEM\]/,
+    "$1",
+  );
+}
+
+// Cut off the SSE response before its message terminators.
+function interruptClaudeReply(res, stream, model, scenario, continuation) {
+  const thinking = {
+    type: "thinking",
+    thinking: "Completed thinking before disconnect.",
+    signature: thinkingSignature("thinking"),
+  };
+  const content =
+    scenario === "tool"
+      ? [
+          {
+            type: "tool_use",
+            id: nextToolId(),
+            name: "Bash",
+            input: { command: "echo fallback-tool-ran" },
+          },
+        ]
+      : [{ type: "text", text: `fallback-${scenario}-answer` }];
+  if (scenario === "thinking") content.unshift(thinking);
+  const message = {
+    id: nextMsgId(),
+    type: "message",
+    role: "assistant",
+    model,
+    content,
+    stop_reason: scenario === "tool" ? "tool_use" : "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: 10, output_tokens: 10 },
+  };
+  console.log(
+    `[mock-api] interrupted reply scenario=${scenario} stream=${stream} id=${message.id}`
+  );
+
+  if (!stream) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(message));
+    return;
+  }
+
+  res.writeHead(200, { "Content-Type": "text/event-stream" });
+  sseEvent(res, "message_start", {
+    type: "message_start",
+    message: { ...message, content: [], stop_reason: null },
+  });
+  const isThinking = scenario === "thinking" && !continuation;
+  sseEvent(res, "content_block_start", {
+    type: "content_block_start",
+    index: 0,
+    content_block: isThinking
+      ? { type: "thinking", thinking: "", signature: "" }
+      : { type: "text", text: "" },
+  });
+  if (!continuation) {
+    sseEvent(res, "content_block_delta", {
+      type: "content_block_delta",
+      index: 0,
+      delta: isThinking
+        ? { type: "thinking_delta", thinking: thinking.thinking }
+        : { type: "text_delta", text: "Abandoned text before disconnect." },
+    });
+  }
+  if (isThinking) {
+    sseEvent(res, "content_block_delta", {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "signature_delta", signature: thinking.signature },
+    });
+    sseEvent(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+    sseEvent(res, "content_block_start", {
+      type: "content_block_start",
+      index: 1,
+      content_block: { type: "text", text: "" },
+    });
+  }
+  res.end();
+}
+
 // A response the model breaks off with a refusal, as the API's safeguards
 // do: stop_reason "refusal" with the refusal's category.
 function streamRefusalResponse(res, text, model) {
@@ -1363,6 +1447,7 @@ function handleMessages(req, res) {
           path: req.url || "/v1/messages",
           model: parsed.model || "unknown",
           messageCount: messages.length,
+          stream: parsed.stream ?? null,
           userText: extractLastUserText(messages),
           isToolResult: hasToolResult(messages),
           effort: parsed.output_config?.effort ?? null,
@@ -1390,6 +1475,33 @@ function handleMessages(req, res) {
       `[mock-api] model=${requestedModel} userText=${JSON.stringify(userText)} isToolResult=${isToolResult} msgCount=${messages.length}`,
     );
     const model = requestedModel;
+    const fixturePrompt = interruptedReplyPrompt(userText);
+    const interruptedReply =
+      /^interrupted Claude reply (text|thinking|tool)(\n)?$/.exec(fixturePrompt);
+    if (interruptedReply) {
+      interruptClaudeReply(
+        res,
+        parsed.stream === true,
+        model,
+        interruptedReply[1],
+        interruptedReply[2] !== undefined,
+      );
+      return;
+    }
+    if (
+      fixturePrompt === "interrupted Claude reply follow-up" ||
+      (isToolResult &&
+        interruptedReplyPrompt(findOriginalUserText(messages)) ===
+          "interrupted Claude reply tool")
+    ) {
+      const answer = isToolResult
+        ? "streamed-after-tool"
+        : "streamed-follow-up";
+      console.log(`[mock-api] ${answer} stream=${parsed.stream}`);
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      streamTextResponse(res, answer, model);
+      return;
+    }
     const usageTestHeaders = usageTestHeadersForText(userText);
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
