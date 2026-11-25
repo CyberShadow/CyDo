@@ -29,6 +29,12 @@ test(
           `${scenario} reply live`,
         ).toHaveCount(1, { timeout: 1_000 });
 
+        const abandoned = assistantText(
+          page,
+          "Abandoned text before disconnect.",
+        );
+        await expect(abandoned).toHaveCount(0);
+
         const forkTarget =
           scenario === "tool"
             ? page.locator(".tool-call:visible", {
@@ -57,6 +63,7 @@ test(
         await endSession(page);
         await page.reload();
         await expect(assistantText(page, "streamed-follow-up")).toHaveCount(1);
+        await expect(abandoned).toHaveCount(0);
         await expect(
           assistantText(page, answer),
           `${scenario} reply after reload`,

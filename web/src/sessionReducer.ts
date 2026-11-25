@@ -34,6 +34,7 @@ import type {
   RateLimitEventMessage,
   ItemStartedEvent,
   ItemDeltaEvent,
+  ItemAbandonedEvent,
   ItemCompletedEvent,
   ItemResultEvent,
   ItemDeniedEvent,
@@ -1458,6 +1459,29 @@ export function reduceItemCompleted(
   return state;
 }
 
+function reduceItemAbandoned(
+  s: SessionState,
+  event: ItemAbandonedEvent,
+): SessionState {
+  const blockKey = s.itemIdMap.get(event.item_id);
+  if (blockKey === undefined) {
+    throw new Error(`Cannot abandon unknown item ${event.item_id}`);
+  }
+  const blocks = new Map(s.blocks);
+  blocks.delete(blockKey);
+  const itemIdMap = new Map(s.itemIdMap);
+  itemIdMap.delete(event.item_id);
+  const messages = s.messages.flatMap((message) => {
+    if (!message.blockIds?.includes(blockKey)) return [message];
+    const blockIds = message.blockIds.filter((id) => id !== blockKey);
+    return blockIds.length > 0 ? [{ ...message, blockIds }] : [];
+  });
+  const pendingCydoTaskItemIds = s.pendingCydoTaskItemIds.filter(
+    (id) => id !== event.item_id,
+  );
+  return { ...s, blocks, itemIdMap, messages, pendingCydoTaskItemIds };
+}
+
 function reduceItemDenied(
   s: SessionState,
   event: ItemDeniedEvent,
@@ -1835,6 +1859,8 @@ export function reduceMessage(
     case "item/delta":
       return reduceItemDelta(s, msg);
 
+    case "item/abandoned":
+      return reduceItemAbandoned(s, msg);
     case "item/completed":
       return reduceItemCompleted(s, msg, seq);
 

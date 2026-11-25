@@ -2650,7 +2650,17 @@ class ClaudeCodeSession : AgentSession
 					auto blocks = abandoned.get;
 					assert(blocks.api_message_id == currentMessageId_,
 						"Claude abandoned_blocks names a different API message");
+					import cydo.protocol : ItemAbandonedEvent;
 					tsev.api_block_count = min(tsev.api_block_count, blocks.from_block_index);
+					foreach (itemId; activeItemIds_[tsev.api_block_count .. $])
+					{
+						if (itemId is null)
+							continue;
+						assert(itemId !in blockCompletions_, "Claude abandoned a block with an assistant frame");
+						ItemAbandonedEvent ev;
+						ev.item_id = itemId;
+						emitEvent(TranslatedEvent(toJson(ev), null));
+					}
 				}
 				emitEvent(TranslatedEvent(toJson(tsev), rawLine));
 				currentMessageId_ = null;
@@ -3376,6 +3386,36 @@ private class ClaudeLiveReplyTest
 			~ `"num_turns":1,"duration_ms":754,"total_cost_usd":0.00076,"result":` ~ toJson(text) ~ "}");
 	}
 
+	void stopWithAbandonedBlocks(string id, int fromIndex)
+	{
+		session.translateLiveLine(format!`{"type":"stream_event","event":{"type":"message_stop"},"abandoned_blocks":{"api_message_id":%s,"from_block_index":%s}}`(
+			toJson(id), fromIndex));
+	}
+
+	void cutTextStream(string id)
+	{
+		startStream(id);
+		stream(textStart);
+		stream(`{"type":"content_block_delta","index":0,"delta":`
+			~ `{"type":"text_delta","text":"Abandoned text before disconnect."}}`);
+		stream(blockStop);
+		stopWithAbandonedBlocks(id, 0);
+	}
+
+	void cutAfterThinking()
+	{
+		startStream("msg_mock_00008");
+		stream(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`);
+		stream(`{"type":"content_block_delta","index":0,"delta":`
+			~ `{"type":"thinking_delta","thinking":"Completed thinking before disconnect."}}`);
+		assistant("msg_mock_00008", interruptedThinking);
+		stream(blockStop);
+		stream(`{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`);
+		stream(`{"type":"content_block_stop","index":1}`);
+		stopWithAbandonedBlocks("msg_mock_00008", 1);
+	}
+
+	enum interruptedThinking = `{"type":"thinking","thinking":"Completed thinking before disconnect."}`;
 	enum textStart = `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`;
 	enum blockStop = `{"type":"content_block_stop","index":0}`;
 }
@@ -3386,20 +3426,10 @@ unittest
 	auto test = new ClaudeLiveReplyTest;
 	scope(exit) test.session.stop();
 
-	void cutStream(string id)
-	{
-		test.startStream(id);
-		test.stream(test.textStart);
-		test.stream(`{"type":"content_block_delta","index":0,"delta":`
-			~ `{"type":"text_delta","text":"Abandoned text before disconnect."}}`);
-		test.stream(test.blockStop);
-		test.session.translateLiveLine(`{"type":"stream_event","event":{"type":"message_stop"},`
-			~ `"abandoned_blocks":{"api_message_id":` ~ toJson(id) ~ `,"from_block_index":0}}`);
-	}
-	cutStream("msg_mock_00001");
+	test.cutTextStream("msg_mock_00001");
 	test.session.translateLiveLine(`{"type":"system","subtype":"api_retry","attempt":1,`
 		~ `"max_retries":10,"error_status":null,"error":"unknown"}`);
-	cutStream("msg_mock_00003");
+	test.cutTextStream("msg_mock_00003");
 	// The assertions below cover the fallback, independently of retraction.
 	test.events = null;
 
@@ -7104,36 +7134,185 @@ unittest
 	assertThrown!AssertError(replay.translateHistoryLine(rows[10], 3));
 }
 
-@("Claude abandoned blocks cap the live block count")
+@("Claude interrupted replies agree live and on replay")
 unittest
 {
-	import std.format : format;
+	import std.algorithm : filter;
+	import std.array : array;
 
-	@JSONPartial static struct Stop
+	@JSONPartial static struct Event
 	{
 		string type;
+		@JSONOptional string item_id;
+		@JSONOptional string item_type;
+		@JSONOptional string text;
+		@JSONOptional string content;
+		@JSONOptional string parent_tool_use_id;
+		@JSONOptional string uuid;
 		@JSONOptional int api_block_count = -1;
 	}
 
-	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
-	int[] counts;
-	session.onOutput = (TranslatedEvent event) {
-		auto parsed = jsonParse!Stop(event.translated);
-		if (parsed.type == "turn/stop")
-			counts ~= parsed.api_block_count;
-	};
-	foreach (limit; [1, 5])
+	string[2][] project(TranslatedEvent[] events, bool live)
 	{
-		session.translateLiveLine(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"A"}}}`);
-		foreach (index; 0 .. 2)
+		string[2][] ordered;
+		size_t[string] active;
+		foreach (entry; events)
 		{
-			session.translateLiveLine(format!`{"type":"stream_event","event":{"type":"content_block_start","index":%s,"content_block":{"type":"text","text":""}}}`(index));
-			session.translateLiveLine(format!`{"type":"stream_event","event":{"type":"content_block_stop","index":%s}}`(index));
+			@JSONPartial static struct EventType { string type; }
+			auto type = jsonParse!EventType(entry.translated).type;
+			switch (type)
+			{
+				case "item/started":
+					auto item = jsonParse!Event(entry.translated);
+					if (item.parent_tool_use_id.length || item.item_type == "user_message")
+						break;
+					active[item.item_id] = ordered.length;
+					ordered ~= [item.item_type, item.item_type == "tool_use" ? item.item_id : item.text];
+					break;
+				case "item/delta":
+					auto delta = jsonParse!Event(entry.translated);
+					if (auto index = delta.item_id in active)
+						ordered[*index][1] ~= delta.content;
+					break;
+				case "item/abandoned":
+					auto abandoned = jsonParse!Event(entry.translated);
+					ordered[active[abandoned.item_id]] = [null, null];
+					break;
+				case "turn/stop":
+					auto stop = jsonParse!Event(entry.translated);
+					if (stop.parent_tool_use_id.length)
+						break;
+					if (!live || stop.api_block_count > 0)
+						ordered ~= ["turn/stop", stop.uuid];
+					active = null;
+					break;
+				default:
+					break;
+			}
 		}
-		session.translateLiveLine(format!`{"type":"stream_event","event":{"type":"message_stop"},"abandoned_blocks":{"api_message_id":"A","from_block_index":%s}}`(limit));
+		return ordered.filter!(entry => entry[0] !is null).array;
 	}
-	assert(counts == [1, 2], format!"limits 1 and 5: expected counts [1, 2], got %s"(counts));
+
+	string row(string id, string blocks)
+	{
+		return `{"type":"assistant","uuid":` ~ toJson("row-" ~ id)
+			~ `,"apiBlockIndex":0,"message":{"id":` ~ toJson(id) ~ `,"content":[` ~ blocks ~ "]}}";
+	}
+
+	void expectAgreement(ClaudeLiveReplyTest test, string[] rows, string[2][] expected)
+	{
+		auto replaySession = (new ClaudeCodeAgent()).createHistoryReplay();
+		TranslatedEvent[] replay;
+		foreach (i, entry; rows)
+			replay ~= replaySession.translateHistoryLine(entry, cast(int) i + 1);
+		replay ~= replaySession.translateHistoryLine(`{"type":"result"}`, cast(int) rows.length + 1);
+		replay ~= replaySession.finishHistoryReplay();
+		auto persisted = project(replay, false);
+		assert(persisted == expected, format!"Replay expected %s, got %s"(expected, persisted));
+		auto live = project(test.events, true);
+		assert(live == persisted, format!"Live expected %s, got %s"(persisted, live));
+		test.events = null;
+	}
+
+	auto test = new ClaudeLiveReplyTest;
+	scope(exit) test.session.stop();
+	enum thinking = ClaudeLiveReplyTest.interruptedThinking;
+	enum text = `{"type":"text","text":"fallback-text-answer"}`;
+	enum answer = `{"type":"text","text":"fallback-thinking-answer"}`;
+	enum tool = `{"type":"tool_use","id":"toolu_mock_00003","name":"Bash","input":{"command":"echo fallback-tool-ran"}}`;
+	enum toolResult = `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_mock_00003","content":"fallback-tool-ran"}]}}`;
+	enum afterTool = `{"type":"text","text":"streamed-after-tool"}`;
+	enum thinkingText = "Completed thinking before disconnect.";
+	enum retry = `{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"error_status":null,"error":"unknown"}`;
+
+	// Stdout L8–L21 and the persisted text fallback.
+	test.cutTextStream("msg_mock_00001");
+	test.session.translateLiveLine(retry);
+	test.cutTextStream("msg_mock_00003");
+	test.assistant("msg_mock_00004", text);
+	test.result("fallback-text-answer");
+	expectAgreement(test, [row("msg_mock_00004", text)],
+		[["text", "fallback-text-answer"], ["turn/stop", "msg_mock_00004"]]);
+
+	// Stdout L45–L68. The fallback frames are packed into one persisted row.
+	test.cutAfterThinking();
+	foreach (id; ["msg_mock_00009", "msg_mock_00010"])
+	{
+		if (id == "msg_mock_00010")
+			test.session.translateLiveLine(retry);
+		test.startStream(id);
+		test.stream(test.textStart);
+		test.stream(test.blockStop);
+		test.stopWithAbandonedBlocks(id, 0);
+	}
+	test.assistant("msg_mock_00011", thinking);
+	test.assistant("msg_mock_00011", answer);
+	test.result("fallback-thinking-answer");
+	expectAgreement(test, [row("msg_mock_00008", thinking), row("msg_mock_00011", thinking ~ "," ~ answer)],
+		[["thinking", thinkingText], ["turn/stop", "msg_mock_00008"],
+		 ["thinking", thinkingText], ["text", "fallback-thinking-answer"], ["turn/stop", "msg_mock_00011"]]);
+
+	// Stdout L92–L115. The fallback tool precedes a normally streamed reply.
+	test.cutTextStream("msg_mock_00015");
+	test.session.translateLiveLine(retry);
+	test.cutTextStream("msg_mock_00016");
+	test.assistant("msg_mock_00017", tool);
+	test.session.translateLiveLine(toolResult);
+	test.startStream("msg_mock_00018");
+	test.stream(test.textStart);
+	test.stream(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"streamed-after-tool"}}`);
+	test.assistant("msg_mock_00018", afterTool);
+	test.stream(test.blockStop);
+	test.stream(`{"type":"message_stop"}`);
+	test.result("streamed-after-tool");
+	expectAgreement(test, [row("msg_mock_00017", tool), toolResult, row("msg_mock_00018", afterTool)],
+		[["tool_use", "toolu_mock_00003"], ["turn/stop", "msg_mock_00017"],
+		 ["text", "streamed-after-tool"], ["turn/stop", "msg_mock_00018"]]);
+}
+
+@("Claude abandoned blocks cap the live block count")
+unittest
+{
+	import cydo.protocol : ItemAbandonedEvent, TurnStopEvent;
+
+	auto test = new ClaudeLiveReplyTest;
+	scope(exit) test.session.stop();
+
+	// The cut at index 1 preserves the framed thinking block in capture 08.
+	test.cutAfterThinking();
+	auto partial = test.expect("item/started", "item/delta", "turn/delta", "item/completed",
+		"item/started", "item/completed", "item/abandoned", "turn/stop");
+	assert(jsonParse!ItemAbandonedEvent(partial[$ - 2].translated).item_id == "cc-block-1");
+	auto partialStop = jsonParse!TurnStopEvent(partial[$ - 1].translated);
+	assert(partialStop.uuid == "msg_mock_00008" && partialStop.api_block_count == 1);
+
+	test.cutTextStream("msg_mock_00001");
+	auto full = test.expect("item/started", "item/delta", "item/completed", "item/abandoned", "turn/stop");
+	assert(jsonParse!ItemAbandonedEvent(full[$ - 2].translated).item_id == "cc-block-0");
+	auto fullStop = jsonParse!TurnStopEvent(full[$ - 1].translated);
+	assert(fullStop.uuid == "msg_mock_00001" && fullStop.api_block_count == 0);
+
+	test.startStream("beyond-end");
+	test.stream(test.textStart);
+	test.stream(test.blockStop);
+	test.stopWithAbandonedBlocks("beyond-end", 5);
+	auto beyond = test.expect("item/started", "item/completed", "turn/stop");
+	assert(jsonParse!TurnStopEvent(beyond[$ - 1].translated).api_block_count == 1);
+}
+
+@("Claude rejects discarding a block with an assistant frame")
+unittest
+{
+	import core.exception : AssertError;
+	import std.exception : assertThrown;
+
+	auto test = new ClaudeLiveReplyTest;
+	scope(exit) test.session.stop();
+	test.startStream("framed");
+	test.stream(test.textStart);
+	test.assistant("framed", `{"type":"text","text":"persisted"}`);
+	test.stream(test.blockStop);
+	assertThrown!AssertError(test.stopWithAbandonedBlocks("framed", 0));
 }
 
 @("Claude rejects abandoned blocks naming a different open message")

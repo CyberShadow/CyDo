@@ -40,6 +40,7 @@ export type {
   CommandOutputEvent,
   ItemStartedEvent,
   ItemDeltaEvent,
+  ItemAbandonedEvent,
   ItemCompletedEvent,
   ItemResultEvent,
   ItemDeniedEvent,
@@ -74,6 +75,7 @@ import type {
   CommandOutputEvent,
   ItemStartedEvent,
   ItemDeltaEvent,
+  ItemAbandonedEvent,
   ItemCompletedEvent,
   ItemResultEvent,
   ItemDeniedEvent,
@@ -166,6 +168,7 @@ export type AgnosticEvent =
   | SessionRateLimitEvent
   | ItemStartedEvent
   | ItemDeltaEvent
+  | ItemAbandonedEvent
   | ItemCompletedEvent
   | ItemResultEvent
   | ItemDeniedEvent

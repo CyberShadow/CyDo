@@ -259,6 +259,11 @@ export interface ItemCompletedEvent {
   extras?: Record<string, unknown>;
 }
 
+export interface ItemAbandonedEvent {
+  type: "item/abandoned";
+  item_id: string;
+}
+
 export interface ItemResultEvent {
   type: "item/result";
   item_id: string;

@@ -2171,3 +2171,89 @@ describe("Claude image companion replay", () => {
     }
   });
 });
+
+describe("item/abandoned reducer", () => {
+  function startText(state: TaskState, item_id: string) {
+    return reduceMessage(
+      state,
+      asEvent({ type: "item/started", item_type: "text", item_id }),
+    );
+  }
+
+  function abandon(state: TaskState, item_id: string) {
+    return reduceMessage(state, asEvent({ type: "item/abandoned", item_id }));
+  }
+
+  it("removes the discarded text block and keeps the thinking block", () => {
+    const thinking = reduceMessage(
+      makeState(),
+      asEvent({
+        type: "item/started",
+        item_type: "thinking",
+        item_id: "thinking",
+      }),
+    );
+    const streamed = startText(thinking, "text");
+    const thinkingKey = streamed.itemIdMap.get("thinking")!;
+    const textKey = streamed.itemIdMap.get("text")!;
+
+    const next = abandon(streamed, "text");
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]?.blockIds).toEqual([thinkingKey]);
+    expect(next.blocks.get(thinkingKey)?.type).toBe("thinking");
+    expect(next.blocks.has(textKey)).toBe(false);
+    expect(next.itemIdMap.has("text")).toBe(false);
+  });
+
+  it("removes an emptied message and preserves the previous turn through the stop", () => {
+    const completed = reduceMessage(
+      startText(makeState(), "earlier"),
+      asEvent({ type: "turn/stop", uuid: "earlier-turn", api_block_count: 1 }),
+    );
+    const streamed = startText(completed, "discarded");
+    expect(streamed.messages).toHaveLength(2);
+
+    const next = abandon(streamed, "discarded");
+    expect(next.messages).toEqual(completed.messages);
+
+    const stopped = reduceMessage(
+      next,
+      asEvent({
+        type: "turn/stop",
+        uuid: "discarded-turn",
+        api_block_count: 0,
+      }),
+    );
+    expect(stopped.messages).toEqual(completed.messages);
+    expect(stopped.blocks).toEqual(completed.blocks);
+  });
+
+  it("prunes the abandoned cydo Task from the pending queue", () => {
+    const streamed = ["kept", "discarded"].reduce<TaskState>(
+      (state, item_id) =>
+        reduceMessage(
+          state,
+          asEvent({
+            type: "item/started",
+            item_type: "tool_use",
+            item_id,
+            name: "Task",
+            tool_server: "cydo",
+          }),
+        ),
+      makeState(),
+    );
+    expect(streamed.pendingCydoTaskItemIds).toEqual(["kept", "discarded"]);
+
+    expect(abandon(streamed, "discarded").pendingCydoTaskItemIds).toEqual([
+      "kept",
+    ]);
+  });
+
+  it("throws for an unknown item ID", () => {
+    expect(() => abandon(makeState(), "unknown")).toThrow(
+      /unknown item unknown/,
+    );
+  });
+});

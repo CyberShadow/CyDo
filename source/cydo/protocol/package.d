@@ -383,6 +383,15 @@ struct ItemCompletedEvent
 	@JSONOptional JSONFragment extras;
 }
 
+/// item/abandoned — the agent discarded a provisional stream block.
+/// Claude's abandoned_blocks contract allows removing these blocks even
+/// after content_block_stop because no assistant frame will arrive.
+struct ItemAbandonedEvent
+{
+	string type = "item/abandoned";
+	string item_id;
+}
+
 /// item/result — tool result returned for a previously started tool_use item.
 struct ItemResultEvent
 {
