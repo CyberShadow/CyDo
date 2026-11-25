@@ -21,7 +21,9 @@ import checkIcon from "../icons/check.svg?raw";
 import errorIcon from "../icons/error.svg?raw";
 import questionIcon from "../icons/question.svg?raw";
 import { DiffView, HunkDiffView } from "./diff/DiffView";
-import { DiffWithToggle } from "./diff/DiffWithToggle";
+import { DiffResult } from "./diff/DiffResult";
+import { ResultImages } from "./ResultImages";
+import { ResultPre } from "./ResultPre";
 import {
   FileContentPreview,
   SvgPreview,
@@ -50,9 +52,7 @@ import {
 } from "../lib/fileChanges";
 import {
   looksLikePatchText,
-  parsePatchHunksFromText,
   parsePatchTextFromInput,
-  parseApplyPatchSections,
   type PatchHunk,
 } from "../lib/patches";
 import { shellOutputView } from "../lib/shellOutput";
@@ -143,27 +143,6 @@ const isShellTool = (
 /** Check if tool is a file write operation across agents. */
 const isFileWriteTool = (name: string, driver?: string): boolean =>
   toolIs(name, driver, undefined, "claude/Write", "codex/fileChange");
-
-function ResultPre({
-  content,
-  class: className,
-  isError,
-  children,
-}: {
-  content: string;
-  class?: string;
-  isError?: boolean;
-  children?: ComponentChildren;
-}) {
-  const cls = `tool-result${isError ? " error" : ""}${
-    className ? ` ${className}` : ""
-  }`;
-  return (
-    <CodePre class={cls} copyText={content}>
-      {children ?? (hasAnsi(content) ? renderAnsi(content) : content)}
-    </CodePre>
-  );
-}
 
 /** Extract plain text from tool result content, regardless of shape. */
 function extractResultText(
@@ -2690,58 +2669,6 @@ function ExecCommandResult({ content }: { content: string }) {
   return <ResultPre content={output} />;
 }
 
-function extractStructuredDiffText(content: string): string {
-  const gitDiffStart = content.search(/^diff --git /m);
-  if (gitDiffStart >= 0) return content.slice(gitDiffStart);
-  return content;
-}
-
-function DiffResult({ content }: { content: string }) {
-  const tokens = useHighlight(content, "diff");
-  const structuredContent = extractStructuredDiffText(content);
-  const sections = parseApplyPatchSections(structuredContent);
-
-  if (sections.length > 0) {
-    const showMeta = sections.length > 1;
-    return (
-      <DiffWithToggle rawText={content}>
-        <div class="filechange-list">
-          {sections.map((section, i) => {
-            const hunks = parsePatchHunksFromText(section.patchText);
-            if (!hunks || hunks.length === 0) return null;
-            return (
-              <div key={i} class="filechange-change">
-                {showMeta && (
-                  <div class="tool-input-field filechange-meta">
-                    <span class="tool-subtitle-tag">{section.op}</span>
-                    <span class="tool-subtitle-path">{section.path}</span>
-                  </div>
-                )}
-                <HunkDiffView hunks={hunks} filePath={section.path} />
-              </div>
-            );
-          })}
-        </div>
-      </DiffWithToggle>
-    );
-  }
-
-  const hunks = parsePatchHunksFromText(structuredContent);
-  if (hunks && hunks.length > 0) {
-    return (
-      <DiffWithToggle rawText={content}>
-        <HunkDiffView hunks={hunks} />
-      </DiffWithToggle>
-    );
-  }
-
-  return (
-    <ResultPre content={content}>
-      {renderHighlightedSource(content, tokens)}
-    </ResultPre>
-  );
-}
-
 /** Extract and render image blocks from tool result content. */
 function renderResultImages(
   content: ToolResultContent | null | undefined,
@@ -2766,16 +2693,9 @@ function renderResultImages(
   }
   if (images.length === 0) return null;
   return (
-    <div class="tool-result-images">
-      {images.map((img, i) => (
-        <img
-          key={i}
-          src={`data:${img.mediaType};base64,${img.data}`}
-          alt="Tool result image"
-          class="tool-result-image"
-        />
-      ))}
-    </div>
+    <ResultImages
+      srcs={images.map((img) => `data:${img.mediaType};base64,${img.data}`)}
+    />
   );
 }
 
