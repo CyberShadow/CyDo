@@ -4,7 +4,8 @@
 //   POST /v1/responses      — OpenAI Responses API  (Codex CLI)
 
 import { createServer } from "node:http";
-import { appendFileSync } from "node:fs";
+import { createServer as createHttpsServer } from "node:https";
+import { appendFileSync, readFileSync } from "node:fs";
 import { matchPattern, waitForBackgroundCommandsRelease } from "./patterns.mjs";
 import { monitorEventLoop } from "./loop-monitor.mjs";
 
@@ -1862,9 +1863,81 @@ function handleMessages(req, res) {
   });
 }
 
+const claudeUsageAuthority = "api.anthropic.com:443";
+let claudeUsageResponse = { status: 404, body: {} };
+let claudeUsageRequests = 0;
+
+let claudeUsageTlsServer;
+
+function createClaudeUsageTlsServer() {
+  return createHttpsServer(
+    {
+      key: readFileSync(new URL("./certs/proxy.key", import.meta.url)),
+      cert: readFileSync(new URL("./certs/proxy.crt", import.meta.url)),
+    },
+    (req, res) => {
+      const path = req.url.split("?", 1)[0];
+      log(`[claude-usage] HTTPS ${req.method} ${path}`);
+      if (
+        !["api.anthropic.com", claudeUsageAuthority].includes(req.headers.host) ||
+        req.method !== "GET" ||
+        path !== "/api/oauth/usage"
+      ) {
+        res.writeHead(404).end();
+        return;
+      }
+      claudeUsageRequests++;
+      const { status, body } = claudeUsageResponse;
+      log(`[claude-usage] usage request #${claudeUsageRequests} => ${status}`);
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+    },
+  );
+}
+
+async function setClaudeUsageResponse(req, res) {
+  let text = "";
+  req.setEncoding("utf8");
+  try {
+    for await (const chunk of req) {
+      text += chunk;
+      if (text.length > 65536) {
+        res.writeHead(413).end();
+        return;
+      }
+    }
+    const { status, body } = JSON.parse(text);
+    if (
+      !Number.isInteger(status) ||
+      (status !== 200 && (status < 400 || status > 599)) ||
+      body === null ||
+      typeof body !== "object" ||
+      Array.isArray(body)
+    ) {
+      res.writeHead(400).end();
+      return;
+    }
+    claudeUsageResponse = { status, body };
+    res.writeHead(204).end();
+  } catch {
+    res.writeHead(400).end();
+  }
+}
+
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   log(`${req.method} ${url.pathname}`);
+
+  if (url.pathname === "/api/claude-usage" && req.method === "POST") {
+    void setClaudeUsageResponse(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/claude-usage/requests" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ requests: claudeUsageRequests }));
+    return;
+  }
 
   // Health check
   if (url.pathname === "/api/hello" && req.method === "GET") {
@@ -1938,6 +2011,20 @@ const server = createServer((req, res) => {
 });
 
 monitorEventLoop(log);
+server.on("connect", (req, socket, head) => {
+  log(`[claude-usage] CONNECT ${req.url}`);
+  if (req.url !== claudeUsageAuthority) {
+    socket.end(
+      "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+    );
+    return;
+  }
+  claudeUsageTlsServer ??= createClaudeUsageTlsServer();
+  socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+  if (head.length) socket.unshift(head);
+  claudeUsageTlsServer.emit("connection", socket);
+});
+
 server.listen(PORT, "127.0.0.1", () => {
   const actualPort = server.address().port;
   log(

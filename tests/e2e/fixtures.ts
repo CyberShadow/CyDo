@@ -11,6 +11,7 @@ import {
   symlinkSync,
 } from "fs";
 import { join } from "path";
+import { writeTestConfig } from "./test-config";
 
 type AgentType = "claude" | "codex" | "copilot";
 
@@ -260,6 +261,7 @@ type TestFixtures = {
   agentType: AgentType;
   backend: { port: number; baseURL: string; pid: number; wsDir: string };
   backendEnv: Record<string, string>;
+  cydoConfig: string | undefined;
 };
 
 /**
@@ -273,11 +275,16 @@ type TestFixtures = {
  */
 export const test = base.extend<TestFixtures>({
   backendEnv: [{}, { option: true }],
+  cydoConfig: [undefined, { option: true }],
 
-  backend: async ({ backendEnv }, use, testInfo: TestInfo) => {
+  backend: async ({ backendEnv, cydoConfig }, use, testInfo: TestInfo) => {
     const workDir = "/tmp/cydo-backend";
     mkdirSync(`${workDir}/data`, { recursive: true });
     symlinkSync("/tmp/cydo-test-workspace/defs", `${workDir}/defs`);
+
+    if (cydoConfig !== undefined) {
+      writeTestConfig("/tmp/playwright-home/.config/cydo/config.yaml", cydoConfig);
+    }
 
     const proc = spawn(process.env.CYDO_BIN!, [], {
       detached: true,
