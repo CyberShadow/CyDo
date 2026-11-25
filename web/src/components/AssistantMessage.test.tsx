@@ -1,4 +1,8 @@
+/** @vitest-environment jsdom */
+
 import { describe, expect, it } from "vitest";
+import { render } from "preact";
+import { act } from "preact/test-utils";
 import renderToString from "preact-render-to-string";
 import { reduceMessage } from "../sessionReducer";
 import { makeTaskState } from "../types";
@@ -19,6 +23,72 @@ function renderAssistantMessage(message: DisplayMessage, block: Block): string {
     </DevModeContext.Provider>,
   );
 }
+
+it("shows the child task link when its id arrives before the tool result", async () => {
+  const itemId = "task-call";
+  const message: DisplayMessage = {
+    id: "task-message",
+    type: "assistant",
+    content: [],
+    blockIds: [itemId],
+    streaming: true,
+  };
+  const resolvedBlocks: Block[] = [
+    {
+      itemId,
+      type: "tool_use",
+      name: "Task",
+      toolServer: "cydo",
+      driver: "claude",
+      text: "",
+      input: {
+        tasks: [
+          {
+            task_type: "research",
+            description: "Investigate",
+            prompt: "Review the issue",
+          },
+        ],
+      },
+      completed: false,
+      creationOrder: 0,
+    },
+  ];
+  const container = document.createElement("div");
+  const props = {
+    message,
+    resolvedBlocks,
+    onViewFile: () => {},
+    semanticSelectors: false,
+    getTaskHref: (id: string) => `/task/${id}`,
+  };
+  const linkSelector = '[data-testid="cydo-task-spec-open"]';
+
+  try {
+    await act(() => {
+      render(<AssistantMessage {...props} />, container);
+    });
+    expect(container.textContent).toContain("Investigate");
+    expect(container.querySelector(linkSelector)).toBeNull();
+
+    await act(() => {
+      render(
+        <AssistantMessage
+          {...props}
+          spawnedTidsByItemId={new Map([[itemId, new Map([[0, 7]])]])}
+        />,
+        container,
+      );
+    });
+    expect(container.querySelector(linkSelector)?.getAttribute("href")).toBe(
+      "/task/7",
+    );
+  } finally {
+    await act(() => {
+      render(null, container);
+    });
+  }
+});
 
 describe("AssistantMessage diagnostic blocks", () => {
   it("renders the diagnostic subject and Markdown body with warning styling", () => {

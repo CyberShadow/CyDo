@@ -3699,6 +3699,8 @@ export const ToolCall = memo(
     prev.toolUseId === next.toolUseId &&
     prev.input === next.input &&
     prev.result === next.result &&
+    prev.spawnedTids === next.spawnedTids &&
+    prev.getTaskHref === next.getTaskHref &&
     prev.permission === next.permission &&
     prev.streaming === next.streaming &&
     prev.children === next.children &&

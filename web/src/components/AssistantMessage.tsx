@@ -502,6 +502,8 @@ export const AssistantMessage = memo(
     prev.message === next.message &&
     shallowArrayEqual(prev.resolvedBlocks, next.resolvedBlocks) &&
     prev.childrenByParent === next.childrenByParent &&
+    prev.spawnedTidsByItemId === next.spawnedTidsByItemId &&
+    prev.getTaskHref === next.getTaskHref &&
     prev.resolvedBlocksByMsg === next.resolvedBlocksByMsg &&
     prev.onViewFile === next.onViewFile &&
     prev.onApproveRetry === next.onApproveRetry &&
