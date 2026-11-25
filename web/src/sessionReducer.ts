@@ -925,31 +925,36 @@ export function replaceHistoryBoundaryIn(
     throw new Error(
       "Replacement event identity does not match history boundary",
     );
-  const matches = s.messages
-    .map((message, index) => ({ message, index }))
-    .filter(
-      ({ message }) =>
-        message.type === expectedType &&
-        (message.seq === seq ||
-          (Array.isArray(message.seq) && message.seq.includes(seq))),
-    );
-  if (matches.length !== 1)
-    throw new Error(
-      `History replacement matched ${matches.length} messages at seq ${seq}`,
-    );
-  const { message } = matches[0]!;
+  let message: DisplayMessage | undefined;
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const candidate = s.messages[i]!;
+    if (
+      candidate.type === expectedType &&
+      (candidate.seq === seq ||
+        (Array.isArray(candidate.seq) && candidate.seq.includes(seq)))
+    ) {
+      message = candidate;
+      break;
+    }
+  }
+  if (!message)
+    throw new Error(`History replacement matched 0 messages at seq ${seq}`);
   const raw = Array.isArray(message.rawSource)
     ? message.rawSource
     : [message.rawSource];
   const seqs = Array.isArray(message.seq) ? message.seq : [message.seq];
-  const rawMatches = seqs
-    .map((value, rawIndex) => ({ value, rawIndex }))
-    .filter(({ value }) => value === seq);
-  if (rawMatches.length !== 1)
+  let rawIndex = -1;
+  let rawMatches = 0;
+  for (let i = 0; i < seqs.length; i++) {
+    if (seqs[i] === seq) {
+      rawIndex = i;
+      rawMatches++;
+    }
+  }
+  if (rawMatches !== 1)
     throw new Error(
-      `History replacement matched ${rawMatches.length} raw contributions at seq ${seq}`,
+      `History replacement matched ${rawMatches} raw contributions at seq ${seq}`,
     );
-  const rawIndex = rawMatches[0]!.rawIndex;
   const existing = raw[rawIndex] as {
     type?: string;
     item_type?: string;

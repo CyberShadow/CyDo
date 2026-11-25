@@ -55,6 +55,23 @@ function serialize(state: TaskState) {
   );
 }
 
+function checkSeqOwnership(state: TaskState, operation: number) {
+  const owners = new Map<number, number>();
+  for (const [index, message] of state.messages.entries()) {
+    if (message.seq === undefined) continue;
+    const seqs = Array.isArray(message.seq) ? message.seq : [message.seq];
+    for (const seq of seqs) {
+      const owner = owners.get(seq);
+      if (owner !== undefined && owner !== index) {
+        throw new Error(
+          `After operation ${operation}, seq ${seq} belongs to messages at indices ${owner} and ${index}`,
+        );
+      }
+      owners.set(seq, index);
+    }
+  }
+}
+
 function checkIdentity(
   before: unknown,
   reference: unknown,
@@ -166,6 +183,8 @@ function checkBatches(
     for (let i = start; i < end; i++) {
       reference = apply(reference, operations[i]!);
       state = apply(state, operations[i]!, batch);
+      checkSeqOwnership(reference, i + 1);
+      checkSeqOwnership(state, i + 1);
     }
     batch.close();
     expect(serialize(input), `input to operations ${start + 1}–${end}`).toBe(
