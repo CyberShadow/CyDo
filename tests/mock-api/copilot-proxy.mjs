@@ -11,6 +11,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { matchPattern } from "./patterns.mjs";
+import { monitorEventLoop } from "./loop-monitor.mjs";
+
+function log(message) {
+  const header = `[copilot-proxy] ${new Date().toISOString()} `;
+  console.log(message.split(/\r\n|[\r\n]/).map(line => header + line).join("\n"));
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.COPILOT_PROXY_PORT || "9001", 10);
@@ -27,7 +33,7 @@ let callIdCounter = 0;
 let connectionCounter = 0;
 
 function logConn(id, message) {
-  console.log(`[copilot-proxy] ${new Date().toISOString()} +${performance.now().toFixed(1)}ms #${id} ${message}`);
+  log(`+${performance.now().toFixed(1)}ms #${id} ${message}`);
 }
 
 function sendJson(socket, statusCode, statusText, body) {
@@ -67,7 +73,7 @@ function sendSse(socket, chunks, delayBeforeLast = 0) {
 }
 
 function handleTokenExchange(socket) {
-  console.log("[copilot-proxy] token exchange");
+  log("token exchange");
   sendJson(socket, 200, "OK", {
     token: "mock_copilot_token",
     expires_at: 9999999999,
@@ -88,7 +94,7 @@ const MODEL_CAPABILITIES = {
 };
 
 function handleModels(socket) {
-  console.log("[copilot-proxy] models list");
+  log("models list");
   sendJson(socket, 200, "OK", {
     object: "list",
     data: [
@@ -114,7 +120,7 @@ function handleChatCompletions(socket, body) {
   // Log tool names on first call
   if (tools.length > 0) {
     const toolNames = tools.map(t => t.function?.name || t.name || "?").join(", ");
-    console.log(`[copilot-proxy] chat completions tools: [${toolNames}]`);
+    log(`chat completions tools: [${toolNames}]`);
   }
 
   // Log the message role sequence for diagnostics
@@ -123,7 +129,7 @@ function handleChatCompletions(socket, body) {
     const cType = Array.isArray(c) ? c.map(b => b.type).join('+') : typeof c;
     return `${m.role}(${cType})`;
   }).join(', ');
-  console.log(`[copilot-proxy] chat completions msgs: [${msgRoles}]`);
+  log(`chat completions msgs: [${msgRoles}]`);
 
   // Detect tool-result follow-up: look for a role:"tool" message after the
   // last assistant message. Copilot may append another user message after the
@@ -139,7 +145,7 @@ function handleChatCompletions(socket, body) {
     }
   }
   if (toolResultMsg) {
-    console.log(`[copilot-proxy] tool-result follow-up: content=${JSON.stringify(toolResultMsg.content).slice(0, 200)}`);
+    log(`tool-result follow-up: content=${JSON.stringify(toolResultMsg.content).slice(0, 200)}`);
     const chatId = nextChatId();
     sendSse(socket, [
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] },
@@ -170,7 +176,7 @@ function handleChatCompletions(socket, body) {
     }
   }
 
-  console.log(`[copilot-proxy] chat completions userText=${JSON.stringify(userText)}`);
+  log(`chat completions userText=${JSON.stringify(userText)}`);
 
   const intent = userText !== null ? matchPattern(userText) : { type: "text", text: "Done." };
   const chatId = nextChatId();
@@ -276,7 +282,7 @@ function handleChatCompletions(socket, body) {
 }
 
 function handleMcpReadonly(socket, body) {
-  console.log(`[copilot-proxy] /mcp/readonly request: ${body.slice(0, 500)}`);
+  log(`/mcp/readonly request: ${body.slice(0, 500)}`);
   let request;
   try {
     request = JSON.parse(body);
@@ -356,7 +362,7 @@ function handleDecryptedRequest(id, socket, host, method, path, body) {
     }
   }
 
-  console.log(`[copilot-proxy] 404 body: ${body.slice(0, 200)}`);
+  log(`404 body: ${body.slice(0, 200)}`);
   sendJson(socket, 404, "Not Found", { error: "Not found" });
 }
 
@@ -447,6 +453,7 @@ server.on("request", (req, res) => {
   res.end(JSON.stringify({ error: "Use CONNECT for HTTPS" }));
 });
 
+monitorEventLoop(log);
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`Copilot HTTPS proxy listening on http://127.0.0.1:${PORT}`);
+  log(`Copilot HTTPS proxy listening on http://127.0.0.1:${PORT}`);
 });

@@ -534,6 +534,7 @@ EOF
               mkdir -p /tmp/mock-api
               cp ${mockApiSrc}/server.mjs /tmp/mock-api/
               cp ${mockApiSrc}/patterns.mjs /tmp/mock-api/
+              cp ${mockApiSrc}/loop-monitor.mjs /tmp/mock-api/
 
               MOCK_API_PORT=9100 MOCK_SUGGESTIONS="$MOCK_SUGGESTIONS" MOCK_STALL_SYSTEM=1 ${pkgs.nodejs_22}/bin/node /tmp/mock-api/server.mjs &
               MOCK_PID=$!
@@ -793,11 +794,15 @@ EOF
               export MOCK_OPENAI_CAPTURE=/tmp/mock-openai-requests.ndjson
               rm -f "$MOCK_OPENAI_CAPTURE"
               ''}
-              ${pkgs.nodejs_22}/bin/node $src/mock-api/server.mjs &
+              ${pkgs.nodejs_22}/bin/node $src/mock-api/server.mjs >/tmp/mock-api.log 2>&1 &
               MOCK_PID=$!
               for i in $(seq 1 15); do
                 if curl -sf http://127.0.0.1:9000/api/hello >/dev/null 2>&1; then break; fi
-                if ! kill -0 $MOCK_PID 2>/dev/null; then echo "Mock API server died"; exit 1; fi
+                if ! kill -0 $MOCK_PID 2>/dev/null; then
+                  echo "Mock API server died"
+                  cat /tmp/mock-api.log
+                  exit 1
+                fi
                 sleep 1
               done
               echo "Mock API server ready on port 9000"
@@ -806,7 +811,7 @@ EOF
               mkdir -p /tmp/copilot-test-home
               export COPILOT_HOME=/tmp/copilot-test-home
 
-              node $src/mock-api/copilot-proxy.mjs &
+              node $src/mock-api/copilot-proxy.mjs >/tmp/copilot-proxy.log 2>&1 &
               COPILOT_PROXY_PID=$!
               (
                 while true; do
@@ -893,7 +898,11 @@ EOF
 
               if [ "''${TEST_RESULT:-0}" != "0" ]; then
                 echo "Tests failed with exit code ''${TEST_RESULT}"
+                echo "=== Mock API server log ==="
+                cat /tmp/mock-api.log
                 ${lib.optionalString (agentType == "copilot") ''
+                echo "=== Copilot proxy log ==="
+                cat /tmp/copilot-proxy.log
                 echo "=== Host pressure ==="
                 cat /tmp/host-pressure.log
                 echo "=== Copilot CLI process logs ==="

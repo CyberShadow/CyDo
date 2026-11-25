@@ -6,6 +6,12 @@
 import { createServer } from "node:http";
 import { appendFileSync } from "node:fs";
 import { matchPattern, waitForBackgroundCommandsRelease } from "./patterns.mjs";
+import { monitorEventLoop } from "./loop-monitor.mjs";
+
+function log(message) {
+  const header = `[mock-api] ${new Date().toISOString()} `;
+  console.log(message.split(/\r\n|[\r\n]/).map(line => header + line).join("\n"));
+}
 
 const PORT = parseInt(process.env.MOCK_API_PORT || "9000", 10);
 let msgCounter = 0;
@@ -1071,8 +1077,8 @@ function handleResponses(req, res) {
         }) + "\n",
       );
     }
-    console.log(
-      `[mock-api] [responses] model=${requestedModel} userText=${JSON.stringify(userText)} intentText=${JSON.stringify(intentText)} isToolOutput=${isToolOutput} inputLen=${input.length}`,
+    log(
+      `[responses] model=${requestedModel} userText=${JSON.stringify(userText)} intentText=${JSON.stringify(intentText)} isToolOutput=${isToolOutput} inputLen=${input.length}`,
     );
 
     // Codex compaction reminder fixture:
@@ -1177,9 +1183,7 @@ function handleResponses(req, res) {
     // Detect compaction/summarization requests — Codex sends a summarization
     // prompt containing "CONTEXT CHECKPOINT COMPACTION" when compacting.
     if (userText.includes("CONTEXT CHECKPOINT COMPACTION")) {
-      console.log(
-        "[mock-api] [responses] detected compaction summarization request",
-      );
+      log("[responses] detected compaction summarization request");
       oaiStreamTextResponse(
         res,
         "Conversation summary: previous context compacted.",
@@ -1469,10 +1473,10 @@ function handleMessages(req, res) {
     const isToolResult = hasToolResult(messages);
     const hasImages = hasImageContent(messages);
     if (hasImages) {
-      console.log(`[mock-api] image content detected`);
+      log(`image content detected`);
     }
-    console.log(
-      `[mock-api] model=${requestedModel} userText=${JSON.stringify(userText)} isToolResult=${isToolResult} msgCount=${messages.length}`,
+    log(
+      `model=${requestedModel} userText=${JSON.stringify(userText)} isToolResult=${isToolResult} msgCount=${messages.length}`,
     );
     const model = requestedModel;
     const fixturePrompt = interruptedReplyPrompt(userText);
@@ -1524,8 +1528,8 @@ function handleMessages(req, res) {
       originalText?.includes("title-switch-overlap-fixture")
     ) {
       const released = titleSwitchOverlapFixture.release();
-      console.log(
-        `[mock-api] title-switch-overlap release=${released ? "completed" : "already-closed"}`,
+      log(
+        `title-switch-overlap release=${released ? "completed" : "already-closed"}`,
       );
       streamTextResponse(res, "mode-switch-title-release", model);
       return;
@@ -1860,7 +1864,7 @@ function handleMessages(req, res) {
 
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  console.log(`[mock-api] ${req.method} ${url.pathname}`);
+  log(`${req.method} ${url.pathname}`);
 
   // Health check
   if (url.pathname === "/api/hello" && req.method === "GET") {
@@ -1895,7 +1899,7 @@ const server = createServer((req, res) => {
   // Remote compact endpoint — Codex calls POST /v1/responses/compact when the
   // context window is exceeded. Return a minimal compacted history so Codex proceeds.
   if (url.pathname === "/v1/responses/compact" && req.method === "POST") {
-    console.log("[mock-api] [responses/compact] remote compaction request");
+    log("[responses/compact] remote compaction request");
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ output: [] }));
     return;
@@ -1933,9 +1937,10 @@ const server = createServer((req, res) => {
   res.end(JSON.stringify({ error: "Not found" }));
 });
 
+monitorEventLoop(log);
 server.listen(PORT, "127.0.0.1", () => {
   const actualPort = server.address().port;
-  console.log(
+  log(
     `Mock API server (Anthropic + OpenAI) listening on http://127.0.0.1:${actualPort}`,
   );
 });
