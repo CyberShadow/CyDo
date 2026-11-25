@@ -4405,6 +4405,92 @@ describe("submission acknowledgement routing", () => {
     expect(connection.sendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("publishes only progress and keeps one batch per recovered-editor replay", async () => {
+    const projection = await recoverEditableDraft();
+    const connection = testState.connection!;
+    testState.hidden = false;
+
+    const copiedEntries = new Map<number, number>();
+    const orderedState = (task: TaskState) =>
+      JSON.stringify(task, (_, value: unknown) =>
+        value instanceof Map ? [...value] : value,
+      );
+
+    for (const count of [100, 1_000]) {
+      const events = generatedEvents(count, projection.agentName);
+      connection.onControlMessage?.({
+        type: "task_history_start",
+        tid: 71,
+        total: count,
+      });
+      await flushAnimationFrames();
+      const start = manager!.getByTid(71)!;
+      expect(start).toMatchObject({
+        historyLoaded: false,
+        historyReceived: 0,
+        ...projection,
+      });
+      deepFreeze(manager!.tasks);
+
+      const object = vi.spyOn(WriteBatch.prototype, "object");
+      const close = vi.spyOn(WriteBatch.prototype, "close");
+      try {
+        for (let offset = 0; offset < count; offset += 20) {
+          const before = manager!.tasks;
+          const chunk = events.slice(offset, offset + 20);
+          for (const { event, seq, ts } of chunk) {
+            connection.onTaskMessage?.(71, event, seq, ts);
+          }
+          expect(manager!.tasks).toBe(before);
+          await flushAnimationFrames();
+
+          const progress = manager!.getByTid(71)!;
+          expect(progress).toEqual({
+            ...start,
+            historyReceived: offset + chunk.length,
+          });
+          expect(progress.messages).toBe(start.messages);
+          expect(progress.blocks).toBe(start.blocks);
+          expect(progress.itemIdMap).toBe(start.itemIdMap);
+          expect(close).not.toHaveBeenCalled();
+          deepFreeze(manager!.tasks);
+        }
+
+        const batches = new Set(object.mock.contexts as WriteBatch[]);
+        expect(batches.size).toBe(1);
+        const [batch] = batches;
+        copiedEntries.set(count, batch!.copiedEntries);
+        connection.onControlMessage?.({ type: "task_history_end", tid: 71 });
+        await flushAnimationFrames();
+        expect(close).toHaveBeenCalledOnce();
+        expect(close.mock.contexts[0]).toBe(batch);
+      } finally {
+        object.mockRestore();
+        close.mockRestore();
+      }
+
+      const reduced = events.reduce(reduceEvent, start);
+      const expected = {
+        ...reduced,
+        historyLoaded: true,
+        everLoaded: true,
+        historyTotal: undefined,
+        historyReceived: undefined,
+        preReloadDrafts: undefined,
+        pendingHistoryReplies: 0,
+        inputDraft: undefined,
+        sessionStatus: reduced.isProcessing ? reduced.sessionStatus : null,
+      };
+      const final = manager!.getByTid(71)!;
+      expect(final).toMatchObject(projection);
+      expect(orderedState(final)).toBe(orderedState(expected));
+    }
+
+    expect(copiedEntries.get(1_000)).toBeLessThanOrEqual(
+      12 * Math.max(copiedEntries.get(100)!, 100),
+    );
+  });
+
   it("replays an outbox entry only after a fresh epoch tasks list", async () => {
     await renderManager();
     const connection = testState.connection!;

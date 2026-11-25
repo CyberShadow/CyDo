@@ -43,6 +43,7 @@ import {
   replaceHistoryBoundaryIn,
 } from "./sessionReducer";
 import { deepFreeze } from "./testing/deepFreeze";
+import { permissionAwaitingAgent } from "./permissionHandoff";
 import { WriteBatch } from "./writeBatch";
 import { outbox } from "./outbox";
 import {
@@ -597,6 +598,10 @@ function findByTid(tid: number): TaskState | undefined {
 export const getLiveTaskForTest =
   import.meta.env.MODE === "test" ? findByTid : undefined;
 
+function isReplaying(task: TaskState): boolean {
+  return !task.historyLoaded && task.historyTotal !== undefined;
+}
+
 function useTaskPublication() {
   const [tasks, setTasks] = useState(new Map<string, TaskState>());
   const publishedTasksRef = useRef(tasks);
@@ -647,12 +652,37 @@ function useTaskPublication() {
 
     const publishDirtyTasks = (dirty: Set<string>) => {
       if (dirty.size === 0) return;
-      const entries = new Map<string, TaskState>();
-      for (const uuid of dirty) {
-        const state = liveStates.get(uuid);
-        if (state && taskBatches.has(uuid)) entries.set(uuid, state);
-      }
-      if (entries.size !== 0) commitTasks(entries);
+      publish((previous) => {
+        let next = previous;
+        for (const uuid of dirty) {
+          const live = liveStates.get(uuid);
+          if (!live || !taskBatches.has(uuid)) continue;
+
+          let state: TaskState;
+          if (isReplaying(live)) {
+            const published = previous.get(uuid);
+            if (!published)
+              throw new Error(`Missing published replay task ${uuid}`);
+            // Rule 4: the composer's permission handoff is derived from timeline and must be current while loading.
+            if (
+              permissionAwaitingAgent(live) ===
+              permissionAwaitingAgent(published)
+            ) {
+              state = { ...published, historyReceived: live.historyReceived };
+            } else {
+              sealTask(uuid);
+              state = live;
+            }
+          } else {
+            sealTask(uuid);
+            state = live;
+          }
+
+          if (next === previous) next = new Map(previous);
+          next.set(uuid, publishState(state));
+        }
+        return next;
+      });
     };
 
     const getPublishedTask = (tid: number) => {
@@ -1580,25 +1610,26 @@ export function useTaskManager(
       let updated = reduceMessageIn(batch, prev, msg, seq, ts);
       if (hasHistoryBoundary(msg) && seq !== undefined)
         updated = replaceHistoryBoundaryIn(batch, updated, msg, seq);
+      let recoveredDraft: string | undefined;
       if (
         msg.type === "user_message/consumed" &&
         msg.consumed_as === "cancelled" &&
-        msg.correlation_id &&
-        unsendRequestsRef.current.has(msg.correlation_id)
+        msg.correlation_id
       ) {
-        const text = unsendRequestsRef.current.get(msg.correlation_id)!;
-        unsendRequestsRef.current.delete(msg.correlation_id);
-        updated = batch.object(updated);
-        updated.inputDraft = text;
+        recoveredDraft = unsendRequestsRef.current.get(msg.correlation_id);
+        if (recoveredDraft !== undefined)
+          unsendRequestsRef.current.delete(msg.correlation_id);
       }
-      if (!updated.historyLoaded && updated.historyTotal !== undefined) {
+      if (isReplaying(updated)) {
         updated = batch.object(updated);
         updated.historyReceived = (updated.historyReceived ?? 0) + 1;
       }
-      markDirty(dirty, uuid, updated);
+      if (recoveredDraft !== undefined)
+        commitTask(uuid, { ...updated, inputDraft: recoveredDraft });
+      else markDirty(dirty, uuid, updated);
       executeDraftEffectsRef.current(effects);
     },
-    [applyDraftEvent],
+    [applyDraftEvent, commitTask],
   );
 
   const handleDraftUpdatedMessage = useCallback(
@@ -2672,6 +2703,8 @@ export function useTaskManager(
       cancelDraftTimers();
       if (controlledImageStore) resetControlledImageStore(controlledImageStore);
       ordinaryDraftStore.clear();
+      clearTasks();
+      tidToUuid.clear();
       conn.disconnect();
     };
   }, [
