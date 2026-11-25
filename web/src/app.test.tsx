@@ -78,6 +78,7 @@ vi.mock("./useSessionManager", () => ({
       interrupt: vi.fn(),
       stop: vi.fn(),
       closeStdin: vi.fn(),
+      renameTask: vi.fn(),
       resume: vi.fn(),
       promote: vi.fn(),
       fork: vi.fn(),
