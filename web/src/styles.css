@@ -406,6 +406,11 @@ body,
   flex-direction: column-reverse;
 }
 
+/* ui.sidebar.order: newest_first reads top-down and rests at the top */
+.sidebar-list.newest-first {
+  flex-direction: column;
+}
+
 .sidebar-item {
   display: flex;
   align-items: center;

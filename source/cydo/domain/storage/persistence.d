@@ -134,6 +134,19 @@ struct Persistence
 			"    has_messages INTEGER NOT NULL DEFAULT 1," ~
 			"    PRIMARY KEY (driver, profile_root, session_id)" ~
 			");",
+			// Migration 22: how far each task's transcript was read for its
+			// newest conversation record, so the next read covers only what
+			// was appended since. end_tail is nullable because an empty tail
+			// (nothing read yet) binds as NULL.
+			"CREATE TABLE session_last_turn_cache (" ~
+			"    driver TEXT NOT NULL," ~
+			"    profile_root TEXT NOT NULL," ~
+			"    session_id TEXT NOT NULL," ~
+			"    scanned_end INTEGER NOT NULL," ~
+			"    end_tail BLOB," ~
+			"    last_turn INTEGER NOT NULL," ~
+			"    PRIMARY KEY (driver, profile_root, session_id)" ~
+			");",
 		]);
 
 		// In CI, disable durability to speed up tests. This trades crash-safety
@@ -423,6 +436,44 @@ struct Persistence
 		db.stmt!"DELETE FROM session_meta_cache WHERE driver = ? AND profile_root = ?"
 			.exec(driverName, profileRoot);
 	}
+
+	/// A transcript's read for its newest conversation record: complete lines
+	/// up to scannedEnd were read, endTail holds the bytes just before it, and
+	/// lastTurn is the record's StdTime, 0 when there was none.
+	struct LastTurnCacheRow
+	{
+		string driverName;
+		string profileRoot;
+		string sessionId;
+		long scannedEnd;
+		const(ubyte)[] endTail;
+		long lastTurn;
+	}
+
+	LastTurnCacheRow[] loadLastTurnCache()
+	{
+		LastTurnCacheRow[] result;
+		foreach (string driverName, string profileRoot, string sessionId, long scannedEnd,
+			ubyte[] endTail, long lastTurn;
+			db.stmt!"SELECT driver, profile_root, session_id, scanned_end, end_tail, last_turn FROM session_last_turn_cache".iterate())
+			result ~= LastTurnCacheRow(driverName, profileRoot, sessionId, scannedEnd,
+				endTail.dup, lastTurn);
+		return result;
+	}
+
+	void upsertLastTurnCache(LastTurnCacheRow row)
+	{
+		db.stmt!"INSERT OR REPLACE INTO session_last_turn_cache (driver, profile_root, session_id, scanned_end, end_tail, last_turn) VALUES (?, ?, ?, ?, ?, ?)"
+			.exec(row.driverName, row.profileRoot, row.sessionId, row.scannedEnd,
+				cast(const(void)[]) row.endTail, row.lastTurn);
+	}
+
+	/// Drop the reads of sessions no task holds any more.
+	void pruneLastTurnCache()
+	{
+		db.stmt!"DELETE FROM session_last_turn_cache WHERE session_id NOT IN (SELECT agent_session_id FROM tasks WHERE agent_session_id IS NOT NULL)"
+			.exec();
+	}
 }
 
 version (unittest)
@@ -610,7 +661,7 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 22);
+	assert(userVersion == 23);
 
 	auto rows = persistence.loadTasks();
 	assert(rows.length == 1);
@@ -672,4 +723,38 @@ unittest
 	}
 	assert(promoted);
 	assert(pendingUnchanged);
+}
+
+version (unittest)
+unittest
+{
+	import std.file : exists, mkdirRecurse, rmdirRecurse;
+	import std.path : buildPath;
+
+	auto root = buildPath("/tmp", "cydo-persistence-last-turn-unittest");
+	if (exists(root))
+		rmdirRecurse(root);
+	mkdirRecurse(root);
+	scope (exit)
+		if (exists(root))
+			rmdirRecurse(root);
+
+	auto persistence = Persistence(buildPath(root, "cydo.db"));
+	auto tid = persistence.createTask("", root);
+	persistence.setAgentSessionId(tid, "kept-session");
+
+	alias Row = Persistence.LastTurnCacheRow;
+	persistence.upsertLastTurnCache(Row("claude", "/profiles/one", "kept-session", 10,
+		[0, 1, 2, 255], 42));
+	persistence.upsertLastTurnCache(Row("codex", "/profiles/two", "gone-session", 5, [], 0));
+	assert(persistence.loadLastTurnCache().length == 2);
+
+	// a later read replaces the row, binary tail and all
+	persistence.upsertLastTurnCache(Row("claude", "/profiles/one", "kept-session", 20,
+		[7, 0, 9], 99));
+	// rows for sessions no task holds go
+	persistence.pruneLastTurnCache();
+	auto rows = persistence.loadLastTurnCache();
+	assert(rows.length == 1);
+	assert(rows[0] == Row("claude", "/profiles/one", "kept-session", 20, [7, 0, 9], 99));
 }

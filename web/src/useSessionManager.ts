@@ -23,6 +23,7 @@ import type {
   HistoryBoundary,
   Notice,
   TaskListEntry,
+  UiConfig,
 } from "./protocol";
 import {
   createOrdinaryDraftStore,
@@ -253,6 +254,7 @@ export interface TaskManager {
     taskType?: string;
     hasPendingQuestion?: boolean;
     hasMessages?: boolean;
+    lastActive?: number;
   }>;
   workspaces: WorkspaceInfo[];
   entryPoints: EntryPointInfo[];
@@ -268,6 +270,8 @@ export interface TaskManager {
   serverError: { message: string; tid?: number } | null;
   dismissServerError: () => void;
   devMode: boolean;
+  /** the config's `ui` section */
+  ui: UiConfig;
   exportLoadError?: string | null;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
@@ -602,6 +606,7 @@ export function useTaskManager(
     tid?: number;
   } | null>(null);
   const [devMode, setDevMode] = useState(false);
+  const [ui, setUi] = useState<UiConfig>({});
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
   const prevNoticeIdsRef = useRef<Set<string>>(new Set());
@@ -2034,6 +2039,7 @@ export function useTaskManager(
         }
         case "server_status": {
           setDevMode(msg.dev_mode ?? false);
+          setUi(msg.ui ?? {});
           const serverBuildId = msg.build_id ?? "";
           if (
             serverBuildId.length > 0 &&
@@ -3377,6 +3383,9 @@ export function useTaskManager(
         taskType: t.taskType,
         hasPendingQuestion: t.hasPendingQuestion,
         hasMessages: t.messages.length > 0,
+        // a task that never ran counts from its creation, so a fresh draft
+        // sorts with the newest work
+        lastActive: t.lastActive || t.createdAt || 0,
       }));
 
     const prev = prevSidebarTasksRef.current;
@@ -3400,7 +3409,8 @@ export function useTaskManager(
           t.archiving === p.archiving &&
           t.taskType === p.taskType &&
           t.hasPendingQuestion === p.hasPendingQuestion &&
-          t.hasMessages === p.hasMessages
+          t.hasMessages === p.hasMessages &&
+          t.lastActive === p.lastActive
         );
       })
     ) {
@@ -3468,6 +3478,7 @@ export function useTaskManager(
       setServerError(null);
     },
     devMode,
+    ui,
     exportLoadError: null,
     navigateHome,
     navigateToProject,
