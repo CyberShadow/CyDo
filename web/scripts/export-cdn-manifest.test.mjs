@@ -43,6 +43,11 @@ const wasmArtifacts = [
     packageName: "tree-sitter-bash",
     relativePath: "tree-sitter-bash.wasm",
   },
+  {
+    exportName: "treeSitterJavaScript",
+    packageName: "tree-sitter-javascript",
+    relativePath: "tree-sitter-javascript.wasm",
+  },
 ];
 const temporaryRoots = [];
 
@@ -122,6 +127,7 @@ function createSyntheticInputs({
   const rootDependencies = {
     "web-tree-sitter": "1.0.0",
     "tree-sitter-bash": "1.0.0",
+    "tree-sitter-javascript": "1.0.0",
     shiki: "1.0.0",
     mermaid: "1.0.0",
   };
@@ -149,6 +155,9 @@ function createSyntheticInputs({
   });
   addPackage("tree-sitter-bash", {
     files: { "tree-sitter-bash.wasm": Buffer.from([0, 0x61, 0x73, 0x6d]) },
+  });
+  addPackage("tree-sitter-javascript", {
+    files: { "tree-sitter-javascript.wasm": Buffer.from([0, 0x61, 0x73, 0x6d]) },
   });
   addPackage("shiki", {
     manifest: { exports: { ".": "./dist/bundle-web.mjs" } },
@@ -236,6 +245,7 @@ describe("export CDN manifest", () => {
     expect(Object.keys(first.runtimeManifest)).toEqual([
       "treeSitterRuntime",
       "treeSitterBash",
+      "treeSitterJavaScript",
       "shikiRoots",
       "mermaidRoots",
       "shikiLanguages",

@@ -1,6 +1,6 @@
 import { Language, Parser } from "web-tree-sitter";
 
-type TreeSitterGrammar = "bash";
+type TreeSitterGrammar = "bash" | "javascript";
 
 export type TreeSitterAssets =
   | Readonly<{

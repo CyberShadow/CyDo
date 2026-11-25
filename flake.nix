@@ -244,7 +244,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
+            npmDepsHash = "sha256-08SYlOKYz2eE9U2RfPfAIDHcz8BcCdNW2uVJQ4A/1ik=";
 
             buildPhase = ''
               runHook preBuild
@@ -267,7 +267,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
+            npmDepsHash = "sha256-08SYlOKYz2eE9U2RfPfAIDHcz8BcCdNW2uVJQ4A/1ik=";
             dontNpmBuild = true;
 
             installPhase = ''
@@ -1183,7 +1183,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
+            npmDepsHash = "sha256-08SYlOKYz2eE9U2RfPfAIDHcz8BcCdNW2uVJQ4A/1ik=";
 
             buildPhase = ''
               runHook preBuild
@@ -1200,7 +1200,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
+            npmDepsHash = "sha256-08SYlOKYz2eE9U2RfPfAIDHcz8BcCdNW2uVJQ4A/1ik=";
 
             buildPhase = ''
               runHook preBuild
@@ -1217,7 +1217,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
+            npmDepsHash = "sha256-08SYlOKYz2eE9U2RfPfAIDHcz8BcCdNW2uVJQ4A/1ik=";
 
             buildPhase = ''
               runHook preBuild
@@ -1234,7 +1234,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
+            npmDepsHash = "sha256-08SYlOKYz2eE9U2RfPfAIDHcz8BcCdNW2uVJQ4A/1ik=";
 
             buildPhase = ''
               runHook preBuild
@@ -1273,7 +1273,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
+            npmDepsHash = "sha256-08SYlOKYz2eE9U2RfPfAIDHcz8BcCdNW2uVJQ4A/1ik=";
 
             buildPhase = ''
               runHook preBuild

@@ -108,7 +108,7 @@ describe("export CDN Vite configuration", () => {
     expect(source).not.toContain("export default");
     expect(source).not.toContain(webRoot);
     expect(source).not.toContain("node_modules/");
-    expect(source.trim().split("\n")).toHaveLength(5);
+    expect(source.trim().split("\n")).toHaveLength(6);
     const declarations = Array.from(
       source.matchAll(/^export const (\w+) = (.+);$/gm),
       ([, name, value]) => ({ name, value: JSON.parse(value) }),
@@ -117,6 +117,7 @@ describe("export CDN Vite configuration", () => {
     expect(declarations.map(({ name }) => name)).toEqual([
       "treeSitterRuntime",
       "treeSitterBash",
+      "treeSitterJavaScript",
       "shikiRoots",
       "mermaidRoots",
       "shikiLanguages",
@@ -124,6 +125,7 @@ describe("export CDN Vite configuration", () => {
     expect(declarations.map(({ value }) => value)).toEqual([
       snapshot.runtimeManifest.treeSitterRuntime,
       snapshot.runtimeManifest.treeSitterBash,
+      snapshot.runtimeManifest.treeSitterJavaScript,
       snapshot.runtimeManifest.shikiRoots,
       snapshot.runtimeManifest.mermaidRoots,
       snapshot.runtimeManifest.shikiLanguages,
@@ -231,10 +233,11 @@ describe("export CDN Vite configuration", () => {
     const wasmUrls = [
       ...snapshot.runtimeManifest.treeSitterRuntime,
       ...snapshot.runtimeManifest.treeSitterBash,
+      ...snapshot.runtimeManifest.treeSitterJavaScript,
     ].map(({ url }) => url);
-    expect(Object.keys(snapshot.importMap.integrity)).not.toEqual(
-      expect.arrayContaining(wasmUrls),
-    );
+    expect(
+      wasmUrls.filter((url) => Object.hasOwn(snapshot.importMap.integrity, url)),
+    ).toEqual([]);
     expect(html).not.toContain("/+esm");
     expect(html).not.toContain("data:application/wasm");
     expect(html).not.toContain("createObjectURL(");

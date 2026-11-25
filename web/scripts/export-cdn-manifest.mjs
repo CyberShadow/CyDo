@@ -54,6 +54,11 @@ const wasmArtifacts = [
     packageName: "tree-sitter-bash",
     relativePath: "tree-sitter-bash.wasm",
   },
+  {
+    exportName: "treeSitterJavaScript",
+    packageName: "tree-sitter-javascript",
+    relativePath: "tree-sitter-javascript.wasm",
+  },
 ];
 
 const resolveExportOptions = {
@@ -945,6 +950,9 @@ class SnapshotBuilder {
       treeSitterBash: wasm.treeSitterBash
         ? wasmHosts.map((host) => candidateFor(wasm.treeSitterBash, host))
         : fail("missing tree-sitter Bash grammar"),
+      treeSitterJavaScript: wasm.treeSitterJavaScript
+        ? wasmHosts.map((host) => candidateFor(wasm.treeSitterJavaScript, host))
+        : fail("missing tree-sitter JavaScript grammar"),
       shikiRoots: rawHosts.map((host) => candidateFor(shikiRoot, host)),
       mermaidRoots: rawHosts.map((host) => candidateFor(mermaidRoot, host)),
       shikiLanguages: sortedObject(

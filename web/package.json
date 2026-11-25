@@ -23,6 +23,7 @@
     "preact-iso": "^2.11.1",
     "shiki": "^4.0.1",
     "tree-sitter-bash": "0.25.1",
+    "tree-sitter-javascript": "0.25.0",
     "web-tree-sitter": "0.27.0"
   },
   "devDependencies": {

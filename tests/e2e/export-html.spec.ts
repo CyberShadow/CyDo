@@ -522,7 +522,7 @@ test(
       ).toEqual([]);
 
       expect(html).not.toMatch(
-        /\/assets\/(?:web-tree-sitter|tree-sitter-bash)-[^"']+\.wasm/,
+        /\/assets\/(?:web-tree-sitter|tree-sitter-bash|tree-sitter-javascript)-[^"']+\.wasm/,
       );
       expect(html).not.toContain("data:application/wasm");
       expect(html).not.toMatch(

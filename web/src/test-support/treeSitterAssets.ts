@@ -16,6 +16,7 @@ export const installedTreeSitterUrls = {
   runtime: `${modules}/web-tree-sitter/web-tree-sitter.wasm`,
   languages: {
     bash: `${modules}/tree-sitter-bash/tree-sitter-bash.wasm`,
+    javascript: `${modules}/tree-sitter-javascript/tree-sitter-javascript.wasm`,
   },
 } satisfies Extract<TreeSitterAssets, { kind: "urls" }>;
 

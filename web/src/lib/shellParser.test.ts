@@ -559,7 +559,10 @@ function configureUrlService({
   const assets: TreeSitterAssets = {
     kind: "urls",
     runtime: "/assets/web-tree-sitter.wasm",
-    languages: { bash: "/assets/tree-sitter-bash.wasm" },
+    languages: {
+      bash: "/assets/tree-sitter-bash.wasm",
+      javascript: "/assets/tree-sitter-javascript.wasm",
+    },
   };
   assetRuntime.configureTreeSitterAssets(assets);
   return { init, languageLoad };
@@ -989,7 +992,7 @@ describe.sequential("shell parser service", () => {
     const firstAssets: TreeSitterAssets = {
       kind: "urls",
       runtime: "runtime-one.wasm",
-      languages: { bash: "bash-one.wasm" },
+      languages: { bash: "bash-one.wasm", javascript: "javascript-one.wasm" },
     };
     first.assetRuntime.configureTreeSitterAssets(firstAssets);
     expect(() => {
@@ -999,7 +1002,7 @@ describe.sequential("shell parser service", () => {
       first.assetRuntime.configureTreeSitterAssets({
         kind: "urls",
         runtime: "runtime-two.wasm",
-        languages: { bash: "bash-two.wasm" },
+        languages: { bash: "bash-two.wasm", javascript: "javascript-two.wasm" },
       });
     }).toThrow("Tree-sitter assets are already configured");
 
@@ -1047,7 +1050,10 @@ describe.sequential("shell parser service", () => {
     assetRuntime.configureTreeSitterAssets({
       kind: "urls",
       runtime: "runtime-url.wasm",
-      languages: { bash: "bash-language-url.wasm" },
+      languages: {
+        bash: "bash-language-url.wasm",
+        javascript: "javascript-language-url.wasm",
+      },
     });
 
     const first = service.loadParsedShellDocument("echo hi");
@@ -1154,7 +1160,10 @@ describe.sequential("shell parser service", () => {
         assetRuntime.configureTreeSitterAssets({
           kind: "urls",
           runtime: "runtime-url.wasm",
-          languages: { bash: "bash-language-url.wasm" },
+          languages: {
+            bash: "bash-language-url.wasm",
+            javascript: "javascript-language-url.wasm",
+          },
         });
         init.mockImplementation(
           phase === "init"
@@ -1185,6 +1194,21 @@ describe.sequential("shell parser service", () => {
     },
   );
 
+  it("loads only the Bash grammar when preloading the shell parser", async () => {
+    const { service, assetRuntime } = await freshShellParser();
+    const loadLanguage = vi.fn(installedTreeSitterBytes.loadLanguage);
+    assetRuntime.configureTreeSitterAssets({
+      ...installedTreeSitterBytes,
+      loadLanguage,
+    });
+    expect(loadLanguage).not.toHaveBeenCalled();
+
+    service.preloadShellParser();
+    expect(loadLanguage).toHaveBeenCalledExactlyOnceWith("bash");
+    await assetRuntime.loadTreeSitterLanguage("bash");
+    expect(loadLanguage).toHaveBeenCalledExactlyOnceWith("bash");
+  });
+
   it("reports a preload rejection once without an unhandled rejection", async () => {
     const { service, treeSitter, assetRuntime } = await freshShellParser();
     const error = new Error("preload failed");
@@ -1204,7 +1228,10 @@ describe.sequential("shell parser service", () => {
       assetRuntime.configureTreeSitterAssets({
         kind: "urls",
         runtime: "runtime-url.wasm",
-        languages: { bash: "bash-language-url.wasm" },
+        languages: {
+          bash: "bash-language-url.wasm",
+          javascript: "javascript-language-url.wasm",
+        },
       });
       expect(() => {
         service.preloadShellParser();
@@ -1248,7 +1275,10 @@ describe.sequential("shell parser service", () => {
     assetRuntime.configureTreeSitterAssets({
       kind: "urls",
       runtime: "runtime-url.wasm",
-      languages: { bash: "bash-language-url.wasm" },
+      languages: {
+        bash: "bash-language-url.wasm",
+        javascript: "javascript-language-url.wasm",
+      },
     });
 
     const pendingA = service.loadParsedShellDocument("echo hi");
@@ -1300,7 +1330,10 @@ describe.sequential("shell parser service", () => {
     secondService.assetRuntime.configureTreeSitterAssets({
       kind: "urls",
       runtime: "runtime-url.wasm",
-      languages: { bash: "bash-language-url.wasm" },
+      languages: {
+        bash: "bash-language-url.wasm",
+        javascript: "javascript-language-url.wasm",
+      },
     });
     const pending = Array.from({ length: 9 }, (_, i) =>
       secondService.service.loadParsedShellDocument(`echo pending-${i}`),

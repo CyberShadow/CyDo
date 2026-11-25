@@ -30,7 +30,7 @@ export function exportCdnManifestPlugin(
     async load(id) {
       if (id !== resolvedExportCdnModule) return undefined;
       const { runtimeManifest } = await getSnapshot();
-      return `export const treeSitterRuntime = ${JSON.stringify(runtimeManifest.treeSitterRuntime)};\nexport const treeSitterBash = ${JSON.stringify(runtimeManifest.treeSitterBash)};\nexport const shikiRoots = ${JSON.stringify(runtimeManifest.shikiRoots)};\nexport const mermaidRoots = ${JSON.stringify(runtimeManifest.mermaidRoots)};\nexport const shikiLanguages = ${JSON.stringify(runtimeManifest.shikiLanguages)};\n`;
+      return `export const treeSitterRuntime = ${JSON.stringify(runtimeManifest.treeSitterRuntime)};\nexport const treeSitterBash = ${JSON.stringify(runtimeManifest.treeSitterBash)};\nexport const treeSitterJavaScript = ${JSON.stringify(runtimeManifest.treeSitterJavaScript)};\nexport const shikiRoots = ${JSON.stringify(runtimeManifest.shikiRoots)};\nexport const mermaidRoots = ${JSON.stringify(runtimeManifest.mermaidRoots)};\nexport const shikiLanguages = ${JSON.stringify(runtimeManifest.shikiLanguages)};\n`;
     },
     async transformIndexHtml() {
       return [
