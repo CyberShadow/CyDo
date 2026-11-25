@@ -44,6 +44,7 @@ import cydo.runtime.config.watcher : ConfigWatcher, ConfigWatcherHost;
 import cydo.workflow.discovery.service : DiscoveryService, DiscoveryServiceHost,
 	DiscoveryTaskSnapshot, ImportableReconciliationCommit, ImportableScanRecord,
 	ImportableTaskSpec;
+import cydo.web.request_policy : isLoopbackListenAddress;
 import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksListPackets, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
@@ -364,6 +365,52 @@ class App
 		auto serverEnv = consumeServerEnvironment();
 		initLogger();
 		applyConfiguredLogLevel("info");
+
+		import core.sys.posix.unistd : isatty, STDERR_FILENO;
+
+		auto userEnv = serverEnv.authUser;
+		auto passEnv = serverEnv.authPass;
+		bool generatedCredentials;
+
+		if (passEnv is null)
+		{
+			if (!isatty(STDERR_FILENO))
+			{
+				fatalf("CYDO_AUTH_PASS not set and stderr is not a TTY — cannot safely communicate generated password. " ~
+					"Set CYDO_AUTH_PASS explicitly, or set CYDO_AUTH_PASS='' to disable authentication.");
+			}
+			import std.random : Random, unpredictableSeed, uniform;
+			auto rng = Random(unpredictableSeed);
+			enum chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+			char[16] buf;
+			foreach (ref c; buf)
+				c = chars[uniform(0, chars.length, rng)];
+			authPass = buf[].idup;
+			generatedCredentials = true;
+		}
+		else
+			authPass = passEnv;
+
+		authUser = userEnv is null ? (authPass.length > 0 ? "user" : "") : userEnv;
+		if (userEnv is null && generatedCredentials)
+			warningf("CYDO_AUTH_USER not set — defaulting to 'user'.");
+
+		if (authUser.length == 0 && authPass.length == 0)
+			setNotice("auth_disabled", Nullable!Notice(Notice(NoticeLevel.warning,
+				"Authentication is disabled.",
+				"Any local user or process that can reach the server can view and control all sessions.",
+				"Set CYDO_AUTH_PASS to enable authentication.")));
+
+		auto listenAddrEnv = serverEnv.listenAddress is null ? "localhost" : serverEnv.listenAddress;
+		if (authUser.length == 0 && authPass.length == 0 && serverEnv.listenSocket is null)
+		{
+			if (!isLoopbackListenAddress(listenAddrEnv))
+				fatalf("Authentication is disabled (CYDO_AUTH_PASS is empty) but CYDO_LISTEN_ADDRESS is '%s'. " ~
+					"Without authentication CyDo only listens on localhost, 127.0.0.1 or ::1. " ~
+					"Set CYDO_AUTH_PASS to enable authentication, or set CYDO_LISTEN_ADDRESS to a loopback address.",
+					listenAddrEnv);
+		}
+
 		{
 			import ae.utils.path : findProgramDirectory;
 			import std.path : buildPath;
@@ -1078,40 +1125,6 @@ class App
 
 		auto sslCert = serverEnv.tlsCert;
 		auto sslKey = serverEnv.tlsKey;
-		import core.sys.posix.unistd : isatty, STDERR_FILENO;
-
-		auto userEnv = serverEnv.authUser;
-		auto passEnv = serverEnv.authPass;
-		bool generatedCredentials;
-
-		if (passEnv is null)
-		{
-			if (!isatty(STDERR_FILENO))
-			{
-				fatalf("CYDO_AUTH_PASS not set and stderr is not a TTY — cannot safely communicate generated password. " ~
-					"Set CYDO_AUTH_PASS explicitly, or set CYDO_AUTH_PASS='' to disable authentication.");
-			}
-			import std.random : Random, unpredictableSeed, uniform;
-			auto rng = Random(unpredictableSeed);
-			enum chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-			char[16] buf;
-			foreach (ref c; buf)
-				c = chars[uniform(0, chars.length, rng)];
-			authPass = buf[].idup;
-			generatedCredentials = true;
-		}
-		else
-			authPass = passEnv;
-
-		authUser = userEnv is null ? (authPass.length > 0 ? "user" : "") : userEnv;
-		if (userEnv is null && generatedCredentials)
-			warningf("CYDO_AUTH_USER not set — defaulting to 'user'.");
-
-		if (authUser.length == 0 && authPass.length == 0)
-			setNotice("auth_disabled", Nullable!Notice(Notice(NoticeLevel.warning,
-				"Authentication is disabled.",
-				"Anyone with network access can view and control all sessions.",
-				"Set CYDO_AUTH_PASS to enable authentication.")));
 		transport.setAuthCredentials(authUser, authPass);
 		transport.startHttpServer(sslCert, sslKey);
 		auto server = transport.server;
@@ -1135,7 +1148,6 @@ class App
 		else
 		{
 			import std.conv : to;
-			auto listenAddrEnv = serverEnv.listenAddress is null ? "localhost" : serverEnv.listenAddress;
 			auto listenPort = to!ushort(serverEnv.listenPort is null ? "3940" : serverEnv.listenPort);
 			auto listenAddr = listenAddrEnv == "*" ? null : listenAddrEnv;
 

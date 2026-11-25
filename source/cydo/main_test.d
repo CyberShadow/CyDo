@@ -8,7 +8,7 @@ import std.conv : to;
 import std.file : SpanMode, chdir, dirEntries, exists, getcwd, mkdirRecurse,
 	read, rmdirRecurse, tempDir;
 import std.path : buildPath, isAbsolute, relativePath;
-import std.process : environment, execute;
+import std.process : Config, environment, execute;
 
 private string cydoCli()
 {
@@ -24,6 +24,17 @@ private typeof(execute(["true"])) runCydo(string[] arguments)
 	auto command = ["bash", "-c", "exec \"$1\" \"${@:2}\" 2>&1", "cydo", cydoCli()];
 	command ~= arguments;
 	return execute(command);
+}
+
+private typeof(execute(["true"])) runCydoWithoutAuth(string listenAddress)
+{
+	auto env = environment.toAA();
+	env["CYDO_AUTH_PASS"] = "";
+	env["CYDO_LISTEN_ADDRESS"] = listenAddress;
+	env.remove("CYDO_AUTH_USER");
+	env.remove("CYDO_LISTEN_SOCKET");
+	return execute(["timeout", "30", "bash", "-c", "exec \"$1\" 2>&1", "cydo", cydoCli()],
+		env, Config.newEnv);
 }
 
 private void withInitCliFixture(string name, void delegate(string root) body)
@@ -72,6 +83,21 @@ private void assertFixtureContents(string root, string[] expected)
 		entries ~= relativePath(entry.name, root);
 	entries.sort;
 	assert(entries == expected, "Unexpected fixture contents: " ~ entries.to!string);
+}
+
+unittest // The server refuses unauthenticated non-loopback TCP binds before opening the database.
+{
+	foreach (address; ["*", "0.0.0.0"])
+	{
+		withInitCliFixture("cydo-main-unauthenticated-bind", (string root)
+		{
+			auto result = runCydoWithoutAuth(address);
+			assert(result.status != 0 && result.status != 124, result.output);
+			assert(result.output.canFind("CYDO_LISTEN_ADDRESS is '" ~ address ~ "'")
+				&& result.output.canFind("CYDO_AUTH_PASS"), result.output);
+			assert(!exists(buildPath(root, "data-home", "cydo", "cydo.db")), result.output);
+		});
+	}
 }
 
 unittest // Actual Program/FunOpt root help documents init.

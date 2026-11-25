@@ -138,6 +138,23 @@ Nullable!RequestRejection checkRequestPolicy(
 			describeHeaders(originHeaders), describeHeaders(hostHeaders))));
 }
 
+/// TCP listen addresses allowed without authentication.
+bool isLoopbackListenAddress(string address)
+{
+	enum loopbackListenAddresses = ["localhost", "127.0.0.1", "::1"];
+	return loopbackListenAddresses.canFind(address);
+}
+
+// Unauthenticated TCP listeners accept only the exact configured loopback literals.
+unittest
+{
+	foreach (address; ["localhost", "127.0.0.1", "::1"])
+		assert(isLoopbackListenAddress(address), address);
+
+	foreach (address; ["*", "0.0.0.0", "::", "127.0.0.2", "[::1]", "LOCALHOST", "192.168.1.5", ""])
+		assert(!isLoopbackListenAddress(address), format!"Accepted listen address %s"(address));
+}
+
 // Host authorities preserve IPv6 brackets and distinguish an omitted port.
 unittest
 {
