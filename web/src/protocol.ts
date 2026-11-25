@@ -219,6 +219,7 @@ export interface TaskListEntry {
   entry_point?: string;
   agent_name?: string;
   driver?: string;
+  usage_profile?: string | null;
   archived?: boolean;
   archiving?: boolean;
   draft?: string;
@@ -437,7 +438,7 @@ export interface AgentUsageLimitWindow {
 }
 export interface AgentUsageMessage {
   type: "agent_usage";
-  agent: string;
+  profile: string;
   updated_at: number;
   limits: Record<string, AgentUsageLimitWindow>;
   /** When the account login ends for good (ISO 8601). */

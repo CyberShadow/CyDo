@@ -126,6 +126,54 @@ describe("taskStateFromEntry draft merge", () => {
   });
 });
 
+describe("taskStateFromEntry usage profile", () => {
+  const entry = {
+    tid: 11,
+    child_count: 0,
+    alive: false,
+    resumable: false,
+    isProcessing: false,
+  };
+
+  it("maps the usage profile when seeding a new task from a snapshot", () => {
+    expect(
+      taskStateFromEntry(
+        { ...entry, usage_profile: "/profiles/work" },
+        undefined,
+        undefined,
+      ).usageProfile,
+    ).toBe("/profiles/work");
+  });
+
+  it("maps the snapshot's usage profile to the task", () => {
+    const existing = makeTaskState(11, false);
+    const profile = "/profiles/work";
+
+    expect(
+      taskStateFromEntry(
+        { ...entry, usage_profile: profile },
+        existing,
+        existing.uuid,
+      ).usageProfile,
+    ).toBe(profile);
+  });
+
+  it.each([null, undefined, ""])(
+    "clears a previous usage profile when the snapshot profile is %j",
+    (usage_profile) => {
+      const existing = {
+        ...makeTaskState(11, false),
+        usageProfile: "/profiles/work",
+      };
+
+      expect(
+        taskStateFromEntry({ ...entry, usage_profile }, existing, existing.uuid)
+          .usageProfile,
+      ).toBeUndefined();
+    },
+  );
+});
+
 describe("task observation adapter", () => {
   const entry = (fields: Record<string, unknown> = {}) =>
     ({

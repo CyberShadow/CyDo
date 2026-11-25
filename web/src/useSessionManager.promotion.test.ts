@@ -98,24 +98,53 @@ async function renderManager(): Promise<TaskManager> {
   return manager!;
 }
 
-describe("task promotion", () => {
-  beforeEach(() => {
-    testState.route.workspace = "source";
-    testState.route.project = "project";
-    testState.route.tid = "42";
-    testState.connection = null;
-    testState.navigate.mockReset();
-    testState.addToast.mockReset();
-    manager = null;
-    root = createRoot();
-  });
+beforeEach(() => {
+  testState.route.workspace = "source";
+  testState.route.project = "project";
+  testState.route.tid = "42";
+  testState.connection = null;
+  testState.navigate.mockReset();
+  testState.addToast.mockReset();
+  manager = null;
+  root = createRoot();
+});
 
-  afterEach(async () => {
+afterEach(async () => {
+  await act(() => {
+    render(null, root);
+  });
+});
+
+describe("agent usage", () => {
+  it("retains independent usage messages for two profiles", async () => {
+    await renderManager();
+    const connection = testState.connection!;
+    const work = {
+      type: "agent_usage",
+      profile: "/profiles/work",
+      updated_at: 1,
+      limits: { five_hour: { utilization: 42 } },
+    } satisfies ControlMessage;
+    const personal = {
+      type: "agent_usage",
+      profile: "/profiles/personal",
+      updated_at: 2,
+      limits: { five_hour: { utilization: 71 } },
+    } satisfies ControlMessage;
+
     await act(() => {
-      render(null, root);
+      connection.onControlMessage?.(work);
+      connection.onControlMessage?.(personal);
+    });
+
+    expect((await renderManager()).agentUsage).toEqual({
+      [work.profile]: work,
+      [personal.profile]: personal,
     });
   });
+});
 
+describe("task promotion", () => {
   it("uses the current workspace without optimistically promoting the task", async () => {
     await renderManager();
     const connection = testState.connection!;

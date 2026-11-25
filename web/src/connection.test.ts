@@ -193,7 +193,7 @@ describe("Connection client behavior", () => {
     ws.emitMessage(
       JSON.stringify({
         type: "agent_usage",
-        agent: "claude",
+        profile: "/tmp/claude",
         updated_at: 1715702400,
         limits: {
           five_hour: { utilization: 42.5, resetsAt: 1715703000 },

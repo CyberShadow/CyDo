@@ -1,11 +1,12 @@
 module cydo.domain.usage.tracker;
 
+import core.time : MonoTime;
+import std.datetime.systime : Clock;
 import std.math : fabs, isFinite, isNaN;
 
-import ae.utils.json : JSONOptional, JSONPartial, jsonParse, toJson;
+import ae.utils.json : JSONOptional, toJson;
 
-import cydo.runtime.config : AgentDriver;
-import cydo.protocol : SessionRateLimitEvent;
+import cydo.protocol : RateLimitInfo;
 
 private struct AgentUsageLimitWindowMessage
 {
@@ -17,7 +18,7 @@ private struct AgentUsageLimitWindowMessage
 private struct AgentUsageMessage
 {
 	string type = "agent_usage";
-	string agent;
+	string profile;
 	long updated_at;
 	AgentUsageLimitWindowMessage[string] limits;
 	@JSONOptional string credential_expires_at;
@@ -25,6 +26,7 @@ private struct AgentUsageMessage
 
 private struct AgentUsageLimitWindowState
 {
+	MonoTime observedAt;
 	bool hasUtilization;
 	double utilization;
 	bool hasResetsAt;
@@ -33,9 +35,9 @@ private struct AgentUsageLimitWindowState
 	string status;
 }
 
-private struct AgentUsageState
+private struct ProfileUsage
 {
-	string agent;
+	string profile;
 	long updatedAt;
 	AgentUsageLimitWindowState[string] limits;
 	string credentialExpiresAt;
@@ -43,47 +45,35 @@ private struct AgentUsageState
 
 class AgentUsageTracker
 {
-	private AgentUsageState[string] agentUsageByAgent;
+	private ProfileUsage[string] usageByProfile;
 
 	string[] snapshotMessages()
 	{
 		string[] payloads;
-		foreach (ref usageState; agentUsageByAgent)
+		foreach (ref usageState; usageByProfile)
 			payloads ~= toJson(buildAgentUsageMessage(usageState));
 		return payloads;
 	}
 
-	bool updateFromClaudeEvent(AgentDriver driver, string translated, out string payload)
+	bool applyPush(string profile, RateLimitInfo info, MonoTime receivedAt, out string payload)
 	{
-		import std.datetime.systime : Clock;
-
-		if (driver != AgentDriver.claude)
-			return false;
-		if (isTurnResultEvent(translated))
-			return updateCredentialExpiry(translated, payload);
-		if (!isSessionRateLimitEvent(translated))
-			return false;
-
-		SessionRateLimitEvent rateLimitEvent;
-		try
-			rateLimitEvent = jsonParse!SessionRateLimitEvent(translated);
-		catch (Exception)
-			return false;
-
-		auto limitType = rateLimitEvent.rate_limit_info.rateLimitType;
+		auto limitType = info.rateLimitType;
 		if (limitType.length == 0)
 			return false;
 
 		auto normalizedUtilization = normalizeUtilizationPercent(
-			rateLimitEvent.rate_limit_info.utilization);
+			info.utilization);
 		const hasUtilization = !isNaN(normalizedUtilization);
-		const hasResetsAt = !isNaN(rateLimitEvent.rate_limit_info.resetsAt);
-		const hasStatus = rateLimitEvent.rate_limit_info.status.length > 0;
+		const hasResetsAt = !isNaN(info.resetsAt);
+		const hasStatus = info.status.length > 0;
 		if (!hasUtilization && !hasResetsAt && !hasStatus)
 			return false;
 
-		auto state = agentUsageByAgent.get("claude", AgentUsageState("claude", 0, null));
+		auto state = usageByProfile.get(profile, ProfileUsage(profile));
 		auto window = state.limits.get(limitType, AgentUsageLimitWindowState.init);
+		if (receivedAt < window.observedAt)
+			return false;
+		window.observedAt = receivedAt;
 		bool changed = false;
 
 		if (hasUtilization
@@ -96,59 +86,41 @@ class AgentUsageTracker
 		}
 		if (hasResetsAt
 			&& (!window.hasResetsAt
-				|| fabs(window.resetsAt - rateLimitEvent.rate_limit_info.resetsAt) > 0.0001))
+				|| fabs(window.resetsAt - info.resetsAt) > 0.0001))
 		{
 			window.hasResetsAt = true;
-			window.resetsAt = rateLimitEvent.rate_limit_info.resetsAt;
+			window.resetsAt = info.resetsAt;
 			changed = true;
 		}
 		if (hasStatus
 			&& (!window.hasStatus
-				|| window.status != rateLimitEvent.rate_limit_info.status))
+				|| window.status != info.status))
 		{
 			window.hasStatus = true;
-			window.status = rateLimitEvent.rate_limit_info.status;
+			window.status = info.status;
 			changed = true;
 		}
+		state.limits[limitType] = window;
 		if (!changed)
 			return false;
 
-		state.agent = "claude";
-		state.updatedAt = cast(long) Clock.currTime.toUnixTime;
-		state.limits[limitType] = window;
-		agentUsageByAgent["claude"] = state;
+		state.updatedAt = Clock.currTime.toUnixTime;
+		usageByProfile[profile] = state;
 		payload = toJson(buildAgentUsageMessage(state));
 		return true;
 	}
 
-	private bool updateCredentialExpiry(string translated, out string payload)
+	bool applyCredentialExpiry(string profile, string expiresAt, out string payload)
 	{
-		import std.datetime.systime : Clock;
-
-		@JSONPartial static struct Probe { @JSONOptional string credential_expires_at; }
-		auto expiresAt = jsonParse!Probe(translated).credential_expires_at;
-		auto state = agentUsageByAgent.get("claude", AgentUsageState("claude", 0, null));
+		auto state = usageByProfile.get(profile, ProfileUsage(profile));
 		if (expiresAt.length == 0 || expiresAt == state.credentialExpiresAt)
 			return false;
 		state.credentialExpiresAt = expiresAt;
-		state.updatedAt = cast(long) Clock.currTime.toUnixTime;
-		agentUsageByAgent["claude"] = state;
+		state.updatedAt = Clock.currTime.toUnixTime;
+		usageByProfile[profile] = state;
 		payload = toJson(buildAgentUsageMessage(state));
 		return true;
 	}
-}
-
-private bool isTurnResultEvent(string translated)
-{
-	import std.algorithm : canFind;
-	return translated.canFind(`"type":"turn/result"`);
-}
-
-private bool isSessionRateLimitEvent(string translated)
-{
-	import std.algorithm : canFind;
-	return translated.canFind(`"type":"session/rate_limit"`)
-		|| translated.canFind(`"type":"session\/rate_limit"`);
 }
 
 private double normalizeUtilizationPercent(double raw)
@@ -165,10 +137,10 @@ private double normalizeUtilizationPercent(double raw)
 	return pct;
 }
 
-private AgentUsageMessage buildAgentUsageMessage(ref const AgentUsageState state)
+private AgentUsageMessage buildAgentUsageMessage(ref const ProfileUsage state)
 {
 	AgentUsageMessage msg;
-	msg.agent = state.agent;
+	msg.profile = state.profile;
 	msg.updated_at = state.updatedAt;
 	msg.credential_expires_at = state.credentialExpiresAt;
 	foreach (limitType, ref window; state.limits)
@@ -187,53 +159,45 @@ private AgentUsageMessage buildAgentUsageMessage(ref const AgentUsageState state
 	return msg;
 }
 
+version (unittest)
+	import ae.utils.json : jsonParse;
+
 unittest
 {
 	auto tracker = new AgentUsageTracker();
-
+	const receivedAt = MonoTime.currTime;
 	string payload;
-	auto changed = tracker.updateFromClaudeEvent(AgentDriver.claude,
-		`{"type":"session/rate_limit","rate_limit_info":{"rateLimitType":"five_hour","utilization":0.42,"resetsAt":1000,"status":"allowed"}}`,
-		payload);
-	assert(changed);
-	assert("claude" in tracker.agentUsageByAgent);
-	assert("five_hour" in tracker.agentUsageByAgent["claude"].limits);
-	assert(tracker.agentUsageByAgent["claude"].limits["five_hour"].hasUtilization);
-	assert(tracker.agentUsageByAgent["claude"].limits["five_hour"].utilization == 42);
 
-	changed = tracker.updateFromClaudeEvent(AgentDriver.claude,
-		`{"type":"session/rate_limit","rate_limit_info":{"rateLimitType":"seven_day","utilization":71.5}}`,
-		payload);
-	assert(changed);
-	assert("seven_day" in tracker.agentUsageByAgent["claude"].limits);
-	assert(tracker.agentUsageByAgent["claude"].limits["five_hour"].utilization == 42);
-	assert(tracker.agentUsageByAgent["claude"].limits["seven_day"].utilization == 71.5);
+	assert(tracker.applyPush("claude", jsonParse!RateLimitInfo(
+		`{"rateLimitType":"five_hour","utilization":0.42,"resetsAt":1000,"status":"allowed"}`),
+		receivedAt, payload));
+	auto msg = jsonParse!AgentUsageMessage(payload);
+	assert(msg.limits["five_hour"].utilization == 42);
 
-	changed = tracker.updateFromClaudeEvent(AgentDriver.claude,
-		`{"type":"session/rate_limit","rate_limit_info":{"rateLimitType":"five_hour","resetsAt":2000,"status":"allowed_warning"}}`,
-		payload);
-	assert(changed);
-	auto msg = buildAgentUsageMessage(tracker.agentUsageByAgent["claude"]);
-	assert("five_hour" in msg.limits);
+	assert(tracker.applyPush("claude", jsonParse!RateLimitInfo(
+		`{"rateLimitType":"seven_day","utilization":71.5}`), receivedAt, payload));
+	msg = jsonParse!AgentUsageMessage(payload);
+	assert(msg.limits["five_hour"].utilization == 42);
+	assert(msg.limits["seven_day"].utilization == 71.5);
+
+	assert(tracker.applyPush("claude", jsonParse!RateLimitInfo(
+		`{"rateLimitType":"five_hour","resetsAt":2000,"status":"allowed_warning"}`),
+		receivedAt, payload));
+	msg = jsonParse!AgentUsageMessage(payload);
 	assert(msg.limits["five_hour"].utilization == 42);
 	assert(msg.limits["five_hour"].resetsAt == 2000);
 	assert(msg.limits["five_hour"].status == "allowed_warning");
 
-	changed = tracker.updateFromClaudeEvent(AgentDriver.claude,
-		`{"type":"session/rate_limit","rate_limit_info":{"rateLimitType":"seven_day","status":"allowed"}}`,
-		payload);
-	assert(changed);
-	msg = buildAgentUsageMessage(tracker.agentUsageByAgent["claude"]);
-	assert("seven_day" in msg.limits);
+	assert(tracker.applyPush("claude", jsonParse!RateLimitInfo(
+		`{"rateLimitType":"seven_day","status":"allowed"}`), receivedAt, payload));
+	msg = jsonParse!AgentUsageMessage(payload);
 	assert(msg.limits["seven_day"].utilization == 71.5);
 	assert(msg.limits["seven_day"].status == "allowed");
 
-	changed = tracker.updateFromClaudeEvent(AgentDriver.claude,
-		`{"type":"session/rate_limit","rate_limit_info":{"rateLimitType":"overage","status":"rejected","resetsAt":3000}}`,
-		payload);
-	assert(changed);
-	msg = buildAgentUsageMessage(tracker.agentUsageByAgent["claude"]);
-	assert("overage" in msg.limits);
+	assert(tracker.applyPush("claude", jsonParse!RateLimitInfo(
+		`{"rateLimitType":"overage","status":"rejected","resetsAt":3000}`),
+		receivedAt, payload));
+	msg = jsonParse!AgentUsageMessage(payload);
 	assert(msg.limits["overage"].status == "rejected");
 	assert(msg.limits["overage"].resetsAt == 3000);
 	assert(isNaN(msg.limits["overage"].utilization));
@@ -242,26 +206,95 @@ unittest
 unittest
 {
 	auto tracker = new AgentUsageTracker();
-
+	const receivedAt = MonoTime.currTime;
 	string payload;
-	auto changed = tracker.updateFromClaudeEvent(AgentDriver.codex,
-		`{"type":"session/rate_limit","rate_limit_info":{"rateLimitType":"five_hour","utilization":0.42,"resetsAt":1000,"status":"allowed"}}`,
-		payload);
-	assert(!changed);
-	assert(tracker.agentUsageByAgent.length == 0);
+	assert(tracker.snapshotMessages().length == 0);
+
+	assert(tracker.applyPush("personal", jsonParse!RateLimitInfo(
+		`{"rateLimitType":"five_hour","utilization":20,"status":"allowed"}`),
+		receivedAt, payload));
+	auto msg = jsonParse!AgentUsageMessage(payload);
+	assert(msg.profile == "personal");
+	assert(msg.limits["five_hour"].utilization == 20);
+
+	assert(tracker.applyPush("work", jsonParse!RateLimitInfo(
+		`{"rateLimitType":"five_hour","utilization":80}`), receivedAt, payload));
+	msg = jsonParse!AgentUsageMessage(payload);
+	assert(msg.profile == "work");
+	assert(msg.limits["five_hour"].utilization == 80);
+	assert(msg.limits["five_hour"].status == "");
+
+	auto snapshots = tracker.snapshotMessages();
+	assert(snapshots.length == 2);
+	AgentUsageMessage[string] byProfile;
+	foreach (snapshot; snapshots)
+	{
+		msg = jsonParse!AgentUsageMessage(snapshot);
+		byProfile[msg.profile] = msg;
+	}
+	assert(byProfile["personal"].limits["five_hour"].utilization == 20);
+	assert(byProfile["personal"].limits["five_hour"].status == "allowed");
+	assert(byProfile["work"].limits["five_hour"].utilization == 80);
+}
+
+unittest
+{
+	import core.time : seconds;
+
+	auto tracker = new AgentUsageTracker();
+	const earlier = MonoTime.currTime;
+	const later = earlier + 1.seconds;
+	string payload;
+	auto newest = jsonParse!RateLimitInfo(
+		`{"rateLimitType":"five_hour","utilization":80}`);
+	auto stale = jsonParse!RateLimitInfo(
+		`{"rateLimitType":"five_hour","utilization":20}`);
+
+	assert(tracker.applyPush("personal", newest, later, payload));
+	assert(!tracker.applyPush("personal", stale, earlier, payload));
+	assert(tracker.applyPush("work", stale, earlier, payload));
+
+	stale.rateLimitType = "seven_day";
+	assert(tracker.applyPush("personal", stale, earlier, payload));
+	auto msg = jsonParse!AgentUsageMessage(payload);
+	assert(msg.limits["five_hour"].utilization == 80);
+	assert(msg.limits["seven_day"].utilization == 20);
+
+	assert(!tracker.applyPush("personal", newest, later + 1.seconds, payload));
+	stale.rateLimitType = "five_hour";
+	assert(!tracker.applyPush("personal", stale, later, payload));
 }
 
 unittest
 {
 	auto tracker = new AgentUsageTracker();
 	string payload;
-	enum result = `{"type":"turn/result","subtype":"success","credential_expires_at":"2026-11-12T12:31:33Z"}`;
-	assert(tracker.updateFromClaudeEvent(AgentDriver.claude, result, payload));
-	import std.algorithm : canFind;
-	assert(payload.canFind(`"credential_expires_at":"2026-11-12T12:31:33Z"`), payload);
-	// Unchanged: nothing to broadcast.
-	assert(!tracker.updateFromClaudeEvent(AgentDriver.claude, result, payload));
-	// A result without one keeps what is known.
-	assert(!tracker.updateFromClaudeEvent(AgentDriver.claude,
-		`{"type":"turn/result","subtype":"success"}`, payload));
+	enum expiry = "2026-11-12T12:31:33Z";
+	enum updatedExpiry = "2026-11-13T12:31:33Z";
+
+	assert(!tracker.applyCredentialExpiry("work", "", payload));
+	assert(tracker.snapshotMessages().length == 0);
+	assert(tracker.applyCredentialExpiry("personal", expiry, payload));
+	auto msg = jsonParse!AgentUsageMessage(payload);
+	assert(msg.profile == "personal");
+	assert(msg.credential_expires_at == expiry);
+	assert(!tracker.applyCredentialExpiry("personal", expiry, payload));
+
+	assert(tracker.applyCredentialExpiry("work", expiry, payload));
+	msg = jsonParse!AgentUsageMessage(payload);
+	assert(msg.profile == "work");
+	assert(msg.credential_expires_at == expiry);
+	assert(tracker.applyCredentialExpiry("personal", updatedExpiry, payload));
+	assert(!tracker.applyCredentialExpiry("personal", "", payload));
+
+	auto snapshots = tracker.snapshotMessages();
+	assert(snapshots.length == 2);
+	string[string] expiryByProfile;
+	foreach (snapshot; snapshots)
+	{
+		msg = jsonParse!AgentUsageMessage(snapshot);
+		expiryByProfile[msg.profile] = msg.credential_expires_at;
+	}
+	assert(expiryByProfile["personal"] == updatedExpiry);
+	assert(expiryByProfile["work"] == expiry);
 }

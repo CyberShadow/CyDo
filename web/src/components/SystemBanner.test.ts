@@ -54,7 +54,7 @@ function renderSystemBanner({
 function usageMessage(limits: AgentUsageMessage["limits"]): AgentUsageMessage {
   return {
     type: "agent_usage",
-    agent: "claude",
+    profile: "/tmp/claude",
     updated_at: 1_700_000_000,
     limits,
   };

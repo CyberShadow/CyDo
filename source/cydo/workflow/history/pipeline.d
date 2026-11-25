@@ -68,7 +68,6 @@ struct HistoryEventPipelineHost
 		noteLiveBoundaryCandidate;
 	void delegate(WebSocketAdapter ws, int tid) sendReplaySupplementalState;
 	void delegate(int tid) onHistorySubscribed;
-	bool delegate(int tid, string translated) updateClaudeUsageFromEvent;
 	HistoryBroadcastPlan delegate(int tid, TranslatedEvent ev) planBroadcast;
 	Promise!DriverHistory delegate(int tid, HistoryAccess access) loadDriverHistory;
 	void delegate(int tid, string itemId, ulong generation) liveToolStarted;
@@ -762,7 +761,6 @@ class HistoryEventPipeline
 			ev.ts = AbsTime(Clock.currStdTime);
 
 		ev.translated = host_.normalizeKnownSystemMessageMeta(ev.translated, tid);
-		host_.updateClaudeUsageFromEvent(tid, ev.translated);
 
 		auto plan = host_.planBroadcast(tid, ev);
 		foreach (synthetic; plan.prependedEvents)
@@ -1277,7 +1275,6 @@ unittest
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};
-	host.updateClaudeUsageFromEvent = (int t, string translated) => false;
 	host.planBroadcast = (int t, TranslatedEvent ev) => HistoryBroadcastPlan.init;
 
 	auto pipeline = new HistoryEventPipeline(host);
@@ -1406,7 +1403,6 @@ unittest
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};
-	host.updateClaudeUsageFromEvent = (int t, string translated) => false;
 	host.planBroadcast = (int t, TranslatedEvent ev) => HistoryBroadcastPlan.init;
 
 	auto pipeline = new HistoryEventPipeline(host);
@@ -1661,7 +1657,6 @@ unittest
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};
-	host.updateClaudeUsageFromEvent = (int t, string translated) => false;
 	host.planBroadcast = (int t, TranslatedEvent ev) => HistoryBroadcastPlan.init;
 
 	auto pipeline = new HistoryEventPipeline(host);
@@ -1879,7 +1874,6 @@ unittest
 	host.broadcastHistoryOperations = (int t) {};
 	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
 	host.onHistorySubscribed = (int t) {};
-	host.updateClaudeUsageFromEvent = (int t, string translated) => false;
 	host.planBroadcast = (int t, TranslatedEvent ev) => HistoryBroadcastPlan.init;
 
 	auto pipeline = new HistoryEventPipeline(host);
@@ -2209,7 +2203,6 @@ unittest
 
 	auto fixture = new DriverHistoryPipelineFixture;
 	fixture.pipeline.host_.normalizeKnownSystemMessageMeta = (string translated, int) => translated;
-	fixture.pipeline.host_.updateClaudeUsageFromEvent = (int, string) => false;
 	fixture.pipeline.host_.planBroadcast = (int, TranslatedEvent event) {
 		HistoryBroadcastPlan plan;
 		plan.currentEvent = event;

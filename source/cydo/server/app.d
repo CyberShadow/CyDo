@@ -74,7 +74,7 @@ import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner
 	TaskSessionRunnerHost;
 import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
 	RawSourceReady, TransportAdapter, WebSocketCallbacks;
-import cydo.domain.usage.tracker : AgentUsageTracker;
+import cydo.workflow.usage.service : ClaudeUsageService;
 
 import cydo.agent.resolver : createConfiguredAgent, displayNameForDriver,
 	effectiveDefaultAgentName, isConfiguredAgentName, resolvePermissionSettings,
@@ -235,7 +235,7 @@ class App
 	private string authPass;
 	// Active notices keyed by notice ID
 	private Notice[string] activeNotices;
-	private AgentUsageTracker agentUsageTracker = new AgentUsageTracker();
+	private ClaudeUsageService claudeUsageService;
 	private ArchiveManager archiveManager;
 	private TaskPathResolver taskPathResolver;
 	private WorktreeAllocator worktreeAllocator;
@@ -257,6 +257,7 @@ class App
 			},
 			historyGeneration: (int tid) => tasks[tid].history.generation,
 		));
+		claudeUsageService = new ClaudeUsageService(&clientHub.broadcast);
 	}
 
 	void start()
@@ -665,7 +666,6 @@ class App
 			},
 			sendReplaySupplementalState: &sendHistoryReplaySupplementalState,
 			onHistorySubscribed: &onHistorySubscribed,
-			updateClaudeUsageFromEvent: &updateClaudeUsageFromEvent,
 			planBroadcast: &planHistoryBroadcast,
 			loadDriverHistory: (int tid, HistoryAccess access) =>
 				taskSessionRunner.loadDriverHistory(tid, access),
@@ -699,6 +699,10 @@ class App
 			devMode: () => config.dev_mode,
 		));
 		taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost(
+			usageSessionStarted: &claudeUsageService.sessionStarted,
+			usageSessionEnded: &claudeUsageService.sessionEnded,
+			usageProfileForSession: &claudeUsageService.profileForSession,
+			observeUsageEvent: &claudeUsageService.observeEvent,
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
 			taskDir: &taskPathResolver.taskDir,
 			outputPath: &taskPathResolver.outputPath,
@@ -1150,7 +1154,7 @@ class App
 		ws.send(Data(buildNoticesList(activeNotices).representation));
 		if (discoveryService.scanInProgress)
 			ws.send(Data(toJson(ScanStatusMessage("scan_status", true)).representation));
-		foreach (payload; agentUsageTracker.snapshotMessages())
+		foreach (payload; claudeUsageService.snapshotMessages())
 			ws.send(Data(payload.representation));
 	}
 
@@ -3625,22 +3629,6 @@ class App
 		return toJson(event);
 	}
 
-	private bool updateClaudeUsageFromEvent(int tid, string translated)
-	{
-		if (tid !in tasks)
-			return false;
-		auto agent = tryAgentForTask(tid);
-		if (!agent)
-			return false;
-
-		string payload;
-		auto changed = agentUsageTracker.updateFromClaudeEvent(
-			agent.driver, translated, payload);
-		if (changed)
-			clientHub.broadcast(payload);
-		return changed;
-	}
-
 	private void broadcastTitleUpdate(int tid, string title)
 	{
 		import ae.utils.json : toJson;
@@ -3813,6 +3801,7 @@ class App
 		agent = agentsByName[defaultName];
 
 		taskTypeCatalog.invalidateAll();
+		taskSessionRunner.invalidateUsageProfiles();
 		discoveryService.beginScan();
 		discoveryService.discoverAllWorkspaces(config);
 		clientHub.broadcast(buildAgentsList(snapshotAgentEntries(), config.default_agent));
@@ -3832,6 +3821,7 @@ class App
 	{
 		infof("Project config changed for %s, reloading task types...", projectPath);
 		taskTypeCatalog.invalidateProject(projectPath);
+		taskSessionRunner.invalidateUsageProfiles();
 		clientHub.broadcast(buildTaskTypesListForProject(
 			projectPath,
 			taskTypeCatalog.getTaskTypesForProject(projectPath),
@@ -3846,6 +3836,7 @@ class App
 	{
 		infof("User task types file changed, reloading task types...");
 		taskTypeCatalog.invalidateAll();
+		taskSessionRunner.invalidateUsageProfiles();
 		broadcastTaskTypeLists();
 	}
 
@@ -3870,6 +3861,7 @@ class App
 	private void handleRefreshWorkspacesMsg()
 	{
 		taskTypeCatalog.invalidateAll();
+		taskSessionRunner.invalidateUsageProfiles();
 		discoveryService.discoverAllWorkspaces(config);
 		clientHub.broadcast(buildWorkspacesList(discoveryService.workspacesInfo));
 		broadcastTaskTypeLists();
@@ -3996,7 +3988,8 @@ class App
 			auto alive = taskAlive(taskScope.tid);
 			auto canStop = taskCanStop(taskScope.tid);
 			auto driver = driverForTask(taskScope.tid);
-			entries ~= buildTaskEntry(*td, childCounts[taskScope.tid], alive, canStop, driver);
+			entries ~= buildTaskEntry(*td, childCounts[taskScope.tid], alive, canStop, driver,
+				taskSessionRunner.usageProfileForTask(taskScope.tid));
 		}
 		return buildTasksListPackets(entries);
 	}
@@ -4011,7 +4004,7 @@ class App
 		assert(td !is null, "Task update requested for missing task");
 		clientHub.broadcast(toJson(TaskUpdatedMessage("task_updated",
 			buildTaskEntry(*td, childCounts[tid], taskAlive(tid), taskCanStop(tid),
-				driverForTask(tid)))));
+				driverForTask(tid), taskSessionRunner.usageProfileForTask(tid)))));
 	}
 
 	private void transitionTask(int tid, TaskStatus expectedFrom, TaskStatus to,
@@ -4816,7 +4809,6 @@ version (unittest) private final class GatedSubmissionFixture
 				publicationOrder ~= "unconfirmed";
 			},
 			normalizeKnownSystemMessageMeta: (string translated, int) => translated,
-			updateClaudeUsageFromEvent: (int, string) => false,
 			noteLiveBoundaryCandidate: (int broadcastTid, size_t seq, string event,
 				string raw, int sourceLine,
 				LocalUserProvenance localUserProvenance) {

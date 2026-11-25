@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import renderToString from "preact-render-to-string";
 import { makeTaskState, type TaskState } from "../types";
 import { createOrdinaryDraftStore } from "../ordinaryDraftStore";
+import type { AgentUsageMessage } from "../protocol";
 
 vi.hoisted(() => {
   vi.stubGlobal("CSS", { supports: () => false });
@@ -12,10 +13,12 @@ import { SessionView, UndoConfirmDialog } from "./SessionView";
 function renderSession(
   undoPending: TaskState["undoPending"],
   state: Partial<TaskState> = {},
+  agentUsage?: Record<string, AgentUsageMessage>,
 ) {
   return renderToString(
     <SessionView
       task={{ ...makeTaskState(7), undoPending, ...state }}
+      agentUsage={agentUsage}
       connected={true}
       tasksLoading={false}
       isActive={true}
@@ -40,6 +43,31 @@ function renderSession(
     />,
   );
 }
+
+describe("SessionView usage", () => {
+  const usage = (profile: string, utilization: number): AgentUsageMessage => ({
+    type: "agent_usage",
+    profile,
+    updated_at: 1,
+    limits: { five_hour: { utilization } },
+  });
+  const profile = "/profiles/work";
+  const agentUsage = {
+    claude: usage("claude", 71),
+    [profile]: usage(profile, 42),
+  };
+
+  it("shows usage only for the task's matching profile", () => {
+    const html = renderSession(null, { usageProfile: profile }, agentUsage);
+
+    expect(html).toContain('class="banner-usage-value">42%</span>');
+    expect(html).not.toContain('class="banner-usage-value">71%</span>');
+  });
+
+  it("omits the usage widget for a task without a profile", () => {
+    expect(renderSession(null, {}, agentUsage)).not.toContain("banner-usage");
+  });
+});
 
 it("keeps raw inspection but hides history mutations on import offers", () => {
   const state: Partial<TaskState> = {

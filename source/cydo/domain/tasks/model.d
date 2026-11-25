@@ -1230,6 +1230,7 @@ struct TaskListEntry
 	string entry_point;
 	string agent_name;
 	string driver;  // resolved runtime driver ("claude"/"codex"/"copilot"); empty for orphaned agents
+	string usage_profile;
 	bool archived;
 	bool archiving;  // true while an archive/unarchive transition is in progress
 	string draft;

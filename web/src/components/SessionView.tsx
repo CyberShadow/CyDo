@@ -388,9 +388,9 @@ function SessionViewInner({
     };
   }, [isActive]);
 
-  const sessionAgent = task.sessionInfo?.agent;
-  const showClaudeUsage = !sessionAgent || sessionAgent === "claude";
-  const claudeUsage = showClaudeUsage ? agentUsage?.claude : undefined;
+  const claudeUsage = task.usageProfile
+    ? agentUsage?.[task.usageProfile]
+    : undefined;
 
   return (
     <>

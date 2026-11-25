@@ -181,6 +181,10 @@ struct TaskSessionLaunch
 
 struct TaskSessionRunnerHost
 {
+	void delegate(int, string, string) usageSessionStarted;
+	void delegate(int) usageSessionEnded;
+	string delegate(int) usageProfileForSession;
+	void delegate(int, string) observeUsageEvent;
 	TaskData* delegate(int tid) getTask;
 	string delegate(const TaskData* td) taskDir;
 	string delegate(const TaskData* td) outputPath;
@@ -352,6 +356,7 @@ class TaskSessionRunner
 
 	private TaskSessionRunnerHost host_;
 	private AgentSession[int] sessions_;
+	private string[ConfiguredNativeHistoryContext] usageProfiles_;
 	private LiveHistoryBinding[int] liveHistoryBindings_;
 	private CodexForkSourceOperation[int] forkSourceOperations_;
 	private ulong nextDiskGateToken_;
@@ -460,11 +465,47 @@ class TaskSessionRunner
 		return session !is null && session.alive;
 	}
 
+	void invalidateUsageProfiles()
+	{
+		usageProfiles_.clear();
+	}
+
+	string usageProfileForTask(int tid)
+	{
+		if (host_.usageProfileForSession is null)
+			return null;
+		auto liveProfile = host_.usageProfileForSession(tid);
+		if (liveProfile.length > 0)
+			return liveProfile;
+
+		auto agent = host_.tryAgentForTask(tid);
+		if (agent is null || agent.driver != AgentDriver.claude)
+			return null;
+
+		auto td = host_.getTask(tid);
+		auto typeDef = currentTaskTypeDef(td);
+		auto context = ConfiguredNativeHistoryContext(td.agentName, td.workspace,
+			td.repoPath, typeDef !is null && typeDef.read_only);
+		if (auto profile = context in usageProfiles_)
+			return *profile;
+
+		string profile;
+		try
+			profile = resolveNativeHistoryContext(*host_.currentConfig(), agent, context).profile.root;
+		catch (Exception)
+		{
+			// A historical task can outlive the configuration needed to resolve its profile.
+		}
+		return usageProfiles_[context] = profile;
+	}
+
 	private void removeSession(int tid)
 	{
 		auto session = sessionForTask(tid);
 		sessions_.remove(tid);
 		host_.closeToolCalls(tid);
+		if (host_.usageSessionEnded !is null)
+			host_.usageSessionEnded(tid);
 		if (!host_.shuttingDown() && host_.getTask(tid) !is null
 			&& (cast(CodexSession) session !is null || cast(ClaudeCodeSession) session !is null))
 			host_.broadcastHistoryOperations(tid);
@@ -1031,6 +1072,8 @@ public:
 				return;
 			if (host_.shuttingDown())
 				return;
+			if (host_.observeUsageEvent !is null)
+				host_.observeUsageEvent(tid, ev.translated);
 			host_.broadcastTask(tid, ev);
 
 			auto current = host_.getTask(tid);
@@ -1171,6 +1214,9 @@ public:
 		}
 		if (auto claude = cast(ClaudeCodeSession) session)
 		{
+			if (host_.usageSessionStarted !is null)
+				host_.usageSessionStarted(tid, launch.processLaunch.nativeHistoryProfile.root,
+					td.agentName);
 			claude.onToolPermissionRequest = (PermissionPrompt prompt,
 				PermissionEscalation escalation) =>
 				host_.decideToolPermission(tid, prompt, escalation);

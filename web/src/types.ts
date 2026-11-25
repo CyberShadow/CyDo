@@ -315,6 +315,7 @@ export interface ItemEnrichment {
 }
 
 export interface TaskState {
+  usageProfile?: string;
   uuid: string;
   tid: number | null;
   status: TaskStatus;

@@ -403,6 +403,7 @@ export function taskStateFromEntry(
   const workspace = entry.workspace || "";
   const projectPath = entry.project_path || "";
   const hasDraft = Object.prototype.hasOwnProperty.call(entry, "draft");
+  const usageProfile = entry.usage_profile || undefined;
   if (!existing || !existingUuid) {
     const base = makeTaskState(
       entry.tid,
@@ -431,6 +432,7 @@ export function taskStateFromEntry(
     );
     return {
       ...base,
+      usageProfile,
       uuid: existingUuid ?? base.uuid,
       childCount: entry.child_count,
       creatorTid: entry.creator_tid || undefined,
@@ -465,6 +467,7 @@ export function taskStateFromEntry(
     entryPoint: entry.entry_point || existing.entryPoint,
     agentName: entry.agent_name || existing.agentName,
     driver: entry.driver || existing.driver,
+    usageProfile,
     suggestions:
       entry.isProcessing && !existing.isProcessing
         ? undefined
@@ -2274,7 +2277,7 @@ export function useTaskManager(
         case "agent_usage": {
           setAgentUsage((prev) => ({
             ...prev,
-            [msg.agent]: msg,
+            [msg.profile]: msg,
           }));
           break;
         }
