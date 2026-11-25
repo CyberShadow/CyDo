@@ -48,6 +48,56 @@ function resolve(hunks = [insertion], base: string | null = "first\nsecond\n") {
   return resolveFileContent(file, blocks, new Map());
 }
 
+it("includes a Claude Write creation with an empty structured patch in Cumulative", () => {
+  const path = "/workspace/created.txt";
+  const content = "new file contents\n";
+  const file: TrackedFile = {
+    path,
+    edits: [
+      {
+        toolUseId: "write",
+        messageId: "message",
+        filePath: path,
+        type: "write",
+        op: "write",
+        status: "applied",
+        source: "claude-tool",
+        payload: { mode: "full_content", content },
+      },
+    ],
+  };
+  const blocks = new Map<string, Block>([
+    [
+      "write",
+      {
+        itemId: "write",
+        type: "tool_use",
+        text: "",
+        completed: true,
+        creationOrder: 0,
+        input: { file_path: path, content },
+        result: {
+          toolUseId: "write",
+          content: "",
+          toolResult: { originalFile: null, structuredPatch: [] },
+        },
+      },
+    ],
+  ]);
+
+  const resolved = resolveFileContent(file, blocks, new Map())!;
+  const cumulative = composeResolvedHunksThrough(file, resolved.resolved, 0)!;
+  expect(
+    applyPatch("", {
+      oldFileName: "",
+      newFileName: path,
+      oldHeader: undefined,
+      newHeader: undefined,
+      hunks: cumulative,
+    }),
+  ).toBe(content);
+});
+
 describe("Bash structured hunk resolution", () => {
   it("renders exact primary fixture sparse old and new fragments without changing raw hunks", () => {
     const hunks = bashEditDiff.files[0]!.hunks;

@@ -171,9 +171,10 @@ function resolveEditContent(
   const tr = (block?.result?.toolResult ?? {}) as Record<string, unknown>;
   const originalFile =
     typeof tr.originalFile === "string" ? tr.originalFile : null;
-  const trStructuredPatch = Array.isArray(tr.structuredPatch)
-    ? (tr.structuredPatch as PatchHunk[])
-    : undefined;
+  const trStructuredPatch =
+    Array.isArray(tr.structuredPatch) && tr.structuredPatch.length > 0
+      ? (tr.structuredPatch as PatchHunk[])
+      : undefined;
 
   if (edit.payload?.mode === "full_content") {
     if (edit.op === "delete") {
