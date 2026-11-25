@@ -2673,7 +2673,7 @@ class ClaudeCodeSession : AgentSession
 		{
 			@JSONOptional string parent_tool_use_id;
 			@JSONOptional bool isSidechain;
-			@JSONOptional bool isApiErrorMessage;
+			@JSONOptional bool is_api_error_message;
 			@JSONOptional string uuid;
 			@JSONOptional string local_command_source;
 			ClaudeMessage message;
@@ -2727,7 +2727,7 @@ class ClaudeCodeSession : AgentSession
 				&& b.type == "thinking" && b.thinking.strip().length > 0;
 		}
 
-		if (raw.isApiErrorMessage && raw.parent_tool_use_id.length == 0)
+		if (raw.is_api_error_message && raw.parent_tool_use_id.length == 0)
 		{
 			string errorText;
 			foreach (ref b; raw.message.content)
@@ -3477,7 +3477,7 @@ unittest
 	}
 
 	auto liveRaw =
-		`{"type":"assistant","isApiErrorMessage":true,"message":{"content":[{"type":"thinking","thinking":"live reasoning"},{"type":"text","text":"live error"}]}}`;
+		`{"type":"assistant","is_api_error_message":true,"message":{"id":"f3a3dd28-77e8-4082-a6b0-44509f6687ad","model":"<synthetic>","content":[{"type":"text","text":"API Error: 400 forced test error"}]},"parent_tool_use_id":null}`;
 	TranslatedEvent[] liveEvents;
 	auto session = new ClaudeCodeSession("true");
 	scope(exit) session.stop();
@@ -3488,7 +3488,7 @@ unittest
 	assert(live.type == "cydo/task_diagnostic");
 	assert(live.severity == "error");
 	assert(live.subject == "Agent error");
-	assert(live.body == "live error");
+	assert(live.body == "API Error: 400 forced test error");
 	assert(liveEvents[0].raw == liveRaw);
 
 	auto historyRaw =
