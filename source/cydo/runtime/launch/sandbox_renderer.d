@@ -406,7 +406,7 @@ string[] buildEnvPrefix(ref ResolvedSandbox sandbox, string workDir)
 }
 
 /// Find the bwrap binary.
-string findBwrap()
+package(cydo.runtime.launch) string findBwrap()
 {
 	foreach (candidate; ["/run/wrappers/bin/bwrap", "/usr/bin/bwrap"])
 		if (exists(candidate))
