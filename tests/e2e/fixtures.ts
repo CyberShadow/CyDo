@@ -21,23 +21,42 @@ export function currentTaskTid(page: Page): number {
   return Number(match[1]);
 }
 
-export function lookupTaskSession(
-  tid: number,
-): { sessionId: string; projectPath: string; agentType: AgentType } {
-  const row = execFileSync(
+export function lookupTaskSession(tid: number): {
+  sessionId: string;
+  projectPath: string;
+  agentType: AgentType;
+} {
+  const output = execFileSync(
     "sqlite3",
     [
+      "-json",
       "/tmp/cydo-backend/data/cydo/cydo.db",
-      `SELECT agent_session_id || '|' || project_path || '|' || agent_type FROM tasks WHERE tid = ${tid};`,
+      `SELECT agent_session_id, project_path, agent_type FROM tasks WHERE tid = ${tid};`,
     ],
     { encoding: "utf8" },
-  ).trim();
-  if (row.length === 0) throw new Error(`No task row found for tid ${tid}`);
-  const [sessionId, projectPath, agentType] = row.split("|");
-  if (!sessionId || !projectPath || !agentType)
-    throw new Error(`Incomplete task row for tid ${tid}: ${row}`);
-  if (agentType !== "claude" && agentType !== "codex" && agentType !== "copilot")
-    throw new Error(`Unexpected agent type ${agentType}`);
+  );
+  if (output.trim().length === 0)
+    throw new Error(`No task row found for tid ${tid}`);
+  const [row] = JSON.parse(output) as Array<{
+    agent_session_id: string | null;
+    project_path: string;
+    agent_type: string;
+  }>;
+  const {
+    agent_session_id: sessionId,
+    project_path: projectPath,
+    agent_type: agentType,
+  } = row!;
+  if (
+    agentType !== "claude" &&
+    agentType !== "codex" &&
+    agentType !== "copilot"
+  )
+    throw new Error(`Unexpected agent type ${agentType} for tid ${tid}`);
+  if (sessionId === null)
+    throw new Error(`Task ${tid} (${agentType}) has no agent session ID yet`);
+  if (!sessionId || !projectPath)
+    throw new Error(`Incomplete task row for tid ${tid}: ${output.trim()}`);
   return { sessionId, projectPath, agentType };
 }
 
