@@ -195,7 +195,6 @@ struct TaskSessionRunnerHost
 	Agent delegate(int tid) agentForTask;
 	Agent delegate(int tid) tryAgentForTask;
 	void delegate(int tid, string agentSessionId) setAgentSessionId;
-	void delegate(int tid) clearLastActive;
 	void delegate(int tid, TranslatedEvent ev) broadcastTask;
 	string delegate(int tid, string subject, string body) appendTaskDiagnostic;
 	void delegate(int tid, string translated) broadcastAppendedTaskEvent;
@@ -993,7 +992,6 @@ public:
 		}
 		sessions_[tid] = session;
 		host_.openToolCalls(tid);
-		host_.clearLastActive(tid);
 		session.onNativeSessionStarted = (string sessionId) {
 			enforce(sessionId.length > 0,
 				"Native session lifecycle callback returned an empty session ID");
@@ -1062,6 +1060,7 @@ public:
 
 			current.isProcessing = false;
 			current.hadTurnResult = true;
+			host_.touchAndPersistLastActive(tid);
 			current.compactionReminderInFlight = false;
 
 			if (!host_.shuttingDown())
@@ -1201,6 +1200,13 @@ public:
 				enforce((*binding).owner is session,
 					"Exiting session does not own its live history binding");
 			auto current = host_.getTask(tid);
+			if (current !is null)
+			{
+				if (current.isProcessing)
+					host_.touchAndPersistLastActive(tid);
+				current.isProcessing = false;
+				current.compactionReminderInFlight = false;
+			}
 			bool shuttingDown = host_.shuttingDown();
 			bool resumePending = !shuttingDown && current !is null
 				&& current.killPromise !is null
@@ -1232,7 +1238,6 @@ public:
 				&& current.processQueue.goalState == ProcessState.Alive
 				&& !current.wasKilledByUser;
 			endSessionToolCalls(tid, session);
-			host_.touchAndPersistLastActive(tid);
 
 			tracef("onExit: tid=%d exitCode=%d status=%s",
 				tid, exitCode, currentStatusForLog(tid));
@@ -1261,7 +1266,6 @@ public:
 				return;
 			}
 
-			current.isProcessing = false;
 			current.stdinClosed = false;
 			if (exitCode != 0 && current.status != TaskStatus.completed
 				&& current.status != TaskStatus.failed)
@@ -1627,7 +1631,10 @@ private:
 	{
 		bool processingChanged = !current.isProcessing;
 		if (processingChanged)
+		{
 			current.isProcessing = true;
+			host_.touchAndPersistLastActive(tid);
+		}
 		// A turn can start without CyDo having just sent anything: the
 		// agent wakes for its background work, or takes a message that
 		// was queued behind the turn that just ended.
@@ -1884,6 +1891,10 @@ unittest
 			log ~= text("status:", to);
 		},
 		publishTaskSnapshot: (int tid) { log ~= "snapshot"; },
+		touchAndPersistLastActive: (int tid) {
+			assert(tid == parentTid);
+			log ~= "last-active";
+		},
 	));
 
 	void output(string translated)
@@ -1914,12 +1925,12 @@ unittest
 	output(`{"type":"item/started","item_id":"text_1","item_type":"text"}`);
 	assert(tasks[parentTid].status == TaskStatus.active);
 	assert(tasks[parentTid].isProcessing);
-	assert(log == ["status:active"]);
+	assert(log == ["last-active", "status:active"]);
 
 	// The usual order: the announcement precedes the call, in an active turn.
 	output(taskAnnouncement);
 	assert(tasks[parentTid].status == TaskStatus.active);
-	assert(log == ["status:active"]);
+	assert(log == ["last-active", "status:active"]);
 }
 
 version (unittest) private final class LinkedWorktreeSandboxTestAgent : ClaudeCodeAgent
@@ -2392,7 +2403,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 	string fixtureName, string agentName, string executableEnvName, Agent agent,
 	bool stop = false,
 	void delegate(TaskSessionRunner, TaskData[int]*, string[]*) checkSession = null,
-	void delegate(int tid) failPermissionPrompt = null)
+	void delegate(int tid) failPermissionPrompt = null, bool shuttingDown = false)
 {
 	import ae.net.asockets : socketManager;
 	import ae.utils.statequeue : StateQueue;
@@ -2456,14 +2467,13 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 					setAgentSessionId: (int tid, string sessionId) {
 						tasks[tid].agentSessionId = sessionId;
 					},
-					clearLastActive: (int tid) {},
 				broadcastTask: (int tid, TranslatedEvent event) {},
 				publishTaskSnapshot: (int tid) {},
 				pump: (int tid) => false,
 				hasLiveBatchOwner: (int tid) => false,
 				hasBatchChild: (int tid) => false,
 				hasPendingChildQuestion: (int tid) => false,
-				touchAndPersistLastActive: (int tid) { assert(tid == 1); lifecycle ~= "exit"; },
+				touchAndPersistLastActive: (int tid) { assert(tid == 1); lifecycle ~= "last-active"; },
 					ensureHistoryLoadedForExit: (int tid) => Nullable!TaskHistoryResolution.init,
 					finalReconcileJsonlIfPresent: (int tid, Nullable!TaskHistoryResolution) {},
 					startJsonlWatch: (int tid) {},
@@ -2498,7 +2508,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 					tasks[tid].status = to;
 				},
 				emitTaskReload: (int tid) {},
-				shuttingDown: () => false,
+				shuttingDown: () => shuttingDown,
 				taskTypeCatalog: catalog,
 			));
 			tasks[1].processQueue = new StateQueue!ProcessState(
@@ -2531,8 +2541,9 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 			assert(tasks[1].launch.sandbox.tempFiles.length == 0);
 
 			assert(lifecycle.count("open") == 1, lifecycle.to!string);
-			assert(lifecycle.length >= 3 && lifecycle[$-3 .. $] == ["fail", "close", "exit"],
+			assert(lifecycle.length >= 2 && lifecycle[$-2 .. $] == ["fail", "close"],
 				lifecycle.to!string);
+			assert(!lifecycle.canFind("last-active"), lifecycle.to!string);
 			if (stop || agent.driver == AgentDriver.copilot)
 				assert(beforeExit == ["open", "fail", "close"], beforeExit.to!string);
 			else
@@ -2564,8 +2575,136 @@ unittest
 	assertRunnerMcpConfigCleanup("cydo-task-runner-sync-close", "claude",
 		"CYDO_CLAUDE_BIN", agent, false, (runner, tasks, lifecycle) {
 			runner.closeTaskStdin(1);
-			assert(*lifecycle == ["open", "fail", "close", "exit"]);
+			assert(*lifecycle == ["open", "fail", "close"]);
 			assert(runner.sessionForTask(1) is null);
+		});
+}
+
+unittest
+{
+	auto agent = new SynchronousCloseTestAgent;
+	assertRunnerMcpConfigCleanup("cydo-task-runner-processing-exit", "claude",
+		"CYDO_CLAUDE_BIN", agent, false, (runner, tasks, lifecycle) {
+			(*tasks)[1].isProcessing = true;
+			runner.closeTaskStdin(1);
+			assert(*lifecycle == ["open", "last-active", "fail", "close"]);
+			assert(runner.sessionForTask(1) is null);
+		});
+}
+
+unittest
+{
+	import cydo.domain.storage.persistence : Persistence;
+
+	auto agent = new SynchronousCloseTestAgent;
+	assertRunnerMcpConfigCleanup("cydo-task-runner-subtask-turn-end", "claude",
+		"CYDO_CLAUDE_BIN", agent, false, (runner, tasks, lifecycle) {
+			auto task = &(*tasks)[1];
+			task.status = TaskStatus.active;
+			task.relationType = "subtask";
+			task.isProcessing = true;
+			enum turnStart = 42;
+			enum turnEnd = 43;
+			auto persistence = Persistence(":memory:");
+			assert(persistence.createTask() == task.tid);
+			persistence.setLastActive(task.tid, turnStart);
+			int writes;
+			runner.host_.touchAndPersistLastActive = (int tid) {
+				assert(tid == task.tid && task.status == TaskStatus.active);
+				assert(!task.isProcessing);
+				persistence.setLastActive(tid, turnEnd);
+				++writes;
+			};
+
+			agent.session.result();
+			assert(task.status == TaskStatus.completed);
+			assert(runner.sessionForTask(1) is null);
+			assert(writes == 1);
+			assert(persistence.loadTasks()[0].lastActive == turnEnd);
+		});
+}
+
+unittest
+{
+	foreach (processing; [false, true])
+	{
+		auto agent = new SynchronousCloseTestAgent;
+		assertRunnerMcpConfigCleanup(processing ? "cydo-task-runner-processing-shutdown"
+			: "cydo-task-runner-idle-shutdown", "claude", "CYDO_CLAUDE_BIN", agent,
+			false, (runner, tasks, lifecycle) {
+				(*tasks)[1].isProcessing = processing;
+				agent.session.closeStdin();
+				assert(*lifecycle == (processing ? ["open", "last-active"] : ["open"]));
+				assert(runner.sessionForTask(1) is null);
+			}, null, true);
+	}
+}
+
+unittest
+{
+	import std.algorithm : count;
+
+	import ae.utils.statequeue : StateQueue;
+	import cydo.foundation.testing : drainNextTicks;
+
+	foreach (replacementWorks; [false, true])
+	{
+		auto agent = new SynchronousCloseTestAgent;
+		assertRunnerMcpConfigCleanup(replacementWorks ? "cydo-task-runner-resume-work"
+			: "cydo-task-runner-resume-idle", "claude", "CYDO_CLAUDE_BIN", agent,
+			false, (runner, tasks, lifecycle) {
+				auto task = &(*tasks)[1];
+				task.isProcessing = true;
+				task.compactionReminderInFlight = true;
+				task.processQueue = new StateQueue!ProcessState(runner.makeProcessQueueSF(1),
+					ProcessState.Alive);
+				task.processQueue.setGoal(ProcessState.Dead).ignoreResult();
+				drainNextTicks();
+				assert(task.killPromise !is null);
+				task.processQueue.setGoal(ProcessState.Alive).ignoreResult();
+
+				auto retiring = agent.session;
+				retiring.closeStdin();
+				assert(*lifecycle == ["open", "last-active"]);
+				assert(!task.isProcessing && !task.compactionReminderInFlight);
+				assert(task.killPromise is null);
+
+				drainNextTicks();
+				assert(agent.session !is retiring && runner.sessionForTask(1) is agent.session);
+				assert(!task.isProcessing);
+				if (replacementWorks)
+				{
+					runner.assistantTurnWorkObserved(1, task);
+					assert(task.isProcessing);
+					assert((*lifecycle).count("last-active") == 2);
+					runner.assistantTurnWorkObserved(1, task);
+					assert((*lifecycle).count("last-active") == 2);
+				}
+
+				task.processQueue.setGoal(ProcessState.Dead).ignoreResult();
+				drainNextTicks();
+				agent.session.closeStdin();
+				drainNextTicks();
+				assert(runner.sessionForTask(1) is null);
+				assert((*lifecycle).count("last-active") == (replacementWorks ? 3 : 1));
+			});
+	}
+}
+
+unittest
+{
+	auto agent = new SynchronousCloseTestAgent;
+	assertRunnerMcpConfigCleanup("cydo-task-runner-unprompted-work", "claude",
+		"CYDO_CLAUDE_BIN", agent, false, (runner, tasks, lifecycle) {
+			auto task = &(*tasks)[1];
+			assert(!task.isProcessing);
+			runner.assistantTurnWorkObserved(1, task);
+			assert(task.isProcessing);
+			assert(*lifecycle == ["open", "last-active"]);
+
+			runner.assistantTurnWorkObserved(1, task);
+			assert(*lifecycle == ["open", "last-active"]);
+			runner.closeTaskStdin(1);
 		});
 }
 
@@ -3409,7 +3548,6 @@ version (unittest) private void assertYieldGateRunnerCase(
 				mcpSocketPath: () => "",
 				agentForTask: (int tid) => agent,
 				tryAgentForTask: (int tid) => agent,
-				clearLastActive: (int tid) {},
 				broadcastTask: (int tid, TranslatedEvent event) {},
 				appendTaskDiagnostic: (int tid, string subject, string body) {
 					assert(subject == (diskRetryFails
@@ -4016,7 +4154,6 @@ version (unittest) void finishFollowUpSession(TaskData* child, TaskSessionRunner
 			auto agent = new YieldGateTestAgent;
 			host.agentForTask = (int tid) => cast(Agent) agent;
 			host.tryAgentForTask = host.agentForTask;
-			host.clearLastActive = (int tid) {};
 			host.broadcastTask = (int tid, TranslatedEvent event) {};
 			host.publishTaskSnapshot = (int tid) {};
 			host.failPendingAskUserQuestionOnExit = (int tid) {};
@@ -4221,7 +4358,6 @@ version (unittest) private void testStartupFailureAtExit(string resumeId, TaskSt
 				agentForTask = (int tid) => agent;
 				tryAgentForTask = agentForTask;
 				shuttingDown = () => false;
-				clearLastActive = (int tid) {};
 				publishTaskSnapshot = lifecycle.publishSnapshot;
 				broadcastTask = (int tid, TranslatedEvent event) {};
 				hasPendingChildQuestion = (int tid) => false;
@@ -4364,7 +4500,6 @@ unittest
 		agentForTask = (int tid) => agent;
 		tryAgentForTask = agentForTask;
 		shuttingDown = () => false;
-		clearLastActive = (int tid) {};
 		publishTaskSnapshot = (int tid) {};
 		broadcastTask = (int tid, TranslatedEvent event) {};
 		hasLiveBatchOwner = (int tid) => false;
@@ -4475,7 +4610,6 @@ unittest
 			agentForTask = (int tid) => agent;
 			tryAgentForTask = agentForTask;
 			shuttingDown = () => false;
-			clearLastActive = (int tid) {};
 			publishTaskSnapshot = (int tid) {};
 			broadcastTask = (int tid, TranslatedEvent event) {};
 			hasPendingChildQuestion = (int tid) => false;

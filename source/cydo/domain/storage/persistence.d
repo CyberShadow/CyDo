@@ -266,7 +266,8 @@ struct Persistence
 	{
 		import std.datetime : Clock;
 		// tasks.agent_type stores the configured agent name from config.agents.
-		db.stmt!"INSERT INTO tasks (workspace, project_path, agent_type, created_at, entry_point) VALUES (?, ?, ?, ?, ?)".exec(workspace, projectPath, agentName, Clock.currStdTime, entryPoint);
+		auto createdAt = Clock.currStdTime;
+		db.stmt!"INSERT INTO tasks (workspace, project_path, agent_type, created_at, last_active, entry_point) VALUES (?, ?, ?, ?, ?, ?)".exec(workspace, projectPath, agentName, createdAt, createdAt, entryPoint);
 		return cast(int) db.db.lastInsertRowID;
 	}
 
@@ -451,11 +452,6 @@ struct Persistence
 	void setLastActive(int tid, long lastActive)
 	{
 		db.stmt!"UPDATE tasks SET last_active = ? WHERE tid = ?".exec(lastActive, tid);
-	}
-
-	void clearLastActive(int tid)
-	{
-		db.stmt!"UPDATE tasks SET last_active = NULL WHERE tid = ?".exec(tid);
 	}
 
 	void setCreatedAt(int tid, long createdAt)
@@ -1003,4 +999,13 @@ unittest
 	assert(persistence.loadQuestions() == [
 		QuestionRecord(unrelated, other, third, "unrelated"),
 	]);
+}
+
+unittest
+{
+	auto persistence = Persistence(":memory:");
+	auto tid = persistence.createTask();
+	auto row = persistence.loadTasks()[0];
+	assert(row.tid == tid);
+	assert(row.createdAt != 0 && row.lastActive == row.createdAt);
 }

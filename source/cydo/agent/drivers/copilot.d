@@ -59,6 +59,34 @@ private struct CpPersistedEventBase
 	@JSONOptional Nullable!string timestamp;
 }
 
+unittest
+{
+	import std.datetime : SysTime;
+	import std.exception : assertThrown;
+
+	auto agent = new CopilotAgent;
+	enum timestamp = "2026-03-30T14:29:14.993Z";
+	auto expected = SysTime.fromISOExtString(timestamp).stdTime;
+	foreach (type; [
+		"user.message", "assistant.message", "tool.execution_start",
+		"tool.execution_complete", "assistant.turn_end",
+	])
+		assert(agent.workRecordTime(
+			`{"type":"` ~ type ~ `","id":"1","timestamp":"` ~ timestamp ~ `"}`
+			).get.stdTime == expected, type);
+
+	foreach (type; ["session.start", "session.resume", "session.info"])
+		assert(agent.workRecordTime(
+			`{"type":"` ~ type ~ `","id":"1","timestamp":"` ~ timestamp
+			~ `","data":{"type":"user.message"}}`).isNull, type);
+
+	assert(agent.workRecordTime(
+		`{"type":"user.message","id":"1","data":{"content":"steer"}}`).isNull);
+	assertThrown(agent.workRecordTime("{}"));
+	assertThrown(agent.workRecordTime(`{"type":""}`));
+	assertThrown(agent.workRecordTime(`{"type":"session.info","id":"1","timestamp":"bogus"}`));
+}
+
 @JSONPartial
 private struct CpSessionStartContext
 {
@@ -703,6 +731,26 @@ class CopilotAgent : Agent
 		catch (Exception) { return false; }
 	}
 
+	Nullable!AbsTime workRecordTime(string rawLine)
+	{
+		import cydo.protocol : parseIso8601Timestamp;
+
+		auto record = jsonParse!CpPersistedEventBase(rawLine);
+		enforce(record.type.length != 0, "Copilot history record has no type");
+		auto timestamp = record.timestamp.isNull ? Nullable!AbsTime.init
+			: Nullable!AbsTime(parseIso8601Timestamp(record.timestamp.get));
+		switch (record.type)
+		{
+			case "user.message":
+			case "assistant.message":
+			case "tool.execution_start":
+			case "tool.execution_complete":
+			case "assistant.turn_end":
+				return timestamp;
+			default:
+				return Nullable!AbsTime.init;
+		}
+	}
 
 	string rewriteSessionId(string line, string oldId, string newId)
 	{

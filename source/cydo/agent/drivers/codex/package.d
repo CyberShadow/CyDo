@@ -863,6 +863,9 @@ class CodexAgent : DriverServedHistoryAgent
 
 	bool isHistoryPrompt(string rawLine) { assert(false); }
 
+	// Codex history is driver-served.
+	Nullable!AbsTime workRecordTime(string rawLine) { assert(false); }
+
 	string rewriteSessionId(string line, string oldId, string newId) { assert(false); }
 	bool[int] inactiveHistoryLines(string content) { assert(false); }
 	PersistedHistoryBoundary[] extractPersistedHistoryBoundaries(string content,

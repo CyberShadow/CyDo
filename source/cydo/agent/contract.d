@@ -1,5 +1,8 @@
 module cydo.agent.contract;
 
+import std.typecons : Nullable;
+
+import ae.utils.time.types : AbsTime;
 import ae.utils.promise : Promise;
 
 import cydo.protocol : TranslatedEvent;
@@ -221,6 +224,12 @@ interface Agent
 
 	/// Whether a persisted row represents a user prompt for steering bookkeeping.
 	bool isHistoryPrompt(string rawLine);
+
+	/// When `rawLine`, a line of this agent's file-backed transcript, records
+	/// conversation work, the time it was recorded. Null for bookkeeping records
+	/// (session start/stop, metadata) and for work records that carry no time.
+	/// Throws on a line that is not a record of this agent's format.
+	Nullable!AbsTime workRecordTime(string rawLine);
 
 	/// Whether this agent requires the Bash MCP tool.
 	/// When false, the Bash tool is excluded from the MCP tools/list.

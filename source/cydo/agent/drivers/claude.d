@@ -766,6 +766,20 @@ class ClaudeCodeAgent : Agent
 		return isCanonicalHistoryPrompt(line);
 	}
 
+	Nullable!AbsTime workRecordTime(string rawLine)
+	{
+		import cydo.protocol : parseIso8601Timestamp;
+
+		auto record = jsonParse!ClaudeRecordProbe(rawLine);
+		enforce(record.type.length != 0, "Claude history record has no type");
+		auto timestamp = record.timestamp.isNull ? Nullable!AbsTime.init
+			: Nullable!AbsTime(parseIso8601Timestamp(record.timestamp.get));
+		if (record.type != "user" && record.type != "assistant")
+			return Nullable!AbsTime.init;
+		enforce(!timestamp.isNull, "Claude work record has no timestamp");
+		return timestamp;
+	}
+
 	package(cydo) static bool isCanonicalHistoryPrompt(string line)
 	{
 		return parseHistoryRow(line).kind == HistoryRowKind.prompt;
@@ -4108,6 +4122,37 @@ private struct ClaudeRecordProbe
 	string type;
 	string subtype;
 	@JSONOptional Nullable!string timestamp;
+}
+
+unittest
+{
+	import std.datetime : SysTime;
+	import std.exception : assertThrown;
+
+	auto agent = new ClaudeCodeAgent;
+	enum timestamp = "2026-03-30T14:29:14.993Z";
+	auto expected = SysTime.fromISOExtString(timestamp).stdTime;
+	assert(agent.workRecordTime(
+		`{"type":"user","timestamp":"` ~ timestamp ~ `"}`).get.stdTime == expected);
+	assert(agent.workRecordTime(
+		`{"type":"assistant","timestamp":"` ~ timestamp ~ `","message":{"content":[`
+		~ `{"type":"tool_use","input":{"timestamp":"2026-03-30T15:00:00Z"}}]}}`
+		).get.stdTime == expected);
+
+	foreach (record; [
+		`{"type":"last-prompt"}`,
+		`{"type":"queue-operation","timestamp":"2026-03-30T15:00:00Z"}`,
+		`{"type":"attachment","timestamp":"2026-03-30T15:00:00Z","attachment":{"type":"user"}}`,
+		`{"type":"system","subtype":"away_summary","timestamp":"2026-03-30T15:00:00Z"}`,
+		`{"type":"file-history-snapshot"}`,
+	])
+		assert(agent.workRecordTime(record).isNull, record);
+
+	assertThrown(agent.workRecordTime(`{"type":"user"}`));
+	assertThrown(agent.workRecordTime("invalid JSON"));
+	assertThrown(agent.workRecordTime("{}"));
+	assertThrown(agent.workRecordTime(`{"type":""}`));
+	assertThrown(agent.workRecordTime(`{"type":"attachment","timestamp":"bogus"}`));
 }
 
 /// Route a raw Claude JSONL history line to the appropriate translator.

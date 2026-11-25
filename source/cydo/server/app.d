@@ -824,9 +824,6 @@ class App
 			setAgentSessionId: (int tid, string agentSessionId) {
 				persistence.setAgentSessionId(tid, agentSessionId);
 			},
-			clearLastActive: (int tid) {
-				persistence.clearLastActive(tid);
-			},
 			broadcastTask: (int tid, TranslatedEvent ev) {
 				historyPipeline.broadcastTask(tid, ev);
 			},
@@ -1116,9 +1113,9 @@ class App
 		// when generating MCP configs for auto-resumed sessions.
 		transport.startMcpSocket();
 
-		resumeInFlightTasks();
-
 		recoverLastActive();
+
+		resumeInFlightTasks();
 
 		discoveryService.enumerateSessions();
 
@@ -1274,33 +1271,56 @@ class App
 
 	private void recoverLastActive()
 	{
-		// Recover last_active from .jsonl mtime for tasks that were alive
-		// when the backend crashed (last_active was cleared on session start).
+		import std.datetime.stopwatch : StopWatch;
+		import ae.utils.time.types : AbsTime;
+		import cydo.workflow.history.last_work : lastWorkRecordTime;
+
+		// Recover rows from before last_active was persisted at work boundaries.
+		StopWatch sw;
+		sw.start();
+		size_t recovered, scanned;
 		foreach (ref td; tasks)
 		{
-			if (td.lastActive == 0 && td.agentSessionId.length > 0)
+			if (td.lastActive != 0)
+				continue;
+
+			++recovered;
+			auto resolution = resolveTaskHistory(td.tid);
+			auto lastActive = td.createdAt;
+			final switch (resolution.kind)
 			{
-				try
-				{
-					auto resolution = resolveTaskHistory(td.tid);
-					if (resolution.kind == TaskHistoryResolutionKind.access
-						&& !resolution.requireAccess().isDriverServed)
+				case TaskHistoryResolutionKind.access:
+					auto access = resolution.requireAccess();
+					if (!access.isDriverServed)
 					{
-						auto jp = resolution.requireAccess().path;
-						import std.file : exists, timeLastModified;
-						if (exists(jp))
+						auto path = access.path;
+						++scanned;
+						Nullable!AbsTime workTime;
+						try
+							workTime = lastWorkRecordTime(access.agent, path);
+						catch (Exception e)
 						{
-							td.lastActive = timeLastModified(jp).stdTime;
-							persistence.setLastActive(td.tid, td.lastActive);
+							errorf("last_active recovery for task %d failed: %s", td.tid, e.msg);
+							td.lastActive = td.createdAt;
+							continue;
 						}
+						if (!workTime.isNull)
+							lastActive = workTime.get.stdTime;
 					}
-				}
-				catch (Exception) {} // best-effort
+					break;
+				case TaskHistoryResolutionKind.noSession:
+					break;
+				case TaskHistoryResolutionKind.orphanAgent:
+				case TaskHistoryResolutionKind.unavailable:
+					td.lastActive = td.createdAt;
+					continue;
 			}
-			// Final fallback: if still no lastActive but has createdAt, use that
-			if (td.lastActive == 0 && td.createdAt != 0)
-				td.lastActive = td.createdAt;
+			persistence.setLastActive(td.tid, lastActive);
+			td.lastActive = lastActive;
 		}
+		if (recovered != 0)
+			infof("Recovered last_active for %d tasks (%d transcripts scanned) in %d ms",
+				recovered, scanned, sw.peek.total!"msecs");
 	}
 
 	private void lookupRawSource(int tid, size_t seq, RawSourceReady ready)
@@ -2484,7 +2504,7 @@ class App
 						accepted.inFlightUiNonceGeneration.remove(nonce);
 			}
 			accepted.isProcessing = true;
-			touchTask(tid);
+			touchAndPersistLastActive(tid);
 			accepted.needsAttention = false;
 			persistence.setNeedsAttention(tid, false);
 			accepted.notificationBody = "";
@@ -3272,7 +3292,6 @@ class App
 				announced = true;
 			}
 		}
-		touchAndPersistLastActive(tid);
 		if (td.status != TaskStatus.alive)
 				transitionTask(tid, [TaskStatus.active, TaskStatus.waiting, TaskStatus.completed,
 					TaskStatus.failed], TaskStatus.alive,
@@ -4977,6 +4996,30 @@ unittest
 	assert(fixture.app.sessionForTask(fixture.tid) is null);
 }
 
+unittest
+{
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope (exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	auto app = fixture.app;
+	auto tid = fixture.tid;
+	enum previousActivity = 42;
+	app.persistence.setLastActive(tid, previousActivity);
+	app.tasks[tid].lastActive = previousActivity;
+
+	bool committed;
+	app.sendPreparedTaskMessage(tid, [ContentBlock("text", "accepted work")],
+		null, null, false, "last-active-nonce")
+		.then(() { committed = true; }, (Exception e) { assert(false, e.msg); }).ignoreResult();
+	assert(fixture.session.gates.length == 1);
+	assert(app.persistence.loadTasks()[0].lastActive == previousActivity);
+
+	fixture.session.accept(0, AgentSubmissionReceipt.localEnqueued);
+	drainSubmissionNextTicks();
+	assert(committed);
+	assert(app.tasks[tid].lastActive > previousActivity);
+	assert(app.persistence.loadTasks()[0].lastActive == app.tasks[tid].lastActive);
+}
+
 version (unittest) private WsMessage testBrowserSubmission(int tid, string text,
 	string nonce)
 {
@@ -6490,7 +6533,6 @@ unittest
 		agentForTask: (int tid) => cast(Agent) agent,
 		tryAgentForTask: (int tid) => cast(Agent) agent,
 		setAgentSessionId: (int tid, string sessionId) {},
-		clearLastActive: (int tid) {},
 		broadcastTask: (int tid, TranslatedEvent event) {},
 		publishTaskSnapshot: (int tid) {
 			fixture.app.broadcastTaskUpdate(tid);
@@ -7916,25 +7958,125 @@ unittest
 	}
 }
 
-// Startup recovery of last_active: a driver-served history has no file whose
-// mtime could stand in, so the task falls back to its creation time.
+version (unittest) private void withLegacyLastActiveTask(
+	void delegate(GatedSubmissionFixture, GatedSubmissionRunner, string path) verify)
+{
+	import ae.sys.database : Database, selectValue;
+	import std.file : mkdir, rmdirRecurse;
+	import std.uuid : randomUUID;
+
+	auto root = buildPath(tempDir(), "cydo-legacy-last-active-" ~ randomUUID().toString());
+	mkdir(root);
+	scope (exit) rmdirRecurse(root);
+	auto dbPath = buildPath(root, "tasks.sqlite");
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	scope (exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	auto db = Database(dbPath);
+	auto tid = fixture.tid;
+	db.stmt!"UPDATE tasks SET last_active = NULL WHERE tid = ?".exec(tid);
+	auto row = fixture.app.persistence.loadTasks()[0];
+	assert(row.tid == tid && row.lastActive == 0);
+	fixture.app.tasks[tid].createdAt = row.createdAt;
+	fixture.app.tasks[tid].agentSessionId = "legacy-session";
+
+	verify(fixture, cast(GatedSubmissionRunner) fixture.app.taskSessionRunner,
+		buildPath(root, "history.jsonl"));
+
+	auto isNull = db.stmt!"SELECT last_active IS NULL FROM tasks WHERE tid = ?"
+		.iterate(tid).selectValue!int;
+	assert((isNull != 0) == (fixture.app.persistence.loadTasks()[0].lastActive == 0));
+}
+
+unittest
+{
+	import std.datetime : SysTime;
+	import std.file : append, setTimes, write;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	withLegacyLastActiveTask((fixture, runner, path) {
+		enum timestamp = "2026-03-30T14:29:14.993Z";
+		auto expected = SysTime.fromISOExtString(timestamp).stdTime;
+		write(path, `{"type":"assistant","timestamp":"` ~ timestamp ~ `"}` ~ "\n"
+			~ "{\"type\":\"mode\"}\n");
+		auto task = &fixture.app.tasks[fixture.tid];
+		auto agent = new ClaudeCodeAgent;
+		runner.resolveTaskHistoryOverride = (int tid) => TaskHistoryResolution.access(
+			HistoryAccess(agent, NativeHistoryProfile(agent.driver, tempDir()),
+				task.agentSessionId, path));
+
+		fixture.app.recoverLastActive();
+		assert(task.lastActive == expected);
+		assert(fixture.app.persistence.loadTasks()[0].lastActive == expected);
+
+		append(path, "{\"type\":\"last-prompt\"}\n");
+		auto newer = SysTime.fromISOExtString("2026-03-31T00:00:00Z");
+		setTimes(path, newer, newer);
+		// Simulate reloading the persisted value on the next startup.
+		task.lastActive = fixture.app.persistence.loadTasks()[0].lastActive;
+		runner.resolveTaskHistoryOverride = delegate TaskHistoryResolution(int tid) {
+			assert(false, "Recovered tasks must not resolve history again");
+		};
+		fixture.app.recoverLastActive();
+		assert(task.lastActive == expected);
+		assert(fixture.app.persistence.loadTasks()[0].lastActive == expected);
+	});
+}
+
+unittest
+{
+	import std.file : write;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	foreach (malformed; ["", "invalid JSON", "{}",
+		`{"type":"attachment","timestamp":"bogus"}`])
+	{
+		withLegacyLastActiveTask((fixture, runner, path) {
+			write(path, malformed.length != 0
+				? "{\"type\":\"user\",\"timestamp\":\"2026-03-30T14:29:14Z\"}\n" ~ malformed ~ "\n"
+				: "{\"type\":\"last-prompt\"}\n");
+			auto task = &fixture.app.tasks[fixture.tid];
+			auto agent = new ClaudeCodeAgent;
+			runner.resolveTaskHistoryOverride = (int tid) => TaskHistoryResolution.access(
+				HistoryAccess(agent, NativeHistoryProfile(agent.driver, tempDir()),
+					task.agentSessionId, path));
+
+			fixture.app.recoverLastActive();
+			assert(task.lastActive == task.createdAt);
+			assert(fixture.app.persistence.loadTasks()[0].lastActive
+				== (malformed.length != 0 ? 0 : task.createdAt));
+		});
+	}
+}
+
 unittest
 {
 	import cydo.workflow.history.native_history : DriverHistoryTestAgent;
 
-	auto fixture = new GatedSubmissionFixture(":memory:");
-	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
-	auto runner = cast(GatedSubmissionRunner) fixture.app.taskSessionRunner;
-	auto agent = new DriverHistoryTestAgent;
-	runner.resolveTaskHistoryOverride = (int tid) => TaskHistoryResolution.access(
-		HistoryAccess.driverServed(agent,
-			NativeHistoryProfile(agent.driver, "/unused-profile"), "driver-session"));
-	auto td = &fixture.app.tasks[fixture.tid];
-	td.agentSessionId = "driver-session";
-	td.lastActive = 0;
-	td.createdAt = 42;
-	fixture.app.recoverLastActive();
-	assert(td.lastActive == 42);
+	withLegacyLastActiveTask((fixture, runner, path) {
+		auto task = &fixture.app.tasks[fixture.tid];
+		auto agent = new DriverHistoryTestAgent;
+		runner.resolveTaskHistoryOverride = (int tid) => TaskHistoryResolution.access(
+			HistoryAccess.driverServed(agent,
+				NativeHistoryProfile(agent.driver, "/unused-profile"), task.agentSessionId));
+
+		fixture.app.recoverLastActive();
+		assert(task.lastActive == task.createdAt);
+		assert(fixture.app.persistence.loadTasks()[0].lastActive == task.createdAt);
+	});
+}
+
+unittest
+{
+	withLegacyLastActiveTask((fixture, runner, path) {
+		auto task = &fixture.app.tasks[fixture.tid];
+		runner.resolveTaskHistoryOverride = (int tid) => TaskHistoryResolution.unavailable(
+			UnavailableHistory(UnavailableHistoryKind.context, "claude",
+				task.agentSessionId, "The derived history file does not exist"));
+
+		fixture.app.recoverLastActive();
+		assert(task.lastActive == task.createdAt);
+		assert(fixture.app.persistence.loadTasks()[0].lastActive == 0);
+	});
 }
 
 version (unittest) private final class DriverHistoryTurnFixture
@@ -8024,12 +8166,13 @@ unittest
 	td.projectPath = root;
 	td.entryPoint = "turn_test_singleton";
 	td.resultText = "Singleton finished";
+	app.touchAndPersistLastActive(fixture.base.tid);
 	auto lastActive = td.lastActive;
 
 	app.onTaskTurnCompletedAlive(fixture.base.tid);
 
 	assert(td.status == TaskStatus.alive);
-	assert(td.lastActive > lastActive);
+	assert(td.lastActive == lastActive);
 	assert(!td.needsAttention);
 	assert(td.notificationBody.length == 0);
 	auto row = app.persistence.loadTasks()[0];
