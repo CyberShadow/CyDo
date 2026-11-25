@@ -187,6 +187,34 @@ describe("SystemBanner Claude usage", () => {
     expect(html).toContain('class="banner-usage-value">1%</span>');
   });
 
+  it("shows current model windows and hides expired model windows", () => {
+    const now = Date.now() / 1000;
+    const html = renderSystemBanner({
+      claudeUsage: {
+        ...usageMessage({}),
+        model_weekly: [
+          { label: "Fable", utilization: 42.5, resetsAt: now + 3600 },
+          { label: "Expired model", utilization: 71, resetsAt: now - 3600 },
+        ],
+      },
+    });
+
+    expect(html).toContain('class="banner-usage-label">Fable</span>');
+    expect(html).toContain('class="banner-usage-value">43%</span>');
+    expect(html).not.toContain("Expired model");
+  });
+
+  it.each([[undefined], [[]]])("omits model rows for %j", (model_weekly) => {
+    const html = renderSystemBanner({
+      claudeUsage: {
+        ...usageMessage({ five_hour: { utilization: 42 } }),
+        model_weekly,
+      },
+    });
+
+    expect(html.match(/class="banner-usage-row"/g)).toHaveLength(2);
+  });
+
   it.each([
     [0, "rgb(0, 255, 0)"],
     [25, "rgb(128, 255, 0)"],

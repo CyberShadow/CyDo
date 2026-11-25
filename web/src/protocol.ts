@@ -441,6 +441,7 @@ export interface AgentUsageMessage {
   profile: string;
   updated_at: number;
   limits: Record<string, AgentUsageLimitWindow>;
+  model_weekly?: { label: string; utilization?: number; resetsAt?: number }[];
   /** When the account login ends for good (ISO 8601). */
   credential_expires_at?: string;
 }

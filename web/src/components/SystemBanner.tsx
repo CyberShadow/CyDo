@@ -203,17 +203,25 @@ export function SystemBanner({
   const week = isWindowExpired(claudeUsage?.limits.seven_day, nowSeconds)
     ? undefined
     : claudeUsage?.limits.seven_day;
+  const weekSeconds = 7 * 24 * 60 * 60;
   const usageRows = [
     { label: "5h", window: fiveHour, windowSeconds: 5 * 60 * 60 },
-    { label: "Week", window: week, windowSeconds: 7 * 24 * 60 * 60 },
+    { label: "Week", window: week, windowSeconds: weekSeconds },
+    ...(claudeUsage?.model_weekly ?? [])
+      .filter((window) => !isWindowExpired(window, nowSeconds))
+      .map((window) => ({
+        label: window.label,
+        window,
+        windowSeconds: weekSeconds,
+      })),
   ];
   const loginWarning = loginExpiryWarning(
     claudeUsage?.credential_expires_at,
     Date.now(),
   );
-  const showClaudeUsage =
-    Number.isFinite(fiveHour?.utilization) ||
-    Number.isFinite(week?.utilization);
+  const showClaudeUsage = usageRows.some((row) =>
+    Number.isFinite(row.window?.utilization),
+  );
   const connectionStatus = exportMode
     ? {
         className: connected ? "connected" : "disconnected",
