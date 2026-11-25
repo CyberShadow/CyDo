@@ -841,14 +841,15 @@ function reduceResultMessage(
 function findStreamingMessage(
   s: SessionState,
   parentToolUseId?: string,
+  mode?: "item-placement",
 ): number {
   if (s.streamingMessageCount === 0) return -1;
+  const matchAnyParent = !parentToolUseId && mode !== "item-placement";
   let sawStreaming = false;
   for (let i = s.messages.length - 1; i >= 0; i--) {
     const message = s.messages[i]!;
     if (message.type !== "assistant" || !message.streaming) continue;
-    if (!parentToolUseId || message.parentToolUseId === parentToolUseId)
-      return i;
+    if (matchAnyParent || message.parentToolUseId === parentToolUseId) return i;
     sawStreaming = true;
   }
   if (!sawStreaming) throw new Error("Streaming message count is inconsistent");
@@ -870,19 +871,15 @@ function insertBeforeStreaming(
   return result;
 }
 
-/** Find or create the in-progress assistant message for streaming blocks.
- *
- * When parentToolUseId is provided (sub-agent context), we look for an
- * existing streaming message with that same parentToolUseId, or create a
- * new isolated placeholder.  This prevents sub-agent events from corrupting
- * the main turn's streaming message (M_main). */
+/** Find or create the streaming assistant message in the item's parent context.
+ *  Root items share the parentless stream. */
 function getOrCreateStreamingMessage(
   b: WriteBatch,
   s: SessionState,
   parentToolUseId?: string,
   ts?: number,
 ): number {
-  const i = findStreamingMessage(s, parentToolUseId);
+  const i = findStreamingMessage(s, parentToolUseId, "item-placement");
   if (i >= 0) return i;
   const placeholder = b.adopt<DisplayMessage>({
     id: `streaming-${++s.msgIdCounter}`,

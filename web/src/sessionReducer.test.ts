@@ -1892,6 +1892,75 @@ describe("spawned child enrichment", () => {
   });
 });
 
+it("keeps interleaved root output in the root assistant message", () => {
+  let s = reduceMessage(makeState(), {
+    type: "item/started",
+    item_type: "tool_use",
+    item_id: "agent-call",
+    name: "Agent",
+  });
+  s = reduceMessage(s, {
+    type: "item/started",
+    item_type: "text",
+    item_id: "child-text",
+    parent_tool_use_id: "agent-call",
+    text: "Child output",
+  });
+  s = reduceMessage(s, {
+    type: "item/started",
+    item_type: "text",
+    item_id: "root-text",
+    text: "Root output",
+  });
+
+  expect(
+    s.messages.map((message) => ({
+      parentToolUseId: message.parentToolUseId,
+      items: message.blockIds?.map((id) => s.blocks.get(id)!.itemId),
+    })),
+  ).toEqual([
+    { parentToolUseId: undefined, items: ["agent-call", "root-text"] },
+    { parentToolUseId: "agent-call", items: ["child-text"] },
+  ]);
+});
+
+it("closes a child-only stream when an interrupted turn reports its result", () => {
+  const started = reduceMessage(makeState(), {
+    type: "item/started",
+    item_type: "text",
+    item_id: "child-text",
+    parent_tool_use_id: "agent-call",
+    text: "Partial output",
+  });
+  const child = started.messages[0]!;
+  const interrupted = reduceMessage(started, {
+    type: "turn/result",
+    subtype: "error_during_execution",
+    is_error: true,
+    num_turns: 1,
+    duration_ms: 1,
+    total_cost_usd: 0,
+    usage: { input_tokens: 1, output_tokens: 1 },
+  });
+
+  expect(interrupted.streamingMessageCount).toBe(0);
+  expect(interrupted.messages[0]?.streaming).toBe(false);
+  expect(interrupted.blocks.get(child.blockIds![0]!)?.completed).toBe(true);
+
+  const resumed = reduceMessage(interrupted, {
+    type: "item/started",
+    item_type: "text",
+    item_id: "next-child-text",
+    parent_tool_use_id: "agent-call",
+    text: "New output",
+  });
+  expect(resumed.messages[0]?.blockIds).toHaveLength(1);
+  expect(resumed.messages[2]).toMatchObject({
+    parentToolUseId: "agent-call",
+    streaming: true,
+  });
+});
+
 describe("task state reducer", () => {
   function startedRow(state: TaskState) {
     return state.messages.find(
