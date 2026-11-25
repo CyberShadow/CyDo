@@ -829,11 +829,14 @@ class ClaudeCodeAgent : Agent
 
 	package(cydo) void visitPersistedHistoryRows(const(string)[] rows, int firstLine,
 		scope void delegate(PersistedHistoryBoundary, int firstBlockIndex, int lastBlockIndex, bool joinedApiReply) visitBoundary,
-		scope void delegate() endMessage = null)
+		scope void delegate() endMessage = null, const(int)[] physicalLines = null)
 	{
 		foreach (i, row; rows)
-			visitPersistedHistoryRow(row, firstLine == 0 ? 0 : firstLine + cast(int) i,
-				visitBoundary, endMessage);
+		{
+			auto line = physicalLines.length > 0 ? physicalLines[i]
+				: firstLine == 0 ? 0 : firstLine + cast(int) i;
+			visitPersistedHistoryRow(row, line, visitBoundary, endMessage);
+		}
 	}
 
 	private static void visitPersistedHistoryRow(string line, int lineNum,
@@ -2610,8 +2613,8 @@ class ClaudeCodeSession : AgentSession, UsageSource
 			}
 			rows[i] = entry.json;
 		}
-		if (transcriptRowsHandler_)
-			transcriptRowsHandler_(rows);
+		enforce(transcriptRowsHandler_ !is null, "Claude main transcript mirror requires a row handler");
+		transcriptRowsHandler_(rows);
 	}
 
 	private void translateStreamEventLive(string rawLine)
@@ -3320,39 +3323,63 @@ unittest
 		"Claude transcript mirror arrived before session init in a fresh session");
 }
 
-// The frame must identify a file in the current session and contain object rows.
+@("Claude validates mirror path and frame shape before delivery")
 unittest
 {
-	import std.exception : assertThrown;
+	import std.exception : assertThrown, collectException;
 
 	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
 	auto session = new ClaudeCodeSession("true");
 	scope(exit) session.stop();
 	session.translateLiveLine(
 		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
+	int deliveries;
+	session.onTranscriptRows = (const(string)[] rows) { ++deliveries; };
 
 	assertThrown(session.translateLiveLine(
 		`{"type":"transcript_mirror","filePath":"/project/foreign-session.jsonl",`
 		~ `"entries":[{"type":"user","uuid":"user-row"}]}`));
 	assertThrown(session.translateLiveLine(
 		`{"type":"transcript_mirror","entries":[{"type":"user","uuid":"user-row"}]}`));
-	assertThrown(session.translateLiveLine(`{"type":"transcript_mirror","filePath":null,"entries":[]}`));
-	assertThrown(session.translateLiveLine(
+	auto nullPath = collectException(session.translateLiveLine(
+		`{"type":"transcript_mirror","filePath":null,"entries":[]}`));
+	assert(nullPath && nullPath.msg == "Claude transcript mirror filePath must be a string");
+	auto nonObject = collectException(session.translateLiveLine(
 		`{"type":"transcript_mirror","filePath":"/project/mirror-session.jsonl","entries":[42]}`));
+	assert(nonObject && nonObject.msg == "Claude transcript mirror entry must be a JSON object");
 	foreach (path; ["/project/mirror-session.jsonl", "/project/mirror-session/subagents/agent-x.jsonl"])
 	{
 		auto frame = `{"type":"transcript_mirror","filePath":"` ~ path ~ `"`;
 		assertThrown(session.translateLiveLine(frame ~ `}`));
-		assertThrown(session.translateLiveLine(frame ~ `,"entries":null}`));
-		assertThrown(session.translateLiveLine(frame ~ `,"entries":{}}`));
-		session.translateLiveLine(frame ~ `,"entries":[]}`);
+		foreach (entries; ["null", "{}"])
+		{
+			auto nonArray = collectException(session.translateLiveLine(
+				frame ~ `,"entries":` ~ entries ~ "}"));
+			assert(nonArray && nonArray.msg == "Claude transcript mirror entries must be an array");
+		}
 	}
+	assert(deliveries == 0);
+}
+
+@("Claude main mirror delivery requires a handler")
+unittest
+{
+	import std.exception : collectException;
+
+	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
+	auto session = new ClaudeCodeSession("true");
+	scope(exit) session.stop();
+	session.translateLiveLine(
+		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
+	auto failure = collectException(session.translateLiveLine(
+		`{"type":"transcript_mirror","filePath":"/project/mirror-session.jsonl","entries":[]}`));
+	assert(failure && failure.msg == "Claude main transcript mirror requires a row handler");
 }
 
 // Each main conversation row must carry its own UUID.
 unittest
 {
-	import std.exception : assertThrown;
+	import std.exception : collectException;
 
 	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
 	auto session = new ClaudeCodeSession("true");
@@ -3360,10 +3387,16 @@ unittest
 	session.translateLiveLine(
 		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
 
+	session.onTranscriptRows = (const(string)[] rows) {
+		assert(false, "Malformed mirror rows must not reach the handler");
+	};
 	foreach (rowType; ["user", "assistant", "attachment", "system"])
-		assertThrown(session.translateLiveLine(
+	{
+		auto failure = collectException(session.translateLiveLine(
 			`{"type":"transcript_mirror","filePath":"/project/mirror-session.jsonl","entries":[{"type":"`
-			~ rowType ~ `"}]}`), "Expected a missing UUID to be rejected for " ~ rowType);
+			~ rowType ~ `"}]}`));
+		assert(failure && failure.msg == "Claude transcript mirror " ~ rowType ~ " row has no UUID");
+	}
 }
 
 // can_use_tool requests reach the permission handler; a cancel for a pending
@@ -4024,7 +4057,7 @@ unittest
 	assert(steering == [false, true, false, false]);
 }
 
-@("Claude stdout echo with queue-operation text resolves to its own tailed user row")
+@("Claude stdout echo with queue-operation text resolves to its own mirrored user row")
 unittest
 {
 	import cydo.domain.tasks.model : TaskData, Watermark;
@@ -4033,18 +4066,14 @@ unittest
 	import cydo.workflow.history.jsonl_tracker : JsonlTracker;
 	import cydo.workflow.history.native_history : LiveHistoryContext, LiveHistoryWatchTarget,
 		LiveHistoryWatchResolution;
-	import std.file : remove, write;
-	import std.stdio : File;
 
 	enum tid = 1;
 	enum seq = 7;
-	enum path = "/tmp/cydo-claude-queue-word-echo.jsonl";
+	enum path = "/tmp/cydo-claude-queue-word-echo-mirror-only.jsonl";
 	enum enqueue = `{"type":"queue/operation","operation":"enqueue","content":"queue-operation"}`;
 	enum dequeue = `{"type":"queue/operation","operation":"dequeue"}`;
 	enum liveEcho = `{"type":"user","uuid":"prompt","isReplay":true,"message":{"role":"user","content":"queue-operation"}}`;
-	enum tailEcho = `{"type":"user","uuid":"prompt","message":{"role":"user","content":"queue-operation"}}`;
-	write(path, enqueue ~ "\n" ~ dequeue ~ "\n");
-	scope(exit) remove(path);
+	enum mirrorEcho = `{"type":"user","uuid":"prompt","message":{"role":"user","content":"queue-operation"}}`;
 
 	TaskData task = TaskData(tid, "", "");
 	task.history.reset(Watermark.none());
@@ -4062,6 +4091,7 @@ unittest
 	};
 	tracker.startJsonlWatch(tid);
 	scope(exit) tracker.stopJsonlWatch(tid);
+	tracker.ingestMirrorRows(tid, [enqueue, dequeue]);
 
 	@JSONPartial static struct UserItem
 	{
@@ -4083,12 +4113,8 @@ unittest
 		"stdout user echo must retain its user item type and native identity");
 	assert(resolved.length == 0, "queue rows must not resolve the canonical user item");
 
-	{
-		auto transcript = File(path, "a");
-		transcript.write(tailEcho ~ "\n");
-	}
-	tracker.processNewJsonlContent(tid, path);
-	assert(resolved == ["prompt"], "the canonical tail row must resolve the live user item");
+	tracker.ingestMirrorRows(tid, [mirrorEcho]);
+	assert(resolved == ["prompt"], "the canonical mirrored row must resolve the live user item");
 }
 
 @("Claude stdout preserves a top-level slash-spelled queue operation")
@@ -6934,6 +6960,7 @@ unittest
 			checkOutput("history", subtype.length ? type ~ "/" ~ subtype : type, output);
 	}
 
+	session.onTranscriptRows = (const(string)[] rows) { assert(rows.length == 1); };
 	session.translateLiveLine(eventLine("system", "init"));
 	foreach (type; stdoutTypes.keys)
 		if (type != "system")

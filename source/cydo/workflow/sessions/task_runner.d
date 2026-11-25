@@ -257,6 +257,7 @@ struct TaskSessionRunnerHost
 	void delegate(int tid) spawnContinuation;
 	void delegate(int tid) spawnOnYieldContinuation;
 	void delegate(int tid) emitTaskReload;
+	void delegate(int tid, const(string)[] rows) ingestTranscriptRows;
 	void delegate(int tid) startJsonlWatch;
 	/// Returns the resolution used, or null when history was already loaded
 	/// (no resolution was performed). Never reports an unavailable
@@ -1275,6 +1276,14 @@ public:
 			claude.onToolPermissionRequestWithdrawn = (string toolUseId) =>
 				host_.withdrawToolPermissionPrompt(tid, toolUseId);
 			claude.onRewindAvailabilityChanged = &publishSessionHistoryOperations;
+			claude.onTranscriptRows = (const(string)[] rows) {
+				auto stored = tid in sessions_;
+				if (stored is null || *stored !is session)
+					return;
+				if (host_.shuttingDown())
+					return;
+				host_.ingestTranscriptRows(tid, rows);
+			};
 		}
 
 		session.onStderr = (string line) {
@@ -1369,6 +1378,12 @@ public:
 				current.error = lastStderr;
 			if (HistoryAccess.driverServingHistory(taskAgent) is null)
 			{
+				scope(failure)
+				{
+					host_.stopJsonlWatch(tid);
+					liveHistoryBindings_.remove(tid);
+					removeSession(tid);
+				}
 				auto historyResolution = host_.ensureHistoryLoadedForExit(tid);
 				host_.finalReconcileJsonlIfPresent(tid, historyResolution);
 			}
@@ -2704,6 +2719,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				touchAndPersistLastActive: (int tid) { assert(tid == 1); lifecycle ~= "last-active"; },
 					ensureHistoryLoadedForExit: (int tid) => Nullable!TaskHistoryResolution.init,
 					finalReconcileJsonlIfPresent: (int tid, Nullable!TaskHistoryResolution) {},
+					ingestTranscriptRows: (int tid, const(string)[] rows) {},
 					startJsonlWatch: (int tid) {},
 					stopJsonlWatch: (int tid) {},
 					broadcastHistoryOperations: (int tid) {},
@@ -3878,6 +3894,7 @@ version (unittest) private void assertYieldGateRunnerCase(
 				spawnContinuation: (int tid) { continuations++; },
 				spawnOnYieldContinuation: (int tid) { onYieldContinuations++; },
 				emitTaskReload: (int tid) {},
+				ingestTranscriptRows: (int tid, const(string)[] rows) {},
 				startJsonlWatch: (int tid) {},
 				broadcastHistoryOperations: (int tid) {},
 				ensureHistoryLoadedForExit: (int tid) => Nullable!TaskHistoryResolution.init,
@@ -4398,6 +4415,7 @@ version (unittest) void finishFollowUpSession(TaskData* child, TaskSessionRunner
 			host.finalReconcileJsonlIfPresent = (int tid, Nullable!TaskHistoryResolution resolution) {};
 			host.stopJsonlWatch = (int tid) {};
 			host.shuttingDown = () => false;
+			host.ingestTranscriptRows = (int tid, const(string)[] rows) {};
 			host.startJsonlWatch = (int tid) {};
 			host.broadcastHistoryOperations = (int tid) {};
 			host.pump = (int tid) => false;
@@ -4592,6 +4610,7 @@ version (unittest) private void testStartupFailureAtExit(string resumeId, TaskSt
 				touchAndPersistLastActive = (int tid) {};
 				ensureHistoryLoadedForExit = (int tid) => Nullable!TaskHistoryResolution.init;
 				finalReconcileJsonlIfPresent = (int tid, Nullable!TaskHistoryResolution resolution) {};
+				ingestTranscriptRows = (int tid, const(string)[] rows) {};
 				stopJsonlWatch = (int tid) {};
 				failPendingAskUserQuestionOnExit = (int tid) {};
 				failPendingPermissionPromptOnExit = (int tid) {};
@@ -4740,6 +4759,7 @@ unittest
 		ensureHistoryLoadedForExit = (int tid) => Nullable!TaskHistoryResolution.init;
 		finalReconcileJsonlIfPresent = (int tid, Nullable!TaskHistoryResolution resolution) {};
 		broadcastHistoryOperations = (int tid) {};
+		ingestTranscriptRows = (int tid, const(string)[] rows) {};
 		startJsonlWatch = (int tid) {};
 		stopJsonlWatch = (int tid) {};
 		failPendingAskUserQuestionOnExit = (int tid) {};
@@ -4784,6 +4804,93 @@ unittest
 	assert(task.status == TaskStatus.alive, "retiring process finalized a resumed task");
 	assert(resumed && agent.sessions.length == 2);
 	assert(runner.sessionForTask(1) is agent.sessions[1] && runner.taskAlive(1));
+}
+
+@("Task exit stops JSONL tracking and removes the session when final reconciliation throws")
+unittest
+{
+	import std.exception : collectException;
+	import std.file : write;
+	import std.stdio : File;
+
+	import ae.utils.statequeue : StateQueue;
+	import cydo.domain.tasks.model : Watermark;
+	import cydo.foundation.testing : drainNextTicks;
+	import cydo.workflow.history.jsonl_tracker : JsonlTracker;
+
+	withGitMetadataLaunchFixture("cydo-task-runner-malformed-exit-history",
+		(GitMetadataLaunchFixture fixture) {
+			auto catalog = gitMetadataTaskCatalog(fixture,
+				"task_types:\n  runner:\n    model_class: large\n");
+			TaskData[int] tasks;
+			tasks[1] = TaskData(1, "local", "");
+			auto task = &tasks[1];
+			task.taskType = "runner";
+			task.agentName = "claude";
+			task.agentSessionId = "existing-session";
+			task.status = TaskStatus.alive;
+			task.history.reset(Watermark.none());
+			auto runner = gitMetadataTestRunner(&tasks, catalog, fixture,
+				unrestrictedLaunchTestSandbox(), "", fixture.workspaceRoot);
+			scope (exit) runner.cleanupTaskLaunch(task);
+
+			auto agent = new DeferredExitTestAgent;
+			auto path = buildPath(fixture.root, "history.jsonl");
+			JsonlTracker tracker;
+			tracker.getTask = runner.host_.getTask;
+			tracker.historyGeneration = (int tid) => task.history.generation;
+			tracker.resolveLiveHistoryWatch = (int tid) {
+				auto context = LiveHistoryContext(agent, task.launch.nativeHistoryProfile,
+					task.agentSessionId, true);
+				return LiveHistoryWatchResolution.target(LiveHistoryWatchTarget(context, path));
+			};
+			string[] received;
+			tracker.onClaudeTranscriptRow = (int tid, string row) { received ~= row; };
+			int[] stoppedWatches;
+			with (runner.host_)
+			{
+				agentForTask = (int tid) => agent;
+				tryAgentForTask = agentForTask;
+				shuttingDown = () => false;
+				publishTaskSnapshot = (int tid) {};
+				broadcastTask = (int tid, TranslatedEvent event) {};
+				hasPendingChildQuestion = (int tid) => false;
+				failPendingPermissionPromptOnExit = (int tid) {};
+				touchAndPersistLastActive = (int tid) {};
+				ensureHistoryLoadedForExit = (int tid) => Nullable!TaskHistoryResolution(
+					TaskHistoryResolution.access(HistoryAccess(agent,
+						task.launch.nativeHistoryProfile, task.agentSessionId, path)));
+				finalReconcileJsonlIfPresent = &tracker.finalReconcileJsonlIfPresent;
+				stopJsonlWatch = (int tid) {
+					tracker.stopJsonlWatch(tid);
+					stoppedWatches ~= tid;
+				};
+			}
+
+			task.processQueue = new StateQueue!ProcessState(runner.makeProcessQueueSF(1),
+				ProcessState.Dead);
+			task.processQueue.setGoal(ProcessState.Alive).ignoreResult();
+			drainNextTicks();
+			assert(agent.sessions.length == 1);
+			auto session = agent.sessions[0];
+			assert(runner.sessionForTask(1) is session);
+			assert(stoppedWatches.length == 0);
+
+			write(path, "");
+			tracker.startJsonlWatch(1);
+			enum row = `{"type":"mode","mode":"normal","sessionId":"existing-session"}`;
+			File(path, "a").write(row ~ "\n" ~ `{"uuid":!}` ~ "\n");
+			tracker.ingestMirrorRows(1, [row]);
+			assert(received == [row]);
+			session.closeStdin();
+			auto error = collectException(session.exit(0));
+			assert(error !is null, "malformed history must propagate through the exit callback");
+			assert(error.msg == "Unknown JSON symbol: !", error.msg);
+			assert(stoppedWatches == [1]);
+			assert(runner.sessionForTask(1) is null);
+			tracker.ingestMirrorRows(1, [row]);
+			assert(received == [row]);
+		});
 }
 
 version (unittest) private final class BusyUndoTestCodexAgent : CodexAgent
@@ -4846,6 +4953,7 @@ unittest
 			ensureHistoryLoadedForExit = (int tid) => Nullable!TaskHistoryResolution.init;
 			finalReconcileJsonlIfPresent = (int tid, Nullable!TaskHistoryResolution resolution) {};
 			broadcastHistoryOperations = (int tid) {};
+			ingestTranscriptRows = (int tid, const(string)[] rows) {};
 			stopJsonlWatch = (int tid) {};
 			failPendingAskUserQuestionOnExit = (int tid) {};
 			failPendingPermissionPromptOnExit = (int tid) {};

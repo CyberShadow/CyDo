@@ -789,6 +789,7 @@ class App
 			emitTaskReload: (int tid) {
 				emitTaskReload(tid);
 			},
+			ingestTranscriptRows: (tid, rows) => jsonlTracker.ingestMirrorRows(tid, rows),
 			startJsonlWatch: (int tid) {
 				jsonlTracker.startJsonlWatch(tid);
 				scheduleHistoryOperations(tid);
@@ -914,6 +915,7 @@ class App
 				return;
 			historyPipeline.backfillHistoryBoundary(tid, seq, boundary, publish);
 		};
+		// Only Copilot's file shrink detection fires this hook.
 		jsonlTracker.onLineageInvalidated = (int tid) {
 			auto td = tid in tasks;
 			assert(td !is null, "history lineage invalidated for missing task");
@@ -932,7 +934,7 @@ class App
 			emitTaskReload(tid, "history_lineage");
 			jsonlTracker.startJsonlWatch(tid);
 		};
-		jsonlTracker.onJsonlLine = &onTailedJsonlLine;
+		jsonlTracker.onClaudeTranscriptRow = &onClaudeTranscriptRow;
 		// Discover projects in all workspaces
 		discoveryService.discoverAllWorkspaces(config);
 
@@ -3228,12 +3230,15 @@ class App
 		clientHub.sendToSubscribed(tid, Data(toJson(ackEnv).representation));
 	}
 
-	/// Consume a complete JSONL line delivered by the live tail. The tail
-	/// links the persisted records of the user messages CyDo sent to their
-	/// live display: the echoed user line is a turn opener's canonical
-	/// record, and a queued_command attachment records one absorbed
-	/// mid-turn. Live queue lifecycle events arrive on the CLI's stdout.
-	private void onTailedJsonlLine(int tid, string line, int lineNum)
+	/// PR #28 hook for the single lineage-scoped stream of persisted Claude
+	/// main-transcript rows from the attach catch-up (a file read at attach),
+	/// live mirror frames, and the exit catch-up. Within a generation,
+	/// UUID-bearing rows are delivered exactly once in file order. UUID-less
+	/// rows are delivered at most once and in file order. Consumers must not
+	/// depend on their delivery.
+	/// This runs synchronously within td.history.generation. The generation
+	/// ends at invalidateLineage and td.clearSubmissionCorrelationState().
+	private void onClaudeTranscriptRow(int tid, string row)
 	{
 		auto td = tid in tasks;
 		if (td is null)
@@ -3247,7 +3252,7 @@ class App
 		}
 		AttachmentProbe attachment;
 		try
-			attachment = jsonParse!AttachmentProbe(line);
+			attachment = jsonParse!AttachmentProbe(row);
 		catch (Exception)
 			attachment = AttachmentProbe.init;
 		if (attachment.type == "attachment"
@@ -3263,9 +3268,7 @@ class App
 		}
 
 		import cydo.agent.drivers.claude : ClaudeCodeAgent;
-		if (cast(ClaudeCodeAgent) tryAgentForTask(tid) is null)
-			return;
-		auto uuid = ClaudeCodeAgent.canonicalHistoryPromptUuid(line);
+		auto uuid = ClaudeCodeAgent.canonicalHistoryPromptUuid(row);
 		// The echo carries the UUID CyDo submitted the message under.
 		if (uuid.length == 0 || !td.nativeSubmission(uuid).found)
 			return;
@@ -4934,6 +4937,25 @@ version (unittest) private final class GatedSubmissionFixture
 	size_t titlePromptReads;
 	int[] titlePromptTids;
 	int tid;
+
+	void attachClaudeMirror(int tid, string path = null)
+	{
+		import cydo.runtime.launch.types : NativeHistoryProfile;
+		import cydo.workflow.history.native_history : LiveHistoryContext;
+
+		auto agent = app.agentsByName["claude"];
+		auto context = LiveHistoryContext(agent,
+			NativeHistoryProfile(agent.driver, "/tmp/cydo-app-attachment-profile"),
+			"attachment-session");
+		auto target = LiveHistoryWatchTarget(context, path is null
+			? buildPath(context.profile.root, "attachment-session.jsonl") : path);
+		app.jsonlTracker.onClaudeTranscriptRow = &app.onClaudeTranscriptRow;
+		app.jsonlTracker.resolveLiveHistoryWatch = (int lookupTid) {
+			assert(lookupTid == tid);
+			return LiveHistoryWatchResolution.target(target);
+		};
+		app.jsonlTracker.startJsonlWatch(tid);
+	}
 
 	this(string dbPath)
 	{
@@ -7330,13 +7352,14 @@ unittest
 	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	auto td = &fixture.app.tasks[fixture.tid];
 	td.agentName = "claude";
+	fixture.attachClaudeMirror(fixture.tid);
 	td.reserveNativeSubmission("local-one", "one", td.history.generation, "one");
 	td.reserveNativeSubmission("local-two", "two", td.history.generation, "two");
 
 	// Attachments carry the only native identity for absorption. Their order is
 	// independent from queue presentation, so each retires only its exact UUID.
-	fixture.app.onTailedJsonlLine(fixture.tid,
-		`{"type":"attachment","attachment":{"type":"queued_command","source_uuid":"local-two"}}`, 1);
+	fixture.app.jsonlTracker.ingestMirrorRows(fixture.tid, [
+		`{"type":"attachment","uuid":"attach-two","attachment":{"type":"queued_command","source_uuid":"local-two"}}`]);
 	assert(td.nativeSubmissionCount == 2
 		&& td.nativeSubmission("local-two").tailState == SubmissionTailState.absorbed
 		&& td.nativeSubmission("local-one").tailState == SubmissionTailState.pending);
@@ -7344,29 +7367,28 @@ unittest
 		fixture.session.nativeUserEcho("two", null, "local-two"));
 	assert(td.nativeSubmissionCount == 1 && td.nativeSubmission("local-one").tailState
 		== SubmissionTailState.pending);
-	fixture.app.onTailedJsonlLine(fixture.tid,
-		`{"type":"attachment","attachment":{"type":"queued_command","source_uuid":"local-one"}}`, 2);
+	fixture.app.jsonlTracker.ingestMirrorRows(fixture.tid, [
+		`{"type":"attachment","uuid":"attach-one","attachment":{"type":"queued_command","source_uuid":"local-one"}}`]);
 	assert(td.nativeSubmissionCount == 1
 		&& td.nativeSubmission("local-one").tailState == SubmissionTailState.absorbed);
 	fixture.app.planHistoryBroadcast(fixture.tid,
 		fixture.session.nativeUserEcho("one", null, "local-one"));
 	assert(td.nativeSubmissionCount == 0);
-	fixture.app.onTailedJsonlLine(fixture.tid,
-		`{"type":"attachment","attachment":{"type":"queued_command","source_uuid":"unknown"}}`, 3);
+	fixture.app.jsonlTracker.ingestMirrorRows(fixture.tid, [
+		`{"type":"attachment","uuid":"attach-unknown","attachment":{"type":"queued_command","source_uuid":"unknown"}}`]);
 	assert(td.nativeSubmissionCount == 0);
-	fixture.app.onTailedJsonlLine(fixture.tid,
-		`{"type":"attachment","attachment":{"type":"queued_command"}}`, 4);
+	fixture.app.jsonlTracker.ingestMirrorRows(fixture.tid, [
+		`{"type":"attachment","uuid":"attach-no-source","attachment":{"type":"queued_command"}}`]);
 	assert(td.nativeSubmissionCount == 0);
 }
 
+@("Claude submission reconciliation is independent of mirror frame batching")
 unittest
 {
-	import cydo.agent.drivers.claude : ClaudeCodeAgent;
-	import cydo.workflow.history.native_history : LiveHistoryContext;
-	import cydo.runtime.launch.types : NativeHistoryProfile;
+	import std.array : join;
 	import std.file : write;
 
-	auto dbPath = buildPath(tempDir(), "cydo-app-attachment-chunk-equivalence.sqlite");
+	auto dbPath = buildPath(tempDir(), "cydo-app-attachment-frame-equivalence.sqlite");
 	if (exists(dbPath)) remove(dbPath);
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 	auto fixture = new GatedSubmissionFixture(dbPath);
@@ -7383,67 +7405,49 @@ unittest
 		td.agentName = "claude";
 		td.reserveNativeSubmission("native-one", "one", td.history.generation, "one");
 		td.reserveNativeSubmission("native-two", "two", td.history.generation, "two");
-		auto path = buildPath(tempDir(), split
-			? "cydo-app-attachment-split.jsonl"
-			: "cydo-app-attachment-complete.jsonl");
-		write(path, "");
-		scope(exit) if (exists(path)) remove(path);
-		auto agent = new ClaudeCodeAgent;
-		auto target = LiveHistoryWatchTarget(LiveHistoryContext(agent,
-			NativeHistoryProfile(agent.driver, "/tmp/cydo-app-attachment-profile"),
-			"attachment-session"), path);
-		fixture.app.jsonlTracker.onJsonlLine = &fixture.app.onTailedJsonlLine;
-		fixture.app.jsonlTracker.resolveLiveHistoryWatch = (int lookupTid) {
-			assert(lookupTid == tid);
-			return LiveHistoryWatchResolution.target(target);
-		};
-		fixture.app.jsonlTracker.startJsonlWatch(tid);
+		auto path = buildPath(tempDir(), "cydo-app-attachment-frame-equivalence.jsonl");
+		if (split)
+			write(path, "");
+		scope(exit) if (split) remove(path);
+		fixture.attachClaudeMirror(tid, split ? path : null);
 		scope(exit) fixture.app.jsonlTracker.stopJsonlWatch(tid);
 		td.reserveNativeSubmission("native-user", "turn opener", td.history.generation, "turn opener");
 		auto publicationStart = fixture.submissionMessages.length;
-		fixture.app.historyPipeline.broadcastTask(tid,
-			fixture.session.nativeUserEcho("turn opener", null, "native-user"));
-		string canonical = `{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-11T06:00:00Z","sessionId":"S","content":"turn opener"}` ~ "\n"
-			~ `{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-11T06:00:01Z","sessionId":"S"}` ~ "\n"
-			~ `{"parentUuid":"p","isSidechain":false,"type":"user","toolUseResult":{"stdout":"ok"},"message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok"}]}}` ~ "\n"
-			~ `{"type":"atis-latch","atis":"","sessionId":"S"}` ~ "\n"
-			~ `{"type":"user","uuid":"native-user","message":{"role":"user","content":"turn opener"}}` ~ "\n"
-			~ `{"type":"assistant","uuid":"asst-1","message":{"id":"asst-1","content":[{"type":"text","text":"after steer"}],"model":"m","usage":{"input_tokens":1,"output_tokens":1}}}` ~ "\n";
-		string enqueues = `{"type":"queue-operation","operation":"enqueue","content":"one"}` ~ "\n"
-			~ `{"type":"queue-operation","operation":"enqueue","content":"two"}` ~ "\n";
-		string attachments = `{"type":"attachment","attachment":{"type":"queued_command","source_uuid":"native-two"}}` ~ "\n"
-			~ `{"type":"attachment","attachment":{"type":"queued_command","source_uuid":"native-one"}}` ~ "\n";
-		string removes = `{"type":"queue-operation","operation":"remove"}` ~ "\n"
-			~ `{"type":"queue-operation","operation":"remove"}` ~ "\n";
-		string data = canonical ~ enqueues ~ attachments ~ removes;
+		string[] rows = [
+			`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-11T06:00:00Z","sessionId":"S","content":"turn opener"}`,
+			`{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-11T06:00:01Z","sessionId":"S"}`,
+			`{"parentUuid":"p","isSidechain":false,"type":"user","uuid":"tool-result-1","toolUseResult":{"stdout":"ok"},"message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok"}]}}`,
+			`{"type":"atis-latch","atis":"","sessionId":"S"}`,
+			`{"type":"user","uuid":"native-user","message":{"role":"user","content":"turn opener"}}`,
+			`{"type":"assistant","uuid":"asst-1","apiBlockIndex":0,"message":{"id":"asst-1","content":[{"type":"text","text":"after steer"}],"model":"m","usage":{"input_tokens":1,"output_tokens":1}}}`,
+			`{"type":"queue-operation","operation":"enqueue","content":"one"}`,
+			`{"type":"queue-operation","operation":"enqueue","content":"two"}`,
+			`{"type":"attachment","uuid":"attachment-two","attachment":{"type":"queued_command","source_uuid":"native-two"}}`,
+			`{"type":"attachment","uuid":"attachment-one","attachment":{"type":"queued_command","source_uuid":"native-one"}}`,
+			`{"type":"queue-operation","operation":"remove"}`,
+			`{"type":"queue-operation","operation":"remove"}`,
+		];
 		if (split)
 		{
-			auto canonicalCut = canonical.length / 2;
-			write(path, canonical[0 .. canonicalCut]);
-			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
-			auto f = File(path, "a");
-			f.write(canonical[canonicalCut .. $] ~ enqueues);
-			f.close();
-			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
-			auto cut = attachments.length / 2;
-			f = File(path, "a");
-			f.write(attachments[0 .. cut]);
-			f.close();
-			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
-			f = File(path, "a");
-			f.write(attachments[cut .. $]);
-			f.close();
-			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
-			f = File(path, "a");
-			f.write(removes);
-			f.close();
-			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
+			write(path, rows[0 .. 2].join("\n") ~ "\n");
+			fixture.app.jsonlTracker.ingestMirrorRows(tid, rows[0 .. 2]);
+			fixture.app.jsonlTracker.invalidateLineage(tid);
+		}
+		fixture.app.historyPipeline.broadcastTask(tid,
+			fixture.session.nativeUserEcho("turn opener", null, "native-user"));
+		if (split)
+		{
+			write(path, rows[0 .. 10].join("\n") ~ "\n");
+			fixture.app.jsonlTracker.ingestMirrorRows(tid, rows[2 .. 10]);
+			assert(td.nativeSubmission("native-one").tailState == SubmissionTailState.pending
+				&& td.nativeSubmission("native-two").tailState == SubmissionTailState.pending);
+			foreach (message; fixture.submissionMessages[publicationStart .. $])
+				assert(!message.canFind(`"type":"task_history_boundary_replaced"`));
+			fixture.app.jsonlTracker.startJsonlWatch(tid);
+			fixture.app.jsonlTracker.ingestMirrorRows(tid, rows[10 .. $]);
 		}
 		else
-		{
-			write(path, data);
-			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
-		}
+			fixture.app.jsonlTracker.ingestMirrorRows(tid, rows);
 		assert(td.nativeSubmission("native-one").tailState == SubmissionTailState.absorbed
 			&& td.nativeSubmission("native-two").tailState == SubmissionTailState.absorbed);
 		size_t canonicalBoundaries;
@@ -7474,7 +7478,7 @@ unittest
 			++canonicalReplacements;
 		}
 		assert(canonicalReplacements == 1);
-		// The live queue lifecycle is read from stdout; the tail reports none.
+		// The live queue lifecycle is read from stdout; the mirror reports none.
 		foreach (index; 0 .. td.history.length)
 			assert(!(cast(string) td.history.opIndex(index).unsafeContents)
 				.canFind(`"type":"user_message/consumed"`));
@@ -8752,7 +8756,7 @@ unittest
 }
 
 
-@("Claude tail still recognizes the canonical echo after nested user-shaped tool input")
+@("Claude mirror recognizes the canonical echo after nested user-shaped tool input")
 unittest
 {
 	auto dbPath = buildPath(tempDir(), "cydo-verify-42206-tail.sqlite");
@@ -8762,11 +8766,12 @@ unittest
 	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	auto td = &fixture.app.tasks[fixture.tid];
 	td.agentName = "claude";
+	fixture.attachClaudeMirror(fixture.tid);
 	td.reserveNativeSubmission("local-echo", "next", td.history.generation, "next");
-	fixture.app.onTailedJsonlLine(fixture.tid,
-		`{"type":"assistant","uuid":"assistant-row","message":{"id":"msg_api","content":[{"type":"tool_use","id":"tool-id","name":"mcp__test__save","input":{"type":"user","nested":{"type":"assistant","isMeta":true,"isSidechain":true,"subtype":"compact_boundary","operation":"queue-operation"}}}]}}`, 1);
-	fixture.app.onTailedJsonlLine(fixture.tid,
-		`{"type":"user","uuid":"local-echo","message":{"role":"user","content":"next"}}`, 2);
+	fixture.app.jsonlTracker.ingestMirrorRows(fixture.tid, [
+		`{"type":"assistant","uuid":"assistant-row","apiBlockIndex":0,"message":{"id":"msg_api","content":[{"type":"tool_use","id":"tool-id","name":"mcp__test__save","input":{"type":"user","nested":{"type":"assistant","isMeta":true,"isSidechain":true,"subtype":"compact_boundary","operation":"queue-operation"}}}]}}`]);
+	fixture.app.jsonlTracker.ingestMirrorRows(fixture.tid, [
+		`{"type":"user","uuid":"local-echo","message":{"role":"user","content":"next"}}`]);
 	assert(td.nativeSubmission("local-echo").tailState == SubmissionTailState.canonical);
 }
 
