@@ -660,6 +660,8 @@ body,
 
 .banner-right {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
   gap: 12px;
   font-size: 12px;
