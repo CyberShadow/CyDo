@@ -5766,6 +5766,7 @@ unittest
 
 	auto defs = buildPath(root, "defs");
 	mkdirRecurse(buildPath(defs, "prompts"));
+	write(buildPath(defs, "prompts", "blank.md"), "Blank prompt\n");
 	write(buildPath(defs, "prompts", "start.md"), "Review request: {{task_description}}\n");
 	write(buildPath(defs, "task-types.yaml"),
 		"user_entry_points:\n"
@@ -5782,6 +5783,7 @@ unittest
 		~ "  internal:\n"
 		~ "    task_type: direct_test\n"
 		~ "    title: Internal\n"
+		~ "    description: Internal\n"
 		~ "    prompt_template: prompts/start.md\n");
 
 	auto dbPath = buildPath(tempDir(), "cydo-app-create-submission-acceptance.sqlite");
@@ -6392,6 +6394,7 @@ unittest
 	mkdirRecurse(projectPath);
 	auto defs = buildPath(root, "defs");
 	mkdirRecurse(buildPath(defs, "prompts"));
+	write(buildPath(defs, "prompts", "blank.md"), "Blank prompt\n");
 	write(buildPath(defs, "prompts", "start.md"), "{{task_description}}\n");
 	write(buildPath(defs, "task-types.yaml"),
 		"user_entry_points:\n"
@@ -7045,6 +7048,7 @@ unittest
 			rmdirRecurse(tmp);
 	}
 	mkdirRecurse(buildPath(tmp, "prompts"));
+	write(buildPath(tmp, "prompts", "blank.md"), "Blank prompt\n");
 	write(buildPath(tmp, "prompts", "empty.md"), " \n\t");
 
 	auto app = new App();
@@ -8077,6 +8081,7 @@ unittest
 		rmdirRecurse(root);
 	scope(exit) rmdirRecurse(root);
 	mkdirRecurse(buildPath(root, "prompts"));
+	write(buildPath(root, "prompts", "blank.md"), "Blank prompt\n");
 	write(buildPath(root, "prompts", "start.md"), "{{task_description}}\n");
 	auto definitions = buildPath(root, "task-types.yaml");
 	write(definitions,
@@ -8087,6 +8092,7 @@ unittest
 		~ "  turn_test_singleton:\n"
 		~ "    task_type: test\n"
 		~ "    title: Turn test singleton\n"
+		~ "    description: Turn test singleton\n"
 		~ "    prompt_template: prompts/start.md\n");
 
 	auto fixture = new DriverHistoryTurnFixture;

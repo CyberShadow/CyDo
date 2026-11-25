@@ -301,7 +301,8 @@ unittest
 	symlink("../targets/staged-pack", hop);
 	symlink(movedTarget, replacementHop);
 	mkdirRecurse(replacementPack);
-	mkdirRecurse(shipped);
+	mkdirRecurse(buildPath(shipped, "prompts"));
+	write(buildPath(shipped, "prompts", "blank.md"), "Blank prompt\n");
 	write(buildPath(shipped, yamlName), base ~ "shipped\n");
 	write(buildPath(stagedPack, yamlName), base ~ "original\n");
 	write(buildPath(replacementPack, yamlName), base ~ "replacement\n");

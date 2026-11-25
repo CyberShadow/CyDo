@@ -459,6 +459,7 @@ unittest
 		~ "    creatable_tasks:\n"
 		~ "      child:\n"
 		~ "        worktree: require\n"
+		~ "        prompt_template: prompts/blank.md\n"
 		~ "  child:\n"
 		~ "    model_class: large\n"
 		~ "    read_only: true\n"
@@ -524,6 +525,7 @@ unittest
 		~ "    creatable_tasks:\n"
 		~ "      child:\n"
 		~ "        worktree: require\n"
+		~ "        prompt_template: prompts/blank.md\n"
 		~ "  child:\n"
 		~ "    model_class: large\n");
 

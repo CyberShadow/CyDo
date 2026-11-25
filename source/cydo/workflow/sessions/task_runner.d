@@ -3718,7 +3718,7 @@ version (unittest) private void assertYieldGateRunnerCase(
 				~ "  runner:\n"
 				~ "    model_class: large\n";
 			if (onYield)
-				yaml ~= "    on_yield:\n      task_type: next\n"
+				yaml ~= "    on_yield:\n      task_type: next\n      prompt_template: prompts/blank.md\n"
 					~ "  next:\n    model_class: large\n";
 			auto catalog = gitMetadataTaskCatalog(fixture, yaml);
 			auto config = new CydoConfig;

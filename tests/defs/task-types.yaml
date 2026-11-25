@@ -204,6 +204,7 @@ task_types:
     output_type: []
     on_yield:
       task_type: blank
+      prompt_template: prompts/blank.md
 
   test_system_prompt:
     model_class: small
