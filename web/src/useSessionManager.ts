@@ -2053,6 +2053,10 @@ export function useTaskManager(
           }
           if (!recovered) outbox.remove(correlation_id);
           if (!task) break;
+          if (kind === "attachment_rejected") {
+            showServerError(reason, tid);
+            break;
+          }
           const hasDiagnostic =
             task.messages.some(
               (message) =>

@@ -302,12 +302,13 @@ enum BrowserSubmissionRejectionKind : string
 	native_undo_refused = "native_undo_refused",
 	history_cancelled = "history_cancelled",
 	delivery_failed = "delivery_failed",
+	attachment_rejected = "attachment_rejected",
 }
 
 /// cydo/submission_rejected — sender-only terminal disposition for a browser
 /// submission. `correlation_id` is the create_task correlation or message
 /// nonce supplied by the browser. `tid` is absent when create validation
-/// failed before a task was allocated.
+/// or attachment conversion failed before a task was allocated.
 struct BrowserSubmissionRejectedEvent
 {
 	string type = "cydo/submission_rejected";
@@ -315,6 +316,7 @@ struct BrowserSubmissionRejectedEvent
 	@JSONOptional int tid = -1;
 	BrowserSubmissionRejectionKind kind;
 	string reason;
+	@JSONOptional int attachment = -1;
 }
 
 /// item/started — a new content item begins streaming.

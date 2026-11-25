@@ -2,7 +2,7 @@ export type TurnEndReason = "unspecified" | "completed" | "interrupted" | "hook_
 
 export type TaskDiagnosticSeverity = "info" | "warning" | "error";
 
-export type BrowserSubmissionRejectionKind = "validation" | "task_unavailable" | "task_archiving" | "native_undo_refused" | "history_cancelled" | "delivery_failed";
+export type BrowserSubmissionRejectionKind = "validation" | "task_unavailable" | "task_archiving" | "native_undo_refused" | "history_cancelled" | "delivery_failed" | "attachment_rejected";
 
 export type ItemDenier = "classifier" | "settingsRule" | "backgroundAgent";
 
@@ -219,6 +219,7 @@ export interface BrowserSubmissionRejectedEvent {
   tid?: number;
   kind: BrowserSubmissionRejectionKind;
   reason: string;
+  attachment?: number;
 }
 
 export interface ItemStartedEvent {

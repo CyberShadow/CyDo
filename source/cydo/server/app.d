@@ -98,6 +98,7 @@ import cydo.server.config_resolution : loadRuntimeConfig;
 import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
 import cydo.runtime.image.converter : HeicConverter, createHeicConverter;
 version (unittest) import cydo.runtime.image.converter : UnavailableHeicConverter;
+import cydo.server.attachment_intake : AttachmentRejection, SubmissionIntake, needsNormalization;
 import cydo.server.environment : consumeServerEnvironment;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir, sharedTmpBaseDir;
 import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule;
@@ -238,6 +239,7 @@ class App
 	private TaskTypeCatalog taskTypeCatalog;
 	private string webDistDir;
 	private HeicConverter heicConverter;
+	private SubmissionIntake submissionIntake;
 	// JSONL file tracking state
 	private JsonlTracker jsonlTracker;
 	// HTTP basic auth credentials (from environment)
@@ -282,6 +284,7 @@ class App
 		// Consume server-only settings before anything can spawn a child.
 		auto serverEnv = consumeServerEnvironment();
 		heicConverter = createHeicConverter(serverEnv.heicConverter);
+		submissionIntake = new SubmissionIntake(heicConverter);
 		initLogger();
 		applyConfiguredLogLevel("info");
 
@@ -1508,7 +1511,7 @@ class App
 	/// Send a terminal submission disposition to its originating browser.
 	private void sendBrowserSubmissionRejected(WebSocketAdapter ws,
 		string correlationId, int tid, BrowserSubmissionRejectionKind kind,
-		string reason)
+		string reason, int attachment = -1)
 	{
 		if (kind == BrowserSubmissionRejectionKind.native_undo_refused)
 			clientHub.sendToSubscribed(tid,
@@ -1521,6 +1524,7 @@ class App
 			event.tid = tid;
 		event.kind = kind;
 		event.reason = reason;
+		event.attachment = attachment;
 		clientHub.sendTo(ws, Data(toJson(event).representation));
 	}
 
@@ -1593,14 +1597,6 @@ class App
 		}
 		// Top-level user task creation must always come through a concrete entry point.
 		// Internal tasks (subtasks, continuations, imports) are created through other paths.
-		if (auto refusal = taskTypeLoadRefusal(projectPath))
-		{
-			ws.send(Data(toJson(ErrorMessage("error", refusal)).representation));
-			sendBrowserSubmissionRejected(ws, json.correlation_id, -1,
-				BrowserSubmissionRejectionKind.validation, refusal);
-			return;
-		}
-		auto entryPoints = taskTypeCatalog.getEntryPointsForProject(projectPath);
 		if (json.entry_point.length == 0)
 		{
 			auto reason = "Top-level task creation requires an entry point";
@@ -1609,27 +1605,64 @@ class App
 				BrowserSubmissionRejectionKind.validation, reason);
 			return;
 		}
-		auto ep = entryPoints.byName(json.entry_point);
-		if (ep is null || ep.system)
-		{
-			auto reason = "Unknown entry point: " ~ json.entry_point;
-			ws.send(Data(toJson(ErrorMessage("error", reason)).representation));
-			sendBrowserSubmissionRejected(ws, json.correlation_id, -1,
-				BrowserSubmissionRejectionKind.validation, reason);
+		auto ep = validateBrowserEntryPoint(ws, projectPath, json.entry_point, json.correlation_id);
+		if (ep is null)
 			return;
+
+		ContentBlock[] blocks;
+		if (json.content.json !is null)
+			blocks = jsonParse!(ContentBlock[])(json.content.json);
+		if (!needsNormalization(blocks))
+			return createBrowserTask(ws, json, projectPath, at, ep, blocks);
+
+		submissionIntake.normalize(blocks).then((ContentBlock[] normalized) {
+			// Run creation in the event loop so exceptions follow the synchronous create path.
+			onNextTick(socketManager, {
+				auto current = validateBrowserEntryPoint(ws, projectPath, json.entry_point, json.correlation_id);
+				if (current !is null)
+					createBrowserTask(ws, json, projectPath, at, current, normalized);
+			});
+		}, (Exception e) {
+			auto rejection = cast(AttachmentRejection) e;
+			assert(rejection !is null);
+			sendBrowserSubmissionRejected(ws, json.correlation_id, -1,
+				BrowserSubmissionRejectionKind.attachment_rejected, rejection.msg, rejection.attachment);
+		}).ignoreResult();
+	}
+
+	private const(UserEntryPointDef)* validateBrowserEntryPoint(WebSocketAdapter ws,
+		string projectPath, string entryPoint, string correlationId)
+	{
+		if (auto refusal = taskTypeLoadRefusal(projectPath))
+		{
+			clientHub.sendTo(ws, Data(toJson(ErrorMessage("error", refusal)).representation));
+			sendBrowserSubmissionRejected(ws, correlationId, -1,
+				BrowserSubmissionRejectionKind.validation, refusal);
+			return null;
 		}
-		auto tid = createEntryPointTask(json.workspace, projectPath, at, ep);
+		auto ep = taskTypeCatalog.getEntryPointsForProject(projectPath).byName(entryPoint);
+		if (ep !is null && !ep.system)
+			return ep;
+
+		auto reason = "Unknown entry point: " ~ entryPoint;
+		clientHub.sendTo(ws, Data(toJson(ErrorMessage("error", reason)).representation));
+		sendBrowserSubmissionRejected(ws, correlationId, -1,
+			BrowserSubmissionRejectionKind.validation, reason);
+		return null;
+	}
+
+	private void createBrowserTask(WebSocketAdapter ws, WsMessage json, string projectPath,
+		string agentName, const UserEntryPointDef* ep, ContentBlock[] blocks)
+	{
+		auto tid = createEntryPointTask(json.workspace, projectPath, agentName, ep);
 		// Send task_created only to the requesting client (unicast) so that
 		// parallel test workers don't steal each other's task IDs.
-		ws.send(Data(toJson(TaskCreatedMessage("task_created", tid, json.workspace, projectPath, 0, "", json.correlation_id)).representation));
+		clientHub.sendTo(ws, Data(toJson(TaskCreatedMessage("task_created", tid, json.workspace, projectPath, 0, "", json.correlation_id)).representation));
 		unicastFocusHint(ws, 0, tid);
 		// Broadcast updated task state so all other clients see the new task.
 		broadcastTaskUpdate(tid);
 
 		// If content is provided, send it as the first message atomically
-		ContentBlock[] blocks;
-		if (json.content.json !is null)
-			blocks = jsonParse!(ContentBlock[])(json.content.json);
 		if (blocks.length > 0)
 			submitInitialMessage(tid, blocks, MessageSource.user).except((Exception failure) {
 				sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
@@ -1987,18 +2020,53 @@ class App
 		}).ignoreResult();
 	}
 
+	private struct BrowserSubmissionRefusal
+	{
+		BrowserSubmissionRejectionKind kind;
+		string reason;
+	}
+
+	private BrowserSubmissionRefusal browserSubmissionRefusal(int tid, ulong generation)
+	{
+		auto td = tid in tasks;
+		if (td is null)
+			return BrowserSubmissionRefusal(BrowserSubmissionRejectionKind.task_unavailable,
+				"Task is no longer available");
+		if (td.history.generation != generation)
+			return BrowserSubmissionRefusal(BrowserSubmissionRejectionKind.history_cancelled,
+				"Submission was cancelled because task history changed");
+		if (auto refusal = nativeUndoDeliveryRefusal(td))
+			return BrowserSubmissionRefusal(BrowserSubmissionRejectionKind.native_undo_refused,
+				refusal);
+		if (isArchiveTransitioning(tid))
+			return BrowserSubmissionRefusal(BrowserSubmissionRejectionKind.task_archiving,
+				"Task is being archived");
+		if (auto refusal = taskTypeLoadRefusal(td.projectPath))
+			return BrowserSubmissionRefusal(BrowserSubmissionRejectionKind.validation, refusal);
+		return BrowserSubmissionRefusal.init;
+	}
+
+	private void releaseUiNonceLease(TaskData* td, string nonce, ulong generation)
+	{
+		if (nonce.length > 0)
+			if (auto leasedGeneration = nonce in td.inFlightUiNonceGeneration)
+				if (*leasedGeneration == generation)
+					td.inFlightUiNonceGeneration.remove(nonce);
+	}
+
 	private void handleUserMessage(WebSocketAdapter ws, WsMessage json)
 	{
 		auto tid = json.tid;
-		if (tid < 0 || tid !in tasks)
+		auto msgNonce = json.correlation_id;
+		auto td = tid in tasks;
+		if (tid < 0 || td is null)
 		{
-			sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
+			sendBrowserSubmissionRejected(ws, msgNonce, tid,
 				BrowserSubmissionRejectionKind.task_unavailable,
 				"Task is no longer available");
 			return;
 		}
-		auto td = &tasks[tid];
-		auto msgNonce = json.correlation_id;
+
 		auto submissionGeneration = td.history.generation;
 		if (msgNonce.length > 0)
 		{
@@ -2009,27 +2077,10 @@ class App
 					return;
 		}
 
-		// Refuse at the entry point so a blocked send performs no task
-		// materialization, nonce leasing, or process start on the way to the
-		// delivery funnel's fail-closed backstop. The blockage is a property of
-		// the task, not of one requester, so every subscribed client hears it.
-		if (auto refusal = nativeUndoDeliveryRefusal(td))
+		auto refusal = browserSubmissionRefusal(tid, submissionGeneration);
+		if (refusal.reason.length)
 		{
-			sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
-				BrowserSubmissionRejectionKind.native_undo_refused, refusal);
-			return;
-		}
-		if (isArchiveTransitioning(tid))
-		{
-			sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
-				BrowserSubmissionRejectionKind.task_archiving,
-				"Task is being archived");
-			return;
-		}
-		if (auto refusal = taskTypeLoadRefusal(td.projectPath))
-		{
-			sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
-				BrowserSubmissionRejectionKind.validation, refusal);
+			sendBrowserSubmissionRejected(ws, msgNonce, tid, refusal.kind, refusal.reason);
 			return;
 		}
 		assert(td.taskType.length > 0, "Task must have a task_type when receiving a message");
@@ -2037,14 +2088,69 @@ class App
 		ContentBlock[] blocks;
 		if (json.content.json !is null)
 			blocks = jsonParse!(ContentBlock[])(json.content.json);
+		if (msgNonce.length > 0)
+			td.inFlightUiNonceGeneration[msgNonce] = submissionGeneration;
+
+		auto initializesDescription = td.description.length == 0;
+		auto initializesTitle = td.title.length == 0;
+		auto draftAtSubmission = td.draft;
+		submissionIntake.submit(tid, blocks, (ContentBlock[] normalized) {
+			dispatchBrowserSubmission(ws, tid, msgNonce, submissionGeneration, normalized,
+				initializesDescription, initializesTitle, draftAtSubmission);
+		}, (AttachmentRejection rejection) {
+			if (auto current = tid in tasks)
+				releaseUiNonceLease(current, msgNonce, submissionGeneration);
+			sendBrowserSubmissionRejected(ws, msgNonce, tid,
+				BrowserSubmissionRejectionKind.attachment_rejected, rejection.msg, rejection.attachment);
+		});
+	}
+
+	private void dispatchBrowserSubmission(WebSocketAdapter ws, int tid, string msgNonce,
+		ulong submissionGeneration, ContentBlock[] blocks, bool initializesDescription,
+		bool initializesTitle, string draftAtSubmission)
+	{
+		auto td = tid in tasks;
+		auto refusal = browserSubmissionRefusal(tid, submissionGeneration);
+		if (refusal.reason.length)
+		{
+			if (td !is null)
+				releaseUiNonceLease(td, msgNonce, submissionGeneration);
+			sendBrowserSubmissionRejected(ws, msgNonce, tid, refusal.kind, refusal.reason);
+			return;
+		}
+		void rejectSubmission(Exception e)
+		{
+			auto rejected = tid in tasks;
+			assert(rejected !is null,
+				"User message submission task disappeared");
+			releaseUiNonceLease(rejected, msgNonce, submissionGeneration);
+			if (rejected.history.generation == submissionGeneration
+				&& rejected.status != TaskStatus.failed)
+			{
+				auto translated = historyPipeline.appendTaskDiagnostic(tid,
+					"Failed to submit message", e.msg);
+				broadcastAppendedTaskEvent(tid, translated);
+				broadcastTaskUpdate(tid);
+			}
+			sendBrowserSubmissionRejected(ws, msgNonce, tid,
+				submissionRejectionKind(e), e.msg);
+		}
+
+		scope (failure) releaseUiNonceLease(td, msgNonce, submissionGeneration);
+		prepareBrowserSubmission(td, tid, msgNonce, submissionGeneration, blocks,
+			initializesDescription, initializesTitle, draftAtSubmission)
+			.except(&rejectSubmission).ignoreResult();
+	}
+
+	private Promise!void prepareBrowserSubmission(TaskData* td, int tid, string msgNonce,
+		ulong submissionGeneration, ContentBlock[] blocks, bool initializesDescription,
+		bool initializesTitle, string draftAtSubmission)
+	{
 		auto textContent = extractContentText(blocks);
 
 		// Wrap first message in prompt template (e.g. conversation.md)
 		auto messageToSend = blocks;
 		string userMsgMeta;
-		auto initializesDescription = td.description.length == 0;
-		auto initializesTitle = td.title.length == 0;
-		auto draftAtSubmission = td.draft;
 		if (initializesDescription)
 		{
 			auto typeDef = taskTypeCatalog.getTaskTypesForProject(td.projectPath).byName(td.taskType);
@@ -2080,8 +2186,6 @@ class App
 		}
 		if (initializesDescription)
 			materializePendingTask(tid);
-		if (msgNonce.length > 0)
-			td.inFlightUiNonceGeneration[msgNonce] = submissionGeneration;
 		void commitAcceptedBrowserSubmission(TaskData* accepted)
 		{
 			if (initializesDescription && accepted.description.length == 0)
@@ -2114,7 +2218,7 @@ class App
 				clientHub.sendToSubscribed(tid, draftData);
 			}
 		}
-		td.processQueue.setGoal(ProcessState.Alive).then(() {
+		return td.processQueue.setGoal(ProcessState.Alive).then(() {
 			auto queued = tid in tasks;
 			assert(queued !is null,
 				"User message submission task disappeared before dispatch");
@@ -2123,25 +2227,7 @@ class App
 					"Submission was cancelled because task history changed"));
 			return sendTaskMessage(tid, messageToSend, blocks, userMsgMeta, msgNonce,
 				userMsgMeta.length > 0, &commitAcceptedBrowserSubmission, MessageSource.user);
-		}).except((Exception e) {
-			auto rejected = tid in tasks;
-			assert(rejected !is null,
-				"User message submission task disappeared");
-			if (msgNonce.length > 0)
-				if (auto leasedGeneration = msgNonce in rejected.inFlightUiNonceGeneration)
-					if (*leasedGeneration == submissionGeneration)
-						rejected.inFlightUiNonceGeneration.remove(msgNonce);
-			if (rejected.history.generation == submissionGeneration
-				&& rejected.status != TaskStatus.failed)
-			{
-				auto translated = historyPipeline.appendTaskDiagnostic(tid,
-					"Failed to submit message", e.msg);
-				broadcastAppendedTaskEvent(tid, translated);
-				broadcastTaskUpdate(tid);
-			}
-			sendBrowserSubmissionRejected(ws, msgNonce, tid,
-				submissionRejectionKind(e), e.msg);
-		}).ignoreResult();
+		});
 	}
 
 	private void handleResumeMsg(WsMessage json)
@@ -2465,9 +2551,7 @@ class App
 			if (nonce.length > 0)
 			{
 				accepted.recentNonces[nonce] = true;
-				if (auto leasedGeneration = nonce in accepted.inFlightUiNonceGeneration)
-					if (*leasedGeneration == submissionGeneration)
-						accepted.inFlightUiNonceGeneration.remove(nonce);
+				releaseUiNonceLease(accepted, nonce, submissionGeneration);
 			}
 			accepted.isProcessing = true;
 			touchAndPersistLastActive(tid);
@@ -4134,7 +4218,7 @@ class App
 	private void unicastFocusHint(WebSocketAdapter ws, int fromTid, int toTid)
 	{
 		import ae.utils.json : toJson;
-		ws.send(Data(toJson(FocusHintMessage("focus_hint", fromTid, toTid)).representation));
+		clientHub.sendTo(ws, Data(toJson(FocusHintMessage("focus_hint", fromTid, toTid)).representation));
 	}
 
 	private void handleRequestTaskTypesMsg(WebSocketAdapter ws, WsMessage json)
@@ -4509,6 +4593,7 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 	ContentBlock[][] contents;
 	MessageSource[] sources;
 	size_t sendCalls;
+	bool acceptsImages;
 	private void delegate(TranslatedEvent) outputHandler_;
 	private void delegate(string) nativeSessionStartedHandler_;
 	private void delegate(int) exitHandler_;
@@ -4585,7 +4670,7 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 	}
 
 	void invalidatePendingSubmittedMessages() {}
-	@property bool supportsImages() const { return false; }
+	@property bool supportsImages() const { return acceptsImages; }
 	void interrupt() {}
 	void sigint() {}
 	void stop() {}
@@ -4843,9 +4928,13 @@ unittest
 		"Raw-archived same-scope children count, while cross-scope rows do not");
 }
 
+version (unittest)
+	import cydo.server.attachment_intake : GatedFakeConverter, testHeicBlock, testJpegBytes;
+
 version (unittest) private final class GatedSubmissionFixture
 {
 	App app;
+	GatedFakeConverter converter;
 	GatedSubmissionSession session;
 	SubmissionCaptureWebSocket socket;
 	string[] submissionMessages;
@@ -4858,6 +4947,9 @@ version (unittest) private final class GatedSubmissionFixture
 	this(string dbPath)
 	{
 		app = new App();
+		converter = new GatedFakeConverter;
+		app.heicConverter = converter;
+		app.submissionIntake = new SubmissionIntake(converter);
 		app.persistence = Persistence(dbPath);
 		tid = app.persistence.createTask();
 		app.tasks[tid] = TaskData(tid, "local", "/tmp/cydo-app-submission");
@@ -5067,6 +5159,177 @@ version (unittest) private void drainSubmissionNextTicks()
 		foreach (handler; handlers)
 			handler();
 	}
+}
+
+version (unittest) private WsMessage testBrowserHeicSubmission(int tid, string text, string nonce)
+{
+	auto message = testBrowserSubmission(tid, text, nonce);
+	message.content = JSONFragment(toJson([ContentBlock("text", text), testHeicBlock()]));
+	return message;
+}
+
+version (unittest) private auto assertBrowserRejection(
+	SubmissionCaptureWebSocket socket, string nonce, int tid, BrowserSubmissionRejectionKind kind)
+{
+	import std.conv : to;
+
+	assert(submissionRejectionCount(socket.sent) == 1);
+	auto rejection = parseJSON(socket.sent[$ - 1]);
+	assert(rejection["type"].str == "cydo/submission_rejected"
+		&& rejection["correlation_id"].str == nonce && rejection["kind"].str == kind.to!string);
+	if (tid >= 0)
+		assert(rejection["tid"].integer == tid);
+	else
+		assert("tid" !in rejection);
+	return rejection;
+}
+
+version (unittest) private ContentBlock testNormalizedJpeg()
+{
+	import std.base64 : Base64;
+	return ContentBlock(type: "image", data: Base64.encode(testJpegBytes), media_type: "image/jpeg");
+}
+
+unittest
+{
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	auto task = &fixture.app.tasks[fixture.tid];
+	task.agentName = "test";
+	auto message = testBrowserHeicSubmission(fixture.tid, "photo", "duplicate-photo");
+	fixture.app.handleUserMessage(fixture.socket, message);
+	drainSubmissionNextTicks();
+	assert(message.correlation_id in task.inFlightUiNonceGeneration);
+	fixture.app.handleUserMessage(fixture.socket, message);
+	drainSubmissionNextTicks();
+	assert(fixture.converter.gates.length == 1 && fixture.session.sendCalls == 0
+		&& fixture.socket.sent.length == 0);
+
+	fixture.converter.gates[0].fulfill(testJpegBytes);
+	drainSubmissionNextTicks();
+	assert(fixture.session.sendCalls == 1);
+	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
+	drainSubmissionNextTicks();
+	assert(fixture.session.sendCalls == 1 && message.correlation_id in task.recentNonces);
+}
+
+unittest
+{
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	fixture.app.tasks[fixture.tid].agentName = "test";
+	fixture.session.acceptsImages = true;
+	auto message = testBrowserHeicSubmission(fixture.tid, "photo", "normalized-photo");
+	fixture.app.handleUserMessage(fixture.socket, message);
+	drainSubmissionNextTicks();
+	fixture.converter.gates[0].fulfill(testJpegBytes);
+	drainSubmissionNextTicks();
+
+	auto expected = [ContentBlock("text", "photo"), testNormalizedJpeg()];
+	assert(fixture.session.sendCalls == 1 && fixture.session.contents[0] == expected);
+	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
+	drainSubmissionNextTicks();
+	assert(fixture.submissionMessages.length == 1);
+	auto envelope = jsonParse!UnconfirmedUserEventEnvelope(fixture.submissionMessages[0]);
+	auto event = jsonParse!ItemStartedEvent(envelope.unconfirmedUserEvent.json);
+	assert(envelope.tid == fixture.tid && event.content == expected);
+}
+
+unittest
+{
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	fixture.app.tasks[fixture.tid].agentName = "test";
+	fixture.app.handleUserMessage(fixture.socket,
+		testBrowserHeicSubmission(fixture.tid, "first", "first-photo"));
+	fixture.app.handleUserMessage(fixture.socket,
+		testBrowserSubmission(fixture.tid, "second", "second-text"));
+	drainSubmissionNextTicks();
+	assert(fixture.converter.gates.length == 1 && fixture.session.sendCalls == 0);
+	fixture.converter.gates[0].fulfill(testJpegBytes);
+	drainSubmissionNextTicks();
+	assert(fixture.session.correlations == ["first-photo", "second-text"]);
+	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
+	fixture.session.accept(1, AgentSubmissionReceipt.appServerAccepted);
+	drainSubmissionNextTicks();
+}
+
+unittest
+{
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	auto task = &fixture.app.tasks[fixture.tid];
+	task.agentName = "test";
+	fixture.session.acceptsImages = true;
+	enum submittedDraft = "draft being submitted";
+	enum newerDraft = "new draft saved during conversion";
+
+	void saveDraft(string draft)
+	{
+		fixture.app.handleSetDraftMsg(fixture.socket, WsMessage(type: "set_draft",
+			tid: fixture.tid, content: JSONFragment(toJson(draft))));
+		assert(task.draft == draft && fixture.app.persistence.loadTasks()[0].draft == draft);
+	}
+
+	saveDraft(submittedDraft);
+	fixture.app.handleUserMessage(fixture.socket,
+		testBrowserHeicSubmission(fixture.tid, submittedDraft, "photo-with-draft"));
+	fixture.app.handleUserMessage(fixture.socket,
+		testBrowserSubmission(fixture.tid, submittedDraft, "queued-text-with-draft"));
+	drainSubmissionNextTicks();
+	assert(fixture.converter.gates.length == 1 && fixture.session.sendCalls == 0);
+
+	saveDraft(newerDraft);
+	fixture.converter.gates[0].fulfill(testJpegBytes);
+	drainSubmissionNextTicks();
+	assert(fixture.session.correlations == ["photo-with-draft", "queued-text-with-draft"]);
+	foreach (i, nonce; fixture.session.correlations)
+	{
+		fixture.session.accept(i, AgentSubmissionReceipt.appServerAccepted);
+		drainSubmissionNextTicks();
+		assert(nonce in task.recentNonces);
+		assert(task.draft == newerDraft, "Accepting " ~ nonce ~ " erased the newer in-memory draft");
+		assert(fixture.app.persistence.loadTasks()[0].draft == newerDraft,
+			"Accepting " ~ nonce ~ " erased the newer persisted draft");
+	}
+}
+
+unittest
+{
+	foreach (undo; [true, false])
+	{
+		auto fixture = new GatedSubmissionFixture(":memory:");
+		scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+		auto task = &fixture.app.tasks[fixture.tid];
+		task.agentName = "test";
+		if (undo)
+			task.beginConfirmedNativeUndo();
+		else
+			task.archiving = true;
+		auto message = testBrowserHeicSubmission(fixture.tid, "blocked photo", "blocked-photo");
+		fixture.app.handleUserMessage(fixture.socket, message);
+		assertBrowserRejection(fixture.socket, message.correlation_id, fixture.tid, undo
+			? BrowserSubmissionRejectionKind.native_undo_refused
+			: BrowserSubmissionRejectionKind.task_archiving);
+		drainSubmissionNextTicks();
+		assert(fixture.converter.inputs.length == 0 && fixture.session.sendCalls == 0);
+	}
+}
+
+unittest
+{
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	fixture.app.tasks[fixture.tid].agentName = "test";
+	fixture.app.heicConverter = new UnavailableHeicConverter("no bwrap");
+	fixture.app.submissionIntake = new SubmissionIntake(fixture.app.heicConverter);
+	auto message = testBrowserHeicSubmission(fixture.tid, "photo", "unavailable-photo");
+	fixture.app.handleUserMessage(fixture.socket, message);
+	drainSubmissionNextTicks();
+	auto rejection = assertBrowserRejection(fixture.socket, message.correlation_id, fixture.tid,
+		BrowserSubmissionRejectionKind.attachment_rejected);
+	assert(rejection["attachment"].integer == 0 && rejection["reason"].str.canFind("no bwrap"));
+	assert(fixture.session.sendCalls == 0);
 }
 
 unittest
@@ -5887,13 +6150,17 @@ unittest
 	fixture.app.taskTypeCatalog = new TaskTypeCatalog(defs,
 		buildPath(defs, "task-types.yaml"), (string name) => name == "claude");
 	fixture.app.agentsByName["claude"] = new TestClaudePromptAgent;
+	size_t taskDirReads;
 	fixture.app.taskPathResolver = new TaskPathResolver(TaskPathResolverHost(
 		getTask: (int lookupTid) {
 			auto task = lookupTid in fixture.app.tasks;
 			return task is null ? null : task;
 		},
 		workspaces: () => fixture.app.config.workspaces,
-		taskDirTemplate: () => fixture.app.taskDirTemplate,
+		taskDirTemplate: () {
+			taskDirReads++;
+			return fixture.app.taskDirTemplate;
+		},
 	));
 	fixture.app.worktreeAllocator = new WorktreeAllocator(WorktreeAllocatorHost(
 		getTask: (int lookupTid) {
@@ -5970,8 +6237,10 @@ unittest
 	));
 	fixture.app.workflowTools = new WorkflowToolsBackend(WorkflowToolsHost.init);
 	auto runner = new GatedSubmissionRunner(fixture.session, true);
+	size_t launchCount;
 	bool launchSawAssignedWorktree;
 	runner.onLaunch = (int launchTid) {
+		launchCount++;
 		auto launched = &fixture.app.tasks[launchTid];
 		launchSawAssignedWorktree = launched.worktreeTid == launchTid
 			&& exists(fixture.app.taskPathResolver.worktreePath(launched));
@@ -6047,6 +6316,9 @@ unittest
 	fixture.socket.sent = null;
 	fixture.app.handleCreateTaskMsg(fixture.socket,
 		createMessage("cancelled direct first message", "create-history-nonce"));
+	assert(fixture.socket.sent.length > 0
+		&& fixture.socket.sent[0].canFind(`"type":"task_created"`)
+		&& fixture.converter.inputs.length == 0, "Text-only creation is synchronous");
 	auto cancelledTid = latestTid();
 	auto cancelled = &fixture.app.tasks[cancelledTid];
 	drainSubmissionNextTicks();
@@ -6427,11 +6699,190 @@ unittest
 	assertUserTaskStart("Keep this title");
 	assertUserTaskStart("");
 
+	// Reuse the real entry point and worktree fixture for the attachment cases.
+	fixture.session.acceptsImages = true;
+	auto photoCreate = createMessage("first photo", "create-photo");
+	photoCreate.content = JSONFragment(toJson([ContentBlock("text", "first photo"), testHeicBlock()]));
+	auto beforePhotoTid = latestTid();
+	auto beforePhotoTaskCount = fixture.app.tasks.length;
+	auto photoSendIndex = fixture.session.sendCalls;
+	fixture.socket.sent = null;
+	fixture.app.handleCreateTaskMsg(fixture.socket, photoCreate);
+	drainSubmissionNextTicks();
+	assert(fixture.converter.gates.length == 1 && fixture.socket.sent.length == 0
+		&& latestTid() == beforePhotoTid && fixture.app.tasks.length == beforePhotoTaskCount
+		&& fixture.session.sendCalls == photoSendIndex);
+
+	fixture.converter.gates[0].fulfill(testJpegBytes);
+	drainSubmissionNextTicks();
+	auto photoTid = latestTid();
+	assert(photoTid > beforePhotoTid && fixture.app.tasks.length == beforePhotoTaskCount + 1);
+	auto createdPhotoTask = parseJSON(fixture.socket.sent[0]);
+	assert(createdPhotoTask["type"].str == "task_created"
+		&& createdPhotoTask["tid"].integer == photoTid
+		&& createdPhotoTask["correlation_id"].str == photoCreate.correlation_id);
+	assert(fixture.session.sendCalls == photoSendIndex + 1);
+	auto photoContent = fixture.session.contents[photoSendIndex];
+	assert(photoContent.length == 2 && photoContent[1] == testNormalizedJpeg());
+	fixture.session.accept(photoSendIndex, AgentSubmissionReceipt.appServerAccepted);
+	drainSubmissionNextTicks();
+
+	import cydo.runtime.image.bounded_filter : FilterFailure, FilterFailureKind;
+	photoCreate.correlation_id = "create-photo-refused";
+	fixture.socket.sent = null;
+	fixture.app.handleCreateTaskMsg(fixture.socket, photoCreate);
+	drainSubmissionNextTicks();
+	assert(fixture.converter.gates.length == 2 && fixture.socket.sent.length == 0);
+	fixture.converter.gates[1].reject(new FilterFailure(FilterFailureKind.failed));
+	drainSubmissionNextTicks();
+	auto photoRejection = assertBrowserRejection(fixture.socket, photoCreate.correlation_id, -1,
+		BrowserSubmissionRejectionKind.attachment_rejected);
+	assert(photoRejection["attachment"].integer == 0 && photoRejection["reason"].str == "conversion failed");
+	assert(fixture.socket.sent.length == 1);
+	assert(latestTid() == photoTid && fixture.app.tasks.length == beforePhotoTaskCount + 1
+		&& fixture.session.sendCalls == photoSendIndex + 1);
+
+	void assertPendingPhoto(bool cancelHistory)
+	{
+		auto ep = fixture.app.taskTypeCatalog.getEntryPointsForProject(projectPath).byName("isolated");
+		auto tid = fixture.app.createEntryPointTask("create", projectPath, "claude", ep);
+		auto task = &fixture.app.tasks[tid];
+		fixture.app.clientHub.subscribe(fixture.socket, tid);
+		fixture.socket.sent = null;
+		auto message = testBrowserHeicSubmission(tid, "pending photo", "pending-photo");
+		auto sends = fixture.session.sendCalls;
+		auto launches = launchCount;
+		auto gateIndex = fixture.converter.gates.length;
+		auto path = worktreePathForTaskDir(fixture.app.taskPathResolver.taskDir(task));
+		auto reads = taskDirReads;
+		assert(task.status == TaskStatus.pending && task.worktreeTid == 0 && !exists(path));
+		assert(task.processQueue.goalState == ProcessState.Dead && !fixture.app.taskAlive(tid));
+
+		fixture.app.handleUserMessage(fixture.socket, message);
+		drainSubmissionNextTicks();
+		assert(fixture.converter.gates.length == gateIndex + 1);
+		assert(message.correlation_id in task.inFlightUiNonceGeneration);
+		assert(taskDirReads == reads && launchCount == launches);
+		if (cancelHistory)
+		{
+			task.history.reset(Watermark.none());
+			fixture.converter.gates[gateIndex].fulfill(testJpegBytes);
+			drainSubmissionNextTicks();
+			assertBrowserRejection(fixture.socket, message.correlation_id, tid,
+				BrowserSubmissionRejectionKind.history_cancelled);
+		}
+		else
+		{
+			fixture.converter.gates[gateIndex].reject(new FilterFailure(FilterFailureKind.failed));
+			drainSubmissionNextTicks();
+			auto refusal = assertBrowserRejection(fixture.socket, message.correlation_id, tid,
+				BrowserSubmissionRejectionKind.attachment_rejected);
+			assert(refusal["attachment"].integer == 0 && refusal["reason"].str == "conversion failed");
+		}
+
+		assert(taskDirReads == reads, "A refused submission must stop before prompt framing");
+		assert(task.processQueue.goalState == ProcessState.Dead && launchCount == launches);
+		assert(task.status == TaskStatus.pending && task.description.length == 0
+			&& task.worktreeTid == 0 && !exists(path) && task.history.length == 0);
+		auto row = rowFor(tid);
+		assert(row.status == TaskStatus.pending && row.description.length == 0 && row.worktreeTid == 0);
+		assert(message.correlation_id !in task.inFlightUiNonceGeneration);
+		assert(fixture.session.sendCalls == sends && fixture.socket.sent.length == 1);
+
+		fixture.app.handleUserMessage(fixture.socket, message);
+		drainSubmissionNextTicks();
+		assert(fixture.converter.gates.length == gateIndex + 2);
+		fixture.converter.gates[gateIndex + 1].fulfill(testJpegBytes);
+		drainSubmissionNextTicks();
+		assert(taskDirReads > reads && launchCount == launches + 1);
+		assert(task.worktreeTid == tid && rowFor(tid).worktreeTid == tid && exists(path));
+		assert(fixture.session.sendCalls == sends + 1);
+		fixture.session.accept(sends, AgentSubmissionReceipt.appServerAccepted);
+		drainSubmissionNextTicks();
+		assert(message.correlation_id in task.recentNonces && task.description == "pending photo");
+		assert(submissionRejectionCount(fixture.socket.sent) == 1);
+	}
+
+	assertPendingPhoto(false);
+	assertPendingPhoto(true);
+
+	{
+		import std.exception : collectException;
+
+		enum insertFailure = "test task insert failure";
+		fixture.app.persistence.db.db.exec("CREATE TEMP TRIGGER fail_task_insert BEFORE INSERT ON tasks "
+			~ "BEGIN SELECT RAISE(ABORT, '" ~ insertFailure ~ "'); END;");
+		scope(exit) fixture.app.persistence.db.db.exec("DROP TRIGGER fail_task_insert;");
+		auto taskCount = fixture.app.tasks.length;
+		auto previousTid = latestTid();
+		auto sends = fixture.session.sendCalls;
+		fixture.socket.sent = null;
+		auto synchronous = collectException(fixture.app.handleCreateTaskMsg(fixture.socket,
+			createMessage("cannot insert text task", "insert-text-failure")));
+		assert(synchronous !is null && synchronous.msg.canFind(insertFailure));
+		assert(fixture.socket.sent.length == 0 && latestTid() == previousTid
+			&& fixture.app.tasks.length == taskCount && fixture.session.sendCalls == sends);
+
+		auto gateIndex = fixture.converter.gates.length;
+		photoCreate.correlation_id = "insert-photo-failure";
+		fixture.app.handleCreateTaskMsg(fixture.socket, photoCreate);
+		drainSubmissionNextTicks();
+		assert(fixture.converter.gates.length == gateIndex + 1 && fixture.socket.sent.length == 0);
+		fixture.converter.gates[gateIndex].fulfill(testJpegBytes);
+		auto deferred = collectException(drainSubmissionNextTicks());
+		assert(deferred !is null && deferred.msg == synchronous.msg);
+		drainSubmissionNextTicks();
+		assert(fixture.socket.sent.length == 0 && latestTid() == previousTid
+			&& fixture.app.tasks.length == taskCount && fixture.session.sendCalls == sends);
+	}
+
 	// An unborn repository cannot supply the HEAD required by git worktree add.
 	auto unbornProject = buildPath(root, "unborn");
 	mkdirRecurse(unbornProject);
 	auto gitInit = execute(["git", "-C", unbornProject, "init", "-q"]);
 	assert(gitInit.status == 0, gitInit.output);
+
+	{
+		import std.exception : collectException;
+
+		auto ep = fixture.app.taskTypeCatalog.getEntryPointsForProject(unbornProject).byName("isolated");
+		auto tid = fixture.app.createEntryPointTask("create", unbornProject, "claude", ep);
+		auto task = &fixture.app.tasks[tid];
+		fixture.app.clientHub.subscribe(fixture.socket, tid);
+		fixture.socket.sent = null;
+		auto sends = fixture.session.sendCalls;
+		auto launches = launchCount;
+		auto gateIndex = fixture.converter.gates.length;
+		auto text = testBrowserSubmission(tid, "text to unborn repo", "unborn-fast-text");
+		auto synchronous = collectException(fixture.app.handleUserMessage(fixture.socket, text));
+		assert(synchronous !is null && synchronous.msg.canFind("Failed to create required worktree"));
+		assert(text.correlation_id !in task.inFlightUiNonceGeneration);
+		assert(fixture.socket.sent.length == 0 && task.history.length == 0
+			&& fixture.converter.gates.length == gateIndex);
+
+		auto photo = testBrowserHeicSubmission(tid, "photo to unborn repo", "unborn-photo");
+		auto queued = testBrowserSubmission(tid, "text to unborn repo", "unborn-queued-text");
+		fixture.app.handleUserMessage(fixture.socket, photo);
+		fixture.app.handleUserMessage(fixture.socket, queued);
+		drainSubmissionNextTicks();
+		assert(fixture.converter.gates.length == gateIndex + 1 && fixture.socket.sent.length == 0);
+		assert(photo.correlation_id in task.inFlightUiNonceGeneration
+			&& queued.correlation_id in task.inFlightUiNonceGeneration);
+
+		fixture.converter.gates[gateIndex].fulfill(testJpegBytes);
+		auto deferred = collectException(drainSubmissionNextTicks());
+		assert(deferred !is null && deferred.msg == synchronous.msg);
+		assert(photo.correlation_id !in task.inFlightUiNonceGeneration
+			&& queued.correlation_id in task.inFlightUiNonceGeneration);
+		auto afterPhoto = collectException(drainSubmissionNextTicks());
+		assert(afterPhoto !is null && afterPhoto.msg == synchronous.msg);
+		drainSubmissionNextTicks();
+		assert(fixture.socket.sent.length == 0 && task.history.length == 0);
+		assert(photo.correlation_id !in task.inFlightUiNonceGeneration
+			&& queued.correlation_id !in task.inFlightUiNonceGeneration);
+		assert(task.worktreeTid == 0 && task.status == TaskStatus.pending
+			&& launchCount == launches && fixture.session.sendCalls == sends);
+	}
 
 	auto caller = &fixture.app.tasks[fixture.tid];
 	caller.workspace = "create";
@@ -7537,7 +7988,12 @@ unittest // A create-first load rejects until the watcher observes a repair.
 
 	fixture.repairThroughWatcher();
 	auto socket = new SubmissionCaptureWebSocket;
-	scope (exit) socket.disconnect("test complete", DisconnectType.requested);
+	app.clientHub.add(socket);
+	scope (exit)
+	{
+		app.clientHub.remove(socket);
+		socket.disconnect("test complete", DisconnectType.requested);
+	}
 	message.correlation_id = "create-after-repair";
 	app.handleCreateTaskMsg(socket, message);
 	assert(submissionRejectionCount(socket.sent) == 0);
