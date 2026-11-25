@@ -78,6 +78,38 @@ function reconstructSource(node: {
 }
 
 describe("sourceTree projection parser", () => {
+  it.each([
+    ["delimiter text inside an expansion", ":<<E\n$xE "],
+    ["trailing space on the delimiter line", ":<<E\n$x\nE "],
+  ])("rejects an incomplete heredoc with %s", async (_label, source) => {
+    const parsed = await loadParsedShellDocument(source);
+    if (parsed.ok) buildShellSourceTree(parsed.document);
+    expect(parsed).toMatchObject({
+      ok: false,
+      reason: "invalid_heredoc",
+      issue: "incomplete",
+    });
+  });
+
+  it.each([
+    ["at EOF without a final newline", ":<<E\n$x\nE"],
+    ["after a quoted opener", ":<<'E'\n$x\nE\n"],
+    ["before CRLF", ":<<E\n$x\nE\r\n"],
+  ])("accepts a heredoc terminator %s", async (_label, source) => {
+    const tree = await buildLoadedShellSourceTree(source);
+    expect(tree.ok).toBe(true);
+    if (tree.ok) expect(reconstructSource(tree.value)).toBe(source);
+  });
+
+  it("rejects multiple heredocs on the same command line", async () => {
+    const parsed = await loadParsedShellDocument(":<<A <<B\na\nA\nb\nB\n");
+    expect(parsed).toMatchObject({
+      ok: false,
+      reason: "unsafe_shell_syntax",
+      issue: "error_node",
+    });
+  });
+
   it("preserves the full source of a 4,000-command && chain", async () => {
     const source = Array(4_000).fill("true").join(" && ");
     const tree = await buildLoadedShellSourceTree(source);

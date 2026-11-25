@@ -3839,22 +3839,17 @@ describe("Unit 2 public shell semantic contracts", () => {
     });
   });
 
-  it("uses a typed fallback for a source-consistent terminal cat boundary", async () => {
+  it("rejects a semicolon on the heredoc terminator line", async () => {
     const command = "cat >output.md <<EOF\nbody\nEOF;";
-    const loaded = await loadParsedShellDocument(command);
-    expect(loaded.ok).toBe(true);
-    if (!loaded.ok) return;
-    expect(loaded.document.program.boundaries).toEqual([
-      {
-        kind: "semicolon",
-        text: ";",
-        span: { start: command.length - 1, end: command.length },
-      },
-    ]);
+    await expect(loadParsedShellDocument(command)).resolves.toMatchObject({
+      ok: false,
+      reason: "invalid_heredoc",
+      issue: "incomplete",
+    });
     await expect(parseShellSemantic(command)).resolves.toEqual({
       ok: false,
-      code: "unsafe_shell_syntax",
-      reason: "unsupported heredoc structure",
+      code: "invalid_heredoc",
+      reason: "shell parser rejected heredoc: incomplete",
     });
   });
 

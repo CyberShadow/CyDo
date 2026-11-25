@@ -1802,6 +1802,20 @@ function ensureRedirect(
   if (!unquoted && !singleQuoted && !doubleQuoted)
     throwInvalid("unsupported_delimiter", nodeSpan(startNode));
   const quoted = singleQuoted || doubleQuoted;
+  const delimiterValue = delimiterRaw.slice(
+    quoted ? 1 : 0,
+    quoted ? -1 : undefined,
+  );
+  const terminatorSpan = nodeSpan(endNode);
+  if (
+    state.source.slice(terminatorSpan.start, terminatorSpan.end) !==
+      delimiterValue ||
+    state.source[terminatorSpan.start - 1] !== "\n" ||
+    (terminatorSpan.end !== state.source.length &&
+      state.source[terminatorSpan.end] !== "\n" &&
+      !state.source.startsWith("\r\n", terminatorSpan.end))
+  )
+    throwInvalid("incomplete", redirectSpan);
   const rawBodySpan = nodeSpan(bodyNode);
   const bodyText = state.source.slice(rawBodySpan.start, rawBodySpan.end);
   const contentEnd = bodyText.endsWith("\r\n")
@@ -1884,13 +1898,13 @@ function ensureRedirect(
       rawBodySpan.start,
     ),
     delimiter: {
-      value: delimiterRaw.slice(quoted ? 1 : 0, quoted ? -1 : undefined),
+      value: delimiterValue,
       rawSpan: startSpan,
       quoted,
     },
     rawBodySpan,
     contentSpan: sourceSpan(state.source, rawBodySpan.start, contentEnd),
-    terminatorSpan: nodeSpan(endNode),
+    terminatorSpan,
     header: { arguments: headerArguments, continuation },
     nestedNativeIds,
   };
