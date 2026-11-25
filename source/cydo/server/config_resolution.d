@@ -3,11 +3,11 @@ module cydo.server.config_resolution;
 import configy.attributes : SetInfo;
 
 import std.conv : to;
-import std.typecons : Nullable;
 
 import cydo.agent.resolver : effectiveDefaultAgentName, isConfiguredAgentName;
 import cydo.agent.drivers.registry : agentRegistry;
-import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, effectiveDriver, loadConfig, reloadConfig;
+import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, configPath, effectiveDriver, loadConfig;
+import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
 
 void resolveConfig(ref CydoConfig config)
 {
@@ -50,25 +50,21 @@ void resolveConfig(ref CydoConfig config)
 	}
 	else
 		config.default_agent = effectiveDefaultAgentName(config);
+
+	foreach (ref ws; config.workspaces)
+		if (ws.default_agent.length > 0 && !isConfiguredAgentName(config, ws.default_agent))
+			throw new Exception("Workspace '" ~ ws.name
+				~ "' default_agent references unknown configured agent: " ~ ws.default_agent);
 }
 
 CydoConfig loadRuntimeConfig()
 {
 	auto config = loadConfig();
-	resolveConfig(config);
-	return config;
-}
-
-Nullable!CydoConfig reloadRuntimeConfig()
-{
-	auto result = reloadConfig();
-	if (!result.isNull())
-	{
-		auto config = result.get();
+	try
 		resolveConfig(config);
-		result = Nullable!CydoConfig(config);
-	}
-	return result;
+	catch (Exception e)
+		throw new ConfigFileException(ConfigErrorKind.invalid, configPath(), e.msg);
+	return config;
 }
 
 unittest
@@ -161,6 +157,43 @@ unittest
 	}
 	catch (Exception e)
 		assert(e.msg == "Multiple Claude-configured agents exist; set default_agent explicitly");
+}
+
+unittest // Unknown global and workspace default agents are invalid runtime config.
+{
+	import cydo.runtime.config : configPath;
+	import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
+	import std.algorithm : canFind;
+	import std.exception : collectException;
+	import std.file : mkdirRecurse, rmdirRecurse, tempDir, write;
+	import std.path : buildPath, dirName;
+	import std.process : environment;
+	import std.uuid : randomUUID;
+
+	auto root = buildPath(tempDir(), "cydo-config-resolution-" ~ randomUUID().toString());
+	auto oldHome = environment.get("HOME", "");
+	auto hadHome = "HOME" in environment;
+	environment["HOME"] = root;
+	auto path = configPath();
+	mkdirRecurse(dirName(path));
+	scope (exit)
+	{
+		if (hadHome)
+			environment["HOME"] = oldHome;
+		else
+			environment.remove("HOME");
+		rmdirRecurse(root);
+	}
+
+	foreach (yaml; ["workspaces: {}\ndefault_agent: nope\n",
+		"workspaces: {local: {root: /tmp, default_agent: nope}}\n"])
+	{
+		write(path, yaml);
+		auto error = collectException!ConfigFileException(loadRuntimeConfig());
+		assert(error !is null, "expected an invalid default agent for " ~ yaml);
+		assert(error.kind == ConfigErrorKind.invalid && error.path == path, error.msg);
+		assert(error.msg.canFind("default_agent") && error.msg.canFind("nope"), error.msg);
+	}
 }
 
 // 27. End-to-end: parse → resolveConfig → createAgentByDriver → setModelAliases →

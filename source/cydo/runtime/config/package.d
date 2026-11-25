@@ -1,7 +1,7 @@
 module cydo.runtime.config;
 
 import configy.attributes : ConfigParser, Key, Optional, SetInfo;
-import cydo.runtime.config.yaml : parseYamlConfigFile;
+import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException, loadConfigYaml, parseConfigNode, readConfigText;
 
 import dyaml.node : NodeID;
 
@@ -207,11 +207,13 @@ struct CydoConfig
 	@Optional string system_keyword = "SYSTEM";
 	@Optional long disk_cleanup_threshold_bytes = 10_485_760;
 
-	/// Called by configy during parsing (configy/read.d:650), so a semantic
-	/// error surfaces on the same path as a YAML syntax error.
+	/// Called by configy during parsing.
 	void validate() const
 	{
 		import std.format : format;
+		import std.algorithm : canFind;
+		if (!["trace", "info", "warning", "error"].canFind(log_level))
+			throw new Exception("unknown log_level: " ~ log_level);
 		if (system_keyword.length == 0)
 			throw new Exception("system_keyword must be nonempty");
 		if (disk_cleanup_threshold_bytes <= 0)
@@ -278,27 +280,23 @@ private void validateSandbox(const ref SandboxConfig sandbox, string source)
 
 CydoConfig loadConfig()
 {
-	auto result = parseYamlConfigFile!CydoConfig(configPath);
-	CydoConfig config = result.isNull() ? CydoConfig.init : result.get();
-	applyPostLoadFixups(config);
+	import std.logger : infof;
+
+	auto path = configPath();
+	CydoConfig config;
+	string text;
+	if (readConfigText(path, text))
+		config = parseConfigNode!CydoConfig(loadConfigYaml(text, path), path);
+	else
+		infof("No config file at %s; using defaults", path);
+
+	try
+		applyPostLoadFixups(config);
+	catch (Exception e)
+		throw new ConfigFileException(ConfigErrorKind.invalid, path, e.msg);
 	return config;
 }
 
-/// Re-parse config file. Returns null on parse error (caller keeps old config).
-Nullable!CydoConfig reloadConfig()
-{
-	auto result = parseYamlConfigFile!CydoConfig(configPath);
-	if (!result.isNull())
-	{
-		auto inner = result.get();
-		applyPostLoadFixups(inner);
-		result = Nullable!CydoConfig(inner);
-	}
-	return result;
-}
-
-/// Apply all post-parse fixups to a freshly loaded config. Single source of
-/// truth so loadConfig and reloadConfig stay in sync.
 private void applyPostLoadFixups(ref CydoConfig config)
 {
 	ensureDefaultWorkspace(config);
@@ -334,6 +332,135 @@ version (unittest)
 	import std.file : exists, mkdirRecurse, rmdirRecurse, symlink, write;
 	import std.path : buildPath, buildNormalizedPath;
 	import std.process : environment;
+
+	private void withConfigFileFixture(void delegate(string path) body)
+	{
+		import std.file : tempDir;
+		import std.path : dirName;
+		import std.uuid : randomUUID;
+
+		auto root = buildPath(tempDir(), "cydo-config-load-" ~ randomUUID().toString());
+		auto oldHome = environment.get("HOME", "");
+		auto hadHome = "HOME" in environment;
+		environment["HOME"] = root;
+		auto path = configPath();
+		mkdirRecurse(dirName(path));
+		scope (exit)
+		{
+			if (hadHome)
+				environment["HOME"] = oldHome;
+			else
+				environment.remove("HOME");
+			rmdirRecurse(root);
+		}
+		body(path);
+	}
+
+	unittest // An absent config file yields the local workspace rooted at HOME.
+	{
+		withConfigFileFixture((string path)
+		{
+			assert(!exists(path));
+			auto config = loadConfig();
+			assert(config.workspaces.length == 1);
+			assert(config.workspaces[0].name == "local");
+			assert(config.workspaces[0].root == realPath(environment["HOME"]));
+		});
+	}
+
+	unittest // An existing path that cannot be read is a typed error.
+	{
+		import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
+		import std.exception : collectException;
+
+		withConfigFileFixture((string path)
+		{
+			mkdirRecurse(path);
+			auto error = collectException!ConfigFileException(loadConfig());
+			assert(error !is null, "expected an unreadable config directory");
+			assert(error.kind == ConfigErrorKind.unreadable, error.msg);
+			assert(error.path == path && error.msg.canFind(path ~ ": cannot be read: ")
+				&& error.msg.canFind("expected a regular file"), error.msg);
+		});
+		withConfigFileFixture((string path)
+		{
+			symlink(path ~ ".missing", path);
+			auto error = collectException!ConfigFileException(loadConfig());
+			assert(error !is null, "expected an unreadable dangling config symlink");
+			assert(error.kind == ConfigErrorKind.unreadable, error.msg);
+			assert(error.path == path && error.msg.canFind(path ~ ": cannot be read: ")
+				&& error.msg.canFind("No such file or directory"), error.msg);
+		});
+	}
+
+	unittest // Reject a FIFO after opening it in nonblocking mode.
+	{
+		import core.sys.posix.sys.stat : S_IRUSR, S_IWUSR, mkfifo;
+		import std.exception : collectException;
+		import std.string : toStringz;
+
+		withConfigFileFixture((string path)
+		{
+			assert(mkfifo(path.toStringz, S_IRUSR | S_IWUSR) == 0);
+			auto error = collectException!ConfigFileException(loadConfig());
+			assert(error !is null && error.kind == ConfigErrorKind.unreadable);
+			assert(error.path == path && error.msg.canFind("expected a regular file"), error.msg);
+		});
+	}
+
+	unittest // YAML syntax failures retain the source line.
+	{
+		import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
+		import std.exception : collectException;
+
+		withConfigFileFixture((string path)
+		{
+			write(path, "x: ]\n");
+			auto error = collectException!ConfigFileException(loadConfig());
+			assert(error !is null, "expected a config syntax error");
+			assert(error.kind == ConfigErrorKind.syntax, error.msg);
+			assert(error.path == path && error.msg.canFind(path ~ ":1"), error.msg);
+		});
+	}
+
+	unittest // Invalid explicit tags fail during YAML construction.
+	{
+		import std.exception : collectException;
+
+		withConfigFileFixture((string path)
+		{
+			write(path, "dev_mode: !!timestamp garbage\n");
+			auto error = collectException!ConfigFileException(loadConfig());
+			assert(error !is null && error.kind == ConfigErrorKind.syntax);
+			assert(error.path == path && error.msg.canFind(path
+				~ ": syntax error: Unable to parse timestamp value: garbage"), error.msg);
+		});
+	}
+
+	unittest // Schema, validation, and workspace fixup failures are invalid config.
+	{
+		import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
+		import std.exception : collectException;
+
+		withConfigFileFixture((string path)
+		{
+			auto invalidConfigs = [
+				"workspaces: {}\nunknown_key: true\n": "unknown_key",
+				"workspaces: {}\nsystem_keyword: ''\n": "system_keyword",
+				"workspaces: {}\nlog_level: verbose\n": "log_level",
+				"workspaces: {local: {root: '~/.config/cydo/config.yaml'}}\n":
+					"workspace root must be a directory",
+			];
+			foreach (yaml, diagnostic; invalidConfigs)
+			{
+				write(path, yaml);
+				auto error = collectException!ConfigFileException(loadConfig());
+				assert(error !is null, "expected invalid config for " ~ yaml);
+				assert(error.kind == ConfigErrorKind.invalid && error.path == path, error.msg);
+				assert(error.msg.canFind(diagnostic), error.msg);
+			}
+		});
+	}
 
 	unittest // Runtime config paths expand HOME and the package re-exports configPath.
 	{

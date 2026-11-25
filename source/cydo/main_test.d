@@ -100,6 +100,53 @@ unittest // The server refuses unauthenticated non-loopback TCP binds before ope
 	}
 }
 
+private void assertServerRejectsConfig(string diagnostic)
+{
+	// A password gets the server past its listen-address checks to config loading.
+	auto result = execute(["bash", "-c", "exec timeout -k 5 30 \"$1\" server 2>&1",
+		"cydo", cydoCli()], ["CYDO_AUTH_PASS": "test-password"]);
+	assert(result.status != 0 && result.status != 124 && result.status != 137, result.output);
+	assert(result.output.canFind(configPath() ~ ": " ~ diagnostic ~ ":"), result.output);
+	assert(!exists(buildPath(environment["XDG_DATA_HOME"], "cydo", "cydo.db")));
+	// The runtime directory would remain even if shutdown removed the PID file.
+	assert(!exists(buildPath(environment["XDG_RUNTIME_DIR"], "cydo")));
+}
+
+unittest // Malformed YAML aborts startup before creating server state.
+{
+	import std.file : write;
+	import std.path : dirName;
+
+	withInitCliFixture("cydo-main-server-malformed-config", (string root)
+	{
+		auto path = configPath();
+		mkdirRecurse(dirName(path));
+		write(path, "x: ]\n");
+		assertServerRejectsConfig("syntax error");
+	});
+}
+
+unittest // A config that exists without read permission also aborts startup.
+{
+	import core.sys.posix.sys.stat : chmod;
+	import core.sys.posix.unistd : geteuid;
+	import std.file : write;
+	import std.path : dirName;
+	import std.string : toStringz;
+
+	if (geteuid() == 0)
+		return;
+
+	withInitCliFixture("cydo-main-server-unreadable-config", (string root)
+	{
+		auto path = configPath();
+		mkdirRecurse(dirName(path));
+		write(path, "workspaces: {}\n");
+		assert(chmod(path.toStringz(), 0) == 0);
+		assertServerRejectsConfig("cannot be read");
+	});
+}
+
 unittest // Actual Program/FunOpt root help documents init.
 {
 	withInitCliFixture("cydo-main-init-cli-root-help", (string root)

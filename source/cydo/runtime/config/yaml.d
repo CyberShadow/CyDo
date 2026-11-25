@@ -12,8 +12,6 @@ import dyaml.node : Node;
 import dyaml.resolver : Resolver;
 import std.regex : regex;
 import std.format : format;
-import std.stdio : File, stderr;
-import std.typecons : Nullable, nullable;
 
 private void useCoreSchema(ref Loader loader)
 {
@@ -30,11 +28,99 @@ private void useCoreSchema(ref Loader loader)
 	loader.resolver.addImplicitResolver("tag:yaml.org,2002:merge", regex(`^<<$`), "<");
 }
 
-Node loadYamlFile(string path)
+enum ConfigErrorKind { unreadable, syntax, invalid }
+
+class ConfigFileException : Exception
 {
-	auto loader = Loader.fromFile(path);
-	useCoreSchema(loader);
-	return loader.load();
+	ConfigErrorKind kind;
+	string path;
+
+	this(ConfigErrorKind kind, string path, string detail)
+	{
+		super(path ~ ": " ~ errorLabel(kind) ~ ": " ~ detail);
+		this.kind = kind;
+		this.path = path;
+	}
+
+	private static string errorLabel(ConfigErrorKind kind)
+	{
+		final switch (kind)
+		{
+			case ConfigErrorKind.unreadable: return "cannot be read";
+			case ConfigErrorKind.syntax: return "syntax error";
+			case ConfigErrorKind.invalid: return "invalid";
+		}
+	}
+}
+
+bool readConfigText(string path, out string text)
+{
+	import core.stdc.errno : errno, EINTR, ENOENT, ENOTDIR;
+	import core.sys.posix.fcntl : O_CLOEXEC, O_NONBLOCK, O_RDONLY, open;
+	import core.sys.posix.sys.stat : S_ISREG, fstat, lstat, stat_t;
+	import core.sys.posix.unistd : close, read;
+	import std.array : appender;
+	import std.file : FileException;
+	import std.string : toStringz;
+
+	auto filename = path.toStringz;
+	stat_t info;
+	if (lstat(filename, &info) != 0)
+	{
+		auto error = errno;
+		if (error == ENOENT || error == ENOTDIR)
+			return false;
+		throw new ConfigFileException(ConfigErrorKind.unreadable, path,
+			(new FileException(path, error)).msg);
+	}
+
+	auto fd = open(filename, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+	if (fd < 0)
+		throw new ConfigFileException(ConfigErrorKind.unreadable, path,
+			(new FileException(path, errno)).msg);
+	scope (exit) close(fd);
+
+	if (fstat(fd, &info) != 0)
+		throw new ConfigFileException(ConfigErrorKind.unreadable, path,
+			(new FileException(path, errno)).msg);
+	if (!S_ISREG(info.st_mode))
+		throw new ConfigFileException(ConfigErrorKind.unreadable, path, "expected a regular file");
+
+	auto contents = appender!string();
+	char[8192] buffer;
+	while (true)
+	{
+		auto count = read(fd, buffer.ptr, buffer.length);
+		if (count == 0)
+			break;
+		if (count < 0)
+		{
+			auto error = errno;
+			if (error == EINTR)
+				continue;
+			throw new ConfigFileException(ConfigErrorKind.unreadable, path,
+				(new FileException(path, error)).msg);
+		}
+		contents.put(buffer[0 .. count]);
+	}
+	text = contents.data;
+	return true;
+}
+
+Node loadConfigYaml(string text, string path)
+{
+	try
+		return loadYamlString(text, path);
+	catch (Exception e)
+		throw new ConfigFileException(ConfigErrorKind.syntax, path, yamlConfigDiagnostic(e));
+}
+
+T parseConfigNode(T)(Node node, string path)
+{
+	try
+		return parseYamlConfigNode!T(node, path);
+	catch (Exception e)
+		throw new ConfigFileException(ConfigErrorKind.invalid, path, yamlConfigDiagnostic(e));
 }
 
 Node loadYamlString(string data, string name)
@@ -55,22 +141,6 @@ string yamlConfigDiagnostic(Exception error)
 	if (auto configError = cast(ConfigException) error)
 		return format("%s", configError);
 	return error.message().idup;
-}
-
-private Nullable!T reportYamlConfigFailure(T)(lazy T parse, File diagnostics)
-{
-	try
-		return nullable(parse);
-	catch (Exception error)
-	{
-		diagnostics.writeln(yamlConfigDiagnostic(error));
-		return Nullable!T.init;
-	}
-}
-
-Nullable!T parseYamlConfigFile(T)(string path)
-{
-	return reportYamlConfigFailure(parseYamlConfigNode!T(loadYamlFile(path), path), stderr);
 }
 
 T parseYamlConfigString(T)(string data, string name)
@@ -154,16 +224,15 @@ unittest // The suggestions setting requires a core boolean.
 	assertThrown(parseYamlConfigString!CydoConfig(yaml ~ "no", "config.yaml"));
 }
 
-unittest // A redirected diagnostic includes the filename, position, and key.
+unittest // An invalid config diagnostic includes the filename, position, and key.
 {
 	import std.algorithm : canFind;
+	import std.exception : collectException;
 
 	struct Config { bool b; }
-	auto diagnostics = File.tmpfile();
-	auto result = reportYamlConfigFailure(
-		parseYamlConfigString!Config("# comment\nb: no\n", "redirected.yaml"), diagnostics);
-	assert(result.isNull());
-	diagnostics.rewind();
-	auto line = diagnostics.readln();
-	assert(line.canFind("redirected.yaml(1:3): b:"), line);
+	enum path = "invalid.yaml";
+	auto error = collectException!ConfigFileException(
+		parseConfigNode!Config(loadConfigYaml("# comment\nb: no\n", path), path));
+	assert(error !is null && error.kind == ConfigErrorKind.invalid);
+	assert(error.msg.canFind("invalid.yaml(1:3): b:"), error.msg);
 }

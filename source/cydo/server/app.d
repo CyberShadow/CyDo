@@ -94,7 +94,8 @@ import cydo.agent.drivers.claude : ClaudeCodeSession;
 import cydo.agent.drivers.codex : CodexSession;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
 import cydo.domain.storage.persistence : LoadedHistory, Persistence, openDatabase;
-import cydo.server.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
+import cydo.server.config_resolution : loadRuntimeConfig;
+import cydo.runtime.config.yaml : ConfigFileException;
 import cydo.server.environment : consumeServerEnvironment;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir, sharedTmpBaseDir;
 import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule;
@@ -337,6 +338,8 @@ class App
 			taskTypeCatalog = new TaskTypeCatalog(taskTypesDir, taskTypesPath,
 				(string name) => isConfiguredAgentName(config, name));
 		}
+		config = loadRuntimeConfig();
+		claudeUsageService.configChanged(config);
 		{
 			persistence = openDatabase();
 			taskLifecycle = TaskLifecycle(
@@ -352,8 +355,6 @@ class App
 			import cydo.runtime.launch.sandbox : runtimeDir;
 			createPidFile("cydo.pid", runtimeDir());
 		}
-		config = loadRuntimeConfig();
-		claudeUsageService.configChanged(config);
 		persistence.normalizeProjectPaths(&bestEffortProjectPathIdentity);
 		taskDirTemplate = config.task_dir.length > 0 ? config.task_dir : defaultTaskDirTemplate;
 		applyConfiguredLogLevel(config.log_level);
@@ -3806,15 +3807,17 @@ class App
 	private void onConfigChanged()
 	{
 		infof("Config file changed, reloading...");
-		auto result = reloadRuntimeConfig();
-		if (result.isNull())
+		CydoConfig candidate;
+		try
+			candidate = loadRuntimeConfig();
+		catch (ConfigFileException e)
 		{
-			warningf("Config reload failed (parse error), keeping current config");
+			warningf("Config reload rejected; keeping the current config: %s", e.msg);
 			return;
 		}
 		auto oldAgents = config.agents;
 		auto oldTaskDirTemplate = taskDirTemplate;
-		config = result.get();
+		config = candidate;
 		claudeUsageService.configChanged(config);
 		applyConfiguredLogLevel(config.log_level);
 		auto reloadedTaskDirTemplate = config.task_dir.length > 0
@@ -4341,8 +4344,7 @@ package(cydo) void initLogger()
 	installRobustLogger();
 }
 
-/// Apply configured log level (trace/info/warning/error). Invalid values fall
-/// back to info.
+/// Apply the validated log level.
 package(cydo) void applyConfiguredLogLevel(string level)
 {
 	import std.logger : sharedLog, LogLevel;
@@ -4352,10 +4354,7 @@ package(cydo) void applyConfiguredLogLevel(string level)
 		case "info":     (cast()sharedLog).logLevel = LogLevel.info; break;
 		case "warning":  (cast()sharedLog).logLevel = LogLevel.warning; break;
 		case "error":    (cast()sharedLog).logLevel = LogLevel.error; break;
-		default:
-			warningf("Invalid config log_level '%s', falling back to info", level);
-			(cast()sharedLog).logLevel = LogLevel.info;
-			break;
+		default: assert(false);
 	}
 }
 
