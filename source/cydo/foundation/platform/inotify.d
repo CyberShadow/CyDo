@@ -134,10 +134,13 @@ final class KernelINotify
 	private int fd;
 	private FileConnection conn;
 	private void delegate(int wd, in char[] name, INotify.Mask mask) handler;
+	private void delegate() batchHandler;
 
-	this(void delegate(int wd, in char[] name, INotify.Mask mask) handler)
+	this(void delegate(int wd, in char[] name, INotify.Mask mask) handler,
+		void delegate() batchHandler)
 	{
 		this.handler = handler;
+		this.batchHandler = batchHandler;
 		fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
 		errnoEnforce(fd >= 0, "inotify_init1");
 		conn = new FileConnection(fd);
@@ -159,6 +162,7 @@ final class KernelINotify
 				handler(event.wd, name, cast(INotify.Mask) event.mask);
 				data = data[end .. $];
 			});
+		batchHandler();
 	}
 
 	int add(string path, INotify.Mask mask)
@@ -202,7 +206,7 @@ unittest
 	scope (exit) rmdirRecurse(root);
 	symlink(dir, link);
 
-	auto kernel = new KernelINotify((int wd, in char[] name, INotify.Mask mask) {});
+	auto kernel = new KernelINotify((int wd, in char[] name, INotify.Mask mask) {}, {});
 	scope (exit) kernel.close();
 	enum mask = INotify.Mask.create | INotify.Mask.onlyDir;
 	auto wd = kernel.add(dir, mask);
