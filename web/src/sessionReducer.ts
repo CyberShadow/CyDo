@@ -1000,10 +1000,6 @@ function reduceItemStartedUserMessage(
       ? (content as AssistantContentBlock[])
       : [{ type: "text" as const, text: "" }];
 
-  const isPendingUserMsg = (m: DisplayMessage) =>
-    m.type === "user" && m.ackState !== undefined && m.ackState > 1;
-  const isProvisionalUserMsg = (m: DisplayMessage) =>
-    m.type === "user" && m.isProvisional === true;
   const eventNonce = (event as unknown as { correlation_id?: string })
     .correlation_id;
   const eventCydoMeta = (event as unknown as { meta?: CydoMeta }).meta;
@@ -1017,77 +1013,85 @@ function reduceItemStartedUserMessage(
   // Queue-emitted history bubbles retain their enqueue-N identity until their
   // own user_message/consumed confirmation removes them.
   const isReplayDisposableProvisionalUserMsg = (m: DisplayMessage) =>
-    isProvisionalUserMsg(m) &&
+    m.isProvisional === true &&
     m.expectedNativeUuid === undefined &&
     (eventNonce ? m.nonce === eventNonce : !m.nonce || hasSameContent(m));
   const isExpectedReplayProvisionalUserMsg = (m: DisplayMessage) =>
-    isProvisionalUserMsg(m) &&
+    m.isProvisional === true &&
     m.expectedNativeUuid !== undefined &&
     m.expectedNativeUuid === event.uuid;
 
-  // Extract cydoMeta from a pending placeholder before replay removes it.
-  const pendingMsg = eventNonce
-    ? s.messages.find((m) => isPendingUserMsg(m) && m.nonce === eventNonce)
-    : s.messages.find(
-        (m) => isPendingUserMsg(m) && (!m.nonce || hasSameContent(m)),
-      );
+  let pendingMsg: DisplayMessage | undefined;
+  let expectedDropIdx = -1;
+  let disposableDropIdx = -1;
+  let matchIdx = -1;
+  const disposableIndices: number[] = [];
 
-  let state = s;
-  let displacedPlaceholder: DisplayMessage | undefined;
+  for (let i = 0; i < s.messages.length; i++) {
+    const message = s.messages[i]!;
+    if (message.type !== "user") continue;
+    const isPending = message.ackState !== undefined && message.ackState > 1;
 
-  if (event.is_replay) {
-    // One replay echo accounts for exactly one sent message: displace at
-    // most one placeholder. A prior queue confirmation gives an exact native
-    // UUID match; otherwise retain the nonce/content matching for replays
-    // that arrive first.
-    const expectedDropIdx = state.messages.findIndex(
-      isExpectedReplayProvisionalUserMsg,
-    );
-    const dropIdx =
-      expectedDropIdx >= 0
-        ? expectedDropIdx
-        : state.messages.findIndex(isReplayDisposableProvisionalUserMsg);
-    if (dropIdx >= 0) {
-      displacedPlaceholder = state.messages[dropIdx];
-      state = b.object(state);
-      state.messages = b.array(state.messages);
-      state.messages.splice(dropIdx, 1);
+    // Read pending metadata before removing the matched placeholder.
+    if (
+      !pendingMsg &&
+      isPending &&
+      (eventNonce
+        ? message.nonce === eventNonce
+        : !message.nonce || hasSameContent(message))
+    ) {
+      pendingMsg = message;
+    }
+
+    if (event.is_replay) {
+      // An exact native UUID wins over the first disposable placeholder.
+      if (expectedDropIdx < 0 && isExpectedReplayProvisionalUserMsg(message))
+        expectedDropIdx = i;
+      if (
+        disposableDropIdx < 0 &&
+        isReplayDisposableProvisionalUserMsg(message)
+      )
+        disposableDropIdx = i;
+    } else if (!event.pending && matchIdx < 0) {
+      if (
+        isPending &&
+        !message.uuid &&
+        (eventNonce ? message.nonce === eventNonce : hasSameContent(message))
+      ) {
+        matchIdx = i;
+      } else if (!eventNonce && isReplayDisposableProvisionalUserMsg(message)) {
+        disposableIndices.push(i);
+      }
     }
   }
 
-  let reconciled = displacedPlaceholder;
-  // Match by nonce when provided, leaving unrelated placeholders alone.
-  // A replay already displaced its placeholder above and must not consume
-  // a second one.
-  if (!event.pending && !event.is_replay) {
-    const matchIdx = state.messages.findIndex(
-      (m) =>
-        isPendingUserMsg(m) &&
-        !m.uuid &&
-        (eventNonce ? m.nonce === eventNonce : hasSameContent(m)),
-    );
-    if (matchIdx >= 0) {
-      reconciled = state.messages[matchIdx];
-      state = b.object(state);
-      state.messages = b.array(state.messages);
-      state.messages.splice(matchIdx, 1);
-    } else if (!eventNonce) {
-      const removed = state.messages.filter(
-        isReplayDisposableProvisionalUserMsg,
-      );
-      if (removed.length === 1) reconciled = removed[0];
-      if (removed.length > 0) {
-        state = b.object(state);
-        state.messages = b.array(state.messages);
-        let kept = 0;
-        for (const message of state.messages) {
-          if (!isReplayDisposableProvisionalUserMsg(message)) {
-            state.messages[kept++] = message;
-          }
-        }
-        state.messages.length = kept;
-      }
+  let state = s;
+  let displacedPlaceholder: DisplayMessage | undefined;
+  let reconciled: DisplayMessage | undefined;
+  const dropIdx = event.is_replay
+    ? expectedDropIdx >= 0
+      ? expectedDropIdx
+      : disposableDropIdx
+    : matchIdx;
+  if (dropIdx >= 0) {
+    reconciled = s.messages[dropIdx];
+    if (event.is_replay) displacedPlaceholder = reconciled;
+    state = b.object(state);
+    state.messages = b.array(state.messages);
+    state.messages.splice(dropIdx, 1);
+  } else if (disposableIndices.length > 0) {
+    const first = disposableIndices[0]!;
+    if (disposableIndices.length === 1) reconciled = s.messages[first];
+
+    state = b.object(state);
+    state.messages = b.array(state.messages);
+    let removed = 0;
+    let kept = first;
+    for (let i = first; i < state.messages.length; i++) {
+      if (i === disposableIndices[removed]) removed++;
+      else state.messages[kept++] = state.messages[i]!;
     }
+    state.messages.length = kept;
   }
 
   // The echo inherits the render identity of the single row it reconciles.
