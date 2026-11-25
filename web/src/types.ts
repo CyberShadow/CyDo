@@ -321,6 +321,7 @@ export interface TaskState {
   status: TaskStatus;
   messages: DisplayMessage[];
   streamingMessageCount: number;
+  mayHaveEchoPending: boolean;
   replacementEvents: Map<number, import("./protocol").AgnosticEvent>;
   sessionInfo: SessionInfo | null;
   sessionStatus?: string | null;
@@ -440,6 +441,7 @@ export function makeTaskState(
     status,
     messages: [],
     streamingMessageCount: 0,
+    mayHaveEchoPending: false,
     replacementEvents: new Map(),
     sessionInfo: null,
     sessionStatus: null,

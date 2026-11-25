@@ -1153,6 +1153,7 @@ function reduceItemStartedUserMessage(
     echoMsg.ackState = 3;
     echoMsg.pending = true;
     echoMsg.echoPending = true;
+    state.mayHaveEchoPending = true;
   }
 
   if (event.is_meta) {
@@ -1284,7 +1285,7 @@ function reduceItemStarted(
     (event.item_type === "text" ||
       event.item_type === "thinking" ||
       event.item_type === "tool_use") &&
-    s.messages.some((m) => m.echoPending)
+    s.mayHaveEchoPending
   ) {
     s = b.object(s);
     s.messages = b.array(s.messages);
@@ -1297,6 +1298,7 @@ function reduceItemStarted(
       promoted.pending = undefined;
       promoted.ackState = undefined;
     }
+    s.mayHaveEchoPending = false;
   }
 
   const state = b.object(s);

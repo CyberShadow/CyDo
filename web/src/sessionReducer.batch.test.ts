@@ -55,12 +55,18 @@ function serialize(state: TaskState) {
   );
 }
 
-function checkStreamingMessageCount(state: TaskState, context: string) {
+function checkMessageInvariants(state: TaskState, context: string) {
   expect(state.streamingMessageCount, context).toBe(
     state.messages.filter(
       (message) => message.type === "assistant" && message.streaming === true,
     ).length,
   );
+  if (!state.mayHaveEchoPending) {
+    expect(
+      state.messages.some((message) => message.echoPending),
+      `${context}: echoPending message with a cleared flag`,
+    ).toBe(false);
+  }
 }
 
 function checkSeqOwnership(state: TaskState, operation: number) {
@@ -182,7 +188,7 @@ function checkBatches(
   deepFreeze(operations);
   const expected = operations.reduce((state, op, i) => {
     const next = apply(state, op);
-    checkStreamingMessageCount(next, `Unbatched operation ${i + 1}`);
+    checkMessageInvariants(next, `Unbatched operation ${i + 1}`);
     return next;
   }, initial);
   let state = initial;
@@ -197,8 +203,8 @@ function checkBatches(
       state = apply(state, operations[i]!, batch);
       checkSeqOwnership(reference, i + 1);
       checkSeqOwnership(state, i + 1);
-      checkStreamingMessageCount(reference, `Reference operation ${i + 1}`);
-      checkStreamingMessageCount(state, `Batched operation ${i + 1}`);
+      checkMessageInvariants(reference, `Reference operation ${i + 1}`);
+      checkMessageInvariants(state, `Batched operation ${i + 1}`);
     }
     batch.close();
     expect(serialize(input), `input to operations ${start + 1}–${end}`).toBe(
@@ -220,6 +226,57 @@ const readA = {
   name: "Read",
 } as const;
 const readB = { ...readA, item_id: "read-b" };
+
+it("promotes every replayed pending user message on assistant output", () => {
+  const initial: TaskState = {
+    ...makeTaskState(1),
+    messages: ["first", "second"].map((prompt) => ({
+      id: prompt,
+      type: "user",
+      content: [{ type: "text", text: prompt }],
+      nonce: prompt,
+      ackState: 3,
+      pending: true,
+      isProvisional: true,
+    })),
+  };
+  const echoes = initial.messages.reduce(
+    (state, message, index) =>
+      reduceMessage(
+        state,
+        {
+          type: "item/started",
+          item_type: "user_message",
+          item_id: "cc-user-msg",
+          uuid: `replayed-${message.id}`,
+          content: [{ type: "text", text: message.id }],
+          is_replay: true,
+        },
+        index + 1,
+      ),
+    initial,
+  );
+
+  expect(echoes.mayHaveEchoPending).toBe(true);
+  expect(echoes.messages.map((message) => message.echoPending)).toEqual([
+    true,
+    true,
+  ]);
+
+  const promoted = reduceMessage(deepFreeze(echoes), readA, 3);
+  const users = promoted.messages.filter((message) => message.type === "user");
+  expect(users.map((message) => message.uuid)).toEqual([
+    "replayed-first",
+    "replayed-second",
+  ]);
+  for (const message of users) {
+    expect(message.echoPending).toBeUndefined();
+    expect(message.pending).toBeUndefined();
+    expect(message.ackState).toBeUndefined();
+  }
+  expect(promoted.mayHaveEchoPending).toBe(false);
+});
+
 const resultA = {
   type: "item/result",
   item_id: "read-a",
