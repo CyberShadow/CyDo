@@ -15,6 +15,7 @@ import cydo.domain.tasks.model : AgentInfoEntry, AgentsListMessage, EntryPointEn
 	WorkspacesListMessage, stdTimeToUnixMillis;
 import cydo.domain.task_types.definition : TaskTypeDef, UserEntryPointDef, byName,
 	resolveModelClass;
+import cydo.runtime.config : UiConfig;
 
 TaskListEntry buildTaskEntry(ref TaskData td, size_t childCount, bool alive,
 	bool canStop, string driver)
@@ -202,13 +203,15 @@ string readBuildId(string webDistDir)
 	return m[1].idup;
 }
 
-string buildServerStatus(bool authEnabled, bool devMode, string webDistDir)
+string buildServerStatus(bool authEnabled, bool devMode, string webDistDir,
+	UiConfig ui = UiConfig.init)
 {
 	return toJson(ServerStatusMessage(
 		"server_status",
 		authEnabled,
 		devMode,
 		readBuildId(webDistDir),
+		ui,
 	));
 }
 
@@ -270,6 +273,23 @@ unittest
 		personal);
 	auto codex = buildTaskTypesList([type], [entryPoint], "agentic", "work", "codex");
 	assert(codex.canFind(`"model_class":"large"`), codex);
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+	import cydo.runtime.config : UsageColoring;
+
+	// the page receives the ui section as configured, defaults included
+	auto defaults = buildServerStatus(false, false, "/nonexistent");
+	assert(defaults.canFind(`"ui":{"usage":{"coloring":"pace","remaining":false}}`), defaults);
+
+	UiConfig ui;
+	ui.usage.coloring = UsageColoring.percent;
+	ui.usage.remaining = true;
+	auto configured = buildServerStatus(false, false, "/nonexistent", ui);
+	assert(configured.canFind(`"ui":{"usage":{"coloring":"percent","remaining":true}}`),
+		configured);
 }
 
 unittest
