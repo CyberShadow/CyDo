@@ -18,6 +18,7 @@ import ae.utils.promise : Promise;
 import cydo.mcp : McpResult, ToolCallCancellation;
 import cydo.mcp.payloads : McpContentItem, McpContentResult;
 import cydo.runtime.launch.sandbox : runtimeDir;
+import cydo.web.request_policy : checkRequestPolicy;
 
 version (unittest) import core.exception : AssertError;
 version (unittest) import core.time : msecs, seconds;
@@ -34,6 +35,8 @@ version (unittest) import ae.sys.dataset : DataVec;
 version (unittest) import ae.utils.array : asBytes;
 
 package(cydo):
+
+private enum webSocketResource = "/ws";
 
 enum RawSourceLookupStatus
 {
@@ -190,6 +193,18 @@ class TransportAdapter
 
 	private void handleRequest(HttpRequest request, HttpServerConnection conn)
 	{
+		auto rejection = checkRequestPolicy(request.headers.getAll("Host"),
+			request.headers.getAll("Origin"), request.resource == webSocketResource,
+			authEnabled, request.resource);
+		if (!rejection.isNull)
+		{
+			warningf("%s", rejection.get.logMessage);
+			auto response = new HttpResponseEx();
+			response.setStatus(rejection.get.status);
+			conn.sendResponse(response.serveText(rejection.get.responseText));
+			return;
+		}
+
 		auto resource = request.resource.length > 1 ? request.resource[1 .. $] : "";
 		foreach (pub; pwaPublicFiles)
 		{
@@ -207,7 +222,7 @@ class TransportAdapter
 		if (!checkAuth(request, conn))
 			return;
 
-		if (request.resource == "/ws")
+		if (request.resource == webSocketResource)
 		{
 			handleWebSocket(request, conn);
 			return;
@@ -904,4 +919,64 @@ unittest
 	assertMcpCleanupFailureEscapes(false, false);
 	assertMcpCleanupFailureEscapes(false, true);
 	assertDeferredRawSourceReplyOwnsItsRequest();
+}
+
+version (unittest) private HttpResponse requestOverUnixSocket(
+	string user, string pass, string resource, string host, string origin = null)
+{
+	import std.file : mkdir, rmdirRecurse, write;
+	import std.uuid : randomUUID;
+
+	auto webDistDir = buildPath(tempDir(), "cydo-http-" ~ randomUUID().toString());
+	mkdir(webDistDir);
+	scope (exit) rmdirRecurse(webDistDir);
+	write(buildPath(webDistDir, "index.html"), "<html>CyDo</html>");
+
+	auto adapter = new TransportAdapter(webDistDir ~ "/", WebSocketCallbacks.init, null, McpCallbacks.init);
+	adapter.setAuthCredentials(user, pass);
+	adapter.startHttpServer(null, null);
+
+	auto socketPath = buildPath(webDistDir, "http.sock");
+	auto server = adapter.server;
+	server.listen([AddressInfo(AddressFamily.UNIX, SocketType.STREAM,
+		cast(ProtocolType) 0, new UnixAddress(socketPath), socketPath)]);
+
+	auto request = new HttpRequest();
+	request.resource = resource;
+	request.method = "GET";
+	request.headers["Host"] = host;
+	request.headers["Origin"] = origin;
+
+	HttpResponse observedResponse;
+	string disconnectReason;
+	auto client = new HttpClient(2.seconds, new UnixConnector(socketPath));
+	client.handleResponse = (HttpResponse response, string reason) {
+		observedResponse = response;
+		disconnectReason = reason;
+		server.close();
+	};
+	client.request(request);
+	socketManager.loop();
+
+	assert(observedResponse !is null,
+		format!"GET %s produced no HTTP response: %s"(resource, disconnectReason));
+	return observedResponse;
+}
+
+// A cross-origin WebSocket request is rejected before Basic authentication.
+unittest
+{
+	import cydo.web.request_policy : originMismatchText;
+
+	auto response = requestOverUnixSocket("user", "pass", webSocketResource, "cydo.example", "https://evil.example");
+	assert(response.status == HttpStatusCode.Forbidden, response.status.to!string);
+	assert(response.headers.get("Content-Type", null) == "text/plain; charset=utf-8");
+	assert(cast(string) response.data[].joinData().toGC() == originMismatchText);
+}
+
+// An arbitrary Host can reach the authentication challenge on a regular route.
+unittest
+{
+	auto response = requestOverUnixSocket("user", "pass", "/", "cydo.example");
+	assert(response.status == HttpStatusCode.Unauthorized, response.status.to!string);
 }
