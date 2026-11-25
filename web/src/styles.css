@@ -1868,7 +1868,7 @@ body,
   outline: none;
   overflow-y: auto;
   min-height: 40px;
-  max-height: 200px;
+  max-height: min(200px, 25dvh);
   field-sizing: content;
 }
 
