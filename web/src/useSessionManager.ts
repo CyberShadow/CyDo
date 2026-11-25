@@ -42,6 +42,7 @@ import {
   rejectOrdinarySubmission,
   replaceHistoryBoundary,
 } from "./sessionReducer";
+import { deepFreeze } from "./testing/deepFreeze";
 import { outbox } from "./outbox";
 import {
   canonicalUserTextFromContentAndMeta,
@@ -570,6 +571,68 @@ function findByTid(tid: number): TaskState | undefined {
   return uuid ? liveStates.get(uuid) : undefined;
 }
 
+function useTaskPublication() {
+  const [tasks, setTasks] = useState(new Map<string, TaskState>());
+  const operations = useMemo(() => {
+    const publish = (
+      update: (previous: Map<string, TaskState>) => Map<string, TaskState>,
+    ) => {
+      setTasks(update);
+    };
+
+    const publishState = (state: TaskState) =>
+      import.meta.env.DEV || import.meta.env.MODE === "test"
+        ? deepFreeze(state)
+        : state;
+
+    const commitTask = (
+      uuid: string,
+      next: TaskState,
+      publication: "always" | "if-present" = "always",
+    ) => {
+      liveStates.set(uuid, next);
+      publish((previous) => {
+        if (publication === "if-present" && !previous.has(uuid))
+          return previous;
+        return new Map(previous).set(uuid, publishState(next));
+      });
+    };
+
+    const commitTasks = (entries: Map<string, TaskState>) => {
+      for (const [uuid, state] of entries) liveStates.set(uuid, state);
+      publish((previous) => {
+        const next = new Map(previous);
+        for (const [uuid, state] of entries)
+          next.set(uuid, publishState(state));
+        return next;
+      });
+    };
+
+    /** Hide a task pending deletion while retaining its live state. */
+    const unpublishTask = (uuid: string) => {
+      publish((previous) => {
+        if (!previous.has(uuid)) return previous;
+        const next = new Map(previous);
+        next.delete(uuid);
+        return next;
+      });
+    };
+
+    const removeTask = (uuid: string) => {
+      liveStates.delete(uuid);
+      unpublishTask(uuid);
+    };
+
+    const clearTasks = () => {
+      liveStates.clear();
+      publish(() => new Map());
+    };
+
+    return { commitTask, commitTasks, unpublishTask, removeTask, clearTasks };
+  }, [setTasks]);
+  return { tasks, ...operations };
+}
+
 /** Convert a string task id to a numeric tid; returns null for non-numeric strings. */
 function readBrowserRoute(): ReturnType<typeof parseRoute> {
   return parseRoute(location.pathname);
@@ -603,7 +666,14 @@ export function useTaskManager(
   controlledImageStore?: ControlledImageStore,
 ): TaskManager {
   const [connected, setConnected] = useState(false);
-  const [tasks, setTasks] = useState<Map<string, TaskState>>(new Map());
+  const {
+    tasks,
+    commitTask,
+    commitTasks,
+    unpublishTask,
+    removeTask,
+    clearTasks,
+  } = useTaskPublication();
   const [ordinaryDraftStore] = useState(createOrdinaryDraftStore);
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [scanState, setScanState] = useState<"idle" | "requested" | "scanning">(
@@ -945,11 +1015,11 @@ export function useTaskManager(
       const uuid = tidToUuid.get(tid);
       if (uuid === undefined) return;
       ordinaryDraftStore.retire(uuid);
-      liveStates.delete(uuid);
+      removeTask(uuid);
       tidToUuid.delete(tid);
       requestedHistoryRef.current.delete(uuid);
     },
-    [ordinaryDraftStore],
+    [ordinaryDraftStore, removeTask],
   );
 
   const applyDraftEvent = useCallback(
@@ -991,16 +1061,18 @@ export function useTaskManager(
     [],
   );
 
-  const projectDraft = useCallback((tid: number, form: ProjectedDraftForm) => {
-    const updated = projectDraftTask(
-      findByTid(tid),
-      tid,
-      form,
-      draftStateRef.current.metadata.catalogs,
-    );
-    liveStates.set(updated.uuid, updated);
-    setTasks((previous) => new Map(previous).set(updated.uuid, updated));
-  }, []);
+  const projectDraft = useCallback(
+    (tid: number, form: ProjectedDraftForm) => {
+      const updated = projectDraftTask(
+        findByTid(tid),
+        tid,
+        form,
+        draftStateRef.current.metadata.catalogs,
+      );
+      commitTask(updated.uuid, updated);
+    },
+    [commitTask],
+  );
 
   const requestTaskHistory = useCallback((tid: number) => {
     const task = findByTid(tid);
@@ -1053,46 +1125,47 @@ export function useTaskManager(
         isProcessing: true,
         suggestions: undefined,
       };
-      liveStates.set(uuid, updated);
-      setTasks((previous) => new Map(previous).set(uuid, updated));
+      commitTask(uuid, updated);
     },
-    [sendMessageAttempt],
+    [sendMessageAttempt, commitTask],
   );
 
-  const saveDraft = useCallback((tid: number, draft: string) => {
-    const recovery = outbox
-      .byTid(tid)
-      .find((entry) => entry.recoveredDraft !== undefined);
-    if (recovery) {
-      const entry =
-        recovery.recoveredDraft === draft
-          ? recovery
-          : { ...recovery, nonce: crypto.randomUUID(), recoveredDraft: draft };
-      if (entry !== recovery) outbox.add(entry);
-      connRef.current?.saveDraft(tid, draft, entry.nonce);
-    } else {
-      connRef.current?.saveDraft(tid, draft);
-    }
-    const task = findByTid(tid);
-    if (!task) return;
-    let updated: TaskState | null = null;
-    if (!draft && task.serverDraft !== undefined) {
-      updated = { ...task, serverDraft: undefined };
-    }
-    if (task.status === "pending" && task.messages.length === 0) {
-      const title = draft.trim().split("\n")[0]?.slice(0, 100) || undefined;
-      if (title !== (updated ?? task).title) {
-        updated = { ...(updated ?? task), title };
+  const saveDraft = useCallback(
+    (tid: number, draft: string) => {
+      const recovery = outbox
+        .byTid(tid)
+        .find((entry) => entry.recoveredDraft !== undefined);
+      if (recovery) {
+        const entry =
+          recovery.recoveredDraft === draft
+            ? recovery
+            : {
+                ...recovery,
+                nonce: crypto.randomUUID(),
+                recoveredDraft: draft,
+              };
+        if (entry !== recovery) outbox.add(entry);
+        connRef.current?.saveDraft(tid, draft, entry.nonce);
+      } else {
+        connRef.current?.saveDraft(tid, draft);
       }
-    }
-    if (!updated) return;
-    liveStates.set(task.uuid, updated);
-    setTasks((previous) => {
-      const next = new Map(previous);
-      next.set(task.uuid, updated);
-      return next;
-    });
-  }, []);
+      const task = findByTid(tid);
+      if (!task) return;
+      let updated: TaskState | null = null;
+      if (!draft && task.serverDraft !== undefined) {
+        updated = { ...task, serverDraft: undefined };
+      }
+      if (task.status === "pending" && task.messages.length === 0) {
+        const title = draft.trim().split("\n")[0]?.slice(0, 100) || undefined;
+        if (title !== (updated ?? task).title) {
+          updated = { ...(updated ?? task), title };
+        }
+      }
+      if (!updated) return;
+      commitTask(task.uuid, updated);
+    },
+    [commitTask],
+  );
 
   const executeDraftEffects = useCallback(
     (effects: readonly DraftEffect[]) => {
@@ -1227,12 +1300,7 @@ export function useTaskManager(
 
           case "delete-task": {
             const uuid = tidToUuid.get(effect.tid);
-            setTasks((previous) => {
-              if (!uuid || !previous.has(uuid)) return previous;
-              const next = new Map(previous);
-              next.delete(uuid);
-              return next;
-            });
+            if (uuid !== undefined) unpublishTask(uuid);
             const editor = getEditor(draftStateRef.current, effect.editorId);
             returnFromDeletedDraft(editor.project, effect.tid);
             connRef.current?.deleteTask(effect.tid);
@@ -1261,6 +1329,7 @@ export function useTaskManager(
       requestTaskHistory,
       saveDraft,
       sendMessageAttempt,
+      unpublishTask,
     ],
   );
   executeDraftEffectsRef.current = executeDraftEffects;
@@ -1309,11 +1378,10 @@ export function useTaskManager(
         ...base,
         everLoaded: submitting,
       };
-      liveStates.set(task.uuid, task);
       bindTaskUuid(tid, task.uuid);
-      setTasks((previous) => new Map(previous).set(task.uuid, task));
+      commitTask(task.uuid, task);
     },
-    [bindTaskUuid, entryPointFor],
+    [bindTaskUuid, entryPointFor, commitTask],
   );
 
   const releaseTombstonedActivity = useCallback(
@@ -1383,12 +1451,7 @@ export function useTaskManager(
               : m,
           );
           const updated = { ...prev, messages };
-          liveStates.set(uuid, updated);
-          setTasks((map) => {
-            const next = new Map(map);
-            next.set(uuid, updated);
-            return next;
-          });
+          commitTask(uuid, updated);
           executeDraftEffectsRef.current(effects);
           return;
         }
@@ -1412,15 +1475,10 @@ export function useTaskManager(
           },
         ],
       };
-      liveStates.set(uuid, updated);
-      setTasks((map) => {
-        const next = new Map(map);
-        next.set(uuid, updated);
-        return next;
-      });
+      commitTask(uuid, updated);
       executeDraftEffectsRef.current(effects);
     },
-    [applyDraftEvent],
+    [applyDraftEvent, commitTask],
   );
 
   const handleTaskMessage = useCallback(
@@ -1462,16 +1520,10 @@ export function useTaskManager(
           historyReceived: (updated.historyReceived ?? 0) + 1,
         };
       }
-      liveStates.set(uuid, updated);
-
-      setTasks((map) => {
-        const next = new Map(map);
-        next.set(uuid, updated);
-        return next;
-      });
+      commitTask(uuid, updated);
       executeDraftEffectsRef.current(effects);
     },
-    [applyDraftEvent],
+    [applyDraftEvent, commitTask],
   );
 
   const handleDraftUpdatedMessage = useCallback(
@@ -1498,13 +1550,7 @@ export function useTaskManager(
           ...task,
           serverDraft: new_draft || undefined,
         };
-        liveStates.set(task.uuid, updated);
-        setTasks((previous) => {
-          if (!previous.has(task.uuid)) return previous;
-          const next = new Map(previous);
-          next.set(task.uuid, updated);
-          return next;
-        });
+        commitTask(task.uuid, updated, "if-present");
         if (receipt.kind === "ordinary" && !ownerAtDrain)
           ordinaryDraftStore.applyRemote(task.uuid, {
             old_draft,
@@ -1513,7 +1559,7 @@ export function useTaskManager(
       }
       if (result) executeDraftEffects(result.effects);
     },
-    [applyDraftEvent, executeDraftEffects, ordinaryDraftStore],
+    [applyDraftEvent, executeDraftEffects, ordinaryDraftStore, commitTask],
   );
 
   const applyTaskSnapshotEntry = useCallback(
@@ -1538,7 +1584,6 @@ export function useTaskManager(
         existing,
         tidToUuid.get(entry.tid),
       );
-      liveStates.set(updated.uuid, updated);
       bindTaskUuid(entry.tid, updated.uuid);
       const owner = controlledOwnerByTidRef.current.get(entry.tid);
       if (owner) {
@@ -1555,16 +1600,18 @@ export function useTaskManager(
     [applyDraftEvent, bindTaskUuid, releaseTombstonedActivity],
   );
 
-  const showServerError = useCallback((message: string, tid?: number) => {
-    console.error("Server error:", message, "tid:", tid);
-    const transition = receiveServerError(liveStates, message, tid);
-    if (transition.tasks !== liveStates) {
-      const task = findByTid(tid!);
-      liveStates.set(task!.uuid, transition.tasks.get(task!.uuid)!);
-      setTasks((prev) => receiveServerError(prev, message, tid).tasks);
-    }
-    setServerError(transition.serverError);
-  }, []);
+  const showServerError = useCallback(
+    (message: string, tid?: number) => {
+      console.error("Server error:", message, "tid:", tid);
+      const transition = receiveServerError(liveStates, message, tid);
+      if (transition.tasks !== liveStates) {
+        const task = findByTid(tid!);
+        commitTask(task!.uuid, transition.tasks.get(task!.uuid)!, "if-present");
+      }
+      setServerError(transition.serverError);
+    },
+    [commitTask],
+  );
 
   const recoverSubmission = useCallback(
     (editorId: EditorId, tid?: number) => {
@@ -1751,13 +1798,8 @@ export function useTaskManager(
             relationType,
             "pending",
           );
-          liveStates.set(t.uuid, t);
           bindTaskUuid(tid, t.uuid);
-          setTasks((prev) => {
-            const next = new Map(prev);
-            next.set(t.uuid, t);
-            return next;
-          });
+          commitTask(t.uuid, t);
           break;
         }
         case "tasks_list": {
@@ -1806,13 +1848,7 @@ export function useTaskManager(
             updates.set(result.updated.uuid, result.updated);
             effects.push(...result.effects);
           }
-          setTasks((prev) => {
-            const next = new Map(prev);
-            for (const [uuid, state] of updates) {
-              next.set(uuid, state);
-            }
-            return next;
-          });
+          commitTasks(updates);
           executeDraftEffects(effects);
           if (msg.complete) {
             tasksListPhaseRef.current = "complete";
@@ -1829,7 +1865,7 @@ export function useTaskManager(
           const result = applyTaskSnapshotEntry(msg.task);
           if (!result) break;
           const { updated, effects } = result;
-          setTasks((prev) => new Map(prev).set(updated.uuid, updated));
+          commitTask(updated.uuid, updated);
           executeDraftEffects(effects);
           const owner = controlledOwnerByTidRef.current.get(tid);
           if (!owner) break;
@@ -1883,8 +1919,7 @@ export function useTaskManager(
           let recovered = false;
           if (task) {
             const updated = rejectOrdinarySubmission(task, correlation_id);
-            liveStates.set(task.uuid, updated);
-            setTasks((previous) => new Map(previous).set(task.uuid, updated));
+            commitTask(task.uuid, updated);
 
             if (kind !== "task_unavailable") {
               const text = canonicalUserTextFromContentAndMeta(
@@ -1991,13 +2026,7 @@ export function useTaskManager(
             }
           }
 
-          liveStates.set(t.uuid, final);
-          setTasks((prev) => {
-            if (!prev.has(t.uuid)) return prev;
-            const next = new Map(prev);
-            next.set(t.uuid, final);
-            return next;
-          });
+          commitTask(t.uuid, final, "if-present");
           break;
         }
         case "task_history_start": {
@@ -2006,13 +2035,7 @@ export function useTaskManager(
           const t0 = findByTid(tid);
           if (!t0) break;
           const t = beginTaskHistoryReplay(t0, total);
-          liveStates.set(t0.uuid, t);
-          setTasks((prev) => {
-            if (!prev.has(t0.uuid)) return prev;
-            const next = new Map(prev);
-            next.set(t0.uuid, t);
-            return next;
-          });
+          commitTask(t0.uuid, t, "if-present");
           break;
         }
         case "task_history_end": {
@@ -2031,13 +2054,7 @@ export function useTaskManager(
               historyReceived: undefined,
               pendingHistoryReplies: nextPending,
             };
-            liveStates.set(t0.uuid, t);
-            setTasks((prev) => {
-              if (!prev.has(t0.uuid)) return prev;
-              const next = new Map(prev);
-              next.set(t0.uuid, t);
-              return next;
-            });
+            commitTask(t0.uuid, t, "if-present");
             break;
           }
 
@@ -2057,14 +2074,7 @@ export function useTaskManager(
             inputDraft,
             sessionStatus: t0.isProcessing ? t0.sessionStatus : null,
           };
-          liveStates.set(t0.uuid, t);
-
-          setTasks((prev) => {
-            if (!prev.has(t0.uuid)) return prev;
-            const next = new Map(prev);
-            next.set(t0.uuid, t);
-            return next;
-          });
+          commitTask(t0.uuid, t, "if-present");
           break;
         }
         case "title_update": {
@@ -2072,13 +2082,7 @@ export function useTaskManager(
           const t = findByTid(tid);
           if (!t) break;
           const updated = { ...t, title };
-          liveStates.set(t.uuid, updated);
-          setTasks((prev) => {
-            if (!prev.has(t.uuid)) return prev;
-            const next = new Map(prev);
-            next.set(t.uuid, updated);
-            return next;
-          });
+          commitTask(t.uuid, updated, "if-present");
           break;
         }
         case "suggestions_update": {
@@ -2086,13 +2090,7 @@ export function useTaskManager(
           const t = findByTid(tid);
           if (!t) break;
           const updated = { ...t, suggestions };
-          liveStates.set(t.uuid, updated);
-          setTasks((prev) => {
-            if (!prev.has(t.uuid)) return prev;
-            const next = new Map(prev);
-            next.set(t.uuid, updated);
-            return next;
-          });
+          commitTask(t.uuid, updated, "if-present");
           break;
         }
         case "task_deleted": {
@@ -2108,15 +2106,8 @@ export function useTaskManager(
           const result = editorId
             ? applyDraftEvent({ type: "task-deleted", editorId, tid })
             : null;
-          const uuid = tidToUuid.get(tid);
           outbox.removeForTask(tid);
           removeTaskIdentity(tid);
-          setTasks((prev) => {
-            if (!uuid || !prev.has(uuid)) return prev;
-            const next = new Map(prev);
-            next.delete(uuid);
-            return next;
-          });
           if (result) executeDraftEffects(result.effects);
           if (deletedProject && !wasDeleting) {
             returnFromDeletedDraft(deletedProject, tid);
@@ -2128,13 +2119,7 @@ export function useTaskManager(
           const t = findByTid(tid);
           if (!t) break;
           const updated = { ...t, historyOperations: history_operations };
-          liveStates.set(t.uuid, updated);
-          setTasks((prev) => {
-            if (!prev.has(t.uuid)) return prev;
-            const next = new Map(prev);
-            next.set(t.uuid, updated);
-            return next;
-          });
+          commitTask(t.uuid, updated, "if-present");
           break;
         }
         case "undo_preview": {
@@ -2153,13 +2138,7 @@ export function useTaskManager(
             ...t,
             undoPending,
           };
-          liveStates.set(t.uuid, updated);
-          setTasks((prev) => {
-            if (!prev.has(t.uuid)) return prev;
-            const next = new Map(prev);
-            next.set(t.uuid, updated);
-            return next;
-          });
+          commitTask(t.uuid, updated, "if-present");
           break;
         }
         case "undo_result": {
@@ -2168,23 +2147,13 @@ export function useTaskManager(
           if (!t) break;
           if (output) {
             const updated = { ...t, undoResult: output };
-            liveStates.set(t.uuid, updated);
-            setTasks((prev) => {
-              const next = new Map(prev);
-              next.set(t.uuid, updated);
-              return next;
-            });
+            commitTask(t.uuid, updated);
             const { uuid } = t;
             setTimeout(() => {
               const cur = liveStates.get(uuid);
               if (!cur) return;
               const cleared = { ...cur, undoResult: null };
-              liveStates.set(uuid, cleared);
-              setTasks((prev) => {
-                const next = new Map(prev);
-                next.set(uuid, cleared);
-                return next;
-              });
+              commitTask(uuid, cleared);
             }, 8000);
           }
           break;
@@ -2198,12 +2167,7 @@ export function useTaskManager(
             ? { toolUseId: tool_use_id, questions }
             : null;
           const updated = { ...t, pendingAskUser };
-          liveStates.set(t.uuid, updated);
-          setTasks((prev) => {
-            const next = new Map(prev);
-            next.set(t.uuid, updated);
-            return next;
-          });
+          commitTask(t.uuid, updated);
           break;
         }
         case "permission_prompt": {
@@ -2222,12 +2186,7 @@ export function useTaskManager(
               }
             : null;
           const updated = { ...t, pendingPermission };
-          liveStates.set(t.uuid, updated);
-          setTasks((prev) => {
-            const next = new Map(prev);
-            next.set(t.uuid, updated);
-            return next;
-          });
+          commitTask(t.uuid, updated);
           break;
         }
         case "server_status": {
@@ -2308,6 +2267,8 @@ export function useTaskManager(
       saveDraft,
       showServerError,
       isCurrentOpenEpoch,
+      commitTask,
+      commitTasks,
     ],
   );
 
@@ -2378,12 +2339,7 @@ export function useTaskManager(
       }
       const updated = reduceAgentAck(t, nonce);
       if (updated !== t) {
-        liveStates.set(uuid, updated);
-        setTasks((map) => {
-          const next = new Map(map);
-          next.set(uuid, updated);
-          return next;
-        });
+        commitTask(uuid, updated);
       }
       executeDraftEffects(effects);
     };
@@ -2424,8 +2380,7 @@ export function useTaskManager(
             continue;
           }
           const updated = replaceHistoryBoundary(task, item.msg, item.seq);
-          liveStates.set(uuid, updated);
-          setTasks((prev) => new Map(prev).set(uuid, updated));
+          commitTask(uuid, updated);
         } else {
           if (tombstoneTidToEditorRef.current.has(item.tid)) {
             pendingHistoryBoundaries.delete(item.tid);
@@ -2451,8 +2406,7 @@ export function useTaskManager(
                   replacement.msg,
                   replacement.seq,
                 );
-              liveStates.set(uuid, updated);
-              setTasks((prev) => new Map(prev).set(uuid, updated));
+              commitTask(uuid, updated);
               const remaining = pending.filter(
                 (replacement) => replacement.seq !== item.seq,
               );
@@ -2537,7 +2491,7 @@ export function useTaskManager(
         buffer = [];
         pendingHistoryBoundaries.clear();
         setConnected(false);
-        liveStates.clear();
+        clearTasks();
         tidToUuid.clear();
         ordinaryDraftStore.clear();
         requestedHistoryRef.current.clear();
@@ -2558,7 +2512,6 @@ export function useTaskManager(
         setTypeInfo([]);
         setProjectTypeInfo(new Map());
         setTasksListEpoch(null);
-        setTasks(new Map());
         setAgentUsage({});
       } else {
         openConnectionEpochRef.current = connectionEpochRef.current;
@@ -2636,6 +2589,8 @@ export function useTaskManager(
       conn.disconnect();
     };
   }, [
+    clearTasks,
+    commitTask,
     controlledImageStore,
     handleTaskMessage,
     handleDraftUpdatedMessage,
@@ -2967,45 +2922,43 @@ export function useTaskManager(
     [],
   );
 
-  const undoPreview = useCallback((tid: number, anchor: string) => {
-    // Optimistically set anchor so confirmation bar can reference it
-    const t = findByTid(tid);
-    if (t) {
-      const boundary = [...t.replacementEvents.values()].find(
-        (event) =>
-          (event as { history_boundary?: { anchor: string } }).history_boundary
-            ?.anchor === anchor,
-      ) as
-        | {
-            history_boundary?: {
-              checkpoint_uuid?: string;
-              kind: "user" | "provisional_user" | "agent_turn";
-            };
-          }
-        | undefined;
-      const canRevertFiles =
-        boundary?.history_boundary?.kind !== "provisional_user" &&
-        !!boundary?.history_boundary?.checkpoint_uuid;
-      const undoPending: UndoPending = {
-        anchor,
-        kind: "requesting",
-        canRevertFiles,
-        retainsPrompt: boundary?.history_boundary?.kind === "agent_turn",
-        supportsFileRevert: t.sessionInfo?.supports_file_revert !== false,
-      };
-      const updated = {
-        ...t,
-        undoPending,
-      };
-      liveStates.set(t.uuid, updated);
-      setTasks((prev) => {
-        const next = new Map(prev);
-        next.set(t.uuid, updated);
-        return next;
-      });
-    }
-    connRef.current?.undoTask(tid, anchor, true, false, false);
-  }, []);
+  const undoPreview = useCallback(
+    (tid: number, anchor: string) => {
+      // Optimistically set anchor so confirmation bar can reference it
+      const t = findByTid(tid);
+      if (t) {
+        const boundary = [...t.replacementEvents.values()].find(
+          (event) =>
+            (event as { history_boundary?: { anchor: string } })
+              .history_boundary?.anchor === anchor,
+        ) as
+          | {
+              history_boundary?: {
+                checkpoint_uuid?: string;
+                kind: "user" | "provisional_user" | "agent_turn";
+              };
+            }
+          | undefined;
+        const canRevertFiles =
+          boundary?.history_boundary?.kind !== "provisional_user" &&
+          !!boundary?.history_boundary?.checkpoint_uuid;
+        const undoPending: UndoPending = {
+          anchor,
+          kind: "requesting",
+          canRevertFiles,
+          retainsPrompt: boundary?.history_boundary?.kind === "agent_turn",
+          supportsFileRevert: t.sessionInfo?.supports_file_revert !== false,
+        };
+        const updated = {
+          ...t,
+          undoPending,
+        };
+        commitTask(t.uuid, updated);
+      }
+      connRef.current?.undoTask(tid, anchor, true, false, false);
+    },
+    [commitTask],
+  );
 
   const undoConfirm = useCallback(
     (tid: number, revertConversation: boolean, revertFiles: boolean) => {
@@ -3022,27 +2975,20 @@ export function useTaskManager(
       );
       // Clear undoPending
       const updated = { ...t, undoPending: null };
-      liveStates.set(t.uuid, updated);
-      setTasks((prev) => {
-        const next = new Map(prev);
-        next.set(t.uuid, updated);
-        return next;
-      });
+      commitTask(t.uuid, updated);
     },
-    [],
+    [commitTask],
   );
 
-  const undoDismiss = useCallback((tid: number) => {
-    const t = findByTid(tid);
-    if (!t) return;
-    const updated = { ...t, undoPending: null };
-    liveStates.set(t.uuid, updated);
-    setTasks((prev) => {
-      const next = new Map(prev);
-      next.set(t.uuid, updated);
-      return next;
-    });
-  }, []);
+  const undoDismiss = useCallback(
+    (tid: number) => {
+      const t = findByTid(tid);
+      if (!t) return;
+      const updated = { ...t, undoPending: null };
+      commitTask(t.uuid, updated);
+    },
+    [commitTask],
+  );
 
   const dismissAttention = useCallback((tid: number) => {
     connRef.current?.dismissAttention(tid);
@@ -3067,36 +3013,31 @@ export function useTaskManager(
     [],
   );
 
-  const clearInputDraft = useCallback((tid: number) => {
-    const t = findByTid(tid);
-    if (!t?.inputDraft) return;
-    const updated = { ...t, inputDraft: undefined };
-    liveStates.set(t.uuid, updated);
-    setTasks((prev) => {
-      if (!prev.has(t.uuid)) return prev;
-      const next = new Map(prev);
-      next.set(t.uuid, updated);
-      return next;
-    });
-  }, []);
+  const clearInputDraft = useCallback(
+    (tid: number) => {
+      const t = findByTid(tid);
+      if (!t?.inputDraft) return;
+      const updated = { ...t, inputDraft: undefined };
+      commitTask(t.uuid, updated, "if-present");
+    },
+    [commitTask],
+  );
 
-  const resume = useCallback((uuid: string) => {
-    const t = liveStates.get(uuid);
-    if (!t || t.tid === null || t.archived) return;
-    connRef.current?.resumeTask(t.tid);
-    const updated: TaskState = {
-      ...t,
-      alive: true,
-      resumable: false,
-      status: "active",
-    };
-    liveStates.set(uuid, updated);
-    setTasks((prev) => {
-      const next = new Map(prev);
-      next.set(uuid, updated);
-      return next;
-    });
-  }, []);
+  const resume = useCallback(
+    (uuid: string) => {
+      const t = liveStates.get(uuid);
+      if (!t || t.tid === null || t.archived) return;
+      connRef.current?.resumeTask(t.tid);
+      const updated: TaskState = {
+        ...t,
+        alive: true,
+        resumable: false,
+        status: "active",
+      };
+      commitTask(uuid, updated);
+    },
+    [commitTask],
+  );
 
   const promote = useCallback((tid: number) => {
     const t = findByTid(tid);
@@ -3108,20 +3049,18 @@ export function useTaskManager(
     connRef.current?.setArchived(tid, archived);
   }, []);
 
-  const sendAskUserResponse = useCallback((tid: number, content: string) => {
-    connRef.current?.sendAskUserResponse(tid, content);
-    // Optimistically clear the pending question
-    const t = findByTid(tid);
-    if (t) {
-      const updated = { ...t, pendingAskUser: null, isProcessing: true };
-      liveStates.set(t.uuid, updated);
-      setTasks((prev) => {
-        const next = new Map(prev);
-        next.set(t.uuid, updated);
-        return next;
-      });
-    }
-  }, []);
+  const sendAskUserResponse = useCallback(
+    (tid: number, content: string) => {
+      connRef.current?.sendAskUserResponse(tid, content);
+      // Optimistically clear the pending question
+      const t = findByTid(tid);
+      if (t) {
+        const updated = { ...t, pendingAskUser: null, isProcessing: true };
+        commitTask(t.uuid, updated);
+      }
+    },
+    [commitTask],
+  );
 
   const sendPermissionPromptResponse = useCallback(
     (tid: number, toolUseId: string, content: string) => {
@@ -3134,15 +3073,10 @@ export function useTaskManager(
           submittedPermission: t.pendingPermission,
           isProcessing: true,
         };
-        liveStates.set(t.uuid, updated);
-        setTasks((prev) => {
-          const next = new Map(prev);
-          next.set(t.uuid, updated);
-          return next;
-        });
+        commitTask(t.uuid, updated);
       }
     },
-    [],
+    [commitTask],
   );
 
   const editMessage = useCallback(

@@ -212,7 +212,11 @@ vi.mock("./connection", () => {
 
 vi.mock("./outbox", () => ({ outbox: testState.outbox }));
 
-import { useTaskManager } from "./useSessionManager";
+import {
+  projectDraftTask,
+  taskStateFromEntry,
+  useTaskManager,
+} from "./useSessionManager";
 
 let manager: TaskManager | null = null;
 let root: Element;
@@ -2818,15 +2822,20 @@ describe("submission acknowledgement routing", () => {
     expect(testState.connection!.saveDraft).not.toHaveBeenCalled();
   });
 
-  it("fails fast when a pre-catalog persisted task entry point diverges from its form", async () => {
-    const view = await seedPreCatalogPersistedDraft(persistedSnapshot(93));
-    const task = manager!.getByTid(93);
-    if (!task) throw new Error("Expected numeric task");
-    task.entryPoint = "different-entry";
-    expect(() => {
-      view.onTextChange("pending edit");
-    }).toThrow("Draft projection entry point does not match task 93");
-    expect(testState.connection!.saveDraft).not.toHaveBeenCalled();
+  it("fails fast when a pre-catalog persisted task entry point diverges from its form", () => {
+    const task = taskStateFromEntry(
+      { ...persistedSnapshot(93), entry_point: "different-entry" },
+      undefined,
+      undefined,
+    );
+    expect(() =>
+      projectDraftTask(
+        task,
+        93,
+        { entryPoint: "entry", text: "pending edit", agent: "agent" },
+        new Map(),
+      ),
+    ).toThrow("Draft projection entry point does not match task 93");
   });
 
   it("waits for project types and the global default on a direct route", async () => {
