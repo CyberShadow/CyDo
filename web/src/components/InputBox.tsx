@@ -117,8 +117,15 @@ function publishImages(entry: ControlledImageEntry, images: ImageAttachment[]) {
   }
 }
 
+const SUPPORTED_IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
 function useImageAttachments(
-  enabled = true,
+  enabled: boolean,
   resetToken?: number,
   imageStore?: ControlledImageStore,
   imageKey?: string,
@@ -136,6 +143,15 @@ function useImageAttachments(
     () => imageEntry?.generation ?? 0,
   );
   const [isDragging, setIsDragging] = useState(false);
+  const [attachError, setAttachError] = useState("");
+  const clearAttachError = () => {
+    setAttachError("");
+  };
+
+  // Refusals describe a local intake batch, so they expire when the editor changes.
+  useLayoutEffect(() => {
+    setAttachError("");
+  }, [enabled, imageStore, imageKey, imageEntry, resetToken]);
   const enabledRef = useRef(enabled);
   const resetTokenRef = useRef(resetToken);
   const generationRef = useRef(imageEntry?.generation ?? 0);
@@ -201,7 +217,6 @@ function useImageAttachments(
   };
 
   const processFile = (file: File) => {
-    if (!enabledRef.current || !file.type.startsWith("image/")) return;
     const generation = generationRef.current;
     const entry = imageEntry;
     const reader = new FileReader();
@@ -230,28 +245,34 @@ function useImageAttachments(
     reader.readAsDataURL(file);
   };
 
+  const addFiles = (files: FileList | File[]) => {
+    if (!enabledRef.current || files.length === 0) return;
+    const refused: string[] = [];
+    for (const file of files) {
+      if (SUPPORTED_IMAGE_TYPES.has(file.type)) {
+        processFile(file);
+      } else {
+        refused.push(file.type ? `${file.name} (${file.type})` : file.name);
+      }
+    }
+    setAttachError(
+      refused.length
+        ? `Cannot attach ${refused.join(", ")}. Use JPEG, PNG, GIF, or WebP.`
+        : "",
+    );
+  };
+
   const onPaste = (event: ClipboardEvent) => {
     const items = event.clipboardData?.items;
     if (!items) return;
-    if (!enabledRef.current) {
-      for (let index = 0; index < items.length; index++) {
-        const item = items[index];
-        if (item?.kind === "file" && item.type.startsWith("image/")) {
-          event.preventDefault();
-          break;
-        }
-      }
-      return;
+    const files: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.kind !== "file") continue;
+      event.preventDefault();
+      const file = item.getAsFile();
+      if (file) files.push(file);
     }
-    for (let index = 0; index < items.length; index++) {
-      const item = items[index];
-      if (!item) continue;
-      if (item.kind === "file" && item.type.startsWith("image/")) {
-        event.preventDefault();
-        const file = item.getAsFile();
-        if (file) processFile(file);
-      }
-    }
+    addFiles(files);
   };
 
   const onDragOver = (event: DragEvent) => {
@@ -271,11 +292,7 @@ function useImageAttachments(
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0) return;
     event.preventDefault();
-    if (!enabledRef.current) return;
-    for (let index = 0; index < files.length; index++) {
-      const file = files[index];
-      if (file) processFile(file);
-    }
+    addFiles(files);
   };
 
   return {
@@ -283,11 +300,65 @@ function useImageAttachments(
       imagesGeneration === generationRef.current ? images : imagesRef.current,
     setImages,
     isDragging: enabled && isDragging,
+    addFiles,
+    attachError,
+    clearAttachError,
     onPaste,
     onDragOver,
     onDragLeave,
     onDrop,
   };
+}
+
+function AttachButton({
+  disabled,
+  onFiles,
+}: {
+  disabled: boolean;
+  onFiles: (files: FileList) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <input
+        ref={inputRef}
+        class="input-file"
+        type="file"
+        accept="image/*"
+        multiple
+        disabled={disabled}
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={(event) => {
+          const input = event.currentTarget;
+          onFiles(input.files!);
+          input.value = "";
+        }}
+      />
+      <button
+        type="button"
+        class="btn btn-attach"
+        title="Attach images"
+        aria-label="Attach images"
+        disabled={disabled}
+        onClick={() => {
+          inputRef.current!.click();
+        }}
+      >
+        <svg
+          viewBox="5 0 14 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M17 5.75v10.85a5 5 0 0 1-10 0V5.75a3.35 3.35 0 0 1 6.7 0v10.85a1.65 1.65 0 0 1-3.3 0V6.6" />
+        </svg>
+      </button>
+    </>
+  );
 }
 
 function ImagePreviews({
@@ -386,11 +457,19 @@ function OrdinaryInputBox({
     images,
     setImages,
     isDragging,
+    addFiles,
+    attachError,
+    clearAttachError,
     onPaste,
     onDragOver,
     onDragLeave,
     onDrop,
-  } = useImageAttachments();
+  } = useImageAttachments(
+    !disabled && !stdinClosed,
+    undefined,
+    undefined,
+    sessionId,
+  );
 
   const saveDraftDebounced = useMemo(
     () =>
@@ -506,6 +585,11 @@ function OrdinaryInputBox({
     onInputDraftConsumed?.();
   }, [inputDraft, onInputDraftConsumed, sessionId]);
 
+  const sendMessage: OrdinaryProps["onSend"] = (...args) => {
+    clearAttachError();
+    onSend(...args);
+  };
+
   const send = () => {
     if (!draftActive.current) return;
     const trimmed = text.trim();
@@ -514,7 +598,7 @@ function OrdinaryInputBox({
     setImages([]);
     saveDraftDebounced.cancel();
     onSaveDraft?.("");
-    onSend(trimmed, images.length > 0 ? images : undefined);
+    sendMessage(trimmed, images.length > 0 ? images : undefined);
     textareaRef.current?.focus();
   };
 
@@ -554,7 +638,7 @@ function OrdinaryInputBox({
                     handleChange(suggestion);
                     textareaRef.current?.focus();
                   } else {
-                    onSend(suggestion);
+                    sendMessage(suggestion);
                   }
                 }}
                 title="Click to send, drag and drop to edit"
@@ -571,6 +655,11 @@ function OrdinaryInputBox({
           setImages((previous) => previous.filter((image) => image.id !== id));
         }}
       />
+      {attachError && (
+        <div key="attach-error" class="attach-error" role="status">
+          {attachError}
+        </div>
+      )}
       <textarea
         key="textarea"
         ref={textareaRef}
@@ -587,6 +676,11 @@ function OrdinaryInputBox({
         placeholder={inputPlaceholder({ stdinClosed, disabled, isProcessing })}
         disabled={disabled}
         rows={1}
+      />
+      <AttachButton
+        key="attach"
+        disabled={disabled || !!stdinClosed}
+        onFiles={addFiles}
       />
       {isProcessing && (
         <button key="stop" class="btn btn-stop" onClick={onInterrupt}>
@@ -629,11 +723,19 @@ function ControlledInputBox({
     images,
     setImages,
     isDragging,
+    addFiles,
+    attachError,
+    clearAttachError,
     onPaste,
     onDragOver,
     onDragLeave,
     onDrop,
-  } = useImageAttachments(!disabled, composerResetToken, imageStore, imageKey);
+  } = useImageAttachments(
+    !disabled && !stdinClosed,
+    composerResetToken,
+    imageStore,
+    imageKey,
+  );
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = inputRef ?? internalRef;
   const valueRef = useRef(value);
@@ -702,6 +804,7 @@ function ControlledInputBox({
     if (disabled || submitDisabled) return;
     const text = valueRef.current.trim();
     if (!text && images.length === 0) return;
+    clearAttachError();
     onSubmit(text, [...images]);
     textareaRef.current?.focus();
   };
@@ -730,6 +833,11 @@ function ControlledInputBox({
           setImages((previous) => previous.filter((image) => image.id !== id));
         }}
       />
+      {attachError && (
+        <div key="attach-error" class="attach-error" role="status">
+          {attachError}
+        </div>
+      )}
       <textarea
         key="textarea"
         ref={textareaRef}
@@ -743,6 +851,11 @@ function ControlledInputBox({
         placeholder={inputPlaceholder({ stdinClosed, disabled, isProcessing })}
         disabled={disabled}
         rows={1}
+      />
+      <AttachButton
+        key="attach"
+        disabled={disabled || !!stdinClosed}
+        onFiles={addFiles}
       />
       {isProcessing && (
         <button key="stop" class="btn btn-stop" onClick={onInterrupt}>

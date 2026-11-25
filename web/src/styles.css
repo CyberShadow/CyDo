@@ -1821,6 +1821,7 @@ body,
 
 /* Input box */
 .input-box {
+  --composer-btn-h: 36px;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -1862,7 +1863,8 @@ body,
 
 .input-textarea {
   flex: 1;
-  padding: 10px 14px;
+  padding: 9px 14px;
+  line-height: 16px;
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
@@ -1871,7 +1873,7 @@ body,
   resize: none;
   outline: none;
   overflow-y: auto;
-  min-height: 40px;
+  min-height: var(--composer-btn-h);
   max-height: min(200px, 25dvh);
   field-sizing: content;
 }
@@ -1894,6 +1896,54 @@ body,
 .btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.input-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.btn.btn-attach {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  line-height: 0;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
+.btn.btn-attach:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.btn.btn-attach:disabled {
+  opacity: 0.3;
+}
+
+.btn.btn-attach svg {
+  width: auto;
+  height: var(--composer-btn-h);
+  display: block;
+}
+
+.input-box .btn-send,
+.input-box .btn-stop {
+  height: var(--composer-btn-h);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.attach-error {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text-dim);
 }
 
 .btn-send {
