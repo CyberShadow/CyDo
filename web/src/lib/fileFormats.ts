@@ -10,6 +10,10 @@ export function isSvgPath(filePath?: string | null): boolean {
   return /\.svg$/i.test(filePath);
 }
 
+export function isPatchPath(filePath: string): boolean {
+  return /\.(diff|patch)$/i.test(filePath);
+}
+
 /**
  * Check if text content looks like a valid SVG document.
  * Used for content-sniffing when no filePath is available.
