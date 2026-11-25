@@ -257,7 +257,14 @@ class App
 			},
 			historyGeneration: (int tid) => tasks[tid].history.generation,
 		));
-		claudeUsageService = new ClaudeUsageService(&clientHub.broadcast);
+		import core.time : Duration, MonoTime;
+		import ae.sys.timing : setTimeout;
+
+		claudeUsageService = new ClaudeUsageService(&clientHub.broadcast,
+			(Duration delay, void delegate() callback) {
+				auto timer = setTimeout(callback, delay);
+				return &timer.cancel;
+			}, () => MonoTime.currTime);
 	}
 
 	void start()
@@ -345,6 +352,7 @@ class App
 			createPidFile("cydo.pid", runtimeDir());
 		}
 		config = loadRuntimeConfig();
+		claudeUsageService.configChanged(config);
 		persistence.normalizeProjectPaths(&bestEffortProjectPathIdentity);
 		taskDirTemplate = config.task_dir.length > 0 ? config.task_dir : defaultTaskDirTemplate;
 		applyConfiguredLogLevel(config.log_level);
@@ -3767,6 +3775,7 @@ class App
 		auto oldAgents = config.agents;
 		auto oldTaskDirTemplate = taskDirTemplate;
 		config = result.get();
+		claudeUsageService.configChanged(config);
 		applyConfiguredLogLevel(config.log_level);
 		auto reloadedTaskDirTemplate = config.task_dir.length > 0
 			? config.task_dir : defaultTaskDirTemplate;

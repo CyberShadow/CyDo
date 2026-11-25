@@ -1,11 +1,13 @@
 module cydo.domain.usage.tracker;
 
 import core.time : MonoTime;
-import std.datetime.systime : Clock;
+import std.datetime.systime : Clock, SysTime;
 import std.math : fabs, isFinite, isNaN;
+import std.typecons : Nullable;
 
 import ae.utils.json : JSONOptional, toJson;
 
+import cydo.domain.usage.claude_usage : ClaudeUsageReport, ClaudeUsageWindow;
 import cydo.protocol : RateLimitInfo;
 
 private struct AgentUsageLimitWindowMessage
@@ -15,12 +17,20 @@ private struct AgentUsageLimitWindowMessage
 	@JSONOptional string status;
 }
 
+private struct ModelUsageWindowMessage
+{
+	string label;
+	@JSONOptional Nullable!double utilization;
+	@JSONOptional Nullable!long resetsAt;
+}
+
 private struct AgentUsageMessage
 {
 	string type = "agent_usage";
 	string profile;
 	long updated_at;
 	AgentUsageLimitWindowMessage[string] limits;
+	@JSONOptional ModelUsageWindowMessage[] model_weekly;
 	@JSONOptional string credential_expires_at;
 }
 
@@ -40,6 +50,8 @@ private struct ProfileUsage
 	string profile;
 	long updatedAt;
 	AgentUsageLimitWindowState[string] limits;
+	ModelUsageWindowMessage[] modelWeekly;
+	MonoTime modelWeeklyObservedAt;
 	string credentialExpiresAt;
 }
 
@@ -51,7 +63,8 @@ class AgentUsageTracker
 	{
 		string[] payloads;
 		foreach (ref usageState; usageByProfile)
-			payloads ~= toJson(buildAgentUsageMessage(usageState));
+			if (usageState.updatedAt != 0)
+				payloads ~= toJson(buildAgentUsageMessage(usageState));
 		return payloads;
 	}
 
@@ -110,6 +123,68 @@ class AgentUsageTracker
 		return true;
 	}
 
+	bool applyPoll(string profile, ClaudeUsageReport report, MonoTime sentAt, out string payload)
+	{
+		if (!report.rate_limits_available || report.rate_limits.isNull)
+			return false;
+
+		auto state = usageByProfile.get(profile, ProfileUsage(profile));
+		auto limits = report.rate_limits.get;
+		struct WindowUpdate
+		{
+			string limitType;
+			AgentUsageLimitWindowState window;
+			bool changed;
+		}
+		WindowUpdate[2] updates;
+		size_t updateCount;
+
+		static foreach (field; ["five_hour", "seven_day"])
+		{{
+			auto observed = __traits(getMember, limits, field);
+			auto window = state.limits.get(field, AgentUsageLimitWindowState.init);
+			if (!observed.isNull && sentAt >= window.observedAt
+				&& (!observed.get.utilization.isNull || !observed.get.resets_at.isNull))
+			{
+				bool changed = mergePolledWindow(window, observed.get);
+				window.observedAt = sentAt;
+				updates[updateCount++] = WindowUpdate(field, window, changed);
+			}
+		}}
+
+		bool changed;
+		if (!limits.model_scoped.isNull && sentAt >= state.modelWeeklyObservedAt)
+		{
+			ModelUsageWindowMessage[] modelWeekly;
+			foreach (model; limits.model_scoped.get)
+			{
+				auto row = ModelUsageWindowMessage(model.display_name);
+				if (!model.utilization.isNull)
+					row.utilization = clampPercent(model.utilization.get);
+				if (!model.resets_at.isNull)
+					row.resetsAt = SysTime.fromISOExtString(model.resets_at.get).toUnixTime;
+				modelWeekly ~= row;
+			}
+			changed = state.modelWeekly != modelWeekly;
+			state.modelWeekly = modelWeekly;
+			state.modelWeeklyObservedAt = sentAt;
+		}
+
+		foreach (ref update; updates[0 .. updateCount])
+		{
+			state.limits[update.limitType] = update.window;
+			changed |= update.changed;
+		}
+		if (changed)
+		{
+			state.updatedAt = Clock.currTime.toUnixTime;
+			payload = toJson(buildAgentUsageMessage(state));
+		}
+		if (updateCount != 0 || !limits.model_scoped.isNull)
+			usageByProfile[profile] = state;
+		return changed;
+	}
+
 	bool applyCredentialExpiry(string profile, string expiresAt, out string payload)
 	{
 		auto state = usageByProfile.get(profile, ProfileUsage(profile));
@@ -123,6 +198,26 @@ class AgentUsageTracker
 	}
 }
 
+private bool mergePolledWindow(ref AgentUsageLimitWindowState window, ClaudeUsageWindow observed)
+{
+	bool changed;
+	if (!observed.utilization.isNull)
+	{
+		auto utilization = clampPercent(observed.utilization.get);
+		changed |= !window.hasUtilization || window.utilization != utilization;
+		window.hasUtilization = true;
+		window.utilization = utilization;
+	}
+	if (!observed.resets_at.isNull)
+	{
+		auto resetsAt = SysTime.fromISOExtString(observed.resets_at.get).toUnixTime;
+		changed |= !window.hasResetsAt || window.resetsAt != resetsAt;
+		window.hasResetsAt = true;
+		window.resetsAt = resetsAt;
+	}
+	return changed;
+}
+
 private double normalizeUtilizationPercent(double raw)
 {
 	// Pushed rate_limit_event utilization (0-1 or 0-100) is distinct from
@@ -132,17 +227,22 @@ private double normalizeUtilizationPercent(double raw)
 	double pct = raw;
 	if (pct >= 0 && pct <= 1)
 		pct *= 100;
-	if (pct < 0) pct = 0;
-	if (pct > 100) pct = 100;
-	return pct;
+	return clampPercent(pct);
 }
 
-private AgentUsageMessage buildAgentUsageMessage(ref const ProfileUsage state)
+private double clampPercent(double percent)
+{
+	import std.algorithm : clamp;
+	return clamp(percent, 0.0, 100.0);
+}
+
+private AgentUsageMessage buildAgentUsageMessage(ref ProfileUsage state)
 {
 	AgentUsageMessage msg;
 	msg.profile = state.profile;
 	msg.updated_at = state.updatedAt;
 	msg.credential_expires_at = state.credentialExpiresAt;
+	msg.model_weekly = state.modelWeekly;
 	foreach (limitType, ref window; state.limits)
 	{
 		if (!window.hasUtilization && !window.hasResetsAt && !window.hasStatus)
@@ -297,4 +397,90 @@ unittest
 	}
 	assert(expiryByProfile["personal"] == updatedExpiry);
 	assert(expiryByProfile["work"] == expiry);
+}
+
+unittest
+{
+	import core.time : seconds;
+
+	auto tracker = new AgentUsageTracker;
+	auto t1 = MonoTime.currTime;
+	auto t2 = t1 + 1.seconds;
+	auto t3 = t2 + 1.seconds;
+	string payload;
+	assert(tracker.applyPush("work", jsonParse!RateLimitInfo(
+		`{"rateLimitType":"five_hour","utilization":0.42,"status":"allowed"}`), t2, payload));
+	auto report = jsonParse!ClaudeUsageReport(`{
+		"rate_limits_available":true,
+		"rate_limits":{
+			"five_hour":{"utilization":0.5,"resets_at":"2026-11-27T00:00:00Z"},
+			"seven_day":{"utilization":150,"resets_at":"2026-11-27T00:00:00.000Z"}
+		}
+	}`);
+	assert(tracker.applyPoll("work", report, t1, payload));
+	auto msg = jsonParse!AgentUsageMessage(payload);
+	assert(msg.limits["five_hour"].utilization == 42);
+	assert(isNaN(msg.limits["five_hour"].resetsAt));
+	assert(msg.limits["seven_day"].utilization == 100);
+	assert(msg.limits["seven_day"].resetsAt == 1_795_737_600);
+
+	assert(tracker.applyPoll("work", report, t3, payload));
+	msg = jsonParse!AgentUsageMessage(payload);
+	assert(msg.limits["five_hour"].utilization == 0.5);
+	assert(msg.limits["five_hour"].resetsAt == msg.limits["seven_day"].resetsAt);
+	assert(msg.limits["five_hour"].status == "allowed");
+
+	auto snapshot = tracker.snapshotMessages();
+	foreach (noInformation; [
+		`{"rate_limits_available":false,"rate_limits":{"five_hour":{"utilization":99,"resets_at":null}}}`,
+		`{"rate_limits_available":true,"rate_limits":null}`,
+		`{"rate_limits_available":true,"rate_limits":{}}`,
+		`{"rate_limits_available":true,"rate_limits":{"five_hour":null}}`,
+		`{"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":null,"resets_at":null}}}`,
+	])
+	{
+		assert(!tracker.applyPoll("work", jsonParse!ClaudeUsageReport(noInformation), t3, payload));
+		assert(payload is null);
+		assert(tracker.snapshotMessages() == snapshot);
+	}
+	assert(tracker.applyPoll("work", jsonParse!ClaudeUsageReport(`{
+		"rate_limits_available":true,
+		"rate_limits":{"five_hour":{"utilization":10,"resets_at":null}}
+	}`), t3, payload));
+	msg = jsonParse!AgentUsageMessage(payload);
+	assert(msg.limits["five_hour"].utilization == 10);
+	assert(msg.limits["five_hour"].resetsAt == 1_795_737_600);
+}
+
+unittest
+{
+	import core.time : seconds;
+
+	auto tracker = new AgentUsageTracker;
+	auto t1 = MonoTime.currTime;
+	auto t2 = t1 + 1.seconds;
+	string payload;
+	auto fable = jsonParse!ClaudeUsageReport(`{
+		"rate_limits_available":true,
+		"rate_limits":{"model_scoped":[
+			{"display_name":"Fable","utilization":42.5,"resets_at":"2026-11-27T00:00:00.000Z"}
+		]}
+	}`);
+	assert(tracker.applyPoll("work", fable, t1, payload));
+	auto msg = jsonParse!AgentUsageMessage(payload);
+	assert(msg.model_weekly.length == 1);
+	assert(msg.model_weekly[0].label == "Fable");
+	assert(msg.model_weekly[0].utilization.get == 42.5);
+	assert(msg.model_weekly[0].resetsAt.get == 1_795_737_600);
+
+	assert(!tracker.applyPoll("work", jsonParse!ClaudeUsageReport(
+		`{"rate_limits_available":true,"rate_limits":{}}`), t2, payload));
+	assert(jsonParse!AgentUsageMessage(tracker.snapshotMessages()[0]).model_weekly.length == 1);
+
+	auto empty = jsonParse!ClaudeUsageReport(
+		`{"rate_limits_available":true,"rate_limits":{"model_scoped":[]}}`);
+	assert(tracker.applyPoll("work", empty, t2, payload));
+	assert(jsonParse!AgentUsageMessage(payload).model_weekly.length == 0);
+	assert(!tracker.applyPoll("work", fable, t1, payload));
+	assert(tracker.applyPoll("work", fable, t2, payload));
 }
