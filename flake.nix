@@ -289,6 +289,27 @@ EOF
             dubBuildType = "debug";
           });
 
+          heicConverter = let
+            busybox = pkgs.pkgsStatic.busybox;
+            heif = pkgs.libheif.bin;
+            jpeg = pkgs.libjpeg_turbo.bin;
+            closure = pkgs.closureInfo { rootPaths = [ busybox heif jpeg ]; };
+          in pkgs.writeText "cydo-heic-converter.json" (builtins.toJSON {
+            argv = [
+              "${busybox}/bin/busybox"
+              "sh"
+              "-c"
+              ''"$1" cat > /tmp/in.heic && "$2" --quiet -d libde265 --codec-threads 2 /tmp/in.heic /tmp/out.jpg >&2 && exec "$3" -copy icc /tmp/out.jpg''
+              "_"
+              "${busybox}/bin/busybox"
+              "${heif}/bin/heif-dec"
+              "${jpeg}/bin/jpegtran"
+            ];
+            env = {};
+            store_paths = "${closure}/store-paths";
+            probe_input = "${./tests/data/colors.heic}";
+          });
+
           mkCydo = backendPkg: { defs ? ./defs }: pkgs.stdenv.mkDerivation {
             pname = "cydo";
             version = "0.1.0";
@@ -306,7 +327,8 @@ EOF
               ln -s ${defs} $out/share/cydo/defs
 
               makeWrapper $out/share/cydo/cydo $out/bin/cydo \
-                --suffix PATH : ${pkgs.bubblewrap}/bin
+                --suffix PATH : ${pkgs.bubblewrap}/bin \
+                --set-default CYDO_HEIC_CONVERTER ${heicConverter}
               runHook postInstall
             '';
 
@@ -1038,6 +1060,9 @@ EOF
             CI = "1";
             # Build the real executable used by the CLI tests as a separate derivation.
             CYDO_TEST_CYDO_BIN = "${backendDebug}/bin/cydo";
+            CYDO_TEST_HEIC_EXECUTABLE_ALIAS = pkgs.runCommand "cydo-heic-executable-alias" {} ''
+              ln -s ${backendDebug}/bin/cydo "$out"
+            '';
 
             # The Codex driver's exact-shape grammar transcribes the model
             # catalog compiled into this binary; a unit test reads the catalog
@@ -1080,6 +1105,19 @@ EOF
             nativeBuildInputs = [ pkgs.bubblewrap pkgs.python3 ];
           } ''
             python3 ${./tests/sandbox-init.py} ${cydoDebug}/bin/cydo
+            touch "$out"
+          '';
+          image-jail = let
+            probe = ./tests/image-jail-probe.py;
+            probeClosure = pkgs.closureInfo { rootPaths = [ pkgs.python3 probe ]; };
+          in pkgs.runCommandCC "cydo-image-jail-test" {
+            nativeBuildInputs = [ pkgs.bubblewrap pkgs.python3 ];
+            CYDO_IMAGE_JAIL_PROBE = probe;
+            CYDO_IMAGE_JAIL_PROBE_PATHS = "${probeClosure}/store-paths";
+          } ''
+            cc -fPIC -shared -o "$PWD/image-jail-pipe-probe.so" ${./tests/image-jail-pipe-probe.c} -ldl
+            export CYDO_IMAGE_JAIL_PIPE_PROBE="$PWD/image-jail-pipe-probe.so"
+            python3 ${./tests/image-jail.py} ${cydoDebug}/bin/cydo ${./tests/data/colors.heic}
             touch "$out"
           '';
           tool-descriptions = pkgs.stdenv.mkDerivation {

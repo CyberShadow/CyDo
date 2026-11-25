@@ -197,6 +197,47 @@ static:
 			import cydo.runtime.launch.sandbox_init : runSandboxInit;
 			runSandboxInit(command);
 		}
+
+		@(`Convert a HEIC/HEIF still image from stdin to JPEG on stdout.`)
+		void convertImage()
+		{
+			import core.stdc.stdlib : exit;
+			import std.array : appender;
+			import std.process : environment;
+			import std.stdio : stdin, stdout;
+
+			import cydo.runtime.image.converter : createHeicConverter, maxHeicInputBytes;
+			import cydo.runtime.image.heif : isHeifStill;
+
+			initializeProcessSignals();
+			auto input = appender!(immutable(ubyte)[]);
+			foreach (chunk; stdin.byChunk(64 * 1024))
+			{
+				if (chunk.length > maxHeicInputBytes - input.data.length)
+				{
+					stderr.writeln("too large");
+					exit(1);
+				}
+				input.put(chunk);
+			}
+			if (!isHeifStill(input.data))
+			{
+				stderr.writeln("not a HEIC/HEIF still image");
+				exit(1);
+			}
+
+			auto converter = createHeicConverter(environment.get("CYDO_HEIC_CONVERTER"));
+			bool failed;
+			converter.toJpeg(input.data).then((immutable(ubyte)[] jpeg) {
+				stdout.rawWrite(jpeg);
+			}).except((Exception e) {
+				stderr.writeln(e.msg);
+				failed = true;
+			}).ignoreResult();
+			socketManager.loop();
+			if (failed)
+				exit(1);
+		}
 	}
 
 	@(`Simulate task type workflow.`)
