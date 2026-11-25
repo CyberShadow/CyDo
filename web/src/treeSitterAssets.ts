@@ -1,9 +1,9 @@
 import bashLanguage from "tree-sitter-bash/tree-sitter-bash.wasm?url";
 import runtime from "web-tree-sitter/web-tree-sitter.wasm?url";
-import type { ShellParserAssets } from "./lib/shellParser";
+import type { TreeSitterAssets } from "./lib/treeSitterRuntime";
 
-export const shellParserAssets: ShellParserAssets = {
+export const treeSitterAssets: TreeSitterAssets = {
   kind: "urls",
   runtime,
-  bashLanguage,
+  languages: { bash: bashLanguage },
 };

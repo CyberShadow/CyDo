@@ -1,9 +1,8 @@
 import { beforeAll, describe, it, expect } from "vitest";
 import { projectDescendantSpan, type SourceNode } from "./sourceTree";
-import {
-  configureShellParserAssets,
-  loadParsedShellDocument,
-} from "./shellParser";
+import { loadParsedShellDocument } from "./shellParser";
+import { configureTreeSitterAssets } from "./treeSitterRuntime";
+import { installedTreeSitterBytes } from "../test-support/treeSitterAssets";
 import { buildShellSourceTree } from "./shellSourceTree";
 import {
   buildSourceRenderPieces,
@@ -16,39 +15,8 @@ function sourceTextOfPiece(piece: SourceRenderPiece): string {
   return piece.kind === "rich" ? piece.sourceText : piece.text;
 }
 
-type FsPromisesLike = {
-  readFile(path: URL): Promise<Uint8Array>;
-};
-
-const processLike = (
-  globalThis as typeof globalThis & {
-    process: {
-      getBuiltinModule(name: string): unknown;
-    };
-  }
-).process;
-
-beforeAll(async () => {
-  const fs = processLike.getBuiltinModule("node:fs/promises") as FsPromisesLike;
-  const [runtime, bashLanguage] = await Promise.all([
-    fs.readFile(
-      new URL(
-        "../../node_modules/web-tree-sitter/web-tree-sitter.wasm",
-        import.meta.url,
-      ),
-    ),
-    fs.readFile(
-      new URL(
-        "../../node_modules/tree-sitter-bash/tree-sitter-bash.wasm",
-        import.meta.url,
-      ),
-    ),
-  ]);
-  configureShellParserAssets({
-    kind: "bytes",
-    loadRuntime: () => Promise.resolve(new Uint8Array(runtime)),
-    loadBashLanguage: () => Promise.resolve(new Uint8Array(bashLanguage)),
-  });
+beforeAll(() => {
+  configureTreeSitterAssets(installedTreeSitterBytes);
 });
 
 async function buildLoadedShellSourceTree(source: string) {

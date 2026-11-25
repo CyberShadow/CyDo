@@ -2,14 +2,11 @@ import { render } from "preact";
 import "./styles.css";
 import { ExportApp } from "./export-app";
 import { installShellParserE2eBridge } from "./e2e";
-import {
-  configureShellParserAssets,
-  loadParsedShellDocument,
-  preloadShellParser,
-} from "./lib/shellParser";
-import { exportShellParserAssets } from "./exportShellParserAssets";
+import { loadParsedShellDocument, preloadShellParser } from "./lib/shellParser";
+import { configureTreeSitterAssets } from "./lib/treeSitterRuntime";
+import { exportTreeSitterAssets } from "./exportTreeSitterAssets";
 
-configureShellParserAssets(exportShellParserAssets);
+configureTreeSitterAssets(exportTreeSitterAssets);
 preloadShellParser();
 installShellParserE2eBridge(loadParsedShellDocument);
 

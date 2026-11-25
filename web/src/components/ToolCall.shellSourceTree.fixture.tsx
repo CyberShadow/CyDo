@@ -5,6 +5,11 @@ import * as treeSitter from "web-tree-sitter";
 import { tokenize } from "../highlight";
 import * as parser from "../lib/shellParser";
 import * as semanticApi from "../lib/shellSemantic";
+import { configureTreeSitterAssets } from "../lib/treeSitterRuntime";
+import {
+  installedTreeSitterBytes,
+  installedTreeSitterUrls,
+} from "../test-support/treeSitterAssets";
 import {
   actStep,
   type JoinedRow,
@@ -13,13 +18,7 @@ import {
 import { ThemeContext } from "../useTheme";
 import { ToolCall } from "./ToolCall";
 
-type FsPromisesLike = {
-  readFile(path: string): Promise<Uint8Array>;
-};
-
 type ProcessLike = {
-  getBuiltinModule(name: string): unknown;
-  cwd(): string;
   on(
     event: "unhandledRejection",
     listener: (reason: unknown, promise: Promise<unknown>) => void,
@@ -35,10 +34,6 @@ type AssetMode = "urls" | "bytes";
 export const processLike = (
   globalThis as typeof globalThis & { process: ProcessLike }
 ).process;
-
-function installedWasmPath(packageName: string, fileName: string): string {
-  return `${processLike.cwd()}/node_modules/${packageName}/${fileName}`;
-}
 
 function deferred<T>(signal: AbortSignal): {
   promise: Promise<T>;
@@ -64,19 +59,12 @@ function deferred<T>(signal: AbortSignal): {
   return { promise, resolve: resolvePromise, reject: rejectPromise };
 }
 
-async function readInstalledParserWasm(): Promise<{
-  runtime: Uint8Array;
-  bashLanguage: Uint8Array;
-}> {
-  const fs = processLike.getBuiltinModule("node:fs/promises") as FsPromisesLike;
+async function readInstalledParserWasm() {
   const [runtime, bashLanguage] = await Promise.all([
-    fs.readFile(installedWasmPath("web-tree-sitter", "web-tree-sitter.wasm")),
-    fs.readFile(installedWasmPath("tree-sitter-bash", "tree-sitter-bash.wasm")),
+    installedTreeSitterBytes.loadRuntime(),
+    installedTreeSitterBytes.loadLanguage("bash"),
   ]);
-  return {
-    runtime: new Uint8Array(runtime),
-    bashLanguage: new Uint8Array(bashLanguage),
-  };
+  return { runtime, bashLanguage };
 }
 
 export function toolInput(command: string, theme: "dark" | "light") {
@@ -161,13 +149,8 @@ export function warmHighlighter(...langs: ("bash" | "python")[]) {
   };
 }
 
-export async function configureInstalledBytesParser() {
-  const installed = await readInstalledParserWasm();
-  parser.configureShellParserAssets({
-    kind: "bytes",
-    loadRuntime: () => Promise.resolve(installed.runtime),
-    loadBashLanguage: () => Promise.resolve(installed.bashLanguage),
-  });
+export function configureInstalledBytesParser() {
+  configureTreeSitterAssets(installedTreeSitterBytes);
 }
 
 export async function lifecycle(
@@ -180,20 +163,16 @@ export async function lifecycle(
   const load = vi.spyOn(parser, "loadParsedShellDocument");
   const parse = vi.spyOn(treeSitter.Parser.prototype, "parse");
   const languageLoad = vi.spyOn(treeSitter.Language, "load");
-  const runtimeUrl = installedWasmPath(
-    "web-tree-sitter",
-    "web-tree-sitter.wasm",
-  );
-  const bashLanguageUrl = installedWasmPath(
-    "tree-sitter-bash",
-    "tree-sitter-bash.wasm",
-  );
+  const {
+    runtime: runtimeUrl,
+    languages: { bash: bashLanguageUrl },
+  } = installedTreeSitterUrls;
 
   const initGate = deferred<undefined>(signal);
   const runtimeGate = deferred<Uint8Array>(signal);
   const bashLanguageGate = deferred<Uint8Array>(signal);
   const loadRuntime = vi.fn(() => runtimeGate.promise);
-  const loadBashLanguage = vi.fn(() => bashLanguageGate.promise);
+  const loadLanguage = vi.fn(() => bashLanguageGate.promise);
   let init: ReturnType<typeof vi.spyOn> | undefined;
 
   if (mode === "urls") {
@@ -204,16 +183,12 @@ export async function lifecycle(
         await initGate.promise;
         return actualInit(options);
       });
-    parser.configureShellParserAssets({
-      kind: "urls",
-      runtime: runtimeUrl,
-      bashLanguage: bashLanguageUrl,
-    });
+    configureTreeSitterAssets(installedTreeSitterUrls);
   } else {
-    parser.configureShellParserAssets({
+    configureTreeSitterAssets({
       kind: "bytes",
       loadRuntime,
-      loadBashLanguage,
+      loadLanguage,
     });
   }
 
@@ -247,7 +222,7 @@ export async function lifecycle(
       initGate.resolve(undefined);
     } else {
       expect(loadRuntime).toHaveBeenCalledTimes(1);
-      expect(loadBashLanguage).toHaveBeenCalledTimes(1);
+      expect(loadLanguage).toHaveBeenCalledTimes(1);
       runtimeGate.resolve(installed.runtime);
       bashLanguageGate.resolve(installed.bashLanguage);
     }
@@ -326,7 +301,7 @@ export async function initFailure(
   const runtimeGate = deferred<Uint8Array>(signal);
   const bashLanguageGate = deferred<Uint8Array>(signal);
   const loadRuntime = vi.fn(() => runtimeGate.promise);
-  const loadBashLanguage = vi.fn(() => bashLanguageGate.promise);
+  const loadLanguage = vi.fn(() => bashLanguageGate.promise);
   let init: ReturnType<typeof vi.spyOn> | undefined;
 
   processLike.on("unhandledRejection", listener);
@@ -339,19 +314,12 @@ export async function initFailure(
           await initGate.promise;
           return actualInit(options);
         });
-      parser.configureShellParserAssets({
-        kind: "urls",
-        runtime: installedWasmPath("web-tree-sitter", "web-tree-sitter.wasm"),
-        bashLanguage: installedWasmPath(
-          "tree-sitter-bash",
-          "tree-sitter-bash.wasm",
-        ),
-      });
+      configureTreeSitterAssets(installedTreeSitterUrls);
     } else {
-      parser.configureShellParserAssets({
+      configureTreeSitterAssets({
         kind: "bytes",
         loadRuntime,
-        loadBashLanguage,
+        loadLanguage,
       });
     }
 
@@ -375,7 +343,7 @@ export async function initFailure(
         initGate.reject(failure);
       } else {
         expect(loadRuntime).toHaveBeenCalledTimes(1);
-        expect(loadBashLanguage).toHaveBeenCalledTimes(1);
+        expect(loadLanguage).toHaveBeenCalledTimes(1);
         runtimeGate.reject(failure);
         bashLanguageGate.resolve(installed.bashLanguage);
       }
@@ -404,16 +372,16 @@ export async function semanticInitFailure({ root, poll, signal }: JoinedRow) {
   signal.throwIfAborted();
   const failure = new Error("semantic parser initialization failed");
   const loadRuntime = vi.fn(() => Promise.reject(failure));
-  const loadBashLanguage = vi.fn(() => Promise.resolve(installed.bashLanguage));
+  const loadLanguage = vi.fn(() => Promise.resolve(installed.bashLanguage));
   const unhandled: unknown[] = [];
   const listener = (reason: unknown): void => {
     unhandled.push(reason);
   };
 
-  parser.configureShellParserAssets({
+  configureTreeSitterAssets({
     kind: "bytes",
     loadRuntime,
-    loadBashLanguage,
+    loadLanguage,
   });
 
   processLike.on("unhandledRejection", listener);

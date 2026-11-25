@@ -1,11 +1,11 @@
 import { treeSitterBash, treeSitterRuntime } from "virtual:cydo-export-cdn";
 import { fetchBytesWithFallback } from "./export/cdnLoader";
-import type { ShellParserAssets } from "./lib/shellParser";
+import type { TreeSitterAssets } from "./lib/treeSitterRuntime";
 
-export const exportShellParserAssets: ShellParserAssets = {
+export const exportTreeSitterAssets: TreeSitterAssets = {
   kind: "bytes",
   loadRuntime: () =>
     fetchBytesWithFallback(treeSitterRuntime, "web-tree-sitter.wasm"),
-  loadBashLanguage: () =>
+  loadLanguage: () =>
     fetchBytesWithFallback(treeSitterBash, "tree-sitter-bash.wasm"),
 };

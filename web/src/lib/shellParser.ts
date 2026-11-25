@@ -1,4 +1,8 @@
-import { Language, Parser, type Node, type Tree } from "web-tree-sitter";
+import { Parser, type Node, type Tree } from "web-tree-sitter";
+import {
+  loadTreeSitterLanguage,
+  requireTreeSitterAssets,
+} from "./treeSitterRuntime";
 import type {
   SourceProjection,
   SourceProjectionPoint,
@@ -310,14 +314,6 @@ export type ParsedShellDocument = Readonly<{
   diagnostics: readonly ParsedShellDiagnostic[];
 }>;
 
-export type ShellParserAssets =
-  | Readonly<{ kind: "urls"; runtime: string; bashLanguage: string }>
-  | Readonly<{
-      kind: "bytes";
-      loadRuntime(): Promise<Uint8Array>;
-      loadBashLanguage(): Promise<Uint8Array>;
-    }>;
-
 export type ParseResult =
   | Readonly<{ ok: true; document: ParsedShellDocument }>
   | Readonly<{ ok: false; reason: "parser_initialization_failed" }>
@@ -339,14 +335,8 @@ export type ParseResult =
       span: ParsedShellSpan;
     }>;
 
-export function configureShellParserAssets(assets: ShellParserAssets): void {
-  if (configuredAssets !== undefined)
-    throw new Error("shell parser assets are already configured");
-  configuredAssets = assets;
-}
-
 export function preloadShellParser(): void {
-  ensureConfigured();
+  requireTreeSitterAssets();
   const initialization = getInitialization();
   if (preloadReported) return;
   preloadReported = true;
@@ -356,7 +346,7 @@ export function preloadShellParser(): void {
 }
 
 export function loadParsedShellDocument(source: string): Promise<ParseResult> {
-  ensureConfigured();
+  requireTreeSitterAssets();
   const cached = parsedDocumentCache.get(source);
   if (cached !== undefined) {
     if (cached.kind === "settled") {
@@ -395,7 +385,7 @@ export function loadParsedShellDocument(source: string): Promise<ParseResult> {
 export function getCachedParsedShellDocument(
   source: string,
 ): ParseResult | undefined {
-  ensureConfigured();
+  requireTreeSitterAssets();
   const cached = parsedDocumentCache.get(source);
   if (cached === undefined) return undefined;
   if (cached.kind === "pending") return undefined;
@@ -405,7 +395,6 @@ export function getCachedParsedShellDocument(
 }
 
 const PARSED_DOCUMENT_CACHE_CAPACITY = 8;
-const WASM_MAGIC = [0, 0x61, 0x73, 0x6d];
 
 const INTERPRETERS: Readonly<
   Record<string, Readonly<{ flags: readonly string[]; language: string }>>
@@ -436,65 +425,19 @@ type CacheEntry =
     }>;
 
 const parsedDocumentCache = new Map<string, CacheEntry>();
-let configuredAssets: ShellParserAssets | undefined;
 let initializationPromise: Promise<void> | undefined;
 let initializedParser: Parser | undefined;
 let preloadReported = false;
 
-function ensureConfigured(): ShellParserAssets {
-  if (configuredAssets === undefined)
-    throw new Error("shell parser assets are not configured");
-  return configuredAssets;
-}
-
 function getInitialization(): Promise<void> {
-  ensureConfigured();
-  if (initializationPromise !== undefined) return initializationPromise;
-  let resolveInitialization!: () => void;
-  let rejectInitialization!: (error: unknown) => void;
-  initializationPromise = new Promise<void>((resolve, reject) => {
-    resolveInitialization = resolve;
-    rejectInitialization = reject;
-  });
-  const assets = ensureConfigured();
-  void initializeAssets(assets).then(
-    resolveInitialization,
-    rejectInitialization,
-  );
-  return initializationPromise;
+  return (initializationPromise ??= initializeParser());
 }
 
-async function initializeAssets(assets: ShellParserAssets): Promise<void> {
-  let language: Language;
-  if (assets.kind === "urls") {
-    await Parser.init({
-      locateFile(fileName: string): string {
-        if (fileName !== "web-tree-sitter.wasm")
-          throw new Error(`unexpected Tree-sitter runtime file: ${fileName}`);
-        return assets.runtime;
-      },
-    });
-    language = await Language.load(assets.bashLanguage);
-  } else {
-    const [runtimeBytes, bashBytes] = await Promise.all([
-      assets.loadRuntime(),
-      assets.loadBashLanguage(),
-    ]);
-    assertWasmMagic(runtimeBytes);
-    assertWasmMagic(bashBytes);
-    await Parser.init({ wasmBinary: runtimeBytes });
-    language = await Language.load(bashBytes);
-  }
+async function initializeParser(): Promise<void> {
+  const language = await loadTreeSitterLanguage("bash");
   const parser = new Parser();
   parser.setLanguage(language);
   initializedParser = parser;
-}
-
-function assertWasmMagic(bytes: Uint8Array): void {
-  for (let i = 0; i < WASM_MAGIC.length; i++) {
-    if (bytes[i] !== WASM_MAGIC[i])
-      throw new Error("invalid Tree-sitter WASM magic");
-  }
 }
 
 function evictSettledEntries(): void {

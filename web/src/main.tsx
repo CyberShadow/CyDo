@@ -3,14 +3,11 @@ import { LocationProvider } from "preact-iso";
 import "./styles.css";
 import { App } from "./app";
 import { installShellParserE2eBridge } from "./e2e";
-import {
-  configureShellParserAssets,
-  loadParsedShellDocument,
-  preloadShellParser,
-} from "./lib/shellParser";
-import { shellParserAssets } from "./shellParserAssets";
+import { loadParsedShellDocument, preloadShellParser } from "./lib/shellParser";
+import { configureTreeSitterAssets } from "./lib/treeSitterRuntime";
+import { treeSitterAssets } from "./treeSitterAssets";
 
-configureShellParserAssets(shellParserAssets);
+configureTreeSitterAssets(treeSitterAssets);
 preloadShellParser();
 installShellParserE2eBridge(loadParsedShellDocument);
 

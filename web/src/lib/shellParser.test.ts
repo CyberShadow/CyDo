@@ -1,3 +1,5 @@
+import { installedTreeSitterBytes } from "../test-support/treeSitterAssets";
+import type { TreeSitterAssets } from "./treeSitterRuntime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { waitFor } from "../test-support/waitFor";
 import { shellParserCorpus } from "./fixtures/shellParserCorpus";
@@ -7,7 +9,6 @@ import type {
   ParseResult,
   ParsedShellDocument,
   ParsedShellEmbeddedInvocation,
-  ShellParserAssets,
 } from "./shellParser";
 
 type ParsedShellWord = ParsedShellDocument["commands"][number]["name"];
@@ -41,10 +42,6 @@ import type {
 type ShellParserModule = typeof ShellParserTypes;
 type TreeSitterModule = typeof TreeSitterTypes;
 
-type FsPromisesLike = {
-  readFile(path: URL): Promise<Uint8Array>;
-};
-
 type ProcessLike = {
   getBuiltinModule(name: string): unknown;
   on(
@@ -65,39 +62,16 @@ let realLanguage: unknown;
 async function freshShellParser(): Promise<{
   service: ShellParserModule;
   treeSitter: TreeSitterModule;
+  assetRuntime: typeof import("./treeSitterRuntime");
 }> {
   vi.doUnmock("web-tree-sitter");
   vi.resetModules();
-  const [service, treeSitter] = await Promise.all([
+  const [service, treeSitter, assetRuntime] = await Promise.all([
     import("./shellParser"),
     import("web-tree-sitter"),
+    import("./treeSitterRuntime"),
   ]);
-  return { service, treeSitter };
-}
-
-async function readInstalledParserWasm(): Promise<{
-  runtime: Uint8Array;
-  bashLanguage: Uint8Array;
-}> {
-  const fs = processLike.getBuiltinModule("node:fs/promises") as FsPromisesLike;
-  const [runtime, bashLanguage] = await Promise.all([
-    fs.readFile(
-      new URL(
-        "../../node_modules/web-tree-sitter/web-tree-sitter.wasm",
-        import.meta.url,
-      ),
-    ),
-    fs.readFile(
-      new URL(
-        "../../node_modules/tree-sitter-bash/tree-sitter-bash.wasm",
-        import.meta.url,
-      ),
-    ),
-  ]);
-  return {
-    runtime: new Uint8Array(runtime),
-    bashLanguage: new Uint8Array(bashLanguage),
-  };
+  return { service, treeSitter, assetRuntime };
 }
 
 function deferred<T>(): {
@@ -574,31 +548,26 @@ function expectPlainRepositoryData(
     expectPlainRepositoryData(child, seen);
 }
 
-function configureUrlService(
-  service: ShellParserModule,
-  treeSitter: TreeSitterModule,
-) {
+function configureUrlService({
+  assetRuntime,
+  treeSitter,
+}: Awaited<ReturnType<typeof freshShellParser>>) {
   const init = vi.spyOn(treeSitter.Parser, "init").mockResolvedValue(undefined);
   const languageLoad = vi
     .spyOn(treeSitter.Language, "load")
     .mockResolvedValue(realLanguage as never);
-  const assets: ShellParserAssets = {
+  const assets: TreeSitterAssets = {
     kind: "urls",
     runtime: "/assets/web-tree-sitter.wasm",
-    bashLanguage: "/assets/tree-sitter-bash.wasm",
+    languages: { bash: "/assets/tree-sitter-bash.wasm" },
   };
-  service.configureShellParserAssets(assets);
+  assetRuntime.configureTreeSitterAssets(assets);
   return { init, languageLoad };
 }
 
 async function freshRealByteService(): Promise<ShellParserModule> {
-  const { service } = await freshShellParser();
-  const { runtime, bashLanguage } = await readInstalledParserWasm();
-  service.configureShellParserAssets({
-    kind: "bytes",
-    loadRuntime: () => Promise.resolve(runtime),
-    loadBashLanguage: () => Promise.resolve(bashLanguage),
-  });
+  const { service, assetRuntime } = await freshShellParser();
+  assetRuntime.configureTreeSitterAssets(installedTreeSitterBytes);
   return service;
 }
 
@@ -963,19 +932,22 @@ describe.sequential("shell parser service", () => {
   });
 
   it("initializes in real byte mode and deletes the parsed tree", async () => {
-    const { service, treeSitter } = await freshShellParser();
-    const { runtime, bashLanguage } = await readInstalledParserWasm();
+    const { service, treeSitter, assetRuntime } = await freshShellParser();
+    const [runtime, bashLanguage] = await Promise.all([
+      installedTreeSitterBytes.loadRuntime(),
+      installedTreeSitterBytes.loadLanguage("bash"),
+    ]);
     const loadRuntime = vi.fn(() => Promise.resolve(runtime));
-    const loadBashLanguage = vi.fn(() => Promise.resolve(bashLanguage));
+    const loadLanguage = vi.fn(() => Promise.resolve(bashLanguage));
     const init = vi.spyOn(treeSitter.Parser, "init");
     const languageLoad = vi.spyOn(treeSitter.Language, "load");
     const parse = vi.spyOn(treeSitter.Parser.prototype, "parse");
     const deleteTree = vi.spyOn(treeSitter.Tree.prototype, "delete");
 
-    service.configureShellParserAssets({
+    assetRuntime.configureTreeSitterAssets({
       kind: "bytes",
       loadRuntime,
-      loadBashLanguage,
+      loadLanguage,
     });
     const result = await service.loadParsedShellDocument("echo 😀");
 
@@ -983,7 +955,7 @@ describe.sequential("shell parser service", () => {
     if (!result.ok) return;
     expect(result.document.program.span).toEqual({ start: 0, end: 7 });
     expect(loadRuntime).toHaveBeenCalledTimes(1);
-    expect(loadBashLanguage).toHaveBeenCalledTimes(1);
+    expect(loadLanguage).toHaveBeenCalledTimes(1);
     expect(runtime.slice(0, 4)).toEqual(new Uint8Array([0, 0x61, 0x73, 0x6d]));
     expect(bashLanguage.slice(0, 4)).toEqual(
       new Uint8Array([0, 0x61, 0x73, 0x6d]),
@@ -1006,63 +978,63 @@ describe.sequential("shell parser service", () => {
     const first = await freshShellParser();
     expect(() => {
       first.service.preloadShellParser();
-    }).toThrow("shell parser assets are not configured");
+    }).toThrow("Tree-sitter assets are not configured");
     expect(() => {
       void first.service.loadParsedShellDocument("echo hi");
-    }).toThrow("shell parser assets are not configured");
+    }).toThrow("Tree-sitter assets are not configured");
     expect(() => {
       first.service.getCachedParsedShellDocument("echo hi");
-    }).toThrow("shell parser assets are not configured");
+    }).toThrow("Tree-sitter assets are not configured");
 
-    const firstAssets: ShellParserAssets = {
+    const firstAssets: TreeSitterAssets = {
       kind: "urls",
       runtime: "runtime-one.wasm",
-      bashLanguage: "bash-one.wasm",
+      languages: { bash: "bash-one.wasm" },
     };
-    first.service.configureShellParserAssets(firstAssets);
+    first.assetRuntime.configureTreeSitterAssets(firstAssets);
     expect(() => {
-      first.service.configureShellParserAssets(firstAssets);
-    }).toThrow("shell parser assets are already configured");
+      first.assetRuntime.configureTreeSitterAssets(firstAssets);
+    }).toThrow("Tree-sitter assets are already configured");
     expect(() => {
-      first.service.configureShellParserAssets({
+      first.assetRuntime.configureTreeSitterAssets({
         kind: "urls",
         runtime: "runtime-two.wasm",
-        bashLanguage: "bash-two.wasm",
+        languages: { bash: "bash-two.wasm" },
       });
-    }).toThrow("shell parser assets are already configured");
+    }).toThrow("Tree-sitter assets are already configured");
 
     const second = await freshShellParser();
     const loadRuntime = vi.fn(() =>
       Promise.resolve(new Uint8Array([0, 0x61, 0x73, 0x6d])),
     );
-    const loadBashLanguage = vi.fn(() =>
+    const loadLanguage = vi.fn(() =>
       Promise.resolve(new Uint8Array([0, 0x61, 0x73, 0x6d])),
     );
-    const byteAssets: ShellParserAssets = {
+    const byteAssets: TreeSitterAssets = {
       kind: "bytes",
       loadRuntime,
-      loadBashLanguage,
+      loadLanguage,
     };
     expect(second.service).not.toBe(first.service);
-    second.service.configureShellParserAssets(byteAssets);
+    second.assetRuntime.configureTreeSitterAssets(byteAssets);
     expect(loadRuntime).not.toHaveBeenCalled();
-    expect(loadBashLanguage).not.toHaveBeenCalled();
+    expect(loadLanguage).not.toHaveBeenCalled();
     expect(() => {
-      second.service.configureShellParserAssets(byteAssets);
-    }).toThrow("shell parser assets are already configured");
+      second.assetRuntime.configureTreeSitterAssets(byteAssets);
+    }).toThrow("Tree-sitter assets are already configured");
     expect(() => {
-      second.service.configureShellParserAssets({
+      second.assetRuntime.configureTreeSitterAssets({
         kind: "bytes",
         loadRuntime: () =>
           Promise.resolve(new Uint8Array([0, 0x61, 0x73, 0x6d])),
-        loadBashLanguage: () =>
+        loadLanguage: () =>
           Promise.resolve(new Uint8Array([0, 0x61, 0x73, 0x6d])),
       });
-    }).toThrow("shell parser assets are already configured");
+    }).toThrow("Tree-sitter assets are already configured");
   });
 
   it("uses one URL initialization flight and validates locateFile", async () => {
-    const { service, treeSitter } = await freshShellParser();
+    const { service, treeSitter, assetRuntime } = await freshShellParser();
     const initGate = deferred<undefined>();
     const init = vi
       .spyOn(treeSitter.Parser, "init")
@@ -1072,10 +1044,10 @@ describe.sequential("shell parser service", () => {
       .mockResolvedValue(realLanguage as never);
     const parse = vi.spyOn(treeSitter.Parser.prototype, "parse");
     const deleteTree = vi.spyOn(treeSitter.Tree.prototype, "delete");
-    service.configureShellParserAssets({
+    assetRuntime.configureTreeSitterAssets({
       kind: "urls",
       runtime: "runtime-url.wasm",
-      bashLanguage: "bash-language-url.wasm",
+      languages: { bash: "bash-language-url.wasm" },
     });
 
     const first = service.loadParsedShellDocument("echo hi");
@@ -1113,19 +1085,19 @@ describe.sequential("shell parser service", () => {
   ])(
     "rejects an invalid $label WASM prefix before native initialization",
     async ({ runtime, bash }) => {
-      const { service, treeSitter } = await freshShellParser();
+      const { service, treeSitter, assetRuntime } = await freshShellParser();
       const runtimeGate = deferred<Uint8Array>();
       const grammarGate = deferred<Uint8Array>();
       const loadRuntime = vi.fn(() => runtimeGate.promise);
-      const loadBashLanguage = vi.fn(() => grammarGate.promise);
+      const loadLanguage = vi.fn(() => grammarGate.promise);
       const init = vi.spyOn(treeSitter.Parser, "init");
       const languageLoad = vi.spyOn(treeSitter.Language, "load");
       const parse = vi.spyOn(treeSitter.Parser.prototype, "parse");
       const deleteTree = vi.spyOn(treeSitter.Tree.prototype, "delete");
-      service.configureShellParserAssets({
+      assetRuntime.configureTreeSitterAssets({
         kind: "bytes",
         loadRuntime,
-        loadBashLanguage,
+        loadLanguage,
       });
 
       const pending = service.loadParsedShellDocument("echo hi");
@@ -1164,25 +1136,25 @@ describe.sequential("shell parser service", () => {
   ])(
     "retains a typed initialization failure from the $label",
     async ({ phase, error }) => {
-      const { service, treeSitter } = await freshShellParser();
+      const { service, treeSitter, assetRuntime } = await freshShellParser();
       const init = vi.spyOn(treeSitter.Parser, "init");
       const languageLoad = vi.spyOn(treeSitter.Language, "load");
       const loadRuntime = vi.fn(() => Promise.reject(error));
-      const loadBashLanguage = vi.fn(() =>
+      const loadLanguage = vi.fn(() =>
         Promise.resolve(new Uint8Array([0, 0x61, 0x73, 0x6d])),
       );
 
       if (phase === "runtime") {
-        service.configureShellParserAssets({
+        assetRuntime.configureTreeSitterAssets({
           kind: "bytes",
           loadRuntime,
-          loadBashLanguage,
+          loadLanguage,
         });
       } else {
-        service.configureShellParserAssets({
+        assetRuntime.configureTreeSitterAssets({
           kind: "urls",
           runtime: "runtime-url.wasm",
-          bashLanguage: "bash-language-url.wasm",
+          languages: { bash: "bash-language-url.wasm" },
         });
         init.mockImplementation(
           phase === "init"
@@ -1204,7 +1176,7 @@ describe.sequential("shell parser service", () => {
       }
       if (phase === "runtime") {
         expect(loadRuntime).toHaveBeenCalledTimes(1);
-        expect(loadBashLanguage).toHaveBeenCalledTimes(1);
+        expect(loadLanguage).toHaveBeenCalledTimes(1);
         expect(init).not.toHaveBeenCalled();
       } else {
         expect(init).toHaveBeenCalledTimes(1);
@@ -1214,7 +1186,7 @@ describe.sequential("shell parser service", () => {
   );
 
   it("reports a preload rejection once without an unhandled rejection", async () => {
-    const { service, treeSitter } = await freshShellParser();
+    const { service, treeSitter, assetRuntime } = await freshShellParser();
     const error = new Error("preload failed");
     const init = vi.spyOn(treeSitter.Parser, "init").mockRejectedValue(error);
     vi.spyOn(treeSitter.Language, "load").mockResolvedValue(
@@ -1229,10 +1201,10 @@ describe.sequential("shell parser service", () => {
     };
     processLike.on("unhandledRejection", listener);
     try {
-      service.configureShellParserAssets({
+      assetRuntime.configureTreeSitterAssets({
         kind: "urls",
         runtime: "runtime-url.wasm",
-        bashLanguage: "bash-language-url.wasm",
+        languages: { bash: "bash-language-url.wasm" },
       });
       expect(() => {
         service.preloadShellParser();
@@ -1264,7 +1236,7 @@ describe.sequential("shell parser service", () => {
   });
 
   it("caches exact source strings and shares pending work", async () => {
-    const { service, treeSitter } = await freshShellParser();
+    const { service, treeSitter, assetRuntime } = await freshShellParser();
     const initGate = deferred<undefined>();
     const init = vi
       .spyOn(treeSitter.Parser, "init")
@@ -1273,10 +1245,10 @@ describe.sequential("shell parser service", () => {
       realLanguage as never,
     );
     const parse = vi.spyOn(treeSitter.Parser.prototype, "parse");
-    service.configureShellParserAssets({
+    assetRuntime.configureTreeSitterAssets({
       kind: "urls",
       runtime: "runtime-url.wasm",
-      bashLanguage: "bash-language-url.wasm",
+      languages: { bash: "bash-language-url.wasm" },
     });
 
     const pendingA = service.loadParsedShellDocument("echo hi");
@@ -1297,10 +1269,7 @@ describe.sequential("shell parser service", () => {
 
   it("evicts settled entries by true LRU order and never evicts pending entries", async () => {
     const firstService = await freshShellParser();
-    const firstSetup = configureUrlService(
-      firstService.service,
-      firstService.treeSitter,
-    );
+    const firstSetup = configureUrlService(firstService);
     const firstParse = vi.spyOn(
       firstService.treeSitter.Parser.prototype,
       "parse",
@@ -1328,10 +1297,10 @@ describe.sequential("shell parser service", () => {
       realLanguage as never,
     );
     const parse = vi.spyOn(secondService.treeSitter.Parser.prototype, "parse");
-    secondService.service.configureShellParserAssets({
+    secondService.assetRuntime.configureTreeSitterAssets({
       kind: "urls",
       runtime: "runtime-url.wasm",
-      bashLanguage: "bash-language-url.wasm",
+      languages: { bash: "bash-language-url.wasm" },
     });
     const pending = Array.from({ length: 9 }, (_, i) =>
       secondService.service.loadParsedShellDocument(`echo pending-${i}`),
@@ -1349,8 +1318,9 @@ describe.sequential("shell parser service", () => {
   });
 
   it("deletes every tree, including fatal trees, before recursive child parsing", async () => {
-    const { service, treeSitter } = await freshShellParser();
-    configureUrlService(service, treeSitter);
+    const fresh = await freshShellParser();
+    const { service, treeSitter } = fresh;
+    configureUrlService(fresh);
     const parse = vi.spyOn(treeSitter.Parser.prototype, "parse");
     const deleteTree = vi.spyOn(treeSitter.Tree.prototype, "delete");
 
@@ -1377,13 +1347,7 @@ describe.sequential("shell parser service", () => {
   });
 
   it("decodes only strict literal words and preserves projections", async () => {
-    const { service } = await freshShellParser();
-    const { runtime, bashLanguage } = await readInstalledParserWasm();
-    service.configureShellParserAssets({
-      kind: "bytes",
-      loadRuntime: () => Promise.resolve(runtime),
-      loadBashLanguage: () => Promise.resolve(bashLanguage),
-    });
+    const service = await freshRealByteService();
 
     const escaped = await service.loadParsedShellDocument('echo "a\\"b"');
     expect(escaped.ok).toBe(true);
@@ -4898,15 +4862,14 @@ describe.sequential("shell parser service", () => {
 
   it("matches every independently authored corpus row and its exact-source cache result", async () => {
     expect(shellParserCorpus).toHaveLength(25);
-    const { service, treeSitter } = await freshShellParser();
-    const { runtime, bashLanguage } = await readInstalledParserWasm();
-    const loadRuntime = vi.fn(() => Promise.resolve(runtime));
-    const loadBashLanguage = vi.fn(() => Promise.resolve(bashLanguage));
+    const { service, treeSitter, assetRuntime } = await freshShellParser();
+    const loadRuntime = vi.fn(installedTreeSitterBytes.loadRuntime);
+    const loadLanguage = vi.fn(installedTreeSitterBytes.loadLanguage);
     const parse = vi.spyOn(treeSitter.Parser.prototype, "parse");
-    service.configureShellParserAssets({
+    assetRuntime.configureTreeSitterAssets({
       kind: "bytes",
       loadRuntime,
-      loadBashLanguage,
+      loadLanguage,
     });
 
     for (const fixture of shellParserCorpus) {

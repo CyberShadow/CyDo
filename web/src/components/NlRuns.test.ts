@@ -4,7 +4,8 @@ import { assert, beforeAll, expect, it } from "vitest";
 import fixtures from "../lib/nlRuns.test-fixtures.json";
 import { segmentOutput } from "../lib/outputPlan";
 import { shellOutputView } from "../lib/shellOutput";
-import { configureShellParserAssets } from "../lib/shellParser";
+import { configureTreeSitterAssets } from "../lib/treeSitterRuntime";
+import { installedTreeSitterBytes } from "../test-support/treeSitterAssets";
 import { parseShellSemantic } from "../lib/shellSemantic";
 import { actPoll, ownedRoots } from "../test-support/preactAct";
 import {
@@ -14,28 +15,8 @@ import {
 
 const roots = ownedRoots();
 
-beforeAll(async () => {
-  const processLike = (
-    globalThis as typeof globalThis & {
-      process: {
-        cwd(): string;
-        getBuiltinModule(name: string): unknown;
-      };
-    }
-  ).process;
-  const fs = processLike.getBuiltinModule("node:fs/promises") as {
-    readFile(path: string): Promise<Uint8Array>;
-  };
-  const modules = `${processLike.cwd()}/node_modules`;
-  const [runtime, bashLanguage] = await Promise.all([
-    fs.readFile(`${modules}/web-tree-sitter/web-tree-sitter.wasm`),
-    fs.readFile(`${modules}/tree-sitter-bash/tree-sitter-bash.wasm`),
-  ]);
-  configureShellParserAssets({
-    kind: "bytes",
-    loadRuntime: () => Promise.resolve(new Uint8Array(runtime)),
-    loadBashLanguage: () => Promise.resolve(new Uint8Array(bashLanguage)),
-  });
+beforeAll(() => {
+  configureTreeSitterAssets(installedTreeSitterBytes);
 });
 
 async function mixedNumberedView(command = "nl -ba a.d && nl -ba b.py") {

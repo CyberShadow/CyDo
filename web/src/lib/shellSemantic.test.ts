@@ -2,10 +2,11 @@ import { assert, describe, it, expect, beforeAll, vi } from "vitest";
 import { parseShellSemantic } from "./shellSemantic";
 import * as shellParser from "./shellParser";
 import {
-  configureShellParserAssets,
   loadParsedShellDocument,
   type ParsedShellDocument,
 } from "./shellParser";
+import { configureTreeSitterAssets } from "./treeSitterRuntime";
+import { installedTreeSitterBytes } from "../test-support/treeSitterAssets";
 import { shellOutputView } from "./shellOutput";
 import type {
   NumberingLayer,
@@ -80,10 +81,6 @@ function withoutCommand({ command: _command, ...semantic }: ShellSemantic) {
   return semantic;
 }
 
-type FsPromisesLike = {
-  readFile(path: URL): Promise<Uint8Array>;
-};
-
 const processLike = (
   globalThis as typeof globalThis & {
     process: {
@@ -93,27 +90,8 @@ const processLike = (
   }
 ).process;
 
-beforeAll(async () => {
-  const fs = processLike.getBuiltinModule("node:fs/promises") as FsPromisesLike;
-  const [runtime, bashLanguage] = await Promise.all([
-    fs.readFile(
-      new URL(
-        "../../node_modules/web-tree-sitter/web-tree-sitter.wasm",
-        import.meta.url,
-      ),
-    ),
-    fs.readFile(
-      new URL(
-        "../../node_modules/tree-sitter-bash/tree-sitter-bash.wasm",
-        import.meta.url,
-      ),
-    ),
-  ]);
-  configureShellParserAssets({
-    kind: "bytes",
-    loadRuntime: () => Promise.resolve(new Uint8Array(runtime)),
-    loadBashLanguage: () => Promise.resolve(new Uint8Array(bashLanguage)),
-  });
+beforeAll(() => {
+  configureTreeSitterAssets(installedTreeSitterBytes);
 });
 
 async function buildLoadedShellSourceTree(source: string) {

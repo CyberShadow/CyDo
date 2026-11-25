@@ -17,7 +17,8 @@ import {
 } from "../lib/shellSemantic";
 import * as shellParser from "../lib/shellParser";
 import type { ParseResult } from "../lib/shellParser";
-import { configureShellParserAssets } from "../lib/shellParser";
+import { configureTreeSitterAssets } from "../lib/treeSitterRuntime";
+import { installedTreeSitterBytes } from "../test-support/treeSitterAssets";
 import { loadParsedShellDocument } from "../lib/shellParser";
 import type { ItemEnrichment, ToolResult } from "../types";
 import { actPoll, ownedRoots } from "../test-support/preactAct";
@@ -30,38 +31,8 @@ import {
   getCydoTaskResultItems,
 } from "./ToolCall";
 
-type FsPromisesLike = {
-  readFile(path: URL): Promise<Uint8Array>;
-};
-
-const processLike = (
-  globalThis as typeof globalThis & {
-    process: {
-      getBuiltinModule(name: string): unknown;
-      cwd(): string;
-    };
-  }
-).process;
-
-beforeAll(async () => {
-  const fs = processLike.getBuiltinModule("node:fs/promises") as FsPromisesLike;
-  const [runtime, bashLanguage] = await Promise.all([
-    fs.readFile(
-      new URL(
-        `file://${processLike.cwd()}/node_modules/web-tree-sitter/web-tree-sitter.wasm`,
-      ),
-    ),
-    fs.readFile(
-      new URL(
-        `file://${processLike.cwd()}/node_modules/tree-sitter-bash/tree-sitter-bash.wasm`,
-      ),
-    ),
-  ]);
-  configureShellParserAssets({
-    kind: "bytes",
-    loadRuntime: () => Promise.resolve(new Uint8Array(runtime)),
-    loadBashLanguage: () => Promise.resolve(new Uint8Array(bashLanguage)),
-  });
+beforeAll(() => {
+  configureTreeSitterAssets(installedTreeSitterBytes);
 });
 
 afterEach(() => {

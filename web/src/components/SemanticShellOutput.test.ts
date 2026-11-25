@@ -7,38 +7,12 @@ import {
 } from "./SemanticShellOutput";
 import { shellOutputView } from "../lib/shellOutput";
 import type { OutputPlan } from "../lib/outputPlan";
-import { configureShellParserAssets } from "../lib/shellParser";
+import { configureTreeSitterAssets } from "../lib/treeSitterRuntime";
+import { installedTreeSitterBytes } from "../test-support/treeSitterAssets";
 import { parseShellSemantic } from "../lib/shellSemantic";
 
-const processLike = (
-  globalThis as typeof globalThis & {
-    process: { getBuiltinModule(name: string): unknown };
-  }
-).process;
-
-beforeAll(async () => {
-  const fs = processLike.getBuiltinModule("node:fs/promises") as {
-    readFile(path: URL): Promise<Uint8Array>;
-  };
-  const [runtime, bashLanguage] = await Promise.all([
-    fs.readFile(
-      new URL(
-        "../../node_modules/web-tree-sitter/web-tree-sitter.wasm",
-        import.meta.url,
-      ),
-    ),
-    fs.readFile(
-      new URL(
-        "../../node_modules/tree-sitter-bash/tree-sitter-bash.wasm",
-        import.meta.url,
-      ),
-    ),
-  ]);
-  configureShellParserAssets({
-    kind: "bytes",
-    loadRuntime: () => Promise.resolve(new Uint8Array(runtime)),
-    loadBashLanguage: () => Promise.resolve(new Uint8Array(bashLanguage)),
-  });
+beforeAll(() => {
+  configureTreeSitterAssets(installedTreeSitterBytes);
 });
 
 function renderSemantic(
