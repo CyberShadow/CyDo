@@ -495,7 +495,7 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
 
 function TaskLifecycleView({ message }: { message: DisplayMessage }) {
   const raw = message.rawSource as Record<string, unknown>;
-  const isStarted = raw.subtype === "task_started";
+  const isStarted = raw.type === "task/started";
   const taskType = raw.task_type;
   const taskId = raw.task_id;
 
