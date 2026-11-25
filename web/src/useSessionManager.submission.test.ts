@@ -8,6 +8,7 @@ import {
 } from "./controlledImageStore";
 import type { OutboxEntry } from "./outbox";
 import type { AgnosticEvent, ControlMessage } from "./protocol";
+import { deepFreeze } from "./testing/deepFreeze";
 import type {
   DraftViewSnapshot,
   TaskManager,
@@ -1103,6 +1104,48 @@ describe("submission acknowledgement routing", () => {
     });
     expect(manager!.draftView).toBeNull();
     expect(testState.navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes optimistic sends and new backend placeholders without mutating returned tasks", async () => {
+    const tid = 42;
+    const { connection, task } = await seedOrdinaryTask(tid);
+    deepFreeze(manager!.tasks);
+
+    const sentContent = [{ type: "text", text: "optimistic send" }];
+    await act(() => {
+      manager!.send(task.uuid, "optimistic send");
+    });
+    expect(connection.sendMessage).toHaveBeenCalledExactlyOnceWith(
+      tid,
+      sentContent,
+      expect.any(String),
+    );
+    const sent = manager!.getByTid(tid)!;
+    expect(sent.messages).toMatchObject([
+      { type: "user", content: sentContent, pending: true },
+    ]);
+    deepFreeze(manager!.tasks);
+
+    const peerContent = [{ type: "text" as const, text: "sent by a peer" }];
+    await act(() => {
+      connection.onUnconfirmedUserMessage?.(
+        tid,
+        {
+          type: "item/started",
+          item_id: "peer-user",
+          item_type: "user_message",
+          content: peerContent,
+        },
+        "peer-nonce",
+      );
+    });
+    const updated = manager!.getByTid(tid)!;
+    expect(updated.messages).toMatchObject([
+      { type: "user", content: sentContent, pending: true },
+      { type: "user", content: peerContent, pending: true },
+    ]);
+    expect(updated.messages[1]!.id).not.toBe(updated.messages[0]!.id);
+    deepFreeze(manager!.tasks);
   });
 
   it("does not route a submission acknowledgement after attachment changes", async () => {

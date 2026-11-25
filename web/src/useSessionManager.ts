@@ -1034,13 +1034,14 @@ export function useTaskManager(
         content as import("./protocol").AssistantContentBlock[];
       const nonce = crypto.randomUUID();
       sendMessageAttempt(task.tid, content, nonce);
-      const messageId = `opt-${++task.msgIdCounter}`;
+      const msgIdCounter = task.msgIdCounter + 1;
       const updated: TaskState = {
         ...task,
+        msgIdCounter,
         messages: [
           ...task.messages,
           {
-            id: messageId,
+            id: `opt-${msgIdCounter}`,
             type: "user",
             content: displayContent,
             ackState: 4,
@@ -1393,13 +1394,14 @@ export function useTaskManager(
         }
       }
 
-      const id = `pending-${++prev.msgIdCounter}`;
+      const msgIdCounter = prev.msgIdCounter + 1;
       const updated = {
         ...prev,
+        msgIdCounter,
         messages: [
           ...messages,
           {
-            id,
+            id: `pending-${msgIdCounter}`,
             type: "user" as const,
             content,
             ackState: 3 as const,
