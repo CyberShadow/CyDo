@@ -25,6 +25,11 @@ import ae.net.jsonrpc.contentlength : ContentLengthAdapter;
 /// Selects the framing mode for stdout of an AgentProcess.
 enum FramingMode { ndjson, contentLength, raw }
 
+struct ProcessResourceLimits
+{
+	ulong addressSpace, cpuSeconds, fileSize;
+}
+
 /// Run one line handler, containing any fault and reporting it through
 /// `report` (which may be null). Lives outside AgentProcess so the
 /// containment contract is testable without a child process or an event loop.
@@ -179,8 +184,10 @@ class AgentProcess
 {
 	private Pid pid;
 	private FileConnection stdinConn;
+	private bool independentPipes;
+	private bool stdinClosed;
 	private ConnectionAdapter stdoutLines;
-	private LineBufferedAdapter stderrLines;
+	private ConnectionAdapter stderrLines;
 	private Duplex duplex;
 	private bool exited;
 	private int exitStatus;
@@ -212,10 +219,16 @@ class AgentProcess
 	/// If noStdin is true, stdin is redirected from /dev/null (no Duplex needed).
 	/// If logName is non-empty, a LoggingAdapter is inserted above the framing adapter
 	/// to trace-log logical messages at the trace level.
+	/// With independentPipes, this process owns all three endpoints until they
+	/// close. Stdin never enters disconnecting, so forceClosePipes can abort it
+	/// even while queued writes are pending.
 	this(string[] args, string[string] env = null, string workDir = null, bool noStdin = false,
 		FramingMode mode = FramingMode.ndjson, string logName = null,
-		bool waitForPipeDrain = true)
+		bool waitForPipeDrain = true, ProcessResourceLimits resourceLimits = ProcessResourceLimits.init,
+		bool independentPipes = false)
 	{
+		enforce(!(noStdin && independentPipes), "Independent pipes require stdin");
+		this.independentPipes = independentPipes;
 		this.waitForPipeDrain = waitForPipeDrain;
 		Pipe stdinPipe;
 		if (!noStdin)
@@ -225,13 +238,34 @@ class AgentProcess
 
 		tracef("Spawning agent process: %s", args);
 		tracef("Environment: %s", env);
+		auto config = Config.none;
+		version (Posix)
+		{
+			if (resourceLimits != ProcessResourceLimits.init)
+				config.preExecDelegate = delegate() nothrow @nogc @trusted {
+					import core.sys.posix.sys.resource : RLIMIT_AS, RLIMIT_CPU, RLIMIT_FSIZE,
+						rlimit, setrlimit;
+
+					bool apply(int resource, ulong value) nothrow @nogc
+					{
+						if (!value)
+							return true;
+						auto limit = rlimit(value, value);
+						return setrlimit(resource, &limit) == 0;
+					}
+
+					return apply(RLIMIT_AS, resourceLimits.addressSpace)
+						&& apply(RLIMIT_CPU, resourceLimits.cpuSeconds)
+						&& apply(RLIMIT_FSIZE, resourceLimits.fileSize);
+				};
+		}
 		pid = spawnProcess(
 			args,
 			noStdin ? File("/dev/null") : stdinPipe.readEnd,
 			stdoutPipe.writeEnd,
 			stderrPipe.writeEnd,
 			env,
-			Config.none,
+			config,
 			workDir,
 		);
 
@@ -259,16 +293,20 @@ class AgentProcess
 			stdinConn = new FileConnection(stdinFd);
 			auto stdoutConn = new FileConnection(stdoutFd);
 
-			// Duplex for stdin (write) / stdout (read)
-			duplex = new Duplex(stdoutConn, stdinConn);
+			IConnection transport = stdoutConn;
+			if (!independentPipes)
+			{
+				duplex = new Duplex(stdoutConn, stdinConn);
+				transport = duplex;
+			}
 
 			ConnectionAdapter framedConn;
 			if (mode == FramingMode.contentLength)
-				framedConn = new ContentLengthAdapter(duplex);
+				framedConn = new ContentLengthAdapter(transport);
 			else if (mode == FramingMode.raw)
-				framedConn = new ConnectionAdapter(duplex);
+				framedConn = new ConnectionAdapter(transport);
 			else
-				framedConn = new LineBufferedAdapter(duplex, "\n");
+				framedConn = new LineBufferedAdapter(transport, "\n");
 
 			// Optionally log logical messages above the framing adapter.
 			stdoutLines = logName.length ? new LoggingAdapter(framedConn, logName) : framedConn;
@@ -307,7 +345,10 @@ class AgentProcess
 
 		stdoutLines.handleDisconnect = &onStdoutDisconnect;
 
-		stderrLines = new LineBufferedAdapter(stderrConn, "\n");
+		if (independentPipes)
+			stderrLines = new ConnectionAdapter(stderrConn);
+		else
+			stderrLines = new LineBufferedAdapter(stderrConn, "\n");
 		stderrLines.handleReadData = (Data data) {
 			if (onStderrLine)
 			{
@@ -348,48 +389,32 @@ class AgentProcess
 		if (exitFired)
 			return;
 		if (exited && (!waitForPipeDrain || (stdoutEOF && stderrEOF)))
-		{
-			exitFired = true;
-			if (stderrDrainTimer !is null)
-			{
-				stderrDrainTimer.cancel();
-				stderrDrainTimer = null;
-			}
-			if (killTimer !is null)
-			{
-				killTimer.cancel();
-				killTimer = null;
-			}
-			if (killForcedTimer !is null)
-			{
-				killForcedTimer.cancel();
-				killForcedTimer = null;
-			}
-			if (killStdoutDrainTimer !is null)
-			{
-				killStdoutDrainTimer.cancel();
-				killStdoutDrainTimer = null;
-			}
-			if (onExit)
-				onExit(exitStatus);
-		}
+			fireExit();
 		else if (waitForPipeDrain && exited && stdoutEOF && !stderrEOF && stderrDrainTimer is null)
-		{
 			stderrDrainTimer = setTimeout({
-				if (exitFired)
-					return;
-				exitFired = true;
-				if (stderrLines !is null)
-				{
-					auto lines = stderrLines;
-					stderrLines = null;
-					if (lines.state.disconnectable)
-						lines.disconnect("stderr drain timeout");
-				}
-				if (onExit)
-					onExit(exitStatus);
+				stderrDrainTimer = null;
+				fireExit(closeStderr: true);
 			}, 2000.msecs);
+	}
+
+	private void fireExit(bool closeStderr = false)
+	{
+		exitFired = true;
+		foreach (timer; [&stderrDrainTimer, &killTimer, &killForcedTimer, &killStdoutDrainTimer])
+			if (*timer !is null)
+			{
+				(*timer).cancel();
+				*timer = null;
+			}
+		if (closeStderr && stderrLines !is null)
+		{
+			auto lines = stderrLines;
+			stderrLines = null;
+			if (lines.state.disconnectable)
+				lines.disconnect("stderr drain timeout");
 		}
+		if (onExit)
+			onExit(exitStatus);
 	}
 
 	/// Send a message to the process stdin. The framing adapter handles encoding.
@@ -397,7 +422,14 @@ class AgentProcess
 	{
 		if (dead)
 			throw new Exception("Agent process is no longer running");
-		stdoutLines.send(Data(line.asBytes));
+		// Independent pipes keep stdout open when the stdin writer disconnects.
+		if (independentPipes)
+		{
+			enforce(!stdinClosed, "Process stdin is closed");
+			stdinConn.send(Data(line.asBytes));
+		}
+		else
+			stdoutLines.send(Data(line.asBytes));
 	}
 
 	private void onStdoutDisconnect(string, DisconnectType)
@@ -431,12 +463,17 @@ class AgentProcess
 	/// The underlying process PID, for use with asyncWait.
 	@property Pid processId() { return pid; }
 
-	/// Force-disconnect all pipes (stdin, stdout, stderr).
-	/// Used after SIGKILL to unblock the event loop when orphaned grandchildren
-	/// hold pipe FDs open.
+	/// Close all remaining endpoints, discarding queued input in independent mode.
+	/// Safe after exit, including when descendants still hold inherited pipe FDs.
 	void forceClosePipes()
 	{
-		closeStdin();
+		if (independentPipes)
+		{
+			if (stdinConn.state == ConnectionState.connected)
+				stdinConn.disconnect("force close", DisconnectType.error);
+		}
+		else
+			closeStdin();
 		if (stdoutLines !is null)
 		{
 			auto lines = stdoutLines;
@@ -466,12 +503,28 @@ class AgentProcess
 	/// Close stdin to signal EOF — the process will exit gracefully.
 	void closeStdin()
 	{
+		if (independentPipes)
+			return finishStdin();
 		if (stdinConn !is null)
 		{
 			if (stdinConn.state.disconnectable)
 				stdinConn.disconnect("closing stdin");
 			stdinConn = null;
 		}
+	}
+
+	private void finishStdin()
+	{
+		enforce(!stdinClosed, "Process stdin is closed");
+		stdinClosed = true;
+		if (stdinConn.state != ConnectionState.connected)
+			return;
+		// ae cannot abort a disconnecting writer. Wait for the queue to drain
+		// before requesting a disconnect so forceClosePipes can still abort it.
+		if (stdinConn.writePending)
+			stdinConn.handleBufferFlushed = { stdinConn.disconnect("closing stdin"); };
+		else
+			stdinConn.disconnect("closing stdin");
 	}
 
 	/// Send SIGINT.
@@ -506,12 +559,16 @@ class AgentProcess
 
 	/// If the process has not exited within `timeout`, send SIGTERM.
 	/// If it still hasn't exited after another 2 seconds, send SIGKILL.
-	void killAfterTimeout(Duration timeout)
+	void killAfterTimeout(Duration timeout, void delegate() onTimeout = null)
 	{
 		if (exitFired)
 			return;
 		killTimer = setTimeout({
 			killTimer = null;
+			if (exitFired)
+				return;
+			if (onTimeout !is null)
+				onTimeout();
 			if (exitFired)
 				return;
 			sendSignal(SIGTERM);
