@@ -1195,6 +1195,8 @@ body,
 }
 
 .task-lifecycle-desc {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--text);
 }
 

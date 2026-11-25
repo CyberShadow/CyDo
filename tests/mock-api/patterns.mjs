@@ -884,14 +884,17 @@ export function matchPattern(userText) {
   // tool returns at once and the CLI starts a turn of its own when the
   // command exits. "run forgotten command <cmd>" starts it the same way; the
   // agent then stops it when reminded that it is still running (server.mjs).
-  match = userText.match(/run (?:detached|forgotten) command (.+)/i);
+  // An optional " with description <text>" suffix sets the lifecycle label.
+  match = userText.match(
+    /run (?:detached|forgotten) command (.+?)(?: with description (.+))?$/im,
+  );
   if (match)
     return {
       type: "tool_call",
       name: "Bash",
       input: {
         command: match[1].trim(),
-        description: "Running command",
+        description: match[2]?.trim() ?? "Running command",
         run_in_background: true,
       },
     };
