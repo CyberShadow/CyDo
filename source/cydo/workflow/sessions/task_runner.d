@@ -14,6 +14,7 @@ import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJso
 import ae.utils.promise : Promise, reject, resolve;
 
 import cydo.agent.contract : Agent, DriverHistory, DriverHistoryLaunch, SessionConfig;
+import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.resolver : resolveUnsandboxedCommandExecution;
 import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork,
 	MessageSource;
@@ -178,6 +179,13 @@ struct TaskSessionLaunch
 {
 	ProcessLaunch processLaunch;
 	SessionConfig sessionConfig;
+}
+
+struct SandboxedCommandResult
+{
+	int status;
+	immutable(ubyte)[] stdout;
+	string stderr;
 }
 
 struct TaskSessionRunnerHost
@@ -806,6 +814,47 @@ public:
 	{
 		return buildTaskSessionLaunch(tid, taskAgent, typeDef,
 			LaunchOwnership.operation);
+	}
+
+	/// Use the live session's launch while one runs, else a launch built from
+	/// the current configuration for this one command.
+	Promise!SandboxedCommandResult runInTaskSandbox(int tid, string[] command)
+	{
+		auto td = requireTask(tid, "Task not found");
+		enforce(td.status != TaskStatus.importable, "The task is importable");
+		bool owned = td.launch.nativeHistoryProfile.root.length == 0;
+		auto launch = owned
+			? prepareOperationSessionLaunch(tid, host_.agentForTask(tid),
+				currentTaskTypeDef(td)).processLaunch
+			: td.launch;
+
+		AgentProcess child;
+		try
+			child = new AgentProcess(launch.cmdPrefix ~ command, null, null,
+				noStdin: true, mode: FramingMode.raw);
+		catch (Exception e)
+		{
+			if (owned)
+				launchSandbox.cleanup(launch.sandbox);
+			return reject!SandboxedCommandResult(e);
+		}
+
+		import std.array : appender;
+		auto stdout = appender!(immutable(ubyte)[])();
+		auto stderr = appender!string();
+		auto result = new Promise!SandboxedCommandResult;
+		child.onStdoutLine = (string chunk) { stdout.put(cast(immutable(ubyte)[]) chunk); };
+		child.onStderrLine = (string line) {
+			if (stderr.data.length)
+				stderr.put('\n');
+			stderr.put(line);
+		};
+		child.onExit = (int status) {
+			if (owned)
+				launchSandbox.cleanup(launch.sandbox);
+			result.fulfill(SandboxedCommandResult(status, stdout.data, stderr.data));
+		};
+		return result;
 	}
 
 	private TaskSessionLaunch buildTaskSessionLaunch(int tid, Agent taskAgent,
@@ -2173,7 +2222,7 @@ version (unittest) private TaskSessionRunner gitMetadataTestRunner(
 	SandboxConfig workspaceSandbox, string worktreePath, string taskCwd,
 	string mcpSocketPath = "", string taskDirPath = "",
 	bool isolateFilesystem = false, string configuredTmpDir = "",
-	AgentDriver driver = AgentDriver.claude)
+	AgentDriver driver = AgentDriver.claude, Agent delegate(int) agentForTask = null)
 {
 	import std.conv : to;
 	import configy.attributes : SetInfo;
@@ -2214,6 +2263,7 @@ version (unittest) private TaskSessionRunner gitMetadataTestRunner(
 			ToolDescriptionViolation[] violations) {},
 		resolveSharedTmpPath: (int tid) => buildPath(fixture.root, "shared-tmp"),
 		mcpSocketPath: () => mcpSocketPath,
+		agentForTask: agentForTask,
 		abandonToolCalls: (int tid) {},
 		closeToolCalls: (int tid) {},
 		openToolCalls: (int tid) {},
@@ -2319,6 +2369,136 @@ unittest
 			assert(launch.processLaunch.nativeHistoryProfile.root.length > 0);
 			launchSandbox.cleanup(launch.processLaunch.sandbox);
 		});
+}
+
+version (unittest) private final class SandboxedCommandTestAgent : ClaudeCodeAgent
+{
+	override string executableName(string[string] env)
+	{
+		return "/bin/sh";
+	}
+}
+
+version (unittest) private void withSandboxedCommandTestRunner(string name,
+	void delegate(TaskSessionRunner, TaskData*, GitMetadataLaunchFixture) test,
+	Agent delegate(int) agentForTask = null, bool isolateFilesystem = false)
+{
+	import configy.attributes : SetInfo;
+
+	withGitMetadataLaunchFixture("cydo-task-runner-command-" ~ name,
+		(GitMetadataLaunchFixture fixture) {
+			auto catalog = gitMetadataTaskCatalog(fixture,
+				"task_types:\n  operation:\n    model_class: large\n");
+			TaskData[int] tasks;
+			tasks[1] = TaskData(1, "local", fixture.linkedCheckout);
+			tasks[1].taskType = "operation";
+			tasks[1].agentName = "claude";
+			auto sandbox = unrestrictedLaunchTestSandbox();
+			sandbox.isolate_filesystem = SetInfo!bool(isolateFilesystem);
+			auto runner = gitMetadataTestRunner(&tasks, catalog, fixture,
+				sandbox, "", fixture.linkedCheckout, "", "", isolateFilesystem,
+				"", AgentDriver.claude, agentForTask);
+			test(runner, &tasks[1], fixture);
+		});
+}
+
+version (unittest) private SandboxedCommandResult waitForSandboxedCommand(
+	Promise!SandboxedCommandResult command)
+{
+	import ae.net.asockets : socketManager;
+	import std.typecons : Nullable;
+
+	Nullable!SandboxedCommandResult result;
+	command.then((SandboxedCommandResult value) { result = value; },
+		(Exception e) { assert(false, e.msg); }).ignoreResult();
+	socketManager.loop();
+	assert(!result.isNull, "The sandboxed command did not finish");
+	return result.get;
+}
+
+unittest
+{
+	withSandboxedCommandTestRunner("live",
+		(TaskSessionRunner runner, TaskData* td, GitMetadataLaunchFixture fixture) {
+			td.launch.nativeHistoryProfile.root = buildPath(fixture.root, "live-profile");
+			td.launch.cmdPrefix = ["env", "MARK=live"];
+			auto result = waitForSandboxedCommand(runner.runInTaskSandbox(1,
+				["/bin/sh", "-c", "printf %s \"$MARK\""]));
+			assert(result.status == 0);
+			assert(cast(string) result.stdout == "live");
+		},
+		delegate Agent(int) { assert(false, "A live launch must be reused without building a launch"); });
+}
+
+unittest
+{
+	import std.algorithm : canFind, map;
+	import std.array : array;
+	import std.file : dirEntries, exists, mkdir, SpanMode, tempDir, write;
+	import std.process : environment;
+
+	withSandboxedCommandTestRunner("operation",
+		(TaskSessionRunner runner, TaskData* td, GitMetadataLaunchFixture fixture) {
+			// The Nix build sandbox cannot create another mount namespace.
+			// Run the command with the working directory from the rendered prefix.
+			auto bin = buildPath(fixture.root, "bin");
+			mkdir(bin);
+			auto bwrap = buildPath(bin, "bwrap");
+			write(bwrap, "#!/bin/sh\n"
+				~ "while [ \"$#\" -gt 0 ]; do\n"
+				~ "  case \"$1\" in\n"
+				~ "    --chdir) cd \"$2\" || exit 1; shift ;;\n"
+				~ "    --) shift; exec \"$@\" ;;\n"
+				~ "  esac\n"
+				~ "  shift\n"
+				~ "done\n"
+				~ "exit 1\n");
+			assert(execute(["chmod", "+x", bwrap]).status == 0);
+			auto oldPath = environment["PATH"];
+			environment["PATH"] = bin ~ ":" ~ oldPath;
+			scope (exit) environment["PATH"] = oldPath;
+
+			auto existingTemps = dirEntries(tempDir(), "cydo-*", SpanMode.shallow)
+				.map!(entry => entry.name).array;
+			auto command = runner.runInTaskSandbox(1,
+				["/bin/sh", "-c", "printf %s \"$PWD\""]);
+			string[] ownedTemps;
+			foreach (entry; dirEntries(tempDir(), "cydo-*", SpanMode.shallow))
+				if (!existingTemps.canFind(entry.name))
+					ownedTemps ~= entry.name;
+			assert(ownedTemps.length > 0, "The operation launch created no temporary files");
+
+			auto result = waitForSandboxedCommand(command);
+			assert(result.status == 0, result.stderr);
+			assert(cast(string) result.stdout == fixture.linkedCheckout);
+			foreach (path; ownedTemps)
+				assert(!exists(path), "The operation launch left a temporary file: " ~ path);
+			assert(td.launch.nativeHistoryProfile.root.length == 0);
+		},
+		(int) => new SandboxedCommandTestAgent(), true);
+}
+
+unittest
+{
+	withSandboxedCommandTestRunner("failure",
+		(TaskSessionRunner runner, TaskData*, GitMetadataLaunchFixture) {
+			auto result = waitForSandboxedCommand(runner.runInTaskSandbox(1,
+				["/bin/sh", "-c", "printf 'first\\nsecond\\n' >&2; exit 7"]));
+			assert(result.status == 7);
+			assert(result.stderr == "first\nsecond");
+			assert(result.stdout.length == 0);
+		},
+		(int) => new SandboxedCommandTestAgent());
+}
+
+unittest
+{
+	withSandboxedCommandTestRunner("importable",
+		(TaskSessionRunner runner, TaskData* td, GitMetadataLaunchFixture) {
+			td.status = TaskStatus.importable;
+			assertThrown!Exception(runner.runInTaskSandbox(1, ["/bin/sh", "-c", ":"]));
+		},
+		delegate Agent(int) { assert(false, "An importable task must be rejected before building a launch"); });
 }
 
 version (unittest) private final class ColdImportPreviewTestAgent : CodexAgent
