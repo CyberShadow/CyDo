@@ -1,11 +1,13 @@
 import { render, type ComponentChild } from "preact";
 import { act } from "preact/test-utils";
-import { afterEach, expect } from "vitest";
+import { afterEach, expect, vi, type TestContext } from "vitest";
 
 // Own each jsdom root here or unmount it through act in a try/finally.
 // While a root is mounted, await through act or an act-based helper. Trigger
 // updates inside act, and keep dependent waits in one actPoll call.
 // Assert before passive effects inside the same act callback as the update.
+// joinedRows waits for the test body to settle before cleanup. Keep global
+// cleanup out of the body and use row.poll or row.signal for abortable waits.
 
 export function ownedRoots(): {
   create(): HTMLDivElement;
@@ -55,13 +57,22 @@ export interface PollStage {
   steps?: number;
 }
 
-export async function actPoll(
+export function actPoll(...stages: [PollStage, ...PollStage[]]): Promise<void> {
+  return pollStages(undefined, ...stages);
+}
+
+async function pollStages(
+  signal: AbortSignal | undefined,
   ...stages: [PollStage, ...PollStage[]]
 ): Promise<void> {
   for (const stage of stages) {
     const steps = stage.steps ?? 100;
     let used = 0;
-    while (!stage.ready()) {
+    for (;;) {
+      signal?.throwIfAborted();
+      const ready = stage.ready();
+      signal?.throwIfAborted();
+      if (ready) break;
       if (used === steps) {
         throw new Error(`timed out waiting for ${stage.description}`);
       }
@@ -69,4 +80,40 @@ export async function actPoll(
       await actStep();
     }
   }
+}
+
+export interface JoinedRow {
+  root: HTMLDivElement;
+  signal: AbortSignal;
+  poll: (...stages: [PollStage, ...PollStage[]]) => Promise<void>;
+}
+
+export function joinedRows() {
+  let active: { root: HTMLDivElement; settled: Promise<void> } | undefined;
+
+  afterEach(async () => {
+    if (!active) throw new Error("joinedRows: test did not call run");
+    const { root, settled } = active;
+    // Vitest can report a timeout while the test callback is still unwinding.
+    await settled.catch(() => undefined);
+    active = undefined;
+    await act(() => {
+      render(null, root);
+    });
+    root.remove();
+    vi.restoreAllMocks();
+  });
+
+  return (context: TestContext, body: (row: JoinedRow) => Promise<void>) => {
+    const { signal } = context;
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const settled = body({
+      root,
+      signal,
+      poll: (...stages) => pollStages(signal, ...stages),
+    });
+    active = { root, settled };
+    return settled;
+  };
 }
