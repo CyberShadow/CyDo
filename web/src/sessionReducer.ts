@@ -1,9 +1,7 @@
 // Pure task state reducers — no React dependency.
 //
-// Each function takes a TaskState and returns a new TaskState.
-// Convention: functions pre-increment s.msgIdCounter in place before spreading
-// into the return value. This is safe because the caller always replaces the
-// old state with the returned state (the old reference is never reused).
+// Mutate only values owned by the current write batch, acquiring the parent
+// before replacing a child. Acquire ownership at the point of writing.
 
 import type {
   TaskState as SessionState,
@@ -16,9 +14,11 @@ import type {
   FileEditStatus,
   Block,
   CydoMeta,
+  ItemEnrichment,
 } from "./types";
 import type { HistoryBoundary } from "./types";
 import { itemBlockKey } from "./types";
+import { WriteBatch } from "./writeBatch";
 import { toolIs } from "./toolIdentity";
 import { normalizeFilePath } from "./lib/localFileLinks";
 import type {
@@ -76,27 +76,30 @@ function getExtras(msg: {
 }
 
 /** Append `event` to `msg.rawSource` and accumulate its seq into `msg.seq`.
- *  Mutates `msg` in place — callers must already hold a shallow copy. */
+ *  Mutates `msg` in place — callers must already own the message. */
 function appendRawSource(
+  b: WriteBatch,
   msg: DisplayMessage,
   event: unknown,
   seq?: number,
 ): void {
   const prevRaw = msg.rawSource;
-  msg.rawSource = prevRaw
-    ? Array.isArray(prevRaw)
-      ? [...(prevRaw as unknown[]), event]
-      : [prevRaw, event]
-    : event;
+  if (Array.isArray(prevRaw)) {
+    const raw = b.array(prevRaw);
+    msg.rawSource = raw;
+    raw.push(event);
+  } else {
+    msg.rawSource = prevRaw ? b.adopt([prevRaw, event]) : event;
+  }
 
   if (seq != null) {
     const prevSeq = msg.seq;
-    msg.seq =
-      prevSeq != null
-        ? Array.isArray(prevSeq)
-          ? [...prevSeq, seq]
-          : [prevSeq, seq]
-        : seq;
+    if (Array.isArray(prevSeq)) {
+      msg.seq = b.array(prevSeq);
+      msg.seq.push(seq);
+    } else {
+      msg.seq = prevSeq != null ? b.adopt([prevSeq, seq]) : seq;
+    }
   }
 }
 
@@ -214,7 +217,8 @@ function buildEditsFromCodexFileChangeEvent(
 // Individual reducers
 // ---------------------------------------------------------------------------
 
-export function reduceParseError(
+function reduceParseError(
+  b: WriteBatch,
   s: SessionState,
   label: string,
   detail: string,
@@ -222,62 +226,62 @@ export function reduceParseError(
   dumpSource: boolean = true,
   seq?: number,
 ): SessionState {
-  const id = `parse-error-${++s.msgIdCounter}`;
-  return {
-    ...s,
-    messages: [
-      ...s.messages,
-      {
-        id,
-        type: "system" as const,
-        subtype: "parse_error" as const,
-        content: [
-          {
-            type: "text" as const,
-            text: dumpSource
-              ? `${label}: ${detail}\n${JSON.stringify(rawSource, null, 2)}`
-              : `${label}: ${detail}`,
-          },
-        ],
-        rawSource,
-        seq,
-      },
-    ],
-  };
+  const t = b.object(s);
+  const id = `parse-error-${++t.msgIdCounter}`;
+  t.messages = b.array(t.messages);
+  t.messages.push(
+    b.adopt<DisplayMessage>({
+      id,
+      type: "system" as const,
+      subtype: "parse_error" as const,
+      content: [
+        {
+          type: "text" as const,
+          text: dumpSource
+            ? `${label}: ${detail}\n${JSON.stringify(rawSource, null, 2)}`
+            : `${label}: ${detail}`,
+        },
+      ],
+      rawSource,
+      seq,
+    }),
+  );
+  return t;
 }
 
 function reduceSessionInitBootstrap(
+  b: WriteBatch,
   s: SessionState,
   msg: SystemInitMessage,
 ): SessionState {
-  return {
-    ...s,
-    // Preserve the configured agent key separately from the runtime driver so
-    // pre-task_updated blocks still get the correct driver identity.
-    driver: msg.agent ?? s.driver,
-    agentName: msg.agent_name ?? s.agentName,
-    sessionInfo: {
-      model: msg.model,
-      version: msg.agent_version,
-      sessionId: msg.session_id,
-      cwd: msg.cwd,
-      tools: msg.tools,
-      permission_mode: msg.permission_mode,
-      mcp_servers: msg.mcp_servers,
-      agents: msg.agents,
-      api_key_source: msg.api_key_source,
-      skills: msg.skills,
-      plugins: msg.plugins,
-      fast_mode_state: msg.fast_mode_state,
-      agent: msg.agent,
-      agent_name: msg.agent_name,
-      supports_file_revert: msg.supports_file_revert,
-    },
-    sessionStatus: null,
-  };
+  const t = b.object(s);
+  // Preserve the configured agent key separately from the runtime driver so
+  // pre-task_updated blocks still get the correct driver identity.
+  t.driver = msg.agent ?? t.driver;
+  t.agentName = msg.agent_name ?? t.agentName;
+  t.sessionInfo = b.adopt({
+    model: msg.model,
+    version: msg.agent_version,
+    sessionId: msg.session_id,
+    cwd: msg.cwd,
+    tools: msg.tools,
+    permission_mode: msg.permission_mode,
+    mcp_servers: msg.mcp_servers,
+    agents: msg.agents,
+    api_key_source: msg.api_key_source,
+    skills: msg.skills,
+    plugins: msg.plugins,
+    fast_mode_state: msg.fast_mode_state,
+    agent: msg.agent,
+    agent_name: msg.agent_name,
+    supports_file_revert: msg.supports_file_revert,
+  });
+  t.sessionStatus = null;
+  return t;
 }
 
-export function reduceSessionMetadata(
+function reduceSessionMetadata(
+  b: WriteBatch,
   s: SessionState,
   msg: SystemMetadataMessage,
   seq?: number,
@@ -285,39 +289,44 @@ export function reduceSessionMetadata(
   if (!s.sessionInfo) {
     throw new Error("session/metadata received before session/init");
   }
-  const metadataMsg: DisplayMessage = {
-    id: `metadata-${++s.msgIdCounter}`,
+  const t = b.object(s);
+  const metadataMsg = b.adopt<DisplayMessage>({
+    id: `metadata-${++t.msgIdCounter}`,
     type: "system" as const,
     subtype: "metadata" as const,
     content: [],
     rawSource: msg,
     seq,
-  };
-  return {
-    ...s,
-    sessionInfo: { ...s.sessionInfo, model: msg.model },
-    messages: [...s.messages, metadataMsg],
-  };
+  });
+  t.sessionInfo = b.object(s.sessionInfo);
+  t.sessionInfo.model = msg.model;
+  t.messages = b.array(t.messages);
+  t.messages.push(metadataMsg);
+  return t;
 }
 
-export function reduceSystemInit(
+function reduceSystemInit(
+  b: WriteBatch,
   s: SessionState,
   msg: SystemInitMessage,
   seq?: number,
 ): SessionState {
-  const initMsg: DisplayMessage = {
-    id: `init-${++s.msgIdCounter}`,
+  const t = reduceSessionInitBootstrap(b, s, msg);
+  const initMsg = b.adopt<DisplayMessage>({
+    id: `init-${++t.msgIdCounter}`,
     type: "system" as const,
     subtype: "init" as const,
     content: [],
     rawSource: msg,
     seq,
-  };
-  const bootstrapped = reduceSessionInitBootstrap(s, msg);
-  return { ...bootstrapped, messages: [...bootstrapped.messages, initMsg] };
+  });
+  t.messages = b.array(t.messages);
+  t.messages.push(initMsg);
+  return t;
 }
 
-export function reduceSystemStatus(
+function reduceSystemStatus(
+  b: WriteBatch,
   s: SessionState,
   msg: SystemStatusMessage,
   seq?: number,
@@ -327,18 +336,26 @@ export function reduceSystemStatus(
     typeof msg.status === "string" && msg.status.trim().length > 0
       ? msg.status
       : null;
-  const sessionInfo =
-    msg.permission_mode && msg.permission_mode.length > 0 && s.sessionInfo
-      ? { ...s.sessionInfo, permission_mode: msg.permission_mode }
-      : s.sessionInfo;
-  return {
-    ...s,
-    sessionInfo,
-    sessionStatus: status,
-  };
+  const permission = msg.permission_mode;
+  if (
+    permission &&
+    s.sessionInfo &&
+    permission !== s.sessionInfo.permission_mode
+  ) {
+    const t = b.object(s);
+    t.sessionInfo = b.object(s.sessionInfo);
+    t.sessionInfo.permission_mode = permission;
+    t.sessionStatus = status;
+    return t;
+  }
+  if (s.sessionStatus === status) return s;
+  const t = b.object(s);
+  t.sessionStatus = status;
+  return t;
 }
 
-export function reduceStopHookSummary(
+function reduceStopHookSummary(
+  b: WriteBatch,
   s: SessionState,
   msg: {
     hookCount: number;
@@ -360,54 +377,55 @@ export function reduceStopHookSummary(
     : `Stop hook${msg.hookCount > 1 ? "s" : ""}`;
   const text = `${prefix}: ${summary}`;
 
-  const id = `stop-hook-${++s.msgIdCounter}`;
-  return {
-    ...s,
-    messages: [
-      ...s.messages,
-      {
-        id,
-        type: "system" as const,
-        subtype: "stop_hook_summary" as const,
-        content: [{ type: "text" as const, text }],
-        rawSource: msg,
-        seq,
-      },
-    ],
-  };
+  const t = b.object(s);
+  const id = `stop-hook-${++t.msgIdCounter}`;
+  t.messages = b.array(t.messages);
+  t.messages.push(
+    b.adopt<DisplayMessage>({
+      id,
+      type: "system" as const,
+      subtype: "stop_hook_summary" as const,
+      content: [{ type: "text" as const, text }],
+      rawSource: msg,
+      seq,
+    }),
+  );
+  return t;
 }
 
-export function reduceCompactBoundary(
+function reduceCompactBoundary(
+  b: WriteBatch,
   s: SessionState,
   msg: SystemCompactBoundaryMessage,
   seq?: number,
 ): SessionState {
-  const id = `compact-${++s.msgIdCounter}`;
+  const t = b.object(s);
+  const id = `compact-${++t.msgIdCounter}`;
   const cm = msg.compact_metadata;
-  return {
-    ...s,
-    messages: [
-      ...s.messages,
-      {
-        id,
-        type: "compact_boundary" as const,
-        content: [],
-        compactMetadata: cm
-          ? { trigger: cm.trigger, preTokens: cm.pre_tokens }
-          : undefined,
-        rawSource: msg,
-        seq,
-      },
-    ],
-  };
+  t.messages = b.array(t.messages);
+  t.messages.push(
+    b.adopt<DisplayMessage>({
+      id,
+      type: "compact_boundary" as const,
+      content: [],
+      compactMetadata: cm
+        ? { trigger: cm.trigger, preTokens: cm.pre_tokens }
+        : undefined,
+      rawSource: msg,
+      seq,
+    }),
+  );
+  return t;
 }
 
-export function reduceTaskLifecycle(
+function reduceTaskLifecycle(
+  b: WriteBatch,
   s: SessionState,
   msg: SystemTaskStartedMessage | SystemTaskNotificationMessage,
   seq?: number,
 ): SessionState {
-  const id = `task-${++s.msgIdCounter}`;
+  const t = b.object(s);
+  const id = `task-${++t.msgIdCounter}`;
   let text: string;
   if (msg.type === "task/started") {
     const desc = msg.description || msg.task_id;
@@ -416,84 +434,81 @@ export function reduceTaskLifecycle(
   } else {
     text = `Task ${msg.status}: ${msg.summary || msg.task_id}`;
   }
-  const messages =
-    msg.type === "task/notification"
-      ? withTaskState(s.messages, msg.task_id, { status: msg.status })
-      : s.messages;
-  return {
-    ...s,
-    messages: [
-      ...messages,
-      {
-        id,
-        type: "system" as const,
-        subtype: "task_lifecycle" as const,
-        content: [{ type: "text" as const, text }],
-        rawSource: msg,
-        seq,
-        ...(msg.type === "task/started" && {
-          taskState: { status: "running" },
-        }),
-      },
-    ],
-  };
+  if (msg.type === "task/notification") {
+    withTaskState(b, t, msg.task_id, { status: msg.status });
+  }
+  t.messages = b.array(t.messages);
+  t.messages.push(
+    b.adopt<DisplayMessage>({
+      id,
+      type: "system" as const,
+      subtype: "task_lifecycle" as const,
+      content: [{ type: "text" as const, text }],
+      rawSource: msg,
+      seq,
+      ...(msg.type === "task/started" && {
+        taskState: { status: "running" },
+      }),
+    }),
+  );
+  return t;
 }
 
 /** Show a task's changed state on the row that announced its start. */
-export function reduceTaskUpdated(
+function reduceTaskUpdated(
+  b: WriteBatch,
   s: SessionState,
   msg: TaskUpdatedEvent,
 ): SessionState {
   if (msg.status === undefined && msg.error === undefined) return s;
-  return {
-    ...s,
-    messages: withTaskState(s.messages, msg.task_id, {
-      ...(msg.status !== undefined && { status: msg.status }),
-      ...(msg.error !== undefined && { error: msg.error }),
-    }),
-  };
+  return withTaskState(b, s, msg.task_id, {
+    ...(msg.status !== undefined && { status: msg.status }),
+    ...(msg.error !== undefined && { error: msg.error }),
+  });
 }
 
 function withTaskState(
-  messages: DisplayMessage[],
+  b: WriteBatch,
+  s: SessionState,
   taskId: string,
   change: { status?: string; error?: string },
-): DisplayMessage[] {
-  const index = messages.findIndex(
+): SessionState {
+  const index = s.messages.findIndex(
     (m) =>
       m.taskState !== undefined &&
       (m.rawSource as SystemTaskStartedMessage).task_id === taskId,
   );
   // The start may predate the loaded history.
-  if (index < 0) return messages;
-  const started = messages[index]!;
-  const next = [...messages];
-  next[index] = {
-    ...started,
-    taskState: { ...started.taskState!, ...change },
-  };
-  return next;
+  if (index < 0) return s;
+  const started = s.messages[index]!;
+  const t = b.object(s);
+  t.messages = b.array(t.messages);
+  const updated = b.object(started);
+  t.messages[index] = updated;
+  updated.taskState = b.object(updated.taskState!);
+  Object.assign(updated.taskState, change);
+  return t;
 }
 
-export function reduceSummary(
+function reduceSummary(
+  b: WriteBatch,
   s: SessionState,
   msg: SummaryMessage,
   seq?: number,
 ): SessionState {
-  const id = `summary-${++s.msgIdCounter}`;
-  return {
-    ...s,
-    messages: [
-      ...s.messages,
-      {
-        id,
-        type: "summary" as const,
-        content: [{ type: "text" as const, text: msg.summary || "" }],
-        rawSource: msg,
-        seq,
-      },
-    ],
-  };
+  const t = b.object(s);
+  const id = `summary-${++t.msgIdCounter}`;
+  t.messages = b.array(t.messages);
+  t.messages.push(
+    b.adopt<DisplayMessage>({
+      id,
+      type: "summary" as const,
+      content: [{ type: "text" as const, text: msg.summary || "" }],
+      rawSource: msg,
+      seq,
+    }),
+  );
+  return t;
 }
 
 export function reduceRateLimit(
@@ -523,43 +538,51 @@ export function reduceRateLimit(
  *  resolveEditContent() in FileViewer, avoiding string ops and memory
  *  overhead when the viewer is never opened. */
 function appendTrackedEdits(
+  b: WriteBatch,
   state: SessionState,
   edits: FileEdit[],
 ): SessionState {
   if (edits.length === 0) return state;
-  const trackedFiles = new Map(state.trackedFiles);
+  const t = b.object(state);
+  t.trackedFiles = b.map(t.trackedFiles);
   for (const edit of edits) {
-    const path = normalizeFilePath(edit.filePath, state.sessionInfo?.cwd);
-    const existing = trackedFiles.get(path);
-    trackedFiles.set(path, {
-      path,
-      edits: [...(existing?.edits ?? []), { ...edit, filePath: path }],
-    });
+    const path = normalizeFilePath(edit.filePath, t.sessionInfo?.cwd);
+    const tracked = b.adopt({ ...edit, filePath: path });
+    const existing = t.trackedFiles.get(path);
+    if (existing) {
+      const file = b.object(existing);
+      t.trackedFiles.set(path, file);
+      file.edits = b.array(file.edits);
+      file.edits.push(tracked);
+    } else {
+      t.trackedFiles.set(path, b.adopt({ path, edits: b.adopt([tracked]) }));
+    }
   }
-  return { ...state, trackedFiles };
+  return t;
 }
 
 function updateEditStatusByToolUseId(
+  b: WriteBatch,
   state: SessionState,
   toolUseId: string,
   status: FileEditStatus,
 ): SessionState {
-  let changed = false;
-  const trackedFiles = new Map(state.trackedFiles);
-  for (const [path, file] of trackedFiles) {
-    const hasChanges = file.edits.some(
-      (edit) => edit.toolUseId === toolUseId && edit.status !== status,
-    );
-    if (!hasChanges) continue;
-    changed = true;
-    trackedFiles.set(path, {
-      ...file,
-      edits: file.edits.map((edit) =>
-        edit.toolUseId === toolUseId ? { ...edit, status } : edit,
-      ),
-    });
+  let t = state;
+  for (const [path, file] of state.trackedFiles) {
+    for (let i = 0; i < file.edits.length; i++) {
+      const edit = file.edits[i]!;
+      if (edit.toolUseId !== toolUseId || edit.status === status) continue;
+      t = b.object(t);
+      t.trackedFiles = b.map(t.trackedFiles);
+      const updated = b.object(t.trackedFiles.get(path)!);
+      t.trackedFiles.set(path, updated);
+      updated.edits = b.array(updated.edits);
+      const ownedEdit = b.object(edit);
+      updated.edits[i] = ownedEdit;
+      ownedEdit.status = status;
+    }
   }
-  return changed ? { ...state, trackedFiles } : state;
+  return t;
 }
 
 function hasTrackedEditsForToolUseId(
@@ -572,26 +595,30 @@ function hasTrackedEditsForToolUseId(
   return false;
 }
 
-function cancelPendingFileEdits(state: SessionState): SessionState {
-  let changed = false;
-  const trackedFiles = new Map(state.trackedFiles);
-  for (const [path, file] of trackedFiles) {
-    const hasPending = file.edits.some((edit) => edit.status === "pending");
-    if (!hasPending) continue;
-    changed = true;
-    trackedFiles.set(path, {
-      ...file,
-      edits: file.edits.map((edit) =>
-        edit.status === "pending"
-          ? { ...edit, status: "cancelled" as const }
-          : edit,
-      ),
-    });
+function cancelPendingFileEdits(
+  b: WriteBatch,
+  state: SessionState,
+): SessionState {
+  let t = state;
+  for (const [path, file] of state.trackedFiles) {
+    for (let i = 0; i < file.edits.length; i++) {
+      const edit = file.edits[i]!;
+      if (edit.status !== "pending") continue;
+      t = b.object(t);
+      t.trackedFiles = b.map(t.trackedFiles);
+      const updated = b.object(t.trackedFiles.get(path)!);
+      t.trackedFiles.set(path, updated);
+      updated.edits = b.array(updated.edits);
+      const ownedEdit = b.object(edit);
+      updated.edits[i] = ownedEdit;
+      ownedEdit.status = "cancelled";
+    }
   }
-  return changed ? { ...state, trackedFiles } : state;
+  return t;
 }
 
 function trackResultFileEdits(
+  b: WriteBatch,
   state: SessionState,
   toolResults: Array<{
     tool_use_id: string;
@@ -673,7 +700,7 @@ function trackResultFileEdits(
             changeIndex,
           ),
       );
-      state = appendTrackedEdits(state, edits);
+      state = appendTrackedEdits(b, state, edits);
       continue;
     }
 
@@ -692,7 +719,7 @@ function trackResultFileEdits(
         messageId,
         "applied",
       );
-      state = appendTrackedEdits(state, edits);
+      state = appendTrackedEdits(b, state, edits);
       continue;
     }
 
@@ -700,7 +727,7 @@ function trackResultFileEdits(
       typeof input.file_path === "string" ? input.file_path : null;
     if (!filePath) continue;
 
-    state = appendTrackedEdits(state, [
+    state = appendTrackedEdits(b, state, [
       {
         toolUseId: block.tool_use_id,
         messageId,
@@ -738,7 +765,8 @@ function trackResultFileEdits(
   return state;
 }
 
-export function reduceResultMessage(
+function reduceResultMessage(
+  b: WriteBatch,
   s: SessionState,
   msg: ResultMessage,
   seq?: number,
@@ -747,84 +775,85 @@ export function reduceResultMessage(
   // current turn is over. Clear any lingering streaming state so the next
   // response creates a fresh assistant message instead of appending to the
   // interrupted one.
-  let messages = s.messages;
-  let blocks = s.blocks;
+  const t = b.object(s);
+  t.messages = b.array(t.messages);
+  const messages = t.messages;
 
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
     if (m.type === "assistant" && m.streaming === true) {
-      messages = messages.slice();
-      const updated = { ...m, streaming: false };
+      const updated = b.object(m);
+      updated.streaming = false;
       messages[i] = updated;
 
       // Mark all incomplete blocks as completed so partial text remains visible.
       let blocksChanged = false;
       for (const itemId of updated.blockIds ?? []) {
-        const b = blocks.get(itemId);
-        if (b && !b.completed) {
+        const block = t.blocks.get(itemId);
+        if (block && !block.completed) {
           if (!blocksChanged) {
-            blocks = new Map(blocks);
+            t.blocks = b.map(t.blocks);
             blocksChanged = true;
           }
-          blocks.set(itemId, { ...b, completed: true });
+          const complete = b.object(block);
+          t.blocks.set(itemId, complete);
+          complete.completed = true;
         }
       }
       break;
     }
   }
 
-  const id = `result-${++s.msgIdCounter}`;
+  const id = `result-${++t.msgIdCounter}`;
   const resultExtraFields = getExtras(msg);
-  const nextState = {
-    ...s,
-    blocks,
-    sessionStatus: null,
-    totalCost: msg.total_cost_usd || s.totalCost,
-    messages: [
-      ...messages,
-      {
-        id,
-        type: "result" as const,
-        content: [],
-        rawSource: msg,
-        seq,
-        extraFields: resultExtraFields,
-        resultData: {
-          subtype: msg.subtype,
-          isError: msg.is_error,
-          result: msg.result,
-          numTurns: msg.num_turns,
-          durationMs: msg.duration_ms,
-          durationApiMs: msg.duration_api_ms,
-          totalCostUsd: msg.total_cost_usd,
-          usage: msg.usage,
-          modelUsage: msg.model_usage,
-          permissionDenials: msg.permission_denials,
-          stopReason: msg.stop_reason,
-          errors: msg.errors,
-          endReason: msg.end_reason,
-        },
+  t.sessionStatus = null;
+  t.totalCost = msg.total_cost_usd || t.totalCost;
+  messages.push(
+    b.adopt<DisplayMessage>({
+      id,
+      type: "result" as const,
+      content: [],
+      rawSource: msg,
+      seq,
+      extraFields: resultExtraFields,
+      resultData: {
+        subtype: msg.subtype,
+        isError: msg.is_error,
+        result: msg.result,
+        numTurns: msg.num_turns,
+        durationMs: msg.duration_ms,
+        durationApiMs: msg.duration_api_ms,
+        totalCostUsd: msg.total_cost_usd,
+        usage: msg.usage,
+        modelUsage: msg.model_usage,
+        permissionDenials: msg.permission_denials,
+        stopReason: msg.stop_reason,
+        errors: msg.errors,
+        endReason: msg.end_reason,
       },
-    ],
-  };
-  return msg.is_error ? cancelPendingFileEdits(nextState) : nextState;
+    }),
+  );
+  return msg.is_error ? cancelPendingFileEdits(b, t) : t;
 }
 
 /** Insert a message before any in-progress streaming assistant message.
  *  User messages should always precede the assistant's response, but the
  *  protocol may deliver the user echo after streaming has already started. */
 function insertBeforeStreaming(
+  b: WriteBatch,
   messages: DisplayMessage[],
   msg: DisplayMessage,
 ): DisplayMessage[] {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]!.type === "assistant" && messages[i]!.streaming === true) {
-      const result = [...messages];
+      const result = b.array(messages);
       result.splice(i, 0, msg);
       return result;
     }
   }
-  return [...messages, msg];
+  const result = b.array(messages);
+  result.push(msg);
+  return result;
 }
 
 /** Find or create the in-progress assistant message for streaming blocks.
@@ -834,59 +863,34 @@ function insertBeforeStreaming(
  * new isolated placeholder.  This prevents sub-agent events from corrupting
  * the main turn's streaming message (M_main). */
 function getOrCreateStreamingMessage(
+  b: WriteBatch,
   s: SessionState,
   parentToolUseId?: string,
   ts?: number,
-): {
-  messages: DisplayMessage[];
-  msgIdx: number;
-} {
-  const messages = s.messages.slice();
-  if (parentToolUseId) {
-    // Find an existing streaming context for this sub-agent.
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (
-        messages[i]!.type === "assistant" &&
-        messages[i]!.streaming &&
-        messages[i]!.parentToolUseId === parentToolUseId
-      ) {
-        messages[i] = { ...messages[i]! };
-        return { messages, msgIdx: i };
-      }
-    }
-    // No existing context — create an isolated placeholder for this sub-agent.
-    const placeholder: DisplayMessage = {
-      id: `streaming-${++s.msgIdCounter}`,
-      type: "assistant" as const,
-      content: [],
-      blockIds: [],
-      streaming: true,
-      nextCreationOrder: 0,
-      parentToolUseId,
-      ts,
-    };
-    messages.push(placeholder);
-    return { messages, msgIdx: messages.length - 1 };
-  }
-  // Search backwards for an assistant message with active streaming
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]!.type === "assistant" && messages[i]!.streaming) {
-      messages[i] = { ...messages[i]! };
-      return { messages, msgIdx: i };
+): number {
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const message = s.messages[i]!;
+    if (
+      message.type === "assistant" &&
+      message.streaming &&
+      (!parentToolUseId || message.parentToolUseId === parentToolUseId)
+    ) {
+      return i;
     }
   }
-  // Create a streaming placeholder
-  const placeholder: DisplayMessage = {
+  const placeholder = b.adopt<DisplayMessage>({
     id: `streaming-${++s.msgIdCounter}`,
-    type: "assistant" as const,
+    type: "assistant",
     content: [],
-    blockIds: [],
+    blockIds: b.adopt([]),
     streaming: true,
     nextCreationOrder: 0,
     ts,
-  };
-  messages.push(placeholder);
-  return { messages, msgIdx: messages.length - 1 };
+  });
+  if (parentToolUseId) placeholder.parentToolUseId = parentToolUseId;
+  s.messages = b.array(s.messages);
+  s.messages.push(placeholder);
+  return s.messages.length - 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -903,7 +907,8 @@ function tryParseJson(text: string): Record<string, unknown> {
   }
 }
 
-export function replaceHistoryBoundary(
+export function replaceHistoryBoundaryIn(
+  b: WriteBatch,
   s: SessionState,
   event: AgnosticEvent & { history_boundary?: HistoryBoundary },
   seq: number,
@@ -934,7 +939,7 @@ export function replaceHistoryBoundary(
     );
   const { message } = matches[0]!;
   const raw = Array.isArray(message.rawSource)
-    ? message.rawSource.slice()
+    ? message.rawSource
     : [message.rawSource];
   const seqs = Array.isArray(message.seq) ? message.seq : [message.seq];
   const rawMatches = seqs
@@ -968,12 +973,14 @@ export function replaceHistoryBoundary(
     existing.uuid !== (event as { uuid?: string }).uuid
   )
     throw new Error("Replacement target turn identity does not match");
-  const replacementEvents = new Map(s.replacementEvents);
-  replacementEvents.set(seq, event);
-  return { ...s, replacementEvents };
+  const t = b.object(s);
+  t.replacementEvents = b.map(t.replacementEvents);
+  t.replacementEvents.set(seq, event);
+  return t;
 }
 
 function reduceItemStartedUserMessage(
+  b: WriteBatch,
   s: SessionState,
   event: ItemStartedEvent,
   seq?: number,
@@ -1034,15 +1041,13 @@ function reduceItemStartedUserMessage(
         : state.messages.findIndex(isReplayDisposableProvisionalUserMsg);
     if (dropIdx >= 0) {
       displacedPlaceholder = state.messages[dropIdx];
-      state = {
-        ...state,
-        messages: state.messages.filter((_, i) => i !== dropIdx),
-      };
+      state = b.object(state);
+      state.messages = b.array(state.messages);
+      state.messages.splice(dropIdx, 1);
     }
   }
 
   let reconciled = displacedPlaceholder;
-  let filtered = state.messages;
   // Match by nonce when provided, leaving unrelated placeholders alone.
   // A replay already displaced its placeholder above and must not consume
   // a second one.
@@ -1055,22 +1060,33 @@ function reduceItemStartedUserMessage(
     );
     if (matchIdx >= 0) {
       reconciled = state.messages[matchIdx];
-      filtered = state.messages.filter((_, i) => i !== matchIdx);
+      state = b.object(state);
+      state.messages = b.array(state.messages);
+      state.messages.splice(matchIdx, 1);
     } else if (!eventNonce) {
       const removed = state.messages.filter(
         isReplayDisposableProvisionalUserMsg,
       );
       if (removed.length === 1) reconciled = removed[0];
-      filtered = state.messages.filter(
-        (m) => !isReplayDisposableProvisionalUserMsg(m),
-      );
+      if (removed.length > 0) {
+        state = b.object(state);
+        state.messages = b.array(state.messages);
+        let kept = 0;
+        for (const message of state.messages) {
+          if (!isReplayDisposableProvisionalUserMsg(message)) {
+            state.messages[kept++] = message;
+          }
+        }
+        state.messages.length = kept;
+      }
     }
   }
 
   // The echo inherits the render identity of the single row it reconciles.
+  state = b.object(state);
   const id = reconciled?.id ?? `user-echo-${++state.msgIdCounter}`;
   if (event.pending) {
-    const echoMsg: DisplayMessage = {
+    const echoMsg = b.adopt<DisplayMessage>({
       id,
       type: "user" as const,
       content: blocks,
@@ -1089,14 +1105,17 @@ function reduceItemStartedUserMessage(
       uuid: event.uuid,
       cydoMeta: eventCydoMeta,
       ts,
-    };
-    const messages = event.is_meta
-      ? [...state.messages, echoMsg]
-      : insertBeforeStreaming(state.messages, echoMsg);
-    return { ...state, messages };
+    });
+    if (event.is_meta) {
+      state.messages = b.array(state.messages);
+      state.messages.push(echoMsg);
+    } else {
+      state.messages = insertBeforeStreaming(b, state.messages, echoMsg);
+    }
+    return state;
   }
 
-  const echoMsg: DisplayMessage = {
+  const echoMsg = b.adopt<DisplayMessage>({
     id,
     type: "user" as const,
     content: blocks,
@@ -1117,7 +1136,7 @@ function reduceItemStartedUserMessage(
       displacedPlaceholder?.cydoMeta ?? pendingMsg?.cydoMeta ?? eventCydoMeta,
     removed: displacedPlaceholder?.removed,
     ts,
-  };
+  });
   if (displacedPlaceholder?.pending) {
     // The agent echoes a replayed user message as soon as it consumes it —
     // that only proves submission to the harness, not that the LLM has seen
@@ -1128,10 +1147,12 @@ function reduceItemStartedUserMessage(
     echoMsg.echoPending = true;
   }
 
-  const messages = event.is_meta
-    ? [...filtered, echoMsg]
-    : insertBeforeStreaming(filtered, echoMsg);
-  state = { ...state, messages };
+  if (event.is_meta) {
+    state.messages = b.array(state.messages);
+    state.messages.push(echoMsg);
+  } else {
+    state.messages = insertBeforeStreaming(b, state.messages, echoMsg);
+  }
 
   return state;
 }
@@ -1149,7 +1170,8 @@ function reduceItemStartedUserMessage(
 /// echo message follows in the same stream — drop the provisional bubble.
 /// Otherwise upgrade the bubble in place: clear the pending presentation and
 /// apply the consumption classification.
-export function reduceUserMessageConsumed(
+function reduceUserMessageConsumed(
+  b: WriteBatch,
   s: SessionState,
   event: UserMessageConsumedEvent,
 ): SessionState {
@@ -1161,64 +1183,63 @@ export function reduceUserMessageConsumed(
   );
   if (idx < 0) return s;
 
-  if (event.consumed_as === "cancelled") {
-    return { ...s, messages: s.messages.filter((_, i) => i !== idx) };
-  }
-
   const target = s.messages[idx]!;
   const canonicalFollows =
     event.native_uuid &&
     event.native_uuid !== event.uuid &&
     target.uuid?.startsWith("enqueue-");
-  if (canonicalFollows && event.consumed_as !== "removed") {
-    return {
-      ...s,
-      messages: s.messages.filter((_, i) => i !== idx),
-    };
+  const t = b.object(s);
+  t.messages = b.array(t.messages);
+  if (
+    event.consumed_as === "cancelled" ||
+    (canonicalFollows && event.consumed_as !== "removed")
+  ) {
+    t.messages.splice(idx, 1);
+    return t;
   }
-
-  return {
-    ...s,
-    messages: s.messages.map((m, i) => {
-      if (i !== idx) return m;
-      const upgraded: DisplayMessage = {
-        ...m,
-        pending: undefined,
-        ackState: undefined,
-        echoPending: undefined,
-      };
-      if (m.isProvisional) {
-        if (event.native_uuid) upgraded.expectedNativeUuid = event.native_uuid;
-        else {
-          upgraded.isProvisional = undefined;
-          upgraded.expectedNativeUuid = undefined;
-        }
-      }
-      if (event.consumed_as === "steering") upgraded.isSteering = true;
-      else if (event.consumed_as === "removed") upgraded.removed = true;
-      return upgraded;
-    }),
-  };
+  const upgraded = b.object(target);
+  t.messages[idx] = upgraded;
+  upgraded.pending = undefined;
+  upgraded.ackState = undefined;
+  upgraded.echoPending = undefined;
+  if (upgraded.isProvisional) {
+    if (event.native_uuid) upgraded.expectedNativeUuid = event.native_uuid;
+    else {
+      upgraded.isProvisional = undefined;
+      upgraded.expectedNativeUuid = undefined;
+    }
+  }
+  if (event.consumed_as === "steering") upgraded.isSteering = true;
+  else if (event.consumed_as === "removed") upgraded.removed = true;
+  return t;
 }
 
-export function rejectOrdinarySubmission(
+export function rejectOrdinarySubmissionIn(
+  b: WriteBatch,
   task: SessionState,
   nonce: string,
 ): SessionState {
-  return {
-    ...task,
-    messages: task.messages.filter(
-      (message) =>
-        !(
-          message.type === "user" &&
-          message.isProvisional &&
-          message.nonce === nonce
-        ),
-    ),
-  };
+  let t = task;
+  for (let i = task.messages.length - 1; i >= 0; i--) {
+    const message = task.messages[i]!;
+    if (
+      message.type !== "user" ||
+      !message.isProvisional ||
+      message.nonce !== nonce
+    )
+      continue;
+    t = b.object(t);
+    t.messages = b.array(t.messages);
+    t.messages.splice(i, 1);
+  }
+  return t;
 }
 
-export function reduceAgentAck(s: SessionState, nonce: string): SessionState {
+export function reduceAgentAckIn(
+  b: WriteBatch,
+  s: SessionState,
+  nonce: string,
+): SessionState {
   const idx = s.messages.findIndex(
     (m) =>
       m.type === "user" &&
@@ -1227,22 +1248,23 @@ export function reduceAgentAck(s: SessionState, nonce: string): SessionState {
       m.ackState > 1,
   );
   if (idx < 0) return s;
-  return {
-    ...s,
-    messages: s.messages.map((m, i) =>
-      i === idx ? { ...m, ackState: 2 as const } : m,
-    ),
-  };
+  const t = b.object(s);
+  t.messages = b.array(t.messages);
+  const message = b.object(t.messages[idx]!);
+  t.messages[idx] = message;
+  message.ackState = 2;
+  return t;
 }
 
-export function reduceItemStarted(
+function reduceItemStarted(
+  b: WriteBatch,
   s: SessionState,
   event: ItemStartedEvent,
   seq?: number,
   ts?: number,
 ): SessionState {
   if (event.item_type === "user_message") {
-    return reduceItemStartedUserMessage(s, event, seq, ts);
+    return reduceItemStartedUserMessage(b, s, event, seq, ts);
   }
 
   // Top-level assistant output proves the request containing the previously
@@ -1256,27 +1278,29 @@ export function reduceItemStarted(
       event.item_type === "tool_use") &&
     s.messages.some((m) => m.echoPending)
   ) {
-    s = {
-      ...s,
-      messages: s.messages.map((m) =>
-        m.echoPending
-          ? {
-              ...m,
-              echoPending: undefined,
-              pending: undefined,
-              ackState: undefined,
-            }
-          : m,
-      ),
-    };
+    s = b.object(s);
+    s.messages = b.array(s.messages);
+    for (let i = 0; i < s.messages.length; i++) {
+      const message = s.messages[i]!;
+      if (!message.echoPending) continue;
+      const promoted = b.object(message);
+      s.messages[i] = promoted;
+      promoted.echoPending = undefined;
+      promoted.pending = undefined;
+      promoted.ackState = undefined;
+    }
   }
 
-  const { messages, msgIdx } = getOrCreateStreamingMessage(
-    s,
+  const state = b.object(s);
+  const msgIdx = getOrCreateStreamingMessage(
+    b,
+    state,
     event.parent_tool_use_id,
     ts,
   );
-  const msg = messages[msgIdx]!;
+  state.messages = b.array(state.messages);
+  const msg = b.object(state.messages[msgIdx]!);
+  state.messages[msgIdx] = msg;
 
   // Block keys must be globally unique. Item IDs (e.g. "cc-block-0") are only
   // unique within a turn, so scope them with the message ID.
@@ -1287,14 +1311,13 @@ export function reduceItemStarted(
     msg.parentToolUseId = event.parent_tool_use_id;
   }
 
-  appendRawSource(msg, event, seq);
+  appendRawSource(b, msg, event, seq);
 
-  const blocks = new Map(s.blocks);
-  const itemIdMap = new Map(s.itemIdMap);
-  itemIdMap.set(event.item_id, blockKey);
-  if (isDuplicateBlockKey) {
-    return { ...s, messages, blocks, itemIdMap };
+  if (state.itemIdMap.get(event.item_id) !== blockKey) {
+    state.itemIdMap = b.map(state.itemIdMap);
+    state.itemIdMap.set(event.item_id, blockKey);
   }
+  if (isDuplicateBlockKey) return state;
 
   const creationOrder = msg.nextCreationOrder ?? 0;
   msg.nextCreationOrder = creationOrder + 1;
@@ -1307,7 +1330,7 @@ export function reduceItemStarted(
       ? event.item_type
       : "other";
   const driver = s.driver ?? s.sessionInfo?.agent;
-  const block: Block = {
+  const block = b.adopt<Block>({
     itemId: event.item_id,
     type: blockType,
     text: event.text ?? "",
@@ -1318,12 +1341,12 @@ export function reduceItemStarted(
     input: event.input,
     completed: false,
     creationOrder,
-  };
+  });
 
-  msg.blockIds = [...(msg.blockIds || []), blockKey];
-  blocks.set(blockKey, block);
-
-  let state = { ...s, messages, blocks, itemIdMap };
+  msg.blockIds = msg.blockIds ? b.array(msg.blockIds) : b.adopt([]);
+  msg.blockIds.push(blockKey);
+  state.blocks = b.map(state.blocks);
+  state.blocks.set(blockKey, block);
 
   if (event.item_type === "tool_use") {
     if (
@@ -1337,7 +1360,7 @@ export function reduceItemStarted(
         msg.id,
         "pending",
       );
-      state = appendTrackedEdits(state, edits);
+      appendTrackedEdits(b, state, edits);
     } else if (
       toolIs(event.name ?? "", driver, event.tool_server, "codex/apply_patch")
     ) {
@@ -1347,14 +1370,15 @@ export function reduceItemStarted(
         msg.id,
         "pending",
       );
-      state = appendTrackedEdits(state, edits);
+      appendTrackedEdits(b, state, edits);
     }
   }
 
   return state;
 }
 
-export function reduceItemDelta(
+function reduceItemDelta(
+  b: WriteBatch,
   s: SessionState,
   event: ItemDeltaEvent,
 ): SessionState {
@@ -1362,21 +1386,23 @@ export function reduceItemDelta(
   const block = s.blocks.get(blockKey);
   if (!block) return s;
 
-  const updated = { ...block };
+  const t = b.object(s);
+  t.blocks = b.map(t.blocks);
+  const updated = b.object(block);
+  t.blocks.set(blockKey, updated);
   if (event.delta_type === "output_delta") {
-    updated.output = (block.output ?? "") + event.content;
+    updated.output = (updated.output ?? "") + event.content;
   } else if (event.delta_type === "stdin_delta") {
-    updated.stdin = (block.stdin ?? "") + event.content;
+    updated.stdin = (updated.stdin ?? "") + event.content;
   } else {
-    updated.text = block.text + event.content;
+    updated.text += event.content;
   }
 
-  const blocks = new Map(s.blocks);
-  blocks.set(blockKey, updated);
-  return { ...s, blocks };
+  return t;
 }
 
-export function reduceItemCompleted(
+function reduceItemCompleted(
+  b: WriteBatch,
   s: SessionState,
   event: ItemCompletedEvent,
   seq?: number,
@@ -1387,49 +1413,54 @@ export function reduceItemCompleted(
   if (!block) {
     // Item not found anywhere — just update edit status
     return updateEditStatusByToolUseId(
+      b,
       s,
       event.item_id,
       event.is_error ? "cancelled" : "applied",
     );
   }
 
-  const updated: Block = { ...block, completed: true };
+  const isToolUse = block.type === "tool_use";
+  const input = isToolUse
+    ? (event.input ?? block.input ?? tryParseJson(block.text))
+    : undefined;
+  const t = b.object(s);
+  t.blocks = b.map(t.blocks);
+  const updated = b.object(block);
+  t.blocks.set(blockKey, updated);
+  updated.completed = true;
   if (event.text !== undefined) updated.text = event.text;
   if (event.is_narration) updated.narration = true;
   const completedExtras = getExtras(event);
   if (completedExtras) updated.extras = completedExtras;
-  if (block.type === "tool_use") {
-    updated.input = event.input ?? block.input ?? tryParseJson(block.text);
-  }
-
-  const blocks = new Map(s.blocks);
-  blocks.set(blockKey, updated);
+  if (isToolUse) updated.input = input;
 
   // Append to rawSource of the parent message
-  let messages = s.messages;
+  const messages = t.messages;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
     if (m.blockIds?.includes(blockKey)) {
-      messages = messages.slice();
-      const updatedMsg = { ...m };
-      appendRawSource(updatedMsg, event, seq);
-      messages[i] = updatedMsg;
+      t.messages = b.array(messages);
+      const updatedMsg = b.object(m);
+      t.messages[i] = updatedMsg;
+      appendRawSource(b, updatedMsg, event, seq);
       break;
     }
   }
 
-  let state = { ...s, blocks, messages };
-  if (block.type === "tool_use") {
-    state = updateEditStatusByToolUseId(
-      state,
+  if (isToolUse) {
+    updateEditStatusByToolUseId(
+      b,
+      t,
       event.item_id,
       event.is_error ? "cancelled" : "applied",
     );
   }
-  return state;
+  return t;
 }
 
 function reduceItemAbandoned(
+  b: WriteBatch,
   s: SessionState,
   event: ItemAbandonedEvent,
 ): SessionState {
@@ -1437,46 +1468,61 @@ function reduceItemAbandoned(
   if (blockKey === undefined) {
     throw new Error(`Cannot abandon unknown item ${event.item_id}`);
   }
-  const blocks = new Map(s.blocks);
-  blocks.delete(blockKey);
-  const itemIdMap = new Map(s.itemIdMap);
-  itemIdMap.delete(event.item_id);
-  const messages = s.messages.flatMap((message) => {
-    if (!message.blockIds?.includes(blockKey)) return [message];
+  const t = b.object(s);
+  t.blocks = b.map(t.blocks);
+  t.blocks.delete(blockKey);
+  t.itemIdMap = b.map(t.itemIdMap);
+  t.itemIdMap.delete(event.item_id);
+  for (let i = t.messages.length - 1; i >= 0; i--) {
+    const message = t.messages[i]!;
+    if (!message.blockIds?.includes(blockKey)) continue;
+    t.messages = b.array(t.messages);
     const blockIds = message.blockIds.filter((id) => id !== blockKey);
-    return blockIds.length > 0 ? [{ ...message, blockIds }] : [];
-  });
-  return { ...s, blocks, itemIdMap, messages };
+    if (blockIds.length > 0) {
+      const updated = b.object(message);
+      t.messages[i] = updated;
+      updated.blockIds = b.adopt(blockIds);
+    } else {
+      t.messages.splice(i, 1);
+    }
+  }
+  return t;
 }
 
 function reduceItemDenied(
+  b: WriteBatch,
   s: SessionState,
   event: ItemDeniedEvent,
 ): SessionState {
   const blockKey = s.itemIdMap.get(event.item_id) ?? event.item_id;
   const block = s.blocks.get(blockKey);
   if (!block) return s;
-  const blocks = new Map(s.blocks);
-  blocks.set(blockKey, {
-    ...block,
-    denial: { by: event.by, reason: event.reason },
-  });
-  return { ...s, blocks };
+  const t = b.object(s);
+  t.blocks = b.map(t.blocks);
+  const updated = b.object(block);
+  t.blocks.set(blockKey, updated);
+  updated.denial = { by: event.by, reason: event.reason };
+  return t;
 }
 
 function reduceItemPermission(
+  b: WriteBatch,
   s: SessionState,
   event: ItemPermissionEvent,
 ): SessionState {
   const blockKey = s.itemIdMap.get(event.item_id) ?? event.item_id;
   const block = s.blocks.get(blockKey);
   if (!block) return s;
-  const blocks = new Map(s.blocks);
-  blocks.set(blockKey, { ...block, permission: event.stage });
-  return { ...s, blocks };
+  const t = b.object(s);
+  t.blocks = b.map(t.blocks);
+  const updated = b.object(block);
+  t.blocks.set(blockKey, updated);
+  updated.permission = event.stage;
+  return t;
 }
 
-export function reduceItemResult(
+function reduceItemResult(
+  b: WriteBatch,
   s: SessionState,
   event: ItemResultEvent,
   seq?: number,
@@ -1485,44 +1531,42 @@ export function reduceItemResult(
   const block = s.blocks.get(blockKey);
   if (!block) return s;
 
-  const updated: Block = {
-    ...block,
-    result: {
-      toolUseId: event.item_id,
-      content: event.content as import("./types").ToolResultContent,
-      isError: event.is_error,
-      toolResult: event.tool_result,
-    },
+  const t = b.object(s);
+  t.blocks = b.map(t.blocks);
+  const updated = b.object(block);
+  t.blocks.set(blockKey, updated);
+  updated.result = {
+    toolUseId: event.item_id,
+    content: event.content as import("./types").ToolResultContent,
+    isError: event.is_error,
+    toolResult: event.tool_result,
   };
 
-  const blocks = new Map(s.blocks);
-  blocks.set(blockKey, updated);
-
   // Append to rawSource of the parent message
-  let messages = s.messages;
+  const messages = t.messages;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
     if (m.blockIds?.includes(blockKey)) {
-      messages = messages.slice();
-      const updatedMsg = { ...m };
-      appendRawSource(updatedMsg, event, seq);
-      messages[i] = updatedMsg;
+      t.messages = b.array(messages);
+      const updatedMsg = b.object(m);
+      t.messages[i] = updatedMsg;
+      appendRawSource(b, updatedMsg, event, seq);
       break;
     }
   }
 
-  let state = { ...s, blocks, messages };
-  state = trackResultFileEdits(state, [
+  trackResultFileEdits(b, t, [
     {
       tool_use_id: event.item_id,
       content: event.content as import("./types").ToolResultContent,
       is_error: event.is_error,
     },
   ]);
-  return state;
+  return t;
 }
 
-export function reduceTurnDelta(
+function reduceTurnDelta(
+  b: WriteBatch,
   s: SessionState,
   event: TurnDeltaEvent,
   seq?: number,
@@ -1536,8 +1580,10 @@ export function reduceTurnDelta(
         m.parentToolUseId !== event.parent_tool_use_id
       )
         continue;
-      const messages = s.messages.slice();
-      const updated = { ...m };
+      const t = b.object(s);
+      t.messages = b.array(t.messages);
+      const messages = t.messages;
+      const updated = b.object(m);
       messages[i] = updated;
 
       // Apply turn-level metadata eagerly.
@@ -1551,15 +1597,16 @@ export function reduceTurnDelta(
       if (event.uuid) updated.uuid = event.uuid;
 
       // Attach to rawSource for "View source" → "Raw".
-      appendRawSource(updated, event, seq);
+      appendRawSource(b, updated, event, seq);
 
-      return { ...s, messages };
+      return t;
     }
   }
   return s;
 }
 
-export function reduceTurnStop(
+function reduceTurnStop(
+  b: WriteBatch,
   s: SessionState,
   event: TurnStopEvent,
   seq?: number,
@@ -1573,8 +1620,10 @@ export function reduceTurnStop(
         m.parentToolUseId !== event.parent_tool_use_id
       )
         continue;
-      const messages = s.messages.slice();
-      const updated = { ...m };
+      const t = b.object(s);
+      t.messages = b.array(t.messages);
+      const messages = t.messages;
+      const updated = b.object(m);
       messages[i] = updated;
 
       // Apply metadata if present (history path where no turn/delta preceded).
@@ -1590,40 +1639,44 @@ export function reduceTurnStop(
 
       // Always append to rawSource — every raw Claude Code event that
       // contributes to the message should be visible via "View source" → "Raw".
-      appendRawSource(updated, event, seq);
+      appendRawSource(b, updated, event, seq);
 
       updated.streaming = false;
 
       // Mark all incomplete blocks as completed (safety net — prevents
       // orphaned incomplete blocks from persisting past the turn boundary).
-      let blocks = s.blocks;
       let blocksChanged = false;
       for (const itemId of updated.blockIds ?? []) {
-        const b = blocks.get(itemId);
-        if (b && !b.completed) {
+        const block = t.blocks.get(itemId);
+        if (block && !block.completed) {
           if (!blocksChanged) {
-            blocks = new Map(blocks);
+            t.blocks = b.map(t.blocks);
             blocksChanged = true;
           }
-          blocks.set(itemId, { ...b, completed: true });
+          const complete = b.object(block);
+          t.blocks.set(itemId, complete);
+          complete.completed = true;
         }
       }
 
-      return { ...s, messages, blocks };
+      return t;
     }
   }
   return s;
 }
 
-export function reduceStderr(
+function reduceStderr(
+  b: WriteBatch,
   s: SessionState,
   event: StderrMessage,
   seq?: number,
 ): SessionState {
   const lastMessage = s.messages[s.messages.length - 1];
   if (lastMessage?.type === "system" && lastMessage.subtype === "stderr") {
-    const messages = s.messages.slice();
-    const updated = { ...lastMessage };
+    const t = b.object(s);
+    t.messages = b.array(t.messages);
+    const messages = t.messages;
+    const updated = b.object(lastMessage);
     const priorText = updated.content
       .filter(
         (block): block is { type: "text"; text: string } =>
@@ -1637,31 +1690,34 @@ export function reduceStderr(
         text: priorText.length > 0 ? `${priorText}\n${event.text}` : event.text,
       },
     ];
-    appendRawSource(updated, event, seq);
+    appendRawSource(b, updated, event, seq);
     messages[messages.length - 1] = updated;
-    return { ...s, messages };
+    return t;
   }
 
-  const id = `stderr-${++s.msgIdCounter}`;
-  return {
-    ...s,
-    messages: [
-      ...s.messages,
-      {
-        id,
-        type: "system" as const,
-        subtype: "stderr" as const,
-        content: [{ type: "text" as const, text: event.text }],
-        rawSource: event,
-        seq,
-      },
-    ],
-  };
+  const t = b.object(s);
+  const id = `stderr-${++t.msgIdCounter}`;
+  t.messages = b.array(t.messages);
+  t.messages.push(
+    b.adopt<DisplayMessage>({
+      id,
+      type: "system" as const,
+      subtype: "stderr" as const,
+      content: [{ type: "text" as const, text: event.text }],
+      rawSource: event,
+      seq,
+    }),
+  );
+  return t;
 }
 
-export function reduceExit(s: SessionState): SessionState {
+function reduceExit(b: WriteBatch, s: SessionState): SessionState {
   // Backend owns alive/resumable via tasks_list; nothing to update here.
-  return cancelPendingFileEdits({ ...s, sessionStatus: null });
+  if (s.sessionStatus !== null) {
+    s = b.object(s);
+    s.sessionStatus = null;
+  }
+  return cancelPendingFileEdits(b, s);
 }
 
 /** The agent withdrew responses it had delivered: keep them, marked as
@@ -1669,21 +1725,34 @@ export function reduceExit(s: SessionState): SessionState {
  *  agent names it by the uuid of each of its parts, the last of which the
  *  message carries. */
 function reduceTurnRetracted(
+  b: WriteBatch,
   s: SessionState,
   msg: Extract<AgnosticEvent, { type: "turn/retracted" }>,
   seq?: number,
   ts?: number,
 ): SessionState {
   const uuids = new Set(msg.uuids);
-  const messages = s.messages.map((m) =>
-    m.type === "assistant" && m.uuid !== undefined && uuids.has(m.uuid)
-      ? { ...m, retracted: true }
-      : m,
-  );
-  return reduceTaskDiagnostic({ ...s, messages }, msg.notice, seq, ts);
+  let t = s;
+  for (let i = 0; i < s.messages.length; i++) {
+    const message = s.messages[i]!;
+    if (
+      message.type !== "assistant" ||
+      message.uuid === undefined ||
+      !uuids.has(message.uuid) ||
+      message.retracted
+    )
+      continue;
+    t = b.object(t);
+    t.messages = b.array(t.messages);
+    const updated = b.object(message);
+    t.messages[i] = updated;
+    updated.retracted = true;
+  }
+  return reduceTaskDiagnostic(b, t, msg.notice, seq, ts);
 }
 
 function reduceTaskDiagnostic(
+  b: WriteBatch,
   s: SessionState,
   msg: Extract<
     AgnosticEvent,
@@ -1699,53 +1768,61 @@ function reduceTaskDiagnostic(
   for (let i = s.messages.length - 1; i >= 0; i--) {
     if (s.messages[i]!.type !== "assistant" || !s.messages[i]!.streaming)
       continue;
-    const messages = s.messages.slice();
-    const updated = { ...messages[i]! };
+    const t = b.object(s);
+    t.messages = b.array(t.messages);
+    const messages = t.messages;
+    const updated = b.object(messages[i]!);
     messages[i] = updated;
-    appendRawSource(updated, msg, seq);
+    appendRawSource(b, updated, msg, seq);
     const creationOrder = updated.nextCreationOrder ?? 0;
     updated.nextCreationOrder = creationOrder + 1;
-    const itemId = `diagnostic-${++s.msgIdCounter}`;
-    const blocks = new Map(s.blocks);
-    blocks.set(itemId, {
+    const itemId = `diagnostic-${++t.msgIdCounter}`;
+    t.blocks = b.map(t.blocks);
+    t.blocks.set(
       itemId,
-      type: "diagnostic",
-      text: msg.body,
-      severity: msg.severity,
-      subject: msg.subject,
-      hookOutput,
-      completed: false,
-      creationOrder,
-    });
-    updated.blockIds = [...(updated.blockIds || []), itemId];
-    return { ...s, messages, blocks };
-  }
-  return {
-    ...s,
-    messages: [
-      ...s.messages,
-      {
-        id: `task-diagnostic-${++s.msgIdCounter}`,
+      b.adopt({
+        itemId,
         type: "diagnostic",
-        content: [{ type: "text", text: msg.body }],
-        diagnostic: {
-          severity: msg.severity,
-          subject: msg.subject,
-          hookOutput,
-        },
-        rawSource: msg,
-        seq,
-        ts,
+        text: msg.body,
+        severity: msg.severity,
+        subject: msg.subject,
+        hookOutput,
+        completed: false,
+        creationOrder,
+      }),
+    );
+    updated.blockIds = updated.blockIds
+      ? b.array(updated.blockIds)
+      : b.adopt([]);
+    updated.blockIds.push(itemId);
+    return t;
+  }
+  const t = b.object(s);
+  t.messages = b.array(t.messages);
+  t.messages.push(
+    b.adopt<DisplayMessage>({
+      id: `task-diagnostic-${++t.msgIdCounter}`,
+      type: "diagnostic",
+      content: [{ type: "text", text: msg.body }],
+      diagnostic: {
+        severity: msg.severity,
+        subject: msg.subject,
+        hookOutput,
       },
-    ],
-  };
+      rawSource: msg,
+      seq,
+      ts,
+    }),
+  );
+  return t;
 }
 
 // ---------------------------------------------------------------------------
 // Top-level dispatcher: routes to individual reducers
 // ---------------------------------------------------------------------------
 
-export function reduceMessage(
+export function reduceMessageIn(
+  b: WriteBatch,
   s: SessionState,
   msg: AgnosticEvent,
   seq?: number,
@@ -1754,127 +1831,132 @@ export function reduceMessage(
   switch (msg.type) {
     case "agent/notice":
     case "cydo/task_diagnostic":
-      return reduceTaskDiagnostic(s, msg, seq, ts);
+      return reduceTaskDiagnostic(b, s, msg, seq, ts);
     case "agent/command_output": {
-      const id = `command-output-${++s.msgIdCounter}`;
-      const blocks = new Map(s.blocks);
-      blocks.set(id, {
-        itemId: id,
-        type: "command_output",
-        text: msg.text,
-        completed: true,
-        creationOrder: 0,
-      });
-      return {
-        ...s,
-        blocks,
-        messages: [
-          ...s.messages,
-          {
-            id,
-            type: "assistant",
-            content: [],
-            blockIds: [id],
-            rawSource: msg,
-            seq,
-            ts,
-          },
-        ],
-      };
+      const t = b.object(s);
+      const id = `command-output-${++t.msgIdCounter}`;
+      t.blocks = b.map(t.blocks);
+      t.blocks.set(
+        id,
+        b.adopt({
+          itemId: id,
+          type: "command_output",
+          text: msg.text,
+          completed: true,
+          creationOrder: 0,
+        }),
+      );
+      t.messages = b.array(t.messages);
+      t.messages.push(
+        b.adopt<DisplayMessage>({
+          id,
+          type: "assistant",
+          content: [],
+          blockIds: [id],
+          rawSource: msg,
+          seq,
+          ts,
+        }),
+      );
+      return t;
     }
     case "turn/retracted":
-      return reduceTurnRetracted(s, msg, seq, ts);
+      return reduceTurnRetracted(b, s, msg, seq, ts);
     case "session/init":
-      return reduceSystemInit(s, msg, seq);
+      return reduceSystemInit(b, s, msg, seq);
 
     case "session/metadata":
-      return reduceSessionMetadata(s, msg, seq);
+      return reduceSessionMetadata(b, s, msg, seq);
 
     case "session/status":
-      return reduceSystemStatus(s, msg, seq);
+      return reduceSystemStatus(b, s, msg, seq);
 
     case "session/compacted":
-      return reduceCompactBoundary(s, msg, seq);
+      return reduceCompactBoundary(b, s, msg, seq);
 
     case "task/started":
     case "task/notification":
-      return reduceTaskLifecycle(s, msg, seq);
+      return reduceTaskLifecycle(b, s, msg, seq);
 
     case "task/updated":
-      return reduceTaskUpdated(s, msg);
+      return reduceTaskUpdated(b, s, msg);
 
     case "system":
-      return reduceStopHookSummary(s, msg, seq);
+      return reduceStopHookSummary(b, s, msg, seq);
 
     case "item/started":
-      return reduceItemStarted(s, msg, seq, ts);
+      return reduceItemStarted(b, s, msg, seq, ts);
 
     case "user_message/consumed":
-      return reduceUserMessageConsumed(s, msg);
+      return reduceUserMessageConsumed(b, s, msg);
 
     case "item/delta":
-      return reduceItemDelta(s, msg);
+      return reduceItemDelta(b, s, msg);
 
     case "item/abandoned":
-      return reduceItemAbandoned(s, msg);
+      return reduceItemAbandoned(b, s, msg);
+
     case "item/completed":
-      return reduceItemCompleted(s, msg, seq);
+      return reduceItemCompleted(b, s, msg, seq);
 
     case "item/result":
-      return reduceItemResult(s, msg, seq);
+      return reduceItemResult(b, s, msg, seq);
 
     case "item/denied":
-      return reduceItemDenied(s, msg);
+      return reduceItemDenied(b, s, msg);
 
     case "item/permission":
-      return reduceItemPermission(s, msg);
+      return reduceItemPermission(b, s, msg);
 
     case "turn/delta":
-      return reduceTurnDelta(s, msg, seq);
+      return reduceTurnDelta(b, s, msg, seq);
 
     case "turn/stop":
-      return reduceTurnStop(s, msg, seq);
+      return reduceTurnStop(b, s, msg, seq);
 
     case "turn/result":
-      return reduceResultMessage(s, msg, seq);
+      return reduceResultMessage(b, s, msg, seq);
 
     case "session/summary":
-      return reduceSummary(s, msg, seq);
+      return reduceSummary(b, s, msg, seq);
 
-    case "session/cost":
-      return { ...s, totalCost: msg.total_cost_usd };
+    case "session/cost": {
+      if (s.totalCost === msg.total_cost_usd) return s;
+      const t = b.object(s);
+      t.totalCost = msg.total_cost_usd;
+      return t;
+    }
 
     case "session/rate_limit":
       return s;
 
     case "control/response": {
-      const id = `control-response-${++s.msgIdCounter}`;
-      return {
-        ...s,
-        messages: [
-          ...s.messages,
-          {
-            id,
-            type: "system" as const,
-            subtype: "control_response" as const,
-            content: [
-              {
-                type: "text" as const,
-                text: `Control response: ${msg.response.subtype ?? "unknown"}`,
-              },
-            ],
-            rawSource: msg,
-            seq,
-          },
-        ],
-      };
+      const t = b.object(s);
+      const id = `control-response-${++t.msgIdCounter}`;
+      t.messages = b.array(t.messages);
+      t.messages.push(
+        b.adopt<DisplayMessage>({
+          id,
+          type: "system" as const,
+          subtype: "control_response" as const,
+          content: [
+            {
+              type: "text" as const,
+              text: `Control response: ${msg.response.subtype ?? "unknown"}`,
+            },
+          ],
+          rawSource: msg,
+          seq,
+        }),
+      );
+      return t;
     }
 
     case "process/exit":
-      return reduceExit(s);
+      return reduceExit(b, s);
 
     case "process/stderr":
-      return reduceStderr(s, msg, seq);
+      return reduceStderr(b, s, msg, seq);
 
     case "agent/unrecognized": {
       // If mid-turn, embed in the streaming message to preserve temporal order.
@@ -1886,13 +1968,15 @@ export function reduceMessage(
         }
       }
       if (streamingMsgIdx >= 0) {
-        const messages = s.messages.slice();
-        const updated = { ...messages[streamingMsgIdx]! };
+        const t = b.object(s);
+        t.messages = b.array(t.messages);
+        const messages = t.messages;
+        const updated = b.object(messages[streamingMsgIdx]!);
         messages[streamingMsgIdx] = updated;
         const creationOrder = updated.nextCreationOrder ?? 0;
         updated.nextCreationOrder = creationOrder + 1;
 
-        const itemId = `unrecognized-${++s.msgIdCounter}`;
+        const itemId = `unrecognized-${++t.msgIdCounter}`;
         const block: Block = {
           itemId,
           type: "unrecognized",
@@ -1900,15 +1984,19 @@ export function reduceMessage(
           completed: false,
           creationOrder,
         };
-        updated.blockIds = [...(updated.blockIds || []), itemId];
-        appendRawSource(updated, msg, seq);
+        updated.blockIds = updated.blockIds
+          ? b.array(updated.blockIds)
+          : b.adopt([]);
+        updated.blockIds.push(itemId);
+        appendRawSource(b, updated, msg, seq);
 
-        const blocks = new Map(s.blocks);
-        blocks.set(itemId, block);
-        return { ...s, messages, blocks };
+        t.blocks = b.map(t.blocks);
+        t.blocks.set(itemId, b.adopt(block));
+        return t;
       }
       // No streaming message — top-level system message.
       return reduceParseError(
+        b,
         s,
         "Unrecognized agent data",
         msg.reason,
@@ -1919,10 +2007,11 @@ export function reduceMessage(
     }
 
     case "cydo/item_enriched":
-      return reduceItemEnriched(s, msg);
+      return reduceItemEnriched(b, s, msg);
 
     default:
       return reduceParseError(
+        b,
         s,
         "Unknown message type",
         (msg as unknown as Record<string, unknown>).type as string,
@@ -1933,7 +2022,8 @@ export function reduceMessage(
   }
 }
 
-export function reduceItemEnriched(
+function reduceItemEnriched(
+  b: WriteBatch,
   s: SessionState,
   event: CydoItemEnrichedEvent,
 ): SessionState {
@@ -1945,25 +2035,71 @@ export function reduceItemEnriched(
   if (target_tid === undefined && spawned_child === undefined) {
     throw new Error(`Empty enrichment for item ${item_id}`);
   }
-  const enrichment = { ...s.itemEnrichments.get(blockKey) };
-  if (target_tid !== undefined) {
-    if (enrichment.targetTid !== undefined) {
-      throw new Error(`Duplicate target task enrichment for item ${item_id}`);
-    }
-    enrichment.targetTid = target_tid;
+  const existing = s.itemEnrichments.get(blockKey);
+  if (target_tid !== undefined && existing?.targetTid !== undefined) {
+    throw new Error(`Duplicate target task enrichment for item ${item_id}`);
   }
+  if (
+    spawned_child !== undefined &&
+    existing?.spawnedTids?.has(spawned_child.spec_index)
+  ) {
+    throw new Error(
+      `Duplicate spawned child enrichment for item ${item_id} at spec index ${spawned_child.spec_index}`,
+    );
+  }
+  const t = b.object(s);
+  t.itemEnrichments = b.map(t.itemEnrichments);
+  const enrichment = existing
+    ? b.object(existing)
+    : b.adopt<ItemEnrichment>({});
+  t.itemEnrichments.set(blockKey, enrichment);
+  if (target_tid !== undefined) enrichment.targetTid = target_tid;
   if (spawned_child !== undefined) {
-    const { spec_index, child_tid } = spawned_child;
-    if (enrichment.spawnedTids?.has(spec_index)) {
-      throw new Error(
-        `Duplicate spawned child enrichment for item ${item_id} at spec index ${spec_index}`,
-      );
-    }
-    const spawnedTids = new Map(enrichment.spawnedTids);
-    spawnedTids.set(spec_index, child_tid);
+    const spawnedTids = enrichment.spawnedTids
+      ? b.map(enrichment.spawnedTids)
+      : b.adopt(new Map<number, number>());
+    spawnedTids.set(spawned_child.spec_index, spawned_child.child_tid);
     enrichment.spawnedTids = spawnedTids;
   }
-  const itemEnrichments = new Map(s.itemEnrichments);
-  itemEnrichments.set(blockKey, enrichment);
-  return { ...s, itemEnrichments };
+  return t;
+}
+
+export function replaceHistoryBoundary(
+  s: SessionState,
+  event: AgnosticEvent & { history_boundary?: HistoryBoundary },
+  seq: number,
+): SessionState {
+  const batch = new WriteBatch();
+  const next = replaceHistoryBoundaryIn(batch, s, event, seq);
+  batch.close();
+  return next;
+}
+
+export function rejectOrdinarySubmission(
+  task: SessionState,
+  nonce: string,
+): SessionState {
+  const batch = new WriteBatch();
+  const next = rejectOrdinarySubmissionIn(batch, task, nonce);
+  batch.close();
+  return next;
+}
+
+export function reduceAgentAck(s: SessionState, nonce: string): SessionState {
+  const batch = new WriteBatch();
+  const next = reduceAgentAckIn(batch, s, nonce);
+  batch.close();
+  return next;
+}
+
+export function reduceMessage(
+  s: SessionState,
+  msg: AgnosticEvent,
+  seq?: number,
+  ts?: number,
+): SessionState {
+  const batch = new WriteBatch();
+  const next = reduceMessageIn(batch, s, msg, seq, ts);
+  batch.close();
+  return next;
 }
