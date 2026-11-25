@@ -464,6 +464,7 @@ class TaskSessionRunner
 	{
 		auto session = sessionForTask(tid);
 		sessions_.remove(tid);
+		host_.closeToolCalls(tid);
 		if (!host_.shuttingDown() && host_.getTask(tid) !is null
 			&& (cast(CodexSession) session !is null || cast(ClaudeCodeSession) session !is null))
 			host_.broadcastHistoryOperations(tid);
@@ -2541,7 +2542,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 			assert(tasks[1].launch.sandbox.tempFiles.length == 0);
 
 			assert(lifecycle.count("open") == 1, lifecycle.to!string);
-			assert(lifecycle.length >= 2 && lifecycle[$-2 .. $] == ["fail", "close"],
+			assert(lifecycle.length >= 3 && lifecycle[$-3 .. $] == ["fail", "close", "close"],
 				lifecycle.to!string);
 			assert(!lifecycle.canFind("last-active"), lifecycle.to!string);
 			if (stop || agent.driver == AgentDriver.copilot)
@@ -2575,7 +2576,7 @@ unittest
 	assertRunnerMcpConfigCleanup("cydo-task-runner-sync-close", "claude",
 		"CYDO_CLAUDE_BIN", agent, false, (runner, tasks, lifecycle) {
 			runner.closeTaskStdin(1);
-			assert(*lifecycle == ["open", "fail", "close"]);
+			assert(*lifecycle == ["open", "fail", "close", "close"]);
 			assert(runner.sessionForTask(1) is null);
 		});
 }
@@ -2587,7 +2588,7 @@ unittest
 		"CYDO_CLAUDE_BIN", agent, false, (runner, tasks, lifecycle) {
 			(*tasks)[1].isProcessing = true;
 			runner.closeTaskStdin(1);
-			assert(*lifecycle == ["open", "last-active", "fail", "close"]);
+			assert(*lifecycle == ["open", "last-active", "fail", "close", "close"]);
 			assert(runner.sessionForTask(1) is null);
 		});
 }
@@ -2634,7 +2635,7 @@ unittest
 			false, (runner, tasks, lifecycle) {
 				(*tasks)[1].isProcessing = processing;
 				agent.session.closeStdin();
-				assert(*lifecycle == (processing ? ["open", "last-active"] : ["open"]));
+				assert(*lifecycle == (processing ? ["open", "last-active", "close"] : ["open", "close"]));
 				assert(runner.sessionForTask(1) is null);
 			}, null, true);
 	}
@@ -2665,7 +2666,7 @@ unittest
 
 				auto retiring = agent.session;
 				retiring.closeStdin();
-				assert(*lifecycle == ["open", "last-active"]);
+				assert(*lifecycle == ["open", "last-active", "close"]);
 				assert(!task.isProcessing && !task.compactionReminderInFlight);
 				assert(task.killPromise is null);
 
@@ -2715,11 +2716,11 @@ unittest
 		"CYDO_CLAUDE_BIN", agent, false, (runner, tasks, lifecycle) {
 			assert((*tasks).remove(1));
 			agent.session.result();
-			assert(*lifecycle == ["open", "fail", "close"]);
+			assert(*lifecycle == ["open", "fail", "close", "close"]);
 			assert(runner.sessionForTask(1) is null);
 
 			agent.session.closeStdin();
-			assert(*lifecycle == ["open", "fail", "close"]);
+			assert(*lifecycle == ["open", "fail", "close", "close"]);
 		});
 }
 
@@ -3711,7 +3712,7 @@ version (unittest) private void assertYieldGateRunnerCase(
 					},
 				));
 
-				backend.handleAsk("2", question, 1).ignoreResult();
+				backend.handleAsk("2", null, question, 1).ignoreResult();
 				socketManager.loop();
 				assert(presented.length == 1 && presented[0].canFind(question));
 				assert(backend.hasPendingChildQuestion(1));

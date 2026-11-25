@@ -90,6 +90,65 @@ it("shows the child task link when its id arrives before the tool result", async
   }
 });
 
+it("shows the target link when only the message's item enrichments change", async () => {
+  const itemId = "answer-call";
+  const message: DisplayMessage = {
+    id: "answer-message",
+    type: "assistant",
+    content: [],
+    blockIds: [itemId],
+    streaming: true,
+  };
+  const resolvedBlocks: Block[] = [
+    {
+      itemId,
+      type: "tool_use",
+      name: "Answer",
+      toolServer: "cydo",
+      driver: "claude",
+      text: "",
+      input: { qid: 3, message: "Proceed" },
+      completed: false,
+      creationOrder: 0,
+    },
+  ];
+  const props = {
+    message,
+    resolvedBlocks,
+    onViewFile: () => {},
+    semanticSelectors: false,
+    getTaskHref: (id: string) => `/task/${id}`,
+  };
+  const container = document.createElement("div");
+  const linkSelector = '[data-testid="cydo-call-target-open"]';
+
+  try {
+    await act(() => {
+      render(<AssistantMessage {...props} />, container);
+    });
+    expect(container.querySelector(linkSelector)).toBeNull();
+
+    await act(() => {
+      render(
+        <AssistantMessage
+          {...props}
+          itemEnrichments={
+            new Map([[`answer-message:${itemId}`, { targetTid: 7 }]])
+          }
+        />,
+        container,
+      );
+    });
+    expect(container.querySelector(linkSelector)?.getAttribute("href")).toBe(
+      "/task/7",
+    );
+  } finally {
+    await act(() => {
+      render(null, container);
+    });
+  }
+});
+
 describe("AssistantMessage diagnostic blocks", () => {
   it("renders the diagnostic subject and Markdown body with warning styling", () => {
     const html = renderAssistantMessage(

@@ -643,6 +643,20 @@ test("Ask/Answer: child asks parent, parent answers", async ({
       .last(),
   ).toBeVisible();
 
+  await openTask(page, 2);
+  const pendingAskTarget = page
+    .locator('[style*="display: contents"] .message-list')
+    .getByTestId("cydo-call-target-open");
+  await expect(pendingAskTarget).toBeVisible();
+  await expect(pendingAskTarget).toHaveAttribute("href", /\/task\/1$/);
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list .tool-call')
+      .filter({ has: page.getByTestId("cydo-call-target-open") })
+      .locator(".tool-result-section"),
+  ).toHaveCount(0);
+
+  await openTask(page, 1);
   // Parent answers the pending question using the observed qid.
   await sendMessage(page, `call answer ${capturedQid} use approach A`);
 
@@ -655,6 +669,13 @@ test("Ask/Answer: child asks parent, parent answers", async ({
       )
       .last(),
   ).toBeVisible();
+  await openTask(page, 1);
+  const answerTarget = page
+    .locator('[style*="display: contents"] .message-list')
+    .getByTestId("cydo-call-target-open");
+  await expect(answerTarget).toBeVisible();
+  await expect(answerTarget).toHaveAttribute("href", /\/task\/2$/);
+  await expect(page.locator(".toast-item-error")).toHaveCount(0);
 });
 
 test("Ask/Answer: parent can answer child question after another Task call", async ({
@@ -959,6 +980,15 @@ test("Ask/Answer: same-workspace top-level peer Ask succeeds", async ({
       `.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`,
     ),
   ).not.toBeVisible();
+  const askTarget = page
+    .locator('[style*="display: contents"] .message-list')
+    .getByTestId("cydo-call-target-open");
+  await expect(askTarget).toBeVisible();
+  await expect(askTarget).toHaveAttribute(
+    "href",
+    new RegExp(`/task/${targetTid}$`),
+  );
+  await expect(page.locator(".toast-item-error")).toHaveCount(0);
 });
 
 test("Ask/Answer: same-workspace non-direct Ask succeeds", async ({

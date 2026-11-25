@@ -18,6 +18,7 @@ import type {
   CydoMeta,
 } from "./types";
 import type { HistoryBoundary } from "./types";
+import { itemBlockKey } from "./types";
 import { toolIs } from "./toolIdentity";
 import type {
   AgnosticEvent,
@@ -44,6 +45,7 @@ import type {
   UserMessageConsumedEvent,
   StderrMessage,
   CydoTaskSpawnedEvent,
+  CydoItemEnrichedEvent,
 } from "./protocol";
 import {
   fileEditPayloadFromNormalizedChange,
@@ -1298,7 +1300,7 @@ export function reduceItemStarted(
 
   // Block keys must be globally unique. Item IDs (e.g. "cc-block-0") are only
   // unique within a turn, so scope them with the message ID.
-  const blockKey = `${msg.id}:${event.item_id}`;
+  const blockKey = itemBlockKey(msg.id, event.item_id);
   const isDuplicateBlockKey = msg.blockIds?.includes(blockKey) ?? false;
 
   let pendingCydoTaskItemIds = s.pendingCydoTaskItemIds;
@@ -1962,6 +1964,9 @@ export function reduceMessage(
       );
     }
 
+    case "cydo/item_enriched":
+      return reduceItemEnriched(s, msg);
+
     case "cydo/task_spawned":
       return reduceCydoTaskSpawned(s, msg);
 
@@ -1975,6 +1980,27 @@ export function reduceMessage(
         seq,
       );
   }
+}
+
+export function reduceItemEnriched(
+  s: SessionState,
+  event: CydoItemEnrichedEvent,
+): SessionState {
+  const { item_id, target_tid } = event;
+  const blockKey = s.itemIdMap.get(item_id);
+  if (blockKey === undefined || s.blocks.get(blockKey)?.type !== "tool_use") {
+    throw new Error(`Cannot enrich unknown or non-tool item ${item_id}`);
+  }
+  if (target_tid === undefined) {
+    throw new Error(`Empty enrichment for item ${item_id}`);
+  }
+  const existing = s.itemEnrichments.get(blockKey);
+  if (existing?.targetTid !== undefined) {
+    throw new Error(`Duplicate target task enrichment for item ${item_id}`);
+  }
+  const itemEnrichments = new Map(s.itemEnrichments);
+  itemEnrichments.set(blockKey, { ...existing, targetTid: target_tid });
+  return { ...s, itemEnrichments };
 }
 
 export function reduceCydoTaskSpawned(

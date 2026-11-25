@@ -7,7 +7,7 @@ import {
   useMemo,
   useCallback,
 } from "preact/hooks";
-import type { DisplayMessage, Block } from "../types";
+import type { DisplayMessage, Block, ItemEnrichment } from "../types";
 import type { SubtaskEnd } from "../subtaskResultParent";
 import type { AgnosticEvent, TurnEndReason } from "../protocol";
 import { outbox, type OutboxEntry } from "../outbox";
@@ -48,6 +48,7 @@ interface Props {
   onEditRawEvent?: (tid: number, seq: number, content: string) => void;
   onViewFile?: (filePath: string) => void;
   spawnedTidsByItemId?: Map<string, Map<number, number>>;
+  itemEnrichments?: Map<string, ItemEnrichment>;
   getTaskHref?: (id: string) => string;
   subtaskEnd?: SubtaskEnd;
 }
@@ -575,6 +576,7 @@ const MessageView = memo(
     actionUuid,
     actionBoundary,
     spawnedTidsByItemId,
+    itemEnrichments,
     getTaskHref,
   }: {
     msg: DisplayMessage;
@@ -595,6 +597,7 @@ const MessageView = memo(
       checkpointUuid?: string;
     };
     spawnedTidsByItemId?: Map<string, Map<number, number>>;
+    itemEnrichments?: Map<string, ItemEnrichment>;
     getTaskHref?: (id: string) => string;
   }) {
     const devMode = useDevMode();
@@ -673,6 +676,7 @@ const MessageView = memo(
             onApproveRetry={onApproveRetry}
             sessionId={tid}
             spawnedTidsByItemId={spawnedTidsByItemId}
+            itemEnrichments={itemEnrichments}
             getTaskHref={getTaskHref}
           />
         );
@@ -913,6 +917,7 @@ const MessageView = memo(
       next.actionBoundary?.checkpointUuid &&
     prev.actionUuid === next.actionUuid &&
     prev.spawnedTidsByItemId === next.spawnedTidsByItemId &&
+    prev.itemEnrichments === next.itemEnrichments &&
     prev.getTaskHref === next.getTaskHref,
 );
 
@@ -982,6 +987,7 @@ export function MessageList({
   onEditRawEvent,
   onViewFile,
   spawnedTidsByItemId,
+  itemEnrichments,
   getTaskHref,
   subtaskEnd,
 }: Props) {
@@ -1239,6 +1245,7 @@ export function MessageList({
                     : undefined
                 }
                 spawnedTidsByItemId={spawnedTidsByItemId}
+                itemEnrichments={itemEnrichments}
                 getTaskHref={getTaskHref}
               />
             );

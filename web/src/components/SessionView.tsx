@@ -496,6 +496,7 @@ function SessionViewInner({
           }
           onViewFile={openFileViewer}
           spawnedTidsByItemId={task.spawnedTidsByItemId}
+          itemEnrichments={task.itemEnrichments}
           getTaskHref={getTaskHref}
           subtaskEnd={subtaskEnd}
         />

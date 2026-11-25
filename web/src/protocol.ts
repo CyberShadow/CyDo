@@ -49,6 +49,7 @@ export type {
   TurnDeltaEvent,
   UserMessageConsumedEvent,
   AgentUnrecognizedEvent,
+  CydoItemEnrichedEvent,
   CydoTaskSpawnedEvent,
 } from "./generated/protocol";
 
@@ -84,6 +85,7 @@ import type {
   TurnDeltaEvent,
   UserMessageConsumedEvent,
   AgentUnrecognizedEvent,
+  CydoItemEnrichedEvent,
   CydoTaskSpawnedEvent,
 } from "./generated/protocol";
 import type { TaskStatus } from "./types";
@@ -183,6 +185,7 @@ export type AgnosticEvent =
   | CommandOutputEvent
   | ProcessStderrEvent
   | AgentUnrecognizedEvent
+  | CydoItemEnrichedEvent
   | CydoTaskSpawnedEvent;
 
 export type TaskMessage = { tid: number; event: AgnosticEvent };

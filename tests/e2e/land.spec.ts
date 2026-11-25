@@ -34,6 +34,7 @@ test("Land starts the project's integrator and returns its answer", async ({
   // the new-task page offers.
   await expect(integratorItems(page)).toHaveCount(1);
   await expect(authorItem(page)).toHaveCount(1);
+  const integratorTid = await integratorItems(page).getAttribute("data-tid");
   const authorTid = await authorItem(page).getAttribute("data-tid");
 
   // Its answer is the author's result. (The view follows the question to the
@@ -43,6 +44,13 @@ test("Land starts the project's integrator and returns its answer", async ({
   await expect(
     messageList(page).getByText("landed-first", { exact: true }).last(),
   ).toBeVisible();
+
+  const requestTarget = messageList(page).getByTestId("cydo-call-target-open");
+  await expect(requestTarget).toBeVisible();
+  await expect(requestTarget).toHaveAttribute(
+    "href",
+    new RegExp(`/task/${integratorTid}$`),
+  );
 
   // The request had reached the integrator as a question from the author,
   // and having answered, the integrator is idle rather than working.
@@ -63,4 +71,5 @@ test("Land starts the project's integrator and returns its answer", async ({
     messageList(page).getByText("landed-second", { exact: true }).last(),
   ).toBeVisible();
   await expect(integratorItems(page)).toHaveCount(1);
+  await expect(page.locator(".toast-item-error")).toHaveCount(0);
 });

@@ -71,6 +71,8 @@ struct HistoryEventPipelineHost
 	bool delegate(int tid, string translated) updateClaudeUsageFromEvent;
 	HistoryBroadcastPlan delegate(int tid, TranslatedEvent ev) planBroadcast;
 	Promise!DriverHistory delegate(int tid, HistoryAccess access) loadDriverHistory;
+	void delegate(int tid, string itemId, ulong generation) liveToolStarted;
+	void delegate(int tid) liveTurnEnded;
 }
 
 /// The user_message/consumed confirmations recorded at `lineNum`.
@@ -636,11 +638,11 @@ class HistoryEventPipeline
 		auto td = host_.getTask(tid);
 		if (td is null)
 			return 0;
-
-		if (isTurnResultEvent(ev.translated) || isProcessExitEvent(ev.translated))
+		auto event = jsonParse!HistoryBoundaryEvent(ev.translated);
+		if (event.type == "turn/result" || event.type == "process/exit")
 			td.clearLastSessionStatus();
 
-		if (isSessionStatusEvent(ev.translated))
+		if (event.type == "session/status")
 		{
 			cacheSessionStatusEvent(tid, ev.translated, ev.ts.stdTime);
 			host_.sendToSubscribed(tid, Data(
@@ -651,35 +653,36 @@ class HistoryEventPipeline
 
 		auto historyData = Data(toJson(TaskEventEnvelope(tid, ev.ts.stdTime,
 			JSONFragment(ev.translated))).representation);
-		auto merged = mergeStreamingDelta(tid, ev.translated);
-		size_t seq;
-		td = host_.getTask(tid);
-		if (td is null)
-			return 0;
-		if (merged)
-			seq = td.history.isLoaded ? td.history.length - 1 : cast(size_t) -1;
-		else
-			seq = td.history.appendLive(historyData, ev.raw);
+		auto merged = event.type == "item/delta"
+			&& mergeStreamingDelta(*td, ev.translated, event.item_id);
+		auto generation = td.history.generation;
+		auto seq = merged
+			? (td.history.isLoaded ? td.history.length - 1 : cast(size_t) -1)
+			: td.history.appendLive(historyData, ev.raw);
 
-		if (seq == cast(size_t) -1)
+		if (seq != cast(size_t) -1)
 		{
-			if (ev.turnBoundary.anchor.length > 0)
-				attachTurnBoundary(tid, td, ev.turnBoundary);
-			return seq;
+			if (!merged)
+				registerVisibleTurnAnchorFromEvent(tid, seq, ev.translated, ev.raw);
+			host_.sendToSubscribed(tid, Data(
+				toJson(TaskEventSeqEnvelope(tid, cast(int) seq, ev.ts.stdTime,
+					JSONFragment(ev.translated))).representation));
+			if (!merged && host_.noteLiveBoundaryCandidate !is null)
+				host_.noteLiveBoundaryCandidate(tid, seq, ev.translated, ev.raw, ev.sourceLine,
+					localUserProvenance);
 		}
-
-		if (!merged)
-		{
-			registerVisibleTurnAnchorFromEvent(tid, seq, ev.translated, ev.raw);
-		}
-		host_.sendToSubscribed(tid, Data(
-			toJson(TaskEventSeqEnvelope(tid, cast(int) seq, ev.ts.stdTime,
-				JSONFragment(ev.translated))).representation));
-		if (!merged && host_.noteLiveBoundaryCandidate !is null)
-			host_.noteLiveBoundaryCandidate(tid, seq, ev.translated, ev.raw, ev.sourceLine,
-				localUserProvenance);
 		if (ev.turnBoundary.anchor.length > 0)
 			attachTurnBoundary(tid, td, ev.turnBoundary);
+
+		// appendLive also appends to the pending buffer when the store is deferred.
+		if (!merged)
+		{
+			if (event.type == "item/started" && event.item_type == "tool_use" && host_.liveToolStarted)
+				host_.liveToolStarted(tid, event.item_id, generation);
+			if (event.type == "turn/result" && !event.is_sidechain
+				&& event.parent_tool_use_id.length == 0 && host_.liveTurnEnded)
+				host_.liveTurnEnded(tid);
+		}
 		return seq;
 	}
 
@@ -954,24 +957,6 @@ private:
 		}
 	}
 
-	static bool isSessionStatusEvent(string translated)
-	{
-		return translated.canFind(`"type":"session/status"`)
-			|| translated.canFind(`"type":"session\/status"`);
-	}
-
-	static bool isTurnResultEvent(string translated)
-	{
-		return translated.canFind(`"type":"turn/result"`)
-			|| translated.canFind(`"type":"turn\/result"`);
-	}
-
-	static bool isProcessExitEvent(string translated)
-	{
-		return translated.canFind(`"type":"process/exit"`)
-			|| translated.canFind(`"type":"process\/exit"`);
-	}
-
 	void cacheSessionStatusEvent(int tid, string translated, long ts)
 	{
 		auto td = host_.getTask(tid);
@@ -1010,68 +995,45 @@ private:
 
 		TranslatedEvent[] filtered;
 		foreach (ev; events)
-			if (!isSessionStatusEvent(ev.translated))
+			if (jsonParse!HistoryBoundaryEvent(ev.translated).type != "session/status")
 				filtered ~= ev;
 		return filtered;
 	}
 
-	bool mergeStreamingDelta(int tid, string translated)
+	private bool mergeStreamingDelta(ref TaskData td, string translated, string itemId)
 	{
-		if (!translated.canFind(`"type":"item/delta"`))
-			return false;
-
-		auto td = host_.getTask(tid);
-		if (td is null || td.history.lastEventContents().length == 0)
-			return false;
-
 		auto lastEntry = td.history.lastEventContents();
-		if (lastEntry.length > 64 * 1024)
-			return false;
-		if (!lastEntry.canFind(`"type":"item/delta"`)
-			&& !lastEntry.canFind(`"type":"item\/delta"`))
+		if (lastEntry.length == 0 || lastEntry.length > 64 * 1024)
 			return false;
 
-		auto lastId = extractItemId(lastEntry);
-		auto newId = extractItemId(translated);
-		if (lastId is null || newId is null || lastId != newId)
+		TaskEventEnvelope previous;
+		try
+			previous = jsonParse!TaskEventEnvelope(lastEntry);
+		catch (Exception)
+			return false; // History also stores unconfirmed-user envelopes.
+
+		auto last = jsonParse!HistoryBoundaryEvent(previous.event.json);
+		if (last.type != "item/delta" || itemId.length == 0 || last.item_id != itemId)
 			return false;
 
-		auto merged = mergeItemDeltas(lastEntry, translated);
+		auto merged = mergeItemDeltas(previous.event.json, translated);
 		if (merged is null)
 			return false;
 
-		import std.json : parseJSON;
-		auto prevTs = td.history.lastEventTs();
-		auto mergedObj = parseJSON(merged);
-		auto canonical = toJson(TaskEventEnvelope(tid, prevTs,
-			JSONFragment(mergedObj["event"].toString())));
-		td.history.replaceLastEvent(Data(canonical.representation));
+		previous.event = JSONFragment(merged);
+		td.history.replaceLastEvent(Data(toJson(previous).representation));
 		return true;
 	}
 
-	static string extractItemId(const(char)[] s)
-	{
-		import std.string : indexOf;
-		enum key = `"item_id":"`;
-		auto idx = s.indexOf(key);
-		if (idx < 0)
-			return null;
-		auto start = idx + key.length;
-		auto end = s.indexOf('"', start);
-		if (end < 0 || end <= start)
-			return null;
-		return cast(string) s[start .. end];
-	}
-
-	string mergeItemDeltas(const(char)[] lastEnvelope, string newTranslated)
+	private string mergeItemDeltas(string lastTranslated, string newTranslated)
 	{
 		import std.json : JSONValue, parseJSON;
 
-		JSONValue lastJson, newEventJson;
+		JSONValue lastEvent, newEvent;
 		try
 		{
-			lastJson = parseJSON(lastEnvelope);
-			newEventJson = parseJSON(newTranslated);
+			lastEvent = parseJSON(lastTranslated);
+			newEvent = parseJSON(newTranslated);
 		}
 		catch (Exception e)
 		{
@@ -1079,13 +1041,12 @@ private:
 			return null;
 		}
 
-		auto lastEvent = lastJson["event"];
 		if (auto lastContent = "content" in lastEvent.objectNoRef)
 		{
-			if (auto newContent = "content" in newEventJson.objectNoRef)
+			if (auto newContent = "content" in newEvent.objectNoRef)
 			{
 				(*lastContent).str = (*lastContent).str ~ (*newContent).str;
-				return lastJson.toString();
+				return lastEvent.toString();
 			}
 		}
 
@@ -1627,11 +1588,46 @@ unittest
 	assert(replayMismatches.length == 0, replayMismatches.join("\n"));
 }
 
+version (unittest) private class StubWebSocketAdapter : WebSocketAdapter
+{
+	import ae.net.asockets : DisconnectType, IConnection;
+	import ae.sys.dataset : joinData;
+
+	string[] sent;
+
+	this()
+	{
+		super(new class IConnection
+		{
+			ConnectionState state_ = ConnectionState.connected;
+			void delegate(string, DisconnectType) disconnectHandler;
+
+			@property ConnectionState state() { return state_; }
+			void send(scope Data[] data, int priority) {}
+			void disconnect(string reason, DisconnectType type)
+			{
+				state_ = ConnectionState.disconnected;
+				disconnectHandler(reason, type);
+			}
+			@property void handleConnect(void delegate() value) {}
+			@property void handleReadData(void delegate(Data) value) {}
+			@property void handleDisconnect(void delegate(string, DisconnectType) value)
+			{
+				disconnectHandler = value;
+			}
+			@property void handleBufferFlushed(void delegate() value) {}
+		});
+	}
+
+	override void send(scope Data[] data, int priority)
+	{
+		sent ~= cast(string) data.joinData().toGC().as!string;
+	}
+}
+
 unittest
 {
-	import ae.net.asockets : ConnectionState, DisconnectType, IConnection;
-	import ae.sys.dataset : joinData;
-	import ae.utils.array : as;
+	import ae.net.asockets : DisconnectType;
 	import ae.utils.json : JSONFragment, jsonParse, toJson;
 	import cydo.domain.tasks.model : Watermark;
 	import cydo.protocol : TaskDiagnosticEvent, TaskDiagnosticSeverity;
@@ -1645,39 +1641,6 @@ unittest
 	auto td = TaskData(tid, "local", "/tmp");
 	td.history.reset(Watermark.none());
 	Data[] sent;
-	class StubWebSocketAdapter : WebSocketAdapter
-	{
-		string[] sent;
-
-		this()
-		{
-			super(new class IConnection
-			{
-				ConnectionState state_ = ConnectionState.connected;
-				void delegate(string, DisconnectType) disconnectHandler;
-
-				@property ConnectionState state() { return state_; }
-				void send(scope Data[] data, int priority) {}
-				void disconnect(string reason, DisconnectType type)
-				{
-					state_ = ConnectionState.disconnected;
-					disconnectHandler(reason, type);
-				}
-				@property void handleConnect(void delegate() value) {}
-				@property void handleReadData(void delegate(Data) value) {}
-				@property void handleDisconnect(void delegate(string, DisconnectType) value)
-				{
-					disconnectHandler = value;
-				}
-				@property void handleBufferFlushed(void delegate() value) {}
-			});
-		}
-
-		override void send(scope Data[] data, int priority)
-		{
-			sent ~= cast(string) data.joinData().toGC().as!string;
-		}
-	}
 	HistoryEventPipelineHost host;
 	host.getTask = (int t) => t == tid ? &td : null;
 	host.resolveTaskHistory = (int t) => TaskHistoryResolution.noSession();
@@ -2277,4 +2240,295 @@ unittest
 		&& fixture.sent[3].canFind("through:t2") && fixture.sent[3].canFind(`"seq":4`));
 	pipeline.broadcastTask(tid, result("t2"));
 	assert(boundaries(fixture.task) == ["-", "t1", "-", "-", "t2", "-", "-", "-"]);
+}
+
+
+version (unittest)
+{
+	private enum enrichmentTestStart = `{"type":"item/started","item_type":"tool_use","item_id":"x","input":{"type":"turn/result"}}`;
+	private enum enrichmentTestStop = `{"type":"turn/stop"}`;
+	private enum enrichmentTestResult = `{"type":"turn/result","subtype":"success"}`;
+
+	private const(char)[] historyEvent(const ref Data entry)
+	{
+		return jsonParse!TaskEventEnvelope(cast(string) entry.toGC()).event.json;
+	}
+
+	private void finishEnrichmentHistoryRead(DriverHistoryPipelineFixture f, string[] events)
+	{
+		TranslatedEvent[] nativeEvents;
+		foreach (event; events)
+			nativeEvents ~= TranslatedEvent(event, null);
+		f.reads[$ - 1].fulfill(DriverHistory(nativeEvents, 1));
+		drainHistoryNextTicks();
+		assert(f.task.history.isLoaded);
+	}
+}
+
+// A tool start is reported after the event is visible in the store or buffer.
+unittest
+{
+	foreach (pending; [false, true])
+	{
+		auto f = new DriverHistoryPipelineFixture;
+		f.pipeline.whenHistoryLoaded(f.tid, () {});
+		if (!pending)
+			finishEnrichmentHistoryRead(f, []);
+		auto generation = f.task.history.generation;
+		int starts;
+		f.pipeline.host_.liveToolStarted = (int tid, string itemId, ulong reportedGeneration) {
+			assert(tid == f.tid && itemId == "x" && reportedGeneration == generation);
+			if (pending)
+			{
+				bool appended;
+				f.task.history.amendPending((ref Data entry) {
+					appended = historyEvent(entry) == enrichmentTestStart;
+					return true;
+				});
+				assert(appended);
+			}
+			else
+			{
+				auto entry = f.task.history[f.task.history.length - 1];
+				assert(historyEvent(entry) == enrichmentTestStart);
+			}
+			starts++;
+		};
+		f.pipeline.host_.liveTurnEnded = (int tid) { assert(0, "nested input is not a turn end"); };
+		f.pipeline.appendAndBroadcastTaskEvent(f.tid,
+			TranslatedEvent(`{"type":"item/started","item_type":"text","item_id":"text"}`, null));
+		assert(starts == 0);
+		f.pipeline.appendAndBroadcastTaskEvent(f.tid, TranslatedEvent(enrichmentTestStart, null));
+		assert(starts == 1);
+		if (pending)
+			finishEnrichmentHistoryRead(f, [enrichmentTestStart, enrichmentTestResult]);
+		assert(starts == 1);
+	}
+}
+
+unittest
+{
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+	import std.uuid : randomUUID;
+
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.runtime.launch.types : NativeHistoryProfile;
+
+	auto f = new DriverHistoryPipelineFixture;
+	auto path = buildPath(tempDir(), "cydo-enrichment-" ~ randomUUID().toString() ~ ".jsonl");
+	enum line = `{"type":"assistant","uuid":"record","message":{"id":"message","content":[{"type":"tool_use","id":"x","name":"Bash","input":{"type":"session/status"}}]}}` ~ "\n";
+	write(path, line);
+	scope (exit) remove(path);
+
+	auto agent = new ClaudeCodeAgent;
+	auto profile = NativeHistoryProfile(agent.driver, "/unused-profile");
+	f.resolution = TaskHistoryResolution.access(HistoryAccess(agent, profile, f.sessionId, path));
+	f.task.history.reset(Watermark.atBytes(line.length));
+	int starts;
+	f.pipeline.host_.liveToolStarted = (int tid, string itemId, ulong generation) { starts++; };
+	f.pipeline.ensureHistoryLoaded(f.tid);
+	assert(f.task.history.isLoaded);
+	bool found;
+	foreach (ref entry; f.task.history)
+	{
+		auto event = jsonParse!HistoryBoundaryEvent(historyEvent(entry));
+		found |= event.type == "item/started" && event.item_type == "tool_use" && event.item_id == "x";
+	}
+	assert(found && starts == 0);
+}
+
+unittest
+{
+	auto f = new DriverHistoryPipelineFixture;
+	int[] ends;
+	f.pipeline.host_.liveTurnEnded = (int tid) { ends ~= tid; };
+	foreach (event; [
+		`{"type":"turn/result","is_sidechain":true}`,
+		`{"type":"turn/result","parent_tool_use_id":"parent"}`,
+		enrichmentTestStop,
+		`{"type":"process/exit"}`,
+	])
+		f.pipeline.appendAndBroadcastTaskEvent(f.tid, TranslatedEvent(event, null));
+	assert(ends.length == 0);
+	f.pipeline.appendAndBroadcastTaskEvent(f.tid, TranslatedEvent(enrichmentTestResult, null));
+	assert(ends == [f.tid]);
+}
+
+version (unittest) private final class LiveEnrichmentPipelineFixture
+{
+	import cydo.mcp : ToolCallCancellation;
+	import cydo.protocol : CydoItemEnrichedEvent;
+	import cydo.workflow.tools.live_calls : LiveToolCalls, LiveToolCallsHost;
+
+	DriverHistoryPipelineFixture driver;
+	LiveToolCalls calls;
+
+	this()
+	{
+		driver = new DriverHistoryPipelineFixture;
+		calls = new LiveToolCalls(LiveToolCallsHost(
+			appendTaskEvent: (int tid, TranslatedEvent event) {
+				driver.pipeline.appendAndBroadcastTaskEvent(tid, event);
+			},
+			historyGeneration: (int tid) => driver.task.history.generation,
+		));
+		driver.pipeline.host_.liveToolStarted = &calls.toolStarted;
+		driver.pipeline.host_.liveTurnEnded = &calls.turnEnded;
+		calls.openTask(driver.tid);
+	}
+
+	void append(string event)
+	{
+		driver.pipeline.appendAndBroadcastTaskEvent(driver.tid, TranslatedEvent(event, null));
+	}
+
+	void enrich()
+	{
+		auto call = calls.register(driver.tid, "x", new ToolCallCancellation);
+		call.enrich(CydoItemEnrichedEvent(target_tid: 3));
+		calls.settle(call);
+	}
+
+	void assertHistory(string[] expected)
+	{
+		auto expectedEnrichment = CydoItemEnrichedEvent(item_id: "x", target_tid: 3);
+		assert(driver.task.history.length == expected.length);
+		foreach (i, event; expected)
+		{
+			auto entry = driver.task.history[i];
+			auto actual = historyEvent(entry);
+			if (event == "enrichment")
+				assert(jsonParse!CydoItemEnrichedEvent(actual) == expectedEnrichment);
+			else
+				assert(actual == event);
+		}
+	}
+}
+
+unittest
+{
+	foreach (enrichmentFirst; [false, true])
+	{
+		auto f = new LiveEnrichmentPipelineFixture;
+		f.driver.pipeline.whenHistoryLoaded(f.driver.tid, () {});
+		assert(f.driver.reads.length == 1 && !f.driver.task.history.isLoaded);
+		if (enrichmentFirst)
+			f.enrich();
+		f.append(enrichmentTestStart);
+		if (!enrichmentFirst)
+			f.enrich();
+		f.append(enrichmentTestResult);
+		finishEnrichmentHistoryRead(f.driver, [enrichmentTestStop]);
+		f.assertHistory([enrichmentTestStop, enrichmentTestStart, "enrichment", enrichmentTestResult]);
+	}
+}
+
+unittest
+{
+	foreach (liveStart; [false, true])
+	{
+		auto f = new LiveEnrichmentPipelineFixture;
+		f.driver.pipeline.whenHistoryLoaded(f.driver.tid, () {});
+		finishEnrichmentHistoryRead(f.driver, [enrichmentTestStart, enrichmentTestStop]);
+		f.enrich();
+		f.assertHistory([enrichmentTestStart, enrichmentTestStop]);
+		if (liveStart)
+		{
+			f.append(enrichmentTestStart);
+			f.assertHistory([enrichmentTestStart, enrichmentTestStop, enrichmentTestStart, "enrichment"]);
+		}
+		else
+		{
+			f.append(enrichmentTestResult);
+			f.assertHistory([enrichmentTestStart, enrichmentTestStop, enrichmentTestResult]);
+		}
+	}
+}
+
+unittest
+{
+	auto f = new LiveEnrichmentPipelineFixture;
+	f.driver.pipeline.whenHistoryLoaded(f.driver.tid, () {});
+	finishEnrichmentHistoryRead(f.driver, []);
+	f.append(enrichmentTestStart);
+	f.driver.task.history.reset(Watermark.driverServed());
+	f.driver.pipeline.whenHistoryLoaded(f.driver.tid, () {});
+	finishEnrichmentHistoryRead(f.driver, [enrichmentTestStart]);
+	f.enrich();
+	f.assertHistory([enrichmentTestStart]);
+	f.append(enrichmentTestStart);
+	f.assertHistory([enrichmentTestStart, enrichmentTestStart, "enrichment"]);
+}
+
+// A tool input containing a status payload must still release held enrichment.
+unittest
+{
+	import ae.net.asockets : DisconnectType;
+
+	enum start = `{"type":"item/started","item_type":"tool_use","item_id":"x","input":{"type":"session/status"}}`;
+	auto f = new LiveEnrichmentPipelineFixture;
+	auto pipeline = f.driver.pipeline;
+	pipeline.host_.normalizeKnownSystemMessageMeta = (string translated, int tid) => translated;
+	pipeline.host_.historyOperations = (int tid, Agent agent) => HistoryOperations.init;
+	pipeline.host_.sendReplaySupplementalState = (WebSocketAdapter ws, int tid) {};
+	pipeline.host_.subscribe = (WebSocketAdapter ws, int tid, Nullable!HistoryOperations) {};
+	pipeline.host_.onHistorySubscribed = (int tid) {};
+
+	auto ws = new StubWebSocketAdapter;
+	scope (exit) ws.disconnect("test complete", DisconnectType.requested);
+	pipeline.handleRequestHistory(ws, f.driver.tid);
+	f.enrich();
+	f.append(start);
+	assert(ws.sent.length == 0);
+	finishEnrichmentHistoryRead(f.driver, []);
+	f.assertHistory([start, "enrichment"]);
+
+	assert(ws.sent.length == 5);
+	foreach (i; 0 .. 2)
+	{
+		auto entry = f.driver.task.history[i];
+		assert(jsonParse!TaskEventSeqEnvelope(ws.sent[i + 1]).event.json == historyEvent(entry));
+	}
+}
+
+// A nested delta with the same ID cannot merge the next delta into a tool start.
+unittest
+{
+	enum start = `{"type":"item/started","item_type":"tool_use","item_id":"x","input":{"type":"item/delta","item_id":"x"},"content":"start"}`;
+	enum delta = `{"type":"item/delta","item_id":"x","content":"delta"}`;
+	auto f = new LiveEnrichmentPipelineFixture;
+	f.driver.pipeline.whenHistoryLoaded(f.driver.tid, () {});
+	finishEnrichmentHistoryRead(f.driver, []);
+	f.append(start);
+	f.append(delta);
+	f.assertHistory([start, delta]);
+}
+
+// A delta inside unconfirmed user content cannot absorb the next live delta.
+unittest
+{
+	enum extras = `{"label":"provisional","event":{"type":"item/delta","item_id":"x","content":"nested"}}`;
+	enum delta = `{"type":"item/delta","item_id":"x","content":"live"}`;
+	auto f = new DriverHistoryPipelineFixture;
+	f.pipeline.whenHistoryLoaded(f.tid, () {});
+	finishEnrichmentHistoryRead(f, []);
+
+	auto block = ContentBlock("text", "provisional");
+	block.extras = JSONFragment(extras);
+	f.pipeline.appendUnconfirmedUserMessage(f.tid, [block], null, null, "nonce");
+	auto unconfirmed = cast(string) f.task.history[0].toGC();
+	f.pipeline.appendAndBroadcastTaskEvent(f.tid, TranslatedEvent(delta, null));
+
+	assert(f.task.history.length == 2);
+	auto first = cast(string) f.task.history[0].toGC();
+	assert(first == unconfirmed);
+	auto user = jsonParse!UnconfirmedUserEventEnvelope(first);
+	assert(user.tid == f.tid && user.correlation_id == "nonce");
+	auto message = jsonParse!ItemStartedEvent(user.unconfirmedUserEvent.json);
+	assert(message.item_type == "user_message" && message.pending);
+	assert(message.content.length == 1 && message.content[0].text == block.text);
+	assert(message.content[0].extras.json == extras);
+	auto live = jsonParse!TaskEventEnvelope(cast(string) f.task.history[1].toGC());
+	assert(live.tid == f.tid && live.event.json == delta);
 }

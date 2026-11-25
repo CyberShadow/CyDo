@@ -36,8 +36,8 @@ import cydo.foundation.text.title : truncateTitle;
 import cydo.mcp : McpResult, ToolCallCancellation;
 import cydo.mcp.payloads : CreatedTaskResult, TaskResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend,
-	ValidatedTask;
-import cydo.protocol : AnswerResult, BatchResultEnvelope, ContentBlock, QuestionResult, decomposeToolName;
+	ToolCallEnricher, ValidatedTask;
+import cydo.protocol : AnswerResult, BatchResultEnvelope, ContentBlock, CydoItemEnrichedEvent, QuestionResult, decomposeToolName;
 import cydo.runtime.config : UnsandboxedCommandExecution;
 import cydo.workflow.batch.registry : BatchHandle, BatchRegistry;
 import cydo.workflow.mailbox : Mailbox, MailboxEvent;
@@ -152,8 +152,7 @@ struct WorkflowToolsHost
 	void delegate(int tid) clearAskUserQuestionPrompt;
 	void delegate(int tid, const PendingPermission pending) sendPermissionPrompt;
 	void delegate(int tid) clearPermissionPrompt;
-	void delegate(int parentTid, int childTid, int specIndex)
-		appendTaskSpawnedEvent;
+	void delegate(int parentTid, int childTid, int specIndex) appendTaskSpawnedEvent;
 	void delegate(TaskCreatedMessage message) broadcastTaskCreated;
 
 	PermissionSettings delegate(string agentName, string workspaceName) permissionSettings;
@@ -272,12 +271,13 @@ unittest
 		sendAskUserQuestionPrompt: (int tid, JSONFragment questions, string toolUseId) {},
 		clearAskUserQuestionPrompt: (int tid) {},
 		sendPermissionPrompt: (int tid, const PendingPermission pending) {},
-		clearPermissionPrompt: (int tid) {}, appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
+		clearPermissionPrompt: (int tid) {},
+		appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
 		broadcastTaskCreated: (TaskCreatedMessage message) {}, permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 		onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); }, generateTitle: (int tid, string prompt) {},
 	));
 
-	auto tools = new CydoToolsImpl(backend, "1", "tool-call");
+	auto tools = new CydoToolsImpl(backend, "1", new RecordingEnricher);
 	bool resolved;
 	McpResult result;
 	async({ return tools.createTasks([TaskSpec("child startup", "child", "trigger child startup failure")]); }).then((McpResult r) { resolved = true; result = r; });
@@ -984,8 +984,14 @@ public:
 		return awaitEvent(parentTid);
 	}
 
-	Promise!McpResult handleAsk(string callerTidStr, string message,
+	Promise!McpResult handleAsk(string callerTidStr, ToolCallEnricher call, string message,
 		int targetTid)
+	{
+		return ask(callerTidStr, call, message, targetTid, targetTid == -1);
+	}
+
+	private Promise!McpResult ask(string callerTidStr, ToolCallEnricher call, string message,
+		int targetTid, bool announceTarget)
 	{
 		import std.conv : to;
 		int askerTid;
@@ -1029,10 +1035,12 @@ public:
 				[TaskStatus.active, TaskStatus.alive], TaskStatus.waiting,
 				TaskNotificationChange.preserve);
 		host_.broadcastFocusHint(askerTid, targetTid);
+		if (announceTarget)
+			call.enrich(CydoItemEnrichedEvent(target_tid: targetTid));
 		return awaitEvent(askerTid);
 	}
 
-	Promise!McpResult handleAnswer(string callerTidStr, int qid,
+	Promise!McpResult handleAnswer(string callerTidStr, ToolCallEnricher call, int qid,
 		string message)
 	{
 		import std.conv : to;
@@ -1063,6 +1071,7 @@ public:
 		mailbox(q.askerTid).push(MailboxEvent(MailboxEvent.Kind.answer, 0, qid));
 		pump(q.askerTid);
 		host_.broadcastFocusHint(answererTid, q.askerTid);
+		call.enrich(CydoItemEnrichedEvent(target_tid: q.askerTid));
 		if (hasOutstandingWait(answererTid) && presentedQuestionFor(answererTid) == 0)
 		{
 			if (answerer.status != TaskStatus.waiting)
@@ -1075,7 +1084,7 @@ public:
 			q.askerTid, qid, null, null, null))));
 	}
 
-	Promise!McpResult handleRequest(string callerTidStr, string target, string message)
+	Promise!McpResult handleRequest(string callerTidStr, ToolCallEnricher call, string target, string message)
 	{
 		import std.algorithm : map;
 		import std.array : join;
@@ -1107,7 +1116,7 @@ public:
 			"directory": host_.effectiveCwd(callerTd),
 		]);
 		return host_.singletonForTask(callerTid, target).then(
-			(int targetTid) => handleAsk(callerTidStr, request, targetTid),
+			(int targetTid) => ask(callerTidStr, call, request, targetTid, true),
 			(Exception e) => resolve(McpResult(e.msg, true)));
 	}
 
@@ -2636,7 +2645,7 @@ unittest
 		generateTitle: (int tid, string prompt) {},
 	));
 
-	auto tools = new CydoToolsImpl(backend, "1", "tool-call");
+	auto tools = new CydoToolsImpl(backend, "1", new RecordingEnricher);
 	bool resolved;
 	McpResult result;
 	async({
@@ -2753,6 +2762,17 @@ version (unittest)
 			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
 			foreach (handler; handlers)
 				handler();
+		}
+	}
+
+	final class RecordingEnricher : ToolCallEnricher
+	{
+		CydoItemEnrichedEvent[] events;
+
+		void enrich(CydoItemEnrichedEvent event)
+		{
+			assert(event.item_id.length == 0);
+			events ~= event;
 		}
 	}
 
@@ -2993,8 +3013,7 @@ version (unittest)
 				clearAskUserQuestionPrompt: (int tid) {},
 				sendPermissionPrompt: (int tid, const PendingPermission pending) {},
 				clearPermissionPrompt: (int tid) {},
-				appendTaskSpawnedEvent: (int parentTid, int childTid,
-					int specIndex) {},
+				appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {},
 				permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 				onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); },
 				generateTitle: (int tid, string prompt) {},
@@ -3510,7 +3529,7 @@ unittest
 		b.rebuildWaits();
 
 		McpResult result;
-		b.handleAnswer("2", qid, "late answer").then((McpResult r) {
+		b.handleAnswer("2", new RecordingEnricher, qid, "late answer").then((McpResult r) {
 			result = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -3529,7 +3548,7 @@ unittest
 
 		assert(f.persistence.loadQuestions().length == 0);
 		McpResult result;
-		b.handleAnswer("2", qid, "late answer").then((McpResult r) {
+		b.handleAnswer("2", new RecordingEnricher, qid, "late answer").then((McpResult r) {
 			result = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -3545,7 +3564,7 @@ unittest
 		b.rebuildWaits();
 
 		McpResult early, accepted;
-		b.handleAnswer("2", qid, "early answer").then((McpResult r) {
+		b.handleAnswer("2", new RecordingEnricher, qid, "early answer").then((McpResult r) {
 			early = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -3554,7 +3573,7 @@ unittest
 		b.pumpRestoredMailboxes();
 		drainPromiseNextTicks();
 		assert(f.sentTids == [2] && f.sentBodies[0].canFind("unanswered before restart"));
-		b.handleAnswer("2", qid, "answer after restart").then((McpResult r) {
+		b.handleAnswer("2", new RecordingEnricher, qid, "answer after restart").then((McpResult r) {
 			accepted = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -3623,6 +3642,51 @@ unittest
 		assert(nudged == [lostNoticeAsker, cancelledAsker], format!"Unexpected restart nudges: %s"(nudged));
 	}
 
+	// An implicit Ask announces its parent while the call is still pending.
+	{
+		auto f = new BatchInvariantFixture;
+		auto b = f.makeBackend();
+		bool returned;
+		auto call = new RecordingEnricher;
+		b.handleAsk("2", call, "question", -1).then((McpResult r) {
+			returned = true;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+
+		assert(!returned);
+		assert(call.events == [CydoItemEnrichedEvent(target_tid: 1)]);
+	}
+
+	// An implicit Ask from a top-level task is rejected without enrichment.
+	{
+		auto f = new BatchInvariantFixture;
+		auto b = f.makeBackend();
+		McpResult result;
+		auto call = new RecordingEnricher;
+		b.handleAsk("1", call, "question", -1).then((McpResult r) {
+			result = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+
+		assert(result.isError && result.text.canFind("No parent task"));
+		assert(call.events.length == 0);
+	}
+
+	// An Answer to an unknown question is rejected without enrichment.
+	{
+		auto f = new BatchInvariantFixture;
+		auto b = f.makeBackend();
+		McpResult result;
+		auto call = new RecordingEnricher;
+		b.handleAnswer("1", call, 999, "reply").then((McpResult r) {
+			result = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+
+		assert(result.isError && result.text.canFind("Unknown question ID: 999"));
+		assert(call.events.length == 0);
+	}
+
 	// Request releases the asker at Answer while the integrator's turn continues.
 	foreach (status; [TaskStatus.active, TaskStatus.waiting])
 	{
@@ -3633,11 +3697,13 @@ unittest
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
 		McpResult requested, presented, delivered;
-		b.handleRequest("1", "integrator", "land this").then((McpResult r) {
+		auto requestCall = new RecordingEnricher;
+		b.handleRequest("1", requestCall, "integrator", "land this").then((McpResult r) {
 			requested = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
 		assert(f.singletonForTaskCalls == 1);
+		assert(requestCall.events == [CydoItemEnrichedEvent(target_tid: 2)]);
 		assert(f.tasks[1].status == TaskStatus.waiting && requested.text.length == 0);
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
 		drainPromiseNextTicks();
@@ -3645,7 +3711,8 @@ unittest
 		assert(question.message == "land this");
 		assert(f.persistence.loadQuestions() == [b.questions_[question.qid]]);
 		f.tasks[2].status = status;
-		b.handleAnswer("2", question.qid, "landed").then((McpResult r) {
+		auto answerCall = new RecordingEnricher;
+		b.handleAnswer("2", answerCall, question.qid, "landed").then((McpResult r) {
 			delivered = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -3653,6 +3720,8 @@ unittest
 		assert(!requested.isError && requested.text.jsonParse!AnswerResult.message == "landed");
 		assert(!delivered.isError && delivered.text.jsonParse!AnswerResult.status == "delivered");
 		assert(f.focusHints[$ - 1] == [2, 1]);
+		assert(requestCall.events == [CydoItemEnrichedEvent(target_tid: 2)]);
+		assert(answerCall.events == [CydoItemEnrichedEvent(target_tid: 1)]);
 		assert(b.questions_[question.qid].state == QuestionState.answered);
 		assert(f.persistence.loadQuestions() == [b.questions_[question.qid]]);
 		b.onToolCallDelivered("1", requested);
@@ -3671,7 +3740,8 @@ unittest
 		];
 		auto b = f.makeBackend();
 		McpResult result;
-		b.handleRequest("1", target, "review this").then((McpResult r) {
+		auto call = new RecordingEnricher;
+		b.handleRequest("1", call, target, "review this").then((McpResult r) {
 			result = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -3680,6 +3750,59 @@ unittest
 		assert(result.text == "Singleton '" ~ target
 			~ "' is unavailable. Valid targets: integrator");
 		assert(f.singletonForTaskCalls == 0);
+		assert(call.events.length == 0);
+	}
+
+	// A Request keeps its own enrichment destination across singleton startup.
+	{
+		auto f = new BatchInvariantFixture;
+		f.singletons = [SingletonDef("integrator", "child", "", "", SingletonAudience.all)];
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		auto singleton = new Promise!int;
+		b.host_.singletonForTask = (int tid, string name) => singleton;
+		auto call = new RecordingEnricher;
+		b.handleRequest("1", call, "integrator", "land this").ignoreResult();
+		drainPromiseNextTicks();
+		assert(call.events.length == 0);
+		singleton.fulfill(2);
+		drainPromiseNextTicks();
+		assert(call.events == [CydoItemEnrichedEvent(target_tid: 2)]);
+	}
+
+	// Singleton startup can finish after the requesting session has exited.
+	{
+		import cydo.mcp : ToolCallCancellation;
+		import cydo.protocol : TranslatedEvent;
+		import cydo.workflow.tools.live_calls : LiveToolCalls, LiveToolCallsHost;
+
+		auto f = new BatchInvariantFixture;
+		f.singletons = [SingletonDef("integrator", "child", "", "", SingletonAudience.all)];
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		auto singleton = new Promise!int;
+		b.host_.singletonForTask = (int tid, string name) => singleton;
+		int[] appendedTids;
+		auto calls = new LiveToolCalls(LiveToolCallsHost(
+			appendTaskEvent: (int tid, TranslatedEvent event) { appendedTids ~= tid; },
+			historyGeneration: (int tid) => 1UL,
+		));
+		calls.openTask(1);
+		calls.toolStarted(1, "r", 1);
+		auto cancellation = new ToolCallCancellation;
+		auto call = calls.register(1, "r", cancellation);
+		b.handleRequest("1", call, "integrator", "land this").ignoreResult();
+		drainPromiseNextTicks();
+		assert(appendedTids.length == 0);
+		calls.closeTask(1);
+		assert(cancellation.cancelled);
+		calls.openTask(1);
+		calls.toolStarted(1, "r", 1);
+		singleton.fulfill(2);
+		drainPromiseNextTicks();
+		assert(f.persistence.loadQuestions().length == 1);
+		assert(appendedTids.length == 0);
+		calls.settle(call);
 	}
 
 	// Recovered batch rows survive until submission is accepted, including during retry.
@@ -3872,13 +3995,13 @@ unittest
 		BatchHandle handle;
 		string error;
 		bool firstResolved, secondResolved;
-		b.handleAsk("1", "first held question", 2).then((McpResult r) {
+		b.handleAsk("1", new RecordingEnricher, "first held question", 2).then((McpResult r) {
 			firstResolved = true;
 		}).ignoreResult();
 		assert(b.batchRegistry_.create(2, [4], handle, error), error);
 		f.tasks[4].resultText = "held batch result";
 		assert(b.finalizeCompletedSubTask(4));
-		b.handleAsk("3", "second held question", 2).then((McpResult r) {
+		b.handleAsk("3", new RecordingEnricher, "second held question", 2).then((McpResult r) {
 			secondResolved = true;
 		}).ignoreResult();
 		auto held = b.mailbox(2).events.dup;
@@ -3946,7 +4069,7 @@ unittest
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
 		McpResult outcome;
-		b.handleAsk("1", "question", 2).then((McpResult r) {
+		b.handleAsk("1", new RecordingEnricher, "question", 2).then((McpResult r) {
 			outcome = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -4009,7 +4132,7 @@ unittest
 		assert(!b.hasLiveBatchOwner(2) && !b.hasBatchChild(2));
 
 		auto firstFollowUpHint = f.focusHints.length;
-		b.handleAsk("1", "follow up", 2).then((McpResult r) {
+		b.handleAsk("1", new RecordingEnricher, "follow up", 2).then((McpResult r) {
 			askResult = r;
 			askOutcomes++;
 		}).ignoreResult();
@@ -4021,7 +4144,7 @@ unittest
 		f.tasks[2].status = TaskStatus.active;
 		if (answer)
 		{
-			b.handleAnswer("2", qid, "follow-up answer").then((McpResult r) {
+			b.handleAnswer("2", new RecordingEnricher, qid, "follow-up answer").then((McpResult r) {
 				answerResult = r;
 			}).ignoreResult();
 			drainPromiseNextTicks();
@@ -4093,18 +4216,22 @@ unittest
 		b.registerBatchAndAwait("2", [LaunchedTask(3)]).then((McpResult r) {
 			parentDone = true; parentResult = r;
 		}).ignoreResult();
-		b.handleAsk("3", "skip-level question", 1).then((McpResult r) {
+		auto call = new RecordingEnricher;
+		b.handleAsk("3", call, "skip-level question", 1).then((McpResult r) {
 			askDone = true; askResult = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
 		assert(grandparentDone && !parentDone && !askDone);
+		assert(call.events.length == 0);
 		auto q = grandparentResult.text.jsonParse!QuestionResult;
 		assert(q.tid == 3 && q.qid > 0);
-		b.handleAnswer("1", q.qid, "reply").then((McpResult r) {
+		auto answerCall = new RecordingEnricher;
+		b.handleAnswer("1", answerCall, q.qid, "reply").then((McpResult r) {
 			answerDone = true; answerResult = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
 		assert(askDone && !answerDone);
+		assert(answerCall.events == [CydoItemEnrichedEvent(target_tid: 3)]);
 		assert(askResult.text.jsonParse!AnswerResult.qid == q.qid);
 		f.tasks[3].resultText = "grandchild done";
 		assert(b.finalizeCompletedSubTask(3));
@@ -4126,7 +4253,7 @@ unittest
 		auto b = f.makeBackend();
 		McpResult askResult, presented, late;
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
-		b.handleAsk("1", "question", 2).then((McpResult r) {
+		b.handleAsk("1", new RecordingEnricher, "question", 2).then((McpResult r) {
 			askResult = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -4134,7 +4261,7 @@ unittest
 		b.onTaskTerminal(1);
 		drainPromiseNextTicks();
 		assert(askResult.isError);
-		b.handleAnswer("2", presented.text.jsonParse!QuestionResult.qid,
+		b.handleAnswer("2", new RecordingEnricher, presented.text.jsonParse!QuestionResult.qid,
 			"late").then((McpResult r) { late = r; }).ignoreResult();
 		drainPromiseNextTicks();
 		assert(late.isError && late.text.canFind("cancelled"));
@@ -4147,7 +4274,7 @@ unittest
 		f.tasks[3].status = TaskStatus.active;
 		f.tasks[1].isProcessing = true;
 		auto b = f.makeBackend();
-		b.handleAsk("3", "first", 1).ignoreResult();
+		b.handleAsk("3", new RecordingEnricher, "first", 1).ignoreResult();
 		BatchHandle handle;
 		string error;
 		assert(b.batchRegistry_.create(1, [2], handle, error));
@@ -4168,12 +4295,12 @@ unittest
 		f.tasks[1].isProcessing = true;
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
-		b.handleAsk("1", "direct", 2).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "direct", 2).ignoreResult();
 		McpResult presented, delivered;
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
 		drainPromiseNextTicks();
 		auto qid = presented.text.jsonParse!QuestionResult.qid;
-		b.handleAnswer("2", qid, "reply").then((McpResult r) {
+		b.handleAnswer("2", new RecordingEnricher, qid, "reply").then((McpResult r) {
 			delivered = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -4190,12 +4317,12 @@ unittest
 		BatchHandle handle;
 		string error;
 		assert(b.batchRegistry_.create(2, [3], handle, error));
-		b.handleAsk("1", "blocked", 2).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "blocked", 2).ignoreResult();
 		McpResult presented, answerResult;
 		bool answerDone;
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
 		drainPromiseNextTicks();
-		b.handleAnswer("2", presented.text.jsonParse!QuestionResult.qid,
+		b.handleAnswer("2", new RecordingEnricher, presented.text.jsonParse!QuestionResult.qid,
 			"reply").then((McpResult r) {
 			answerDone = true; answerResult = r;
 		}).ignoreResult();
@@ -4215,10 +4342,10 @@ unittest
 		auto b = f.makeBackend();
 		enum qid = 1;
 		McpResult askResult, earlyAnswer, answerResult;
-		b.handleAsk("1", "held question", 2).then((McpResult r) {
+		b.handleAsk("1", new RecordingEnricher, "held question", 2).then((McpResult r) {
 			askResult = r;
 		}).ignoreResult();
-		b.handleAnswer("2", qid, "early").then((McpResult r) {
+		b.handleAnswer("2", new RecordingEnricher, qid, "early").then((McpResult r) {
 			earlyAnswer = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -4234,7 +4361,7 @@ unittest
 		assert(f.sentTids == [2] && f.sentBodies.length == 1);
 		assert(f.sentBodies[0].canFind("held question"));
 
-		b.handleAnswer("2", qid, "reply").then((McpResult r) {
+		b.handleAnswer("2", new RecordingEnricher, qid, "reply").then((McpResult r) {
 			answerResult = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -4250,7 +4377,7 @@ unittest
 		f.tasks[3].status = TaskStatus.active;
 		f.tasks[1].isProcessing = true;
 		auto b = f.makeBackend();
-		b.handleAsk("3", "held question", 1).ignoreResult();
+		b.handleAsk("3", new RecordingEnricher, "held question", 1).ignoreResult();
 		BatchHandle handle;
 		string error;
 		assert(b.batchRegistry_.create(1, [2], handle, error));
@@ -4277,12 +4404,12 @@ unittest
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
 		McpResult presented;
-		b.handleAsk("1", "parent asks child", 2).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "parent asks child", 2).ignoreResult();
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
 		drainPromiseNextTicks();
 		assert(presented.text.jsonParse!QuestionResult.status == "question");
 		assert(b.hasPendingChildQuestion(2));
-		b.handleAsk("3", "held question", 2).ignoreResult();
+		b.handleAsk("3", new RecordingEnricher, "held question", 2).ignoreResult();
 		drainPromiseNextTicks();
 		assert(b.hasPendingChildQuestion(2));
 		b.onTaskTerminal(1);
@@ -4297,7 +4424,7 @@ unittest
 		auto b = f.makeBackend();
 		McpResult presented;
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
-		b.handleAsk("1", "question", 2).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "question", 2).ignoreResult();
 		drainPromiseNextTicks();
 		auto qid = presented.text.jsonParse!QuestionResult.qid;
 		f.tasks[1].status = TaskStatus.failed;
@@ -4324,7 +4451,7 @@ unittest
 		f.tasks[2].status = TaskStatus.completed;
 		f.wakeGate = new Promise!void;
 		auto b = f.makeBackend();
-		b.handleAsk("1", "question during wake", 2).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "question during wake", 2).ignoreResult();
 		assert(b.mailbox(2).events.length == 1);
 		assert(f.tasks[2].isProcessing);
 		assert(!b.pump(2));
@@ -4348,7 +4475,7 @@ unittest
 		f.wakeGate = new Promise!void;
 		f.preparedSendGate = new Promise!void;
 		auto b = f.makeBackend();
-		b.handleAsk("1", "question during send", 2).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "question during send", 2).ignoreResult();
 		f.wakeGate.fulfill();
 		drainPromiseNextTicks();
 		assert(f.sendCalls == 1 && b.mailbox(2).empty);
@@ -4371,7 +4498,7 @@ unittest
 		auto b = f.makeBackend();
 		McpResult presented, failure;
 		b.awaitEvent(1).then((McpResult r) { presented = r; }).ignoreResult();
-		b.handleAsk("2", "question awaiting an answer", 1).then((McpResult r) {
+		b.handleAsk("2", new RecordingEnricher, "question awaiting an answer", 1).then((McpResult r) {
 			failure = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -4395,7 +4522,7 @@ unittest
 		f.wakeGate = new Promise!void;
 		auto b = f.makeBackend();
 		McpResult failed;
-		b.handleAsk("1", "live question", 2).then((McpResult r) {
+		b.handleAsk("1", new RecordingEnricher, "live question", 2).then((McpResult r) {
 			failed = r;
 		}).ignoreResult();
 		f.wakeGate.reject(new Exception("wake failed"));
@@ -4424,7 +4551,7 @@ unittest
 		f.tasks[2].isProcessing = false;
 
 		McpResult[] first, second;
-		b.handleAsk("1", "question during startup", 2).then((McpResult r) {
+		b.handleAsk("1", new RecordingEnricher, "question during startup", 2).then((McpResult r) {
 			first ~= r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -4443,7 +4570,7 @@ unittest
 		assert(b.mailbox(2).events[0].batchId == handle.batchId);
 
 		f.failEnsure = true;
-		b.handleAsk("3", "question after startup failure", 2).then((McpResult r) {
+		b.handleAsk("3", new RecordingEnricher, "question after startup failure", 2).then((McpResult r) {
 			second ~= r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -4480,10 +4607,10 @@ unittest
 		f.tasks[2].isProcessing = false;
 
 		McpResult[] first, second;
-		b.handleAsk("1", "first drained question", 2).then((McpResult r) {
+		b.handleAsk("1", new RecordingEnricher, "first drained question", 2).then((McpResult r) {
 			first ~= r;
 		}).ignoreResult();
-		b.handleAsk("3", "second drained question", 2).then((McpResult r) {
+		b.handleAsk("3", new RecordingEnricher, "second drained question", 2).then((McpResult r) {
 			second ~= r;
 		}).ignoreResult();
 		f.tasks[2].status = TaskStatus.active;
@@ -4523,9 +4650,9 @@ unittest
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
 		McpResult first, second, presented;
-		b.handleAsk("3", "first", 2).then((McpResult r) { first = r; }).ignoreResult();
+		b.handleAsk("3", new RecordingEnricher, "first", 2).then((McpResult r) { first = r; }).ignoreResult();
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
-		b.handleAsk("4", "second", 2).then((McpResult r) { second = r; }).ignoreResult();
+		b.handleAsk("4", new RecordingEnricher, "second", 2).then((McpResult r) { second = r; }).ignoreResult();
 		drainPromiseNextTicks();
 		assert(presented.text.jsonParse!QuestionResult.message == "first");
 		b.onTaskTerminal(2);
@@ -4554,7 +4681,7 @@ unittest
 		b.awaitEvent(1).then((McpResult r) { first = r; }).ignoreResult();
 		drainPromiseNextTicks();
 		assert(first.text.canFind("older batch") && b.mailbox(1).empty);
-		b.handleAsk("3", "newer question", 1).ignoreResult();
+		b.handleAsk("3", new RecordingEnricher, "newer question", 1).ignoreResult();
 		auto newer = b.mailbox(1).events[0];
 		assert(newer.kind == MailboxEvent.Kind.question);
 		f.shuttingDown = true;
@@ -4571,14 +4698,14 @@ unittest
 		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
 		f.tasks[3].status = TaskStatus.active;
 		auto b = f.makeBackend();
-		b.handleAsk("1", "already presented", 2).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "already presented", 2).ignoreResult();
 		McpResult result;
 		auto first = b.mailbox(2).events[0];
 		b.awaitEvent(2).then((McpResult r) { result = r; }).ignoreResult();
 		drainPromiseNextTicks();
 		b.onToolCallDelivered("2", result);
 		assert(b.presentedQuestionFor(2) == first.qid);
-		b.handleAsk("3", "current carrier", 2).ignoreResult();
+		b.handleAsk("3", new RecordingEnricher, "current carrier", 2).ignoreResult();
 		auto second = b.mailbox(2).events[0];
 		b.awaitEvent(2).then((McpResult r) { result = r; }).ignoreResult();
 		drainPromiseNextTicks();
@@ -4594,14 +4721,14 @@ unittest
 		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
 		f.tasks[3].status = TaskStatus.active;
 		auto b = f.makeBackend();
-		b.handleAsk("1", "accepted question", 2).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "accepted question", 2).ignoreResult();
 		drainPromiseNextTicks();
 		assert(f.acceptedPreparedTids == [2] && b.mailbox(2).empty);
 		auto acceptedQid = b.presentedQuestionFor(2);
 		assert(acceptedQid > 0);
 		f.tasks[2].isProcessing = false;
 		f.preparedSendGate = new Promise!void;
-		b.handleAsk("3", "rejected question", 2).ignoreResult();
+		b.handleAsk("3", new RecordingEnricher, "rejected question", 2).ignoreResult();
 		auto expected = b.mailbox(2).events.dup;
 		assert(expected.length == 1 && expected[0].qid != acceptedQid);
 		drainPromiseNextTicks();
@@ -4680,7 +4807,7 @@ unittest
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
 		McpResult first, retry;
-		b.handleAsk("1", "question", 2).then((McpResult r) {
+		b.handleAsk("1", new RecordingEnricher, "question", 2).then((McpResult r) {
 			first = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -4704,7 +4831,7 @@ unittest
 		auto f = new BatchInvariantFixture;
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
-		b.handleAsk("1", "question", 2).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "question", 2).ignoreResult();
 		McpResult question;
 		b.awaitEvent(2).then((McpResult r) { question = r; }).ignoreResult();
 		drainPromiseNextTicks();
@@ -4762,7 +4889,7 @@ unittest
 		auto f = new BatchInvariantFixture;
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
-		b.handleAsk("1", "question", 2).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "question", 2).ignoreResult();
 		McpResult question;
 		b.awaitEvent(2).then((McpResult r) { question = r; }).ignoreResult();
 		drainPromiseNextTicks();
@@ -4806,7 +4933,7 @@ unittest
 		f.failEnsure = true;
 		auto b = f.makeBackend();
 		McpResult askResult;
-		b.handleAsk("3", "wake question", 1).then((McpResult r) {
+		b.handleAsk("3", new RecordingEnricher, "wake question", 1).then((McpResult r) {
 			askResult = r;
 		}).ignoreResult();
 		BatchHandle handle;
@@ -4845,7 +4972,7 @@ unittest
 	void assertDelivered(WorkflowToolsBackend b, int qid)
 	{
 		McpResult result;
-		b.handleAnswer("3", qid, "x").then((McpResult r) { result = r; }).ignoreResult();
+		b.handleAnswer("3", new RecordingEnricher, qid, "x").then((McpResult r) { result = r; }).ignoreResult();
 		drainPromiseNextTicks();
 		assert(!result.isError && result.text.length, "Answer remained blocked or returned an error");
 		assert(result.text.jsonParse!AnswerResult.status == "delivered");
@@ -4858,14 +4985,14 @@ unittest
 		addThirdTask(f);
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
-		b.handleAsk("3", "outgoing", 2).ignoreResult();
+		b.handleAsk("3", new RecordingEnricher, "outgoing", 2).ignoreResult();
 		present(b, 2);
 		f.tasks[3].status = TaskStatus.failed;
 		b.onTaskTerminal(3);
 		assert(b.questions_.length == 1 && f.persistence.loadQuestions().length == 1);
 		f.tasks[3].status = TaskStatus.active;
 		f.tasks[3].isProcessing = true;
-		b.handleAsk("1", "incoming", 3).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "incoming", 3).ignoreResult();
 		auto question = present(b, 3).text.jsonParse!QuestionResult;
 		assertDelivered(b, question.qid);
 	}
@@ -4897,7 +5024,7 @@ unittest
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
 		McpResult failure;
-		b.handleAsk("1", "question", 2).then((McpResult r) { failure = r; }).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "question", 2).then((McpResult r) { failure = r; }).ignoreResult();
 		f.tasks[2].status = TaskStatus.failed;
 		b.onTaskTerminal(2);
 		drainPromiseNextTicks();
@@ -4926,7 +5053,7 @@ unittest
 		string error;
 		assert(b.batchRegistry_.create(1, [2], handle, error), error);
 		McpResult batch;
-		b.handleAsk("1", "question", 3).then((McpResult r) { batch = r; }).ignoreResult();
+		b.handleAsk("1", new RecordingEnricher, "question", 3).then((McpResult r) { batch = r; }).ignoreResult();
 		assert(b.finalizeCompletedSubTask(2));
 		drainPromiseNextTicks();
 		assert(batch.structuredContent && !batch.isError);
@@ -4951,13 +5078,13 @@ unittest
 		f.tasks[2].isProcessing = true;
 		auto b = f.makeBackend();
 		McpResult response;
-		b.handleAsk("2", "question", -1).then((McpResult r) { response = r; }).ignoreResult();
+		b.handleAsk("2", new RecordingEnricher, "question", -1).then((McpResult r) { response = r; }).ignoreResult();
 		auto question = present(b, 1).text.jsonParse!QuestionResult;
 		f.sendFailure = "reminder rejected";
 		b.sendPendingChildAnswerReminder(1);
 		assert(f.sendCalls == 1);
 		if (answered)
-			b.handleAnswer("1", question.qid, "actual answer").ignoreResult();
+			b.handleAnswer("1", new RecordingEnricher, question.qid, "actual answer").ignoreResult();
 		else
 		{
 			f.tasks[2].status = TaskStatus.failed;
@@ -4977,7 +5104,7 @@ unittest
 			assert(b.mailbox(2).empty);
 			assert(f.wakeCalls == 0, "Reminder failure woke the terminal asker");
 			McpResult late;
-			b.handleAnswer("1", question.qid, "late").then((McpResult r) { late = r; }).ignoreResult();
+			b.handleAnswer("1", new RecordingEnricher, question.qid, "late").then((McpResult r) { late = r; }).ignoreResult();
 			drainPromiseNextTicks();
 			assert(late.isError && late.text.canFind("was cancelled"));
 		}
@@ -5110,7 +5237,7 @@ unittest
 			sent ~= tid;
 			return resolve();
 		};
-	auto tools = new CydoToolsImpl(b, "1", "tool-call");
+	auto tools = new CydoToolsImpl(b, "1", new RecordingEnricher);
 	McpResult[] results;
 	async({
 		return tools.createTasks([TaskSpec("one", "child", "first"),
@@ -5192,7 +5319,7 @@ unittest
 					: commitFailure);
 			};
 
-		auto tools = new CydoToolsImpl(b, "1", "tool-call");
+		auto tools = new CydoToolsImpl(b, "1", new RecordingEnricher);
 		McpResult[] results;
 		async({
 			return tools.createTasks([
@@ -5272,7 +5399,7 @@ unittest
 	drainPromiseNextTicks();
 	assert(b.mailbox(2).hasWaiter);
 
-	b.handleAsk("1", "handed-off question", 2)
+	b.handleAsk("1", new RecordingEnricher, "handed-off question", 2)
 		.then((McpResult r) { asker ~= r; }).ignoreResult();
 	assert(!b.mailbox(2).hasWaiter && b.mailbox(2).empty);
 	assert(carrier.length == 0);
@@ -5299,7 +5426,7 @@ unittest
 	auto b = f.makeBackend();
 	McpResult question;
 	McpResult[] carrier;
-	b.handleAsk("1", "question to answer", 2)
+	b.handleAsk("1", new RecordingEnricher, "question to answer", 2)
 		.then((McpResult r) { carrier ~= r; }).ignoreResult();
 	b.awaitEvent(2).then((McpResult r) { question = r; }).ignoreResult();
 	drainPromiseNextTicks();
@@ -5307,7 +5434,7 @@ unittest
 	b.onToolCallDelivered("2", question);
 	assert(b.mailbox(1).hasWaiter);
 
-	b.handleAnswer("2", qid, "handed-off answer").ignoreResult();
+	b.handleAnswer("2", new RecordingEnricher, qid, "handed-off answer").ignoreResult();
 	assert(!b.mailbox(1).hasWaiter && b.mailbox(1).empty);
 	assert(carrier.length == 0);
 
@@ -5372,12 +5499,12 @@ unittest
 	b.awaitEvent(2).then((McpResult r) { results ~= r; }).ignoreResult();
 	drainPromiseNextTicks();
 	assert(b.mailbox(2).hasWaiter);
-	b.handleAsk("1", "cancel this handoff", 2).ignoreResult();
+	b.handleAsk("1", new RecordingEnricher, "cancel this handoff", 2).ignoreResult();
 	assert(!b.mailbox(2).hasWaiter && b.mailbox(2).empty);
 	f.tasks[1].status = TaskStatus.failed;
 	b.onTaskTerminal(1);
 	assert(f.tasks[2].status == TaskStatus.active);
-	b.handleAsk("3", "deliver this live question", 2).ignoreResult();
+	b.handleAsk("3", new RecordingEnricher, "deliver this live question", 2).ignoreResult();
 	drainPromiseNextTicks();
 	assert(results.length == 1 && !results[0].isError
 		&& results[0].text.canFind("deliver this live question"),
@@ -5497,7 +5624,7 @@ unittest
 		QuestionResult[] presented;
 		foreach (message; ["first question", "second question"])
 		{
-			b.handleAsk("1", message, 2).ignoreResult();
+			b.handleAsk("1", new RecordingEnricher, message, 2).ignoreResult();
 			b.awaitEvent(2).then((McpResult r) {
 				presented ~= r.text.jsonParse!QuestionResult;
 				b.onToolCallDelivered("2", r);
@@ -5523,7 +5650,7 @@ unittest
 		McpResult childAnswer;
 		foreach (caller; ["3", "2"])
 		{
-			b.handleAsk(caller, "question for parent", 1).then((McpResult r) {
+			b.handleAsk(caller, new RecordingEnricher, "question for parent", 1).then((McpResult r) {
 				childAnswer = r;
 			}).ignoreResult();
 			b.awaitEvent(1).then((McpResult r) {
@@ -5535,12 +5662,12 @@ unittest
 		assert(presented.length == 2 && presented[1].tid == 2);
 		auto qid = presented[1].qid;
 		McpResult refused, answered;
-		b.handleAsk("1", "parent follow-up", 2).then((McpResult r) {
+		b.handleAsk("1", new RecordingEnricher, "parent follow-up", 2).then((McpResult r) {
 			refused = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
 		assert(refused.isError && refused.text.canFind(format!"qid=%d"(qid)));
-		b.handleAnswer("1", qid, "parent answer").then((McpResult r) {
+		b.handleAnswer("1", new RecordingEnricher, qid, "parent answer").then((McpResult r) {
 			answered = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();

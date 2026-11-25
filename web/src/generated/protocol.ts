@@ -60,6 +60,11 @@ export interface HistoryBoundary {
   checkpoint_uuid?: string;
 }
 
+export interface ItemEnrichmentSpawnedChild {
+  spec_index: number;
+  child_tid: number;
+}
+
 export interface RequestHistory {
   type: "request_history";
   tid: number;
@@ -325,5 +330,12 @@ export interface CydoTaskSpawnedEvent {
   type: "cydo/task_spawned";
   child_tid: number;
   spec_index: number;
+}
+
+export interface CydoItemEnrichedEvent {
+  type: "cydo/item_enriched";
+  item_id: string;
+  target_tid?: number;
+  spawned_child?: ItemEnrichmentSpawnedChild;
 }
 

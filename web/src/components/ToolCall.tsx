@@ -4,7 +4,7 @@ import { memo } from "preact/compat";
 import { useState, useMemo, useEffect, useRef } from "preact/hooks";
 import { marked } from "marked";
 import type { ItemPermissionStage } from "../protocol";
-import type { ToolResult, ToolResultContent } from "../types";
+import type { ItemEnrichment, ToolResult, ToolResultContent } from "../types";
 import { qualifiedToolKey, toolIs } from "../toolIdentity";
 import { sanitizeHtml } from "../sanitize";
 import {
@@ -261,6 +261,7 @@ interface Props {
   children?: ComponentChildren;
   onViewFile?: (filePath: string) => void;
   spawnedTids?: Map<number, number>;
+  enrichment?: ItemEnrichment;
   getTaskHref?: (id: string) => string;
 }
 
@@ -3109,6 +3110,25 @@ function OpenTaskLink({
   );
 }
 
+export function callTargetTid(
+  name: string,
+  driver: string | undefined,
+  toolServer: string | undefined,
+  input: Record<string, unknown> | undefined,
+  enrichment?: ItemEnrichment,
+): number | undefined {
+  switch (qualifiedToolKey(name, toolServer, driver)) {
+    case "cydo:Ask":
+      if (typeof input?.tid === "number" && input.tid !== -1) return input.tid;
+      return enrichment?.targetTid;
+    case "cydo:Answer":
+    case "cydo:Request":
+      return enrichment?.targetTid;
+    default:
+      return undefined;
+  }
+}
+
 export const ToolCall = memo(
   function ToolCall({
     name,
@@ -3122,10 +3142,18 @@ export const ToolCall = memo(
     children,
     onViewFile,
     spawnedTids,
+    enrichment,
     getTaskHref,
   }: Props) {
     // Collapse pending AskUserQuestion input — the interactive form shows the same content
     const qKey = qualifiedToolKey(name, toolServer, driver);
+    const targetTid = callTargetTid(
+      name,
+      driver,
+      toolServer,
+      input,
+      enrichment,
+    );
     const isAsk = askToolNames.has(qKey);
     const [inputOpen, setInputOpen] = useState(
       isAsk ? !!result : defaultExpandedTools.has(qKey),
@@ -3464,6 +3492,12 @@ export const ToolCall = memo(
           )}
           <span class="tool-name">{name}</span>
           {subtitle}
+          {targetTid !== undefined && getTaskHref && (
+            <OpenTaskLink
+              href={getTaskHref(String(targetTid))}
+              testId="cydo-call-target-open"
+            />
+          )}
           {createdTask && getTaskHref && (
             <OpenTaskLink
               href={getTaskHref(String(createdTask.tid))}
@@ -3700,6 +3734,7 @@ export const ToolCall = memo(
     prev.input === next.input &&
     prev.result === next.result &&
     prev.spawnedTids === next.spawnedTids &&
+    prev.enrichment === next.enrichment &&
     prev.getTaskHref === next.getTaskHref &&
     prev.permission === next.permission &&
     prev.streaming === next.streaming &&

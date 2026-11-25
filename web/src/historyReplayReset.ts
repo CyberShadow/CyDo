@@ -98,6 +98,7 @@ function resetTaskTimeline(
     itemIdMap: new Map(),
     pendingCydoTaskItemIds: [],
     spawnedTidsByItemId: new Map(),
+    itemEnrichments: new Map(),
     ...lifecycle,
   };
 }

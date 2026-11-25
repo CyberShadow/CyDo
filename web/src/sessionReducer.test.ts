@@ -1655,6 +1655,127 @@ describe("item/started idempotency", () => {
   });
 });
 
+describe("cydo/item_enriched reducer", () => {
+  function startAnswer(s: TaskState, itemId: string) {
+    return reduceMessage(s, {
+      type: "item/started",
+      item_type: "tool_use",
+      item_id: itemId,
+      name: "Answer",
+      tool_server: "cydo",
+    });
+  }
+
+  it("records the target of a pending tool call", () => {
+    const before = startAnswer(makeState(), "answer");
+    const after = reduceMessage(before, {
+      type: "cydo/item_enriched",
+      item_id: "answer",
+      target_tid: 7,
+    });
+
+    expect(after.itemEnrichments.get(after.itemIdMap.get("answer")!)).toEqual({
+      targetTid: 7,
+    });
+    expect(before.itemEnrichments.has(before.itemIdMap.get("answer")!)).toBe(
+      false,
+    );
+  });
+
+  it("attaches targets to two pending Answers in reverse start order", () => {
+    let s = startAnswer(startAnswer(makeState(), "first"), "second");
+    s = reduceMessage(s, {
+      type: "cydo/item_enriched",
+      item_id: "second",
+      target_tid: 8,
+    });
+    expect(s.itemEnrichments.has(s.itemIdMap.get("first")!)).toBe(false);
+    s = reduceMessage(s, {
+      type: "cydo/item_enriched",
+      item_id: "first",
+      target_tid: 7,
+    });
+    expect(s.itemEnrichments.get(s.itemIdMap.get("first")!)?.targetTid).toBe(7);
+    expect(s.itemEnrichments.get(s.itemIdMap.get("second")!)?.targetTid).toBe(
+      8,
+    );
+  });
+
+  it("retains separate enrichments when two turns reuse an item id", () => {
+    const itemId = "answer";
+    const first = startAnswer(makeState(), itemId);
+    const firstKey = first.itemIdMap.get(itemId)!;
+    const enriched = reduceMessage(first, {
+      type: "cydo/item_enriched",
+      item_id: itemId,
+      target_tid: 7,
+    });
+
+    const second = startAnswer(
+      reduceMessage(enriched, asEvent({ type: "turn/stop" })),
+      itemId,
+    );
+    const secondKey = second.itemIdMap.get(itemId)!;
+    expect(secondKey).not.toBe(firstKey);
+    expect(second.itemEnrichments.has(secondKey)).toBe(false);
+
+    const result = reduceMessage(second, {
+      type: "cydo/item_enriched",
+      item_id: itemId,
+      target_tid: 8,
+    });
+    expect(result.itemEnrichments.get(firstKey)?.targetTid).toBe(7);
+    expect(result.itemEnrichments.get(secondKey)?.targetTid).toBe(8);
+  });
+
+  it("rejects enrichment for an unknown item", () => {
+    expect(() =>
+      reduceMessage(makeState(), {
+        type: "cydo/item_enriched",
+        item_id: "unknown",
+        target_tid: 7,
+      }),
+    ).toThrow(/unknown or non-tool item unknown/);
+  });
+
+  it("rejects enrichment for a non-tool item", () => {
+    const s = reduceMessage(makeState(), {
+      type: "item/started",
+      item_type: "thinking",
+      item_id: "thought",
+    });
+    expect(() =>
+      reduceMessage(s, {
+        type: "cydo/item_enriched",
+        item_id: "thought",
+        target_tid: 7,
+      }),
+    ).toThrow(/non-tool item thought/);
+  });
+
+  it("rejects an empty enrichment for a known tool", () => {
+    const s = startAnswer(makeState(), "answer");
+    expect(() =>
+      reduceMessage(s, { type: "cydo/item_enriched", item_id: "answer" }),
+    ).toThrow(/Empty enrichment for item answer/);
+  });
+
+  it("rejects a second target for the same tool call", () => {
+    const s = reduceMessage(startAnswer(makeState(), "answer"), {
+      type: "cydo/item_enriched",
+      item_id: "answer",
+      target_tid: 7,
+    });
+    expect(() =>
+      reduceMessage(s, {
+        type: "cydo/item_enriched",
+        item_id: "answer",
+        target_tid: 8,
+      }),
+    ).toThrow(/Duplicate target task enrichment for item answer/);
+  });
+});
+
 describe("cydo/task_spawned reducer", () => {
   it("pushes to pendingCydoTaskItemIds on cydo:Task item/started", () => {
     const s = makeState();

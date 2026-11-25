@@ -522,6 +522,25 @@ struct CydoTaskSpawnedEvent
 	int spec_index;  // 0-based index within the parent call's tasks[] array
 }
 
+/// One child task created for a cydo:Task call.
+struct ItemEnrichmentSpawnedChild
+{
+	int spec_index;  /// 0-based index within the call's tasks[] array
+	int child_tid;
+}
+
+/// cydo/item_enriched — CyDo-side metadata about one agent tool call.
+/// item_id is the agent tool-call ID. The event lives in in-memory history.
+struct CydoItemEnrichedEvent
+{
+	string type = "cydo/item_enriched";
+	string item_id;
+	/// The task addressed by an implicit Ask, Answer, or Request.
+	@JSONOptional int target_tid;
+	/// A child created by a cydo:Task call.
+	@JSONOptional ItemEnrichmentSpawnedChild spawned_child;
+}
+
 /// Parse an ISO 8601 timestamp with whole seconds or three fractional digits,
 /// followed by Z or a numeric ±hh:mm offset. Offsets are applied to the instant.
 /// Throws on malformed input. Callers handle absent timestamps explicitly.

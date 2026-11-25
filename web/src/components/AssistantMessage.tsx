@@ -1,7 +1,8 @@
 import { Fragment, h } from "preact";
 import { memo } from "preact/compat";
 import { useState } from "preact/hooks";
-import type { DisplayMessage, Block } from "../types";
+import type { DisplayMessage, Block, ItemEnrichment } from "../types";
+import { itemBlockKey } from "../types";
 import type { ItemDenier } from "../protocol";
 import { Markdown } from "./Markdown";
 import { TaskDiagnosticView } from "./TaskDiagnosticView";
@@ -142,6 +143,7 @@ interface Props {
   sessionId?: number | null;
   semanticSelectors?: boolean;
   spawnedTidsByItemId?: Map<string, Map<number, number>>;
+  itemEnrichments?: Map<string, ItemEnrichment>;
   getTaskHref?: (id: string) => string;
 }
 
@@ -197,6 +199,7 @@ export const AssistantMessage = memo(
     sessionId,
     semanticSelectors = true,
     spawnedTidsByItemId,
+    itemEnrichments,
     getTaskHref,
   }: Props) {
     const devMode = useDevMode();
@@ -365,6 +368,9 @@ export const AssistantMessage = memo(
                     permission={block.permission}
                     onViewFile={onViewFile}
                     spawnedTids={spawnedTidsByItemId?.get(block.itemId)}
+                    enrichment={itemEnrichments?.get(
+                      itemBlockKey(message.id, block.itemId),
+                    )}
                     getTaskHref={getTaskHref}
                   >
                     {block.denial !== undefined && (
@@ -415,6 +421,7 @@ export const AssistantMessage = memo(
                                   sessionId={sessionId}
                                   semanticSelectors={false}
                                   spawnedTidsByItemId={spawnedTidsByItemId}
+                                  itemEnrichments={itemEnrichments}
                                   getTaskHref={getTaskHref}
                                 />
                               </NestedMessageWrapper>
@@ -503,6 +510,7 @@ export const AssistantMessage = memo(
     shallowArrayEqual(prev.resolvedBlocks, next.resolvedBlocks) &&
     prev.childrenByParent === next.childrenByParent &&
     prev.spawnedTidsByItemId === next.spawnedTidsByItemId &&
+    prev.itemEnrichments === next.itemEnrichments &&
     prev.getTaskHref === next.getTaskHref &&
     prev.resolvedBlocksByMsg === next.resolvedBlocksByMsg &&
     prev.onViewFile === next.onViewFile &&

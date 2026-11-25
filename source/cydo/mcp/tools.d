@@ -1,6 +1,8 @@
 /// CyDo MCP tool definitions and implementations.
 module cydo.mcp.tools;
 
+import cydo.protocol : CydoItemEnrichedEvent;
+
 import ae.utils.json : JSONFragment;
 import cydo.mcp : Description, McpName, McpResult, ToolCallCancellation;
 import cydo.mcp.payloads : TaskResult;
@@ -252,6 +254,12 @@ struct ValidatedTask
 
 /// Backend interface — methods that CydoToolsImpl needs from the application.
 /// App implements this; the indirection breaks the compile-time dependency on cydo.server.app.
+/// CyDo-side metadata about this call, shown on its card. Leave item_id unset.
+interface ToolCallEnricher
+{
+	void enrich(CydoItemEnrichedEvent enrichment);
+}
+
 interface ToolsBackend
 {
 	ValidatedTask handleCreateTask(string callerTid, int specIndex,
@@ -264,9 +272,9 @@ interface ToolsBackend
 	Promise!McpResult handleUnsandboxedCommand(string callerTid, string command,
 		string cwd, int timeout, ToolCallCancellation cancellation);
 	Promise!McpResult registerBatchAndAwait(string callerTid, LaunchedTask[] launchedTasks);
-	Promise!McpResult handleAsk(string callerTid, string message, int targetTid);
-	Promise!McpResult handleAnswer(string callerTid, int qid, string message);
-	Promise!McpResult handleRequest(string callerTid, string target, string message);
+	Promise!McpResult handleAsk(string callerTid, ToolCallEnricher call, string message, int targetTid);
+	Promise!McpResult handleAnswer(string callerTid, ToolCallEnricher call, int qid, string message);
+	Promise!McpResult handleRequest(string callerTid, ToolCallEnricher call, string target, string message);
 	Promise!McpResult handleCreateUserTask(string callerTid, string prompt, string title,
 		string entryPoint, string project, bool start);
 }
@@ -277,14 +285,14 @@ class CydoToolsImpl : CydoTools
 {
 	private ToolsBackend app;
 	private string callerTid;
-	private string itemId;
+	private ToolCallEnricher call;
 	private ToolCallCancellation cancellation;
 
-	this(ToolsBackend app, string callerTid, string itemId, ToolCallCancellation cancellation = null)
+	this(ToolsBackend app, string callerTid, ToolCallEnricher call, ToolCallCancellation cancellation = null)
 	{
 		this.app = app;
 		this.callerTid = callerTid;
-		this.itemId = itemId;
+		this.call = call;
 		this.cancellation = cancellation;
 	}
 
@@ -401,19 +409,19 @@ class CydoToolsImpl : CydoTools
 	McpResult ask(string message, int tid = -1)
 	{
 		import ae.utils.promise.await : await;
-		return app.handleAsk(callerTid, message, tid).await();
+		return app.handleAsk(callerTid, call, message, tid).await();
 	}
 
 	McpResult answer(int qid, string message)
 	{
 		import ae.utils.promise.await : await;
-		return app.handleAnswer(callerTid, qid, message).await();
+		return app.handleAnswer(callerTid, call, qid, message).await();
 	}
 
 	McpResult request(string to, string message)
 	{
 		import ae.utils.promise.await : await;
-		return app.handleRequest(callerTid, to, message).await();
+		return app.handleRequest(callerTid, call, to, message).await();
 	}
 
 	McpResult createUserTask(string prompt, string title, string entry_point,
@@ -479,17 +487,17 @@ unittest
 			assert(0, "unexpected call");
 		}
 
-		Promise!McpResult handleAsk(string callerTid, string message, int targetTid)
+		Promise!McpResult handleAsk(string callerTid, ToolCallEnricher call, string message, int targetTid)
 		{
 			assert(0, "unexpected call");
 		}
 
-		Promise!McpResult handleAnswer(string callerTid, int qid, string message)
+		Promise!McpResult handleAnswer(string callerTid, ToolCallEnricher call, int qid, string message)
 		{
 			assert(0, "unexpected call");
 		}
 
-		Promise!McpResult handleRequest(string callerTid, string target, string message)
+		Promise!McpResult handleRequest(string callerTid, ToolCallEnricher call, string target, string message)
 		{
 			assert(0, "unexpected call");
 		}
@@ -501,7 +509,7 @@ unittest
 		}
 	}
 
-	auto impl = new CydoToolsImpl(new FakeToolsBackend, "17", "tool-call");
+	auto impl = new CydoToolsImpl(new FakeToolsBackend, "17", null);
 	auto result = impl.createTasks([
 		TaskSpec("first", "alpha", "prompt a"),
 		TaskSpec("second", "beta", "prompt b"),

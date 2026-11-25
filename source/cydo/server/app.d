@@ -48,6 +48,7 @@ import cydo.web.request_policy : isLoopbackListenAddress;
 import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksListPackets, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
+import cydo.workflow.tools.live_calls : LiveToolCalls, LiveToolCallsHost;
 import cydo.workflow.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
 	HistoryEventPipelineHost, LocalUserProvenance;
 import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
@@ -190,130 +191,23 @@ private Notice buildMcpToolDescriptionLimitNotice(
 	);
 }
 
-/// A mapped session opens its task for tool calls until teardown or global shutdown.
-private struct InFlightToolCalls
-{
-	private ToolCallCancellation[][int] byTask;
-	private bool[int] openTasks;
-	private bool allClosed;
-
-	void register(int tid, ToolCallCancellation cancellation)
-	{
-		byTask[tid] ~= cancellation;
-		if (allClosed || (tid in openTasks) is null)
-			cancellation.cancel();
-	}
-
-	void closeTask(int tid)
-	{
-		openTasks.remove(tid);
-		abandonToolCalls(tid);
-	}
-
-	void openTask(int tid)
-	{
-		openTasks[tid] = true;
-	}
-
-	void closeAll()
-	{
-		allClosed = true;
-		foreach (tid; byTask.keys)
-			abandonToolCalls(tid);
-	}
-
-	void deregister(int tid, ToolCallCancellation cancellation)
-	{
-		import std.algorithm.mutation : remove;
-		import std.algorithm.searching : countUntil;
-
-		auto calls = tid in byTask;
-		auto index = (*calls).countUntil(cancellation);
-		assert(index >= 0);
-		*calls = (*calls).remove(index);
-		if (!calls.length)
-			byTask.remove(tid);
-	}
-
-	void abandonToolCalls(int tid)
-	{
-		if (auto calls = tid in byTask)
-			foreach (cancellation; (*calls).dup)
-				cancellation.cancel();
-	}
-}
-
-unittest
-{
-	InFlightToolCalls calls;
-	auto first = new ToolCallCancellation;
-	auto second = new ToolCallCancellation;
-	auto settled = new ToolCallCancellation;
-	auto unrelated = new ToolCallCancellation;
-	calls.openTask(1);
-	calls.openTask(2);
-	calls.register(1, first);
-	calls.register(1, second);
-	calls.register(1, settled);
-	calls.register(2, unrelated);
-	calls.deregister(1, settled);
-
-	calls.abandonToolCalls(1);
-	assert(first.cancelled);
-	assert(second.cancelled);
-	assert(!settled.cancelled);
-	assert(!unrelated.cancelled);
-}
-
-unittest
-{
-	InFlightToolCalls calls;
-	auto first = new ToolCallCancellation;
-	auto second = new ToolCallCancellation;
-	auto late = new ToolCallCancellation;
-	auto reopened = new ToolCallCancellation;
-	auto neverOpened = new ToolCallCancellation;
-	calls.register(3, neverOpened);
-	assert(neverOpened.cancelled);
-	calls.openTask(1);
-	calls.openTask(2);
-	calls.register(1, first);
-	calls.register(2, second);
-	calls.closeTask(1);
-	assert(first.cancelled && !second.cancelled);
-	calls.register(1, late);
-	assert(late.cancelled);
-	calls.openTask(1);
-	calls.register(1, reopened);
-	assert(!reopened.cancelled);
-	calls.closeAll();
-	assert(second.cancelled && reopened.cancelled);
-	auto afterShutdown = new ToolCallCancellation;
-	calls.register(3, afterShutdown);
-	assert(afterShutdown.cancelled);
-	calls.openTask(1);
-	auto afterReopen = new ToolCallCancellation;
-	calls.register(1, afterReopen);
-	assert(afterReopen.cancelled);
-}
-
 class App
 {
-	private InFlightToolCalls inFlightToolCalls;
+	private LiveToolCalls liveToolCalls;
 
 	private void abandonToolCalls(int tid)
 	{
-		inFlightToolCalls.abandonToolCalls(tid);
+		liveToolCalls.abandonToolCalls(tid);
 	}
 
 	private void closeToolCalls(int tid)
 	{
-		inFlightToolCalls.closeTask(tid);
+		liveToolCalls.closeTask(tid);
 	}
 
 	private void openToolCalls(int tid)
 	{
-		inFlightToolCalls.openTask(tid);
+		liveToolCalls.openTask(tid);
 	}
 
 	import cydo.workflow.history.jsonl_tracker : JsonlTracker;
@@ -357,6 +251,12 @@ class App
 	this()
 	{
 		clientHub = new ClientHub();
+		liveToolCalls = new LiveToolCalls(LiveToolCallsHost(
+			appendTaskEvent: (int tid, TranslatedEvent ev) {
+				historyPipeline.appendAndBroadcastTaskEvent(tid, ev);
+			},
+			historyGeneration: (int tid) => tasks[tid].history.generation,
+		));
 	}
 
 	void start()
@@ -746,6 +646,8 @@ class App
 			},
 		));
 		historyPipeline = new HistoryEventPipeline(HistoryEventPipelineHost(
+			liveToolStarted: &liveToolCalls.toolStarted,
+			liveTurnEnded: &liveToolCalls.turnEnded,
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
 			resolveTaskHistory: &resolveTaskHistory,
 			reportUnavailableHistory: &reportUnavailableHistory,
@@ -1166,7 +1068,7 @@ class App
 	{
 		infof("shutdown() called, cleaning up resources");
 		shuttingDown = true;
-		inFlightToolCalls.closeAll();
+		liveToolCalls.closeAll();
 		taskSessionRunner.shutdownSessions();
 		derivedTextJobs.cancelAll();
 		workflowTools.killActiveTerminals();
@@ -1397,13 +1299,13 @@ class App
 			}
 		}
 
-		if (hasParsedTid)
-			inFlightToolCalls.register(parsedTid, cancellation);
+		// Handlers reject an unparsable tid before attempting to enrich the call.
+		auto call = hasParsedTid ? liveToolCalls.register(parsedTid, itemId, cancellation) : null;
 		return async({
 			scope (exit)
-				if (hasParsedTid)
-					inFlightToolCalls.deregister(parsedTid, cancellation);
-			auto impl = new CydoToolsImpl(workflowTools, tid, itemId, cancellation);
+				if (call)
+					liveToolCalls.settle(call);
+			auto impl = new CydoToolsImpl(workflowTools, tid, call, cancellation);
 			auto dispatcher = mcpToolDispatcher!CydoTools(impl);
 			return dispatcher.dispatch(tool, args);
 		});
@@ -4436,15 +4338,15 @@ unittest
 	));
 	app.workflowTools = new WorkflowToolsBackend(WorkflowToolsHost.init);
 	auto pending = new ToolCallCancellation;
-	app.inFlightToolCalls.openTask(1);
-	app.inFlightToolCalls.register(1, pending);
+	app.liveToolCalls.openTask(1);
+	app.liveToolCalls.register(1, "pending", pending);
 	assert(!pending.cancelled);
 	app.shutdown();
 	assert(pending.cancelled);
 
 	auto late = new ToolCallCancellation;
-	app.inFlightToolCalls.openTask(2);
-	app.inFlightToolCalls.register(2, late);
+	app.liveToolCalls.openTask(2);
+	app.liveToolCalls.register(2, "late", late);
 	assert(late.cancelled);
 }
 
@@ -5071,7 +4973,7 @@ unittest
 	));
 
 	McpResult[] results;
-	app.workflowTools.handleAsk(asker.to!string, "question for pending task", target)
+	app.workflowTools.handleAsk(asker.to!string, null, "question for pending task", target)
 		.then((McpResult result) { results ~= result; }).ignoreResult();
 	drainSubmissionNextTicks();
 	auto questions = app.persistence.loadQuestions();

@@ -24,6 +24,7 @@ import { actPoll, ownedRoots } from "../test-support/preactAct";
 import bashEditDiff from "../testFixtures/claude-bash-edit-diff.json";
 import {
   ToolCall,
+  callTargetTid,
   formatCydoTaskResultItem,
   getCydoTaskResultItems,
 } from "./ToolCall";
@@ -1709,5 +1710,123 @@ describe("CreateTask", () => {
   it("omits the link while pending and on error", () => {
     expect(render()).toBeNull();
     expect(render({ ...createdTask, isError: true })).toBeNull();
+  });
+});
+
+describe("callTargetTid", () => {
+  it.each([
+    ["Ask", { tid: 5 }, undefined, 5],
+    ["Ask", { tid: 5 }, { targetTid: 9 }, 5],
+    ["Ask", {}, { targetTid: 9 }, 9],
+    ["Ask", {}, undefined, undefined],
+    ["Ask", { tid: -1 }, { targetTid: 9 }, 9],
+    ["Ask", { tid: -1 }, undefined, undefined],
+    ["Answer", { qid: 3 }, { targetTid: 9 }, 9],
+    ["Request", { to: "integrator" }, { targetTid: 9 }, 9],
+    ["Task", { tid: 5 }, { targetTid: 9 }, undefined],
+  ] as const)(
+    "resolves %s with input %j and enrichment %j",
+    (name, input, enrichment, expected) => {
+      expect(callTargetTid(name, "claude", "cydo", input, enrichment)).toBe(
+        expected,
+      );
+    },
+  );
+
+  it("ignores a tool from another server with the same name", () => {
+    expect(
+      callTargetTid("Ask", "claude", "other", { tid: 5 }, { targetTid: 9 }),
+    ).toBeUndefined();
+  });
+});
+
+describe("CyDo call target link", () => {
+  const roots = ownedRoots();
+  const targetLink = '.tool-header [data-testid="cydo-call-target-open"]';
+  const props = {
+    toolServer: "cydo",
+    driver: "claude",
+    toolUseId: "target-call",
+    getTaskHref: (tid: string) => `/task/${tid}`,
+  };
+  const message = "Keep this input collapsed";
+
+  it.each([
+    ["Ask", { tid: 7, message }, undefined],
+    ["Answer", { qid: 3, message }, { targetTid: 7 }],
+    ["Request", { to: "integrator", message }, { targetTid: 7 }],
+  ] as const)(
+    "shows the pending %s target with input collapsed",
+    async (name, input, enrichment) => {
+      const root = roots.create();
+      roots.render(h(ToolCall, { ...props, name, input, enrichment }), root);
+      expect(root.querySelector(".tool-input-formatted")).not.toBeNull();
+      await act(() => {
+        root.querySelector<HTMLElement>(".tool-header")!.click();
+      });
+
+      expect(root.querySelector(".tool-input-formatted")).toBeNull();
+      expect(root.querySelector(".tool-result-section")).toBeNull();
+      expect(root.querySelector(targetLink)?.getAttribute("href")).toBe(
+        "/task/7",
+      );
+    },
+  );
+
+  it("omits the target link without a task URL builder", () => {
+    const root = roots.create();
+    roots.render(
+      h(ToolCall, {
+        ...props,
+        name: "Ask",
+        input: { tid: 7 },
+        getTaskHref: undefined,
+      }),
+      root,
+    );
+    expect(root.querySelector(targetLink)).toBeNull();
+  });
+
+  it("renders the result task link independently of the header target", () => {
+    const root = roots.create();
+    roots.render(
+      h(ToolCall, {
+        ...props,
+        name: "Answer",
+        input: { qid: 3, message },
+        enrichment: { targetTid: 7 },
+        result: {
+          toolUseId: props.toolUseId,
+          content: "",
+          toolResult: {
+            tasks: [{ status: "completed", tid: 8, result_text: "Done" }],
+          },
+        },
+      }),
+      root,
+    );
+
+    expect(root.querySelector(targetLink)?.getAttribute("href")).toBe(
+      "/task/7",
+    );
+    expect(
+      root
+        .querySelector(
+          '.tool-result-section [data-testid="cydo-task-spec-open"]',
+        )
+        ?.getAttribute("href"),
+    ).toBe("/task/8");
+  });
+
+  it("adds the header link when only enrichment changes", () => {
+    const root = roots.create();
+    const call = { ...props, name: "Ask", input: { message } };
+    roots.render(h(ToolCall, call), root);
+    expect(root.querySelector(targetLink)).toBeNull();
+
+    roots.render(h(ToolCall, { ...call, enrichment: { targetTid: 7 } }), root);
+    expect(root.querySelector(targetLink)?.getAttribute("href")).toBe(
+      "/task/7",
+    );
   });
 });

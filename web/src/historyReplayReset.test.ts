@@ -469,6 +469,25 @@ describe("history replay reset", () => {
     expect(reset.historyLoaded).toBe(false);
   });
 
+  it("clears live tool-call enrichments before replay", () => {
+    let before = reduceMessage(makeTaskState(1), {
+      type: "item/started",
+      item_type: "tool_use",
+      item_id: "answer",
+      name: "Answer",
+      tool_server: "cydo",
+    });
+    before = reduceMessage(before, {
+      type: "cydo/item_enriched",
+      item_id: "answer",
+      target_tid: 7,
+    });
+    expect(
+      before.itemEnrichments.get(before.itemIdMap.get("answer")!)?.targetTid,
+    ).toBe(7);
+    expect(resetTaskForHistoryReplay(before, 2).itemEnrichments.size).toBe(0);
+  });
+
   it("preserves stable server metadata when task reload clears task state", () => {
     const before = makeRichState();
     const preReloadDrafts = [{ text: "draft captured before reload" }];

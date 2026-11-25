@@ -305,6 +305,15 @@ export interface PermissionPromptState {
   expiresAt?: number;
 }
 
+export function itemBlockKey(messageId: string, itemId: string): string {
+  return `${messageId}:${itemId}`;
+}
+
+export interface ItemEnrichment {
+  targetTid?: number;
+  spawnedTids?: ReadonlyMap<number, number>;
+}
+
 export interface TaskState {
   uuid: string;
   tid: number | null;
@@ -402,6 +411,8 @@ export interface TaskState {
    *  Populated by reduceCydoTaskSpawned; consumed by ToolCall rendering to show
    *  the "Open task →" link. */
   spawnedTidsByItemId: Map<string, Map<number, number>>;
+  /** Enrichments keyed by the message-scoped block key. */
+  itemEnrichments: Map<string, ItemEnrichment>;
 }
 
 export function makeTaskState(
@@ -469,5 +480,6 @@ export function makeTaskState(
     itemIdMap: new Map(),
     pendingCydoTaskItemIds: [],
     spawnedTidsByItemId: new Map(),
+    itemEnrichments: new Map(),
   };
 }
