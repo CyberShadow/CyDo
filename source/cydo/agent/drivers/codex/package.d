@@ -804,10 +804,11 @@ class CodexAgent : DriverServedHistoryAgent
 
 		// Codex JSONL lines: { timestamp, type, payload }
 		// type is one of: session_meta, response_item, event_msg, turn_context, compacted
-		@JSONPartial static struct TimestampProbe { @JSONOptional string timestamp; }
-		AbsTime ts;
-		try { ts = parseIso8601Timestamp(jsonParse!TimestampProbe(line).timestamp); }
-		catch (Exception) {}
+		@JSONPartial static struct TimestampProbe { @JSONOptional Nullable!string timestamp; }
+		if (!evidence.parsed)
+			return [];
+		auto timestamp = jsonParse!TimestampProbe(line).timestamp;
+		auto ts = timestamp.isNull ? AbsTime.init : parseIso8601Timestamp(timestamp.get);
 
 		auto probe = evidence.probe;
 		if (probe.isSessionMeta)
@@ -4098,6 +4099,19 @@ unittest
 	replay = agent.createHistoryReplay();
 	auto restarted = replay.translateHistoryLine(before, 1);
 	assert(restarted.length == 1 && restarted[0].translated.canFind(`"is_meta":true`));
+}
+
+unittest
+{
+	import std.datetime.systime : SysTime;
+
+	enum line = `{"timestamp":"2026-03-30T14:29:14.993Z","type":"response_item",`
+		~ `"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}`;
+	auto evidence = parseRolloutLineEvidence(line, 1);
+	bool seenTaskStarted = true;
+	auto events = CodexAgent.translateLegacyRolloutLine(line, evidence, seenTaskStarted);
+	assert(events.length == 1);
+	assert(events[0].ts.stdTime == SysTime.fromISOExtString("2026-03-30T14:29:14.993Z").stdTime);
 }
 
 unittest

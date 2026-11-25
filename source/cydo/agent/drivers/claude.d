@@ -4102,16 +4102,23 @@ private JSONFragment buildClaudeContentBlocks(const(ContentBlock)[] blocks)
 
 // ─── History translation (stateless — complete JSONL messages) ────────────
 
+@JSONPartial
+private struct ClaudeRecordProbe
+{
+	string type;
+	string subtype;
+	@JSONOptional Nullable!string timestamp;
+}
+
 /// Route a raw Claude JSONL history line to the appropriate translator.
 /// Returns zero or more agnostic event pairs.
 private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine, size_t blockIndexBase = 0)
 {
 	import cydo.protocol : parseIso8601Timestamp;
 
-	@JSONPartial static struct TypeProbe { string type; string subtype; }
-	TypeProbe probe;
+	ClaudeRecordProbe probe;
 	try
-		probe = jsonParse!TypeProbe(rawLine);
+		probe = jsonParse!ClaudeRecordProbe(rawLine);
 	catch (Exception e)
 	{
 		import cydo.protocol : makeUnrecognizedEvent;
@@ -4119,11 +4126,7 @@ private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine, size_t blo
 		return [TranslatedEvent(makeUnrecognizedEvent("history parse error: " ~ e.msg), rawLine)];
 	}
 
-	// Probe timestamp from the JSONL line (present on history lines).
-	@JSONPartial static struct TimestampProbe { @JSONOptional string timestamp; }
-	AbsTime ts;
-	try { ts = parseIso8601Timestamp(jsonParse!TimestampProbe(rawLine).timestamp); }
-	catch (Exception) {}
+	auto ts = probe.timestamp.isNull ? AbsTime.init : parseIso8601Timestamp(probe.timestamp.get);
 
 	TranslatedEvent[] result;
 	switch (probe.type)
@@ -6724,6 +6727,28 @@ unittest
 		~ `"hookErrors":[],"preventedContinuation":false,"hasOutput":false}`;
 	auto translated = translateClaudeHistoryEvent(line);
 	assert(translated.length == 1 && translated[0].translated == line);
+	assert(translated[0].ts == AbsTime.init);
+}
+
+unittest
+{
+	import std.datetime.systime : SysTime;
+
+	enum line = `{"type":"assistant","uuid":"1","timestamp":"2026-03-30T14:29:14.993Z",`
+		~ `"message":{"id":"X","content":[{"type":"text","text":"hello"}]}}`;
+	auto events = translateClaudeHistoryEvent(line);
+	assert(events.length > 0);
+	auto expected = SysTime.fromISOExtString("2026-03-30T14:29:14.993Z").stdTime;
+	foreach (event; events)
+		assert(event.ts.stdTime == expected);
+}
+
+unittest
+{
+	import std.exception : assertThrown;
+
+	assertThrown(translateClaudeHistoryEvent(`{"type":"assistant","uuid":"1","timestamp":"bogus",`
+		~ `"message":{"id":"X","content":[{"type":"text","text":"hello"}]}}`));
 }
 
 unittest

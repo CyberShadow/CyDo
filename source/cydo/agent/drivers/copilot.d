@@ -7,6 +7,7 @@ import std.exception : enforce;
 import std.format : format;
 import std.logger : warningf;
 import std.path : buildPath, dirName, expandTilde;
+import std.typecons : Nullable;
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.time.types : AbsTime;
 import ae.utils.jsonrpc : JsonRpcException, JsonRpcResponse;
@@ -55,7 +56,7 @@ private struct CpPersistedEventBase
 {
 	string type;
 	string id;
-	@JSONOptional string timestamp;
+	@JSONOptional Nullable!string timestamp;
 }
 
 @JSONPartial
@@ -447,9 +448,21 @@ class CopilotAgent : Agent
 		auto userEvents = agent.translateHistoryLine(
 			`{"type":"user.message","id":"user-id","data":{"content":"real user content"}}`, 2);
 		assert(userEvents.length == 1);
+		assert(userEvents[0].ts == AbsTime.init);
 		auto user = jsonParse!ItemStartedEvent(userEvents[0].translated);
 		assert(user.content.length == 1);
 		assert(user.content[0].text == "real user content");
+	}
+
+	unittest
+	{
+		import std.datetime.systime : SysTime;
+
+		auto events = translateHistoryLine(
+			`{"type":"user.message","id":"user-id","timestamp":"2026-03-30T14:29:14.993Z",`
+			~ `"data":{"content":"hello"}}`, 1);
+		assert(events.length == 1);
+		assert(events[0].ts.stdTime == SysTime.fromISOExtString("2026-03-30T14:29:14.993Z").stdTime);
 	}
 
 	// ---- History / fork ----
@@ -496,7 +509,7 @@ class CopilotAgent : Agent
 			return null;
 
 		import cydo.protocol : parseIso8601Timestamp;
-		auto ts = parseIso8601Timestamp(base.timestamp);
+		auto ts = base.timestamp.isNull ? AbsTime.init : parseIso8601Timestamp(base.timestamp.get);
 
 		string[] evStrings;
 		switch (base.type)
@@ -3172,6 +3185,7 @@ unittest
 	session.startReplay();
 
 	SdkEvent event;
+	event.timestamp = "2026-03-30T14:29:14.993Z";
 	event.type = "session.start";
 	event.data = jsonParse!(typeof(event.data))(`{"copilotVersion":"1.0.39"}`);
 	session.handleEvent(event);
@@ -3199,6 +3213,7 @@ unittest
 	];
 
 	SdkEvent internal;
+	internal.timestamp = "2026-03-30T14:29:14.993Z";
 	internal.id = "native-system-1";
 	internal.type = "user.message";
 	internal.data = jsonParse!(typeof(internal.data))(`{"content":"[SYSTEM: internal]"}`);
@@ -3209,6 +3224,7 @@ unittest
 	assert(!output[0].canFind(`"correlation_id"`));
 
 	SdkEvent user;
+	user.timestamp = "2026-03-30T14:29:14.993Z";
 	user.id = "native-user-1";
 	user.type = "user.message";
 	user.data = jsonParse!(typeof(user.data))(`{"content":"ordinary"}`);
@@ -3219,16 +3235,19 @@ unittest
 	assert(output[1].canFind(`"correlation_id":"nonce-1"`));
 
 	SdkEvent start;
+	start.timestamp = "2026-03-30T14:29:14.993Z";
 	start.id = "native-turn-start-1";
 	start.type = "assistant.turn_start";
 	start.data = jsonParse!(typeof(start.data))(`{}`);
 	session.handleEvent(start);
 	SdkEvent message;
+	message.timestamp = "2026-03-30T14:29:14.993Z";
 	message.id = "native-assistant-1";
 	message.type = "assistant.message";
 	message.data = jsonParse!(typeof(message.data))(`{"content":""}`);
 	session.handleEvent(message);
 	SdkEvent end;
+	end.timestamp = "2026-03-30T14:29:14.993Z";
 	end.type = "assistant.turn_end";
 	end.data = jsonParse!(typeof(end.data))(`{}`);
 	session.handleEvent(end);
@@ -3244,6 +3263,7 @@ unittest
 	session.onToolCallsAbandoned = () { abandonments++; };
 
 	SdkEvent idle;
+	idle.timestamp = "2026-03-30T14:29:14.993Z";
 	idle.type = "session.idle";
 	idle.data = jsonParse!(typeof(idle.data))(`{}`);
 	session.handleEvent(idle);
@@ -3941,7 +3961,7 @@ unittest
 		}
 		else if (ending == Ending.idle)
 		{
-			connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"one-shot","event":{"id":"idle","timestamp":"now","type":"session.idle","data":{}}}}`);
+			connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"one-shot","event":{"id":"idle","timestamp":"2026-03-30T14:29:14.993Z","type":"session.idle","data":{}}}}`);
 			drainNextTicks();
 			assert(values == [""] && errors.length == 0 && !sdk.dead);
 			connection.respond(connection.takeRequest("session.destroy"), success);
@@ -3978,7 +3998,7 @@ unittest
 
 		void idle()
 		{
-			connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"one-shot","event":{"id":"idle","timestamp":"now","type":"session.idle","data":{}}}}`);
+			connection.receive(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"one-shot","event":{"id":"idle","timestamp":"2026-03-30T14:29:14.993Z","type":"session.idle","data":{}}}}`);
 		}
 
 		JsonRpcResponse success, refused;

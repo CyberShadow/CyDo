@@ -522,20 +522,47 @@ struct CydoTaskSpawnedEvent
 	int spec_index;  // 0-based index within the parent call's tasks[] array
 }
 
-/// Parse an ISO 8601 timestamp string (e.g. "2026-03-30T14:29:14.993Z") into AbsTime.
-/// Returns AbsTime.init (stdTime == 0) on failure or empty input.
-AbsTime parseIso8601Timestamp(string s) nothrow
+/// Parse an ISO 8601 timestamp with whole seconds or three fractional digits,
+/// followed by Z or a numeric ±hh:mm offset. Offsets are applied to the instant.
+/// Throws on malformed input. Callers handle absent timestamps explicitly.
+AbsTime parseIso8601Timestamp(string s)
 {
-	import ae.utils.time.parse : parseAbsTime;
-	if (s.length == 0)
-		return AbsTime.init;
-	try
-		return parseAbsTime!(`Y-m-d\TH:i:s.vP`)(s);
-	catch (Exception) {}
-	try
-		return parseAbsTime!(`Y-m-d\TH:i:sP`)(s);
-	catch (Exception) {}
-	return AbsTime.init;
+	import std.ascii : isDigit;
+	import std.datetime : UTC;
+	import std.exception : enforce;
+	import ae.utils.time.parse : parseTime;
+
+	bool matches(string value, string shape)
+	{
+		if (value.length != shape.length)
+			return false;
+		foreach (i, expected; shape)
+			if (expected == 'D' ? !isDigit(value[i]) : value[i] != expected)
+				return false;
+		return true;
+	}
+
+	enforce(s.length >= 20 && matches(s[0 .. 19], "DDDD-DD-DDTDD:DD:DD"),
+		"Invalid ISO 8601 timestamp: " ~ s);
+	bool fractional = s[19] == '.';
+	if (fractional)
+		enforce(s.length >= 24 && matches(s[19 .. 23], ".DDD"),
+			"Invalid ISO 8601 timestamp: " ~ s);
+
+	auto zone = s[fractional ? 23 : 19 .. $];
+	bool utc = zone == "Z";
+	if (!utc)
+		enforce(zone.length == 6 && (zone[0] == '+' || zone[0] == '-')
+			&& matches(zone[1 .. $], "DD:DD") && zone[4] <= '5',
+			"Invalid ISO 8601 timestamp: " ~ s);
+
+	if (fractional)
+		return utc
+			? AbsTime(parseTime!(`Y-m-d\TH:i:s.v\Z`)(s, UTC()))
+			: AbsTime(parseTime!(`Y-m-d\TH:i:s.vP`)(s, UTC()));
+	return utc
+		? AbsTime(parseTime!(`Y-m-d\TH:i:s\Z`)(s, UTC()))
+		: AbsTime(parseTime!(`Y-m-d\TH:i:sP`)(s, UTC()));
 }
 
 /// A translated event paired with its raw agent source.
@@ -717,4 +744,39 @@ unittest
 		JSONFragment(`{"type":"item/started","item_type":"user_message"}`)));
 	assert(replacement == `{"type":"task_history_boundary_replaced","tid":7,"seq":4,"ts":9,"event":{"type":"item/started","item_type":"user_message","history_boundary":{"anchor":"anchor","kind":"user","checkpoint_uuid":"checkpoint"}}}`);
 	assert(ordinary == `{"tid":7,"seq":4,"ts":9,"event":{"type":"item/started","item_type":"user_message"}}`);
+}
+
+unittest
+{
+	import std.datetime.systime : SysTime;
+
+	foreach (pair; [
+		["2026-03-30T14:29:14.993Z", "2026-03-30T14:29:14.993Z"],
+		["2026-03-30T14:29:14Z", "2026-03-30T14:29:14Z"],
+		["2026-03-30T16:29:14.993+02:00", "2026-03-30T14:29:14.993Z"],
+		["2026-03-30T09:29:14-05:00", "2026-03-30T14:29:14Z"],
+		["2026-03-30T14:29:14+00:00", "2026-03-30T14:29:14Z"],
+		["2026-03-31T01:00:00+02:00", "2026-03-30T23:00:00Z"],
+	])
+		assert(parseIso8601Timestamp(pair[0]).stdTime == SysTime.fromISOExtString(pair[1]).stdTime,
+			pair[0]);
+}
+
+unittest
+{
+	import std.exception : assertThrown;
+
+	foreach (timestamp; [
+		"", "now",
+		"2026-03-30T14:29:14", "2026-03-30T14:29:14.993",
+		"2026-03-30T14:29:14.993123Z", "2026-03-30 14:29:14Z",
+		"2026-03-30T14:29:14.993+0200", "2026-03-30T14:29:14GMT",
+		"2026-03-30T14:29:14.993Zx", "2026-13-30T14:29:14Z",
+		"2026-03-30T24:29:14Z", "2026-03-30T14:29:14+24:00",
+		"-001-03-30T14:29:14Z", "2026- 3-30T14:29:14Z",
+		"2026-03- 1T14:29:14Z", "2026-03-30T14:29:14. 12Z",
+		"2026-03-30T14:29:14+00:60", "2026-03-30T14:29:14+00:-1",
+		"2026-03-30T14:29:14++1:00", "2026-03-30T14:29:14+00:+1",
+	])
+		assertThrown(parseIso8601Timestamp(timestamp), "accepted invalid timestamp: " ~ timestamp);
 }
