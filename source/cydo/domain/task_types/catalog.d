@@ -10,6 +10,7 @@ import std.path : buildPath;
 import cydo.foundation.platform.path : directoryEntryPaths, existingPathAttributes;
 
 import cydo.runtime.config.paths : configDir, userDefsDir, userTaskTypesPath;
+import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
 import cydo.domain.task_types.definition : TaskTypeDef, UserEntryPointDef, SingletonDef, byName, computeReachesWorktree,
 	computeTreeReadOnly, loadTaskTypeLayers, validateTaskTypes;
 
@@ -33,7 +34,7 @@ private string[] taskTypePackDirectories(string path)
 	catch (FileException e)
 	{
 		if (e.errno != ENOENT && e.errno != ENOTDIR)
-			throw e;
+			throw new ConfigFileException(ConfigErrorKind.unreadable, path, e.msg);
 		return null;
 	}
 }
@@ -706,6 +707,29 @@ unittest
 	import std.conv : octal;
 	import std.exception : collectException;
 	import std.file : setAttributes;
+
+	if (geteuid() == 0)
+		return;
+
+	PackCatalogFixture fixture;
+	scope (exit) fixture.cleanup();
+	fixture.setup("cydo-test-task-type-pack-directory-unreadable");
+
+	auto packs = buildPath(fixture.projectConfig, "packs");
+	mkdirRecurse(packs);
+	setAttributes(packs, octal!300);
+	scope (exit) setAttributes(packs, octal!700);
+	auto error = collectException!ConfigFileException(
+		discoverTaskTypeLayers(fixture.shipped, buildPath(fixture.shipped, "task-types.yaml"), fixture.project));
+	assert(error !is null && error.kind == ConfigErrorKind.unreadable && error.path == packs);
+}
+
+unittest
+{
+	import core.sys.posix.unistd : geteuid;
+	import std.conv : octal;
+	import std.exception : collectException;
+	import std.file : setAttributes;
 	import cydo.domain.task_types.definition : loadTaskTypes;
 
 	// A privileged process can open a file in a directory without search permission.
@@ -724,8 +748,9 @@ unittest
 
 	setAttributes(pack, octal!600);
 	scope (exit) setAttributes(pack, octal!700);
-	auto error = collectException(loadTaskTypes(buildPath(fixture.shipped, "task-types.yaml"), packYaml));
-	assert(error !is null && error.msg.canFind(packYaml));
+	auto error = collectException!ConfigFileException(
+		loadTaskTypes(buildPath(fixture.shipped, "task-types.yaml"), packYaml));
+	assert(error !is null && error.kind == ConfigErrorKind.unreadable && error.path == packYaml);
 	fixture.catalog.invalidateProject(fixture.project);
 	assert(fixture.description() == "pack");
 
@@ -737,6 +762,7 @@ unittest
 
 unittest
 {
+	import std.exception : collectException;
 	import std.file : remove, rename, symlink;
 
 	PackCatalogFixture fixture;
@@ -744,6 +770,7 @@ unittest
 	fixture.setup("cydo-test-task-type-pack-symlink-loop");
 
 	auto packs = buildPath(fixture.projectConfig, "packs");
+	auto shippedYaml = buildPath(fixture.shipped, "task-types.yaml");
 	auto pack = buildPath(packs, "linked");
 	auto target = buildPath(fixture.root, "pack-target");
 	auto movedPacks = buildPath(fixture.root, "moved-packs");
@@ -755,6 +782,9 @@ unittest
 
 	remove(pack);
 	symlink(pack, pack);
+	auto error = collectException!ConfigFileException(
+		discoverTaskTypeLayers(fixture.shipped, shippedYaml, fixture.project));
+	assert(error !is null && error.kind == ConfigErrorKind.unreadable && error.path == packs);
 	fixture.catalog.invalidateProject(fixture.project);
 	assert(fixture.description() == "pack", "A looping pack entry must reject the reload");
 	assert(fixture.catalog.promptSearchPath(fixture.project) == lastGoodDirs);
@@ -763,6 +793,9 @@ unittest
 
 	rename(packs, movedPacks);
 	symlink(packs, packs);
+	error = collectException!ConfigFileException(
+		discoverTaskTypeLayers(fixture.shipped, shippedYaml, fixture.project));
+	assert(error !is null && error.kind == ConfigErrorKind.unreadable && error.path == packs);
 	fixture.catalog.invalidateProject(fixture.project);
 	assert(fixture.description() == "pack", "A looping packs container must reject the reload");
 	assert(fixture.catalog.promptSearchPath(fixture.project) == lastGoodDirs);

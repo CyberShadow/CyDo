@@ -8,6 +8,8 @@ import configy.attributes : Key, Name, Optional;
 import cydo.domain.policy.unsandboxed_command : defaultUnsandboxedCommandExecutionExpr,
 	evaluateUnsandboxedCommandExecution;
 
+import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException, loadConfigYaml, parseConfigNode, readConfigText;
+
 import std.algorithm : canFind, filter, map, reverse, sort;
 import std.array : array, join;
 import std.conv : to;
@@ -390,7 +392,7 @@ string formatCompactCreatableEntryPointToolSummary(TaskTypeDef[] types,
 // Loader
 // ---------------------------------------------------------------------------
 
-import dyaml.node : Node, NodeID;
+import dyaml.node : Node, NodeID, YAMLNull;
 
 /// Load task types from one or more YAML files, merging them in order
 /// (later files override earlier ones at the YAML level).
@@ -402,77 +404,93 @@ TaskTypeConfig loadTaskTypes(string[] paths...)
 
 package(cydo) TaskTypeConfig loadTaskTypeLayers(string[] paths, out string[] loadedPaths)
 {
-	import core.stdc.errno : ENOENT, ENOTDIR;
-	import cydo.runtime.config.yaml : loadYamlString, parseYamlConfigNode;
-	import std.file : FileException, read;
+	auto sources = readTaskTypeLayers(paths);
+	if (sources.length == 0)
+		throw new ConfigFileException(ConfigErrorKind.invalid, paths.join(", "), "no task type files found");
+	loadedPaths = sources.map!(source => source.path).array;
+	return composeTaskTypeLayers(sources);
+}
 
-	Node root;
+struct TaskTypeLayerSource
+{
+	string path;
+	string text;
+}
+
+TaskTypeLayerSource[] readTaskTypeLayers(string[] paths)
+{
+	TaskTypeLayerSource[] sources;
 	foreach (path; paths)
 	{
-		if (path.length == 0)
-			continue;
-		void[] contents;
-		try
-			contents = read(path);
-		catch (FileException e)
+		string text;
+		if (readConfigText(path, text))
+			sources ~= TaskTypeLayerSource(path, text);
+	}
+	return sources;
+}
+
+TaskTypeConfig composeTaskTypeLayers(TaskTypeLayerSource[] sources)
+{
+	assert(sources.length > 0);
+	Node root;
+	foreach (i, ref source; sources)
+	{
+		auto node = loadConfigYaml(source.text, source.path);
+		if (node.nodeID != NodeID.mapping)
+			throw new ConfigFileException(ConfigErrorKind.invalid, source.path,
+				atYamlNode(node, "task type YAML root must be a mapping"));
+		root = i == 0 ? node : deepMerge(root, node);
+	}
+
+	auto paths = sources.map!(source => source.path).join(", ");
+	auto result = parseConfigNode!TaskTypesFile(root, paths);
+	try
+	{
+		removeDisabled(result, root);
+
+		// Ensure "blank" type always exists even if not in any config file.
+		if (result.task_types.byName("blank") is null)
 		{
-			if (e.errno != ENOENT && e.errno != ENOTDIR)
-				throw e;
-			continue;
+			TaskTypeDef blank;
+			blank.name = "blank";
+			blank.icon = "blank";
+			blank.model_class = DjinjaTemplate("large");
+			blank.allow_native_subagents = true;
+			result.task_types = blank ~ result.task_types;
+		}
+		if (result.user_entry_points.byName("blank") is null)
+		{
+			UserEntryPointDef ep;
+			ep.name = "blank";
+			ep.task_type = "blank";
+			ep.description = "Raw agent session with no prompt wrapping or tool restrictions";
+			ep.prompt_template = "prompts/blank.md";
+			result.user_entry_points = ep ~ result.user_entry_points;
 		}
 
-		auto node = loadYamlString(cast(string) contents, path);
-		enforce(node.nodeID == NodeID.mapping, atYamlNode(node, "task type YAML root must be a mapping"));
-		root = loadedPaths.length == 0 ? node : deepMerge(root, node);
-		loadedPaths ~= path;
+		SingletonDef[] singletons;
+		foreach (ref singleton; result.singletons)
+		{
+			auto target = root["singletons"][singleton.name]["task_type"];
+			enforce(result.user_entry_points.byName(singleton.name) is null,
+				atYamlNode(target, "singletons: '" ~ singleton.name ~ "' is already an entry point"));
+			if (singleton.task_type.length == 0)
+				continue;
+			enforce(result.task_types.byName(singleton.task_type) !is null,
+				atYamlNode(target, "singletons: '" ~ singleton.name ~ "' has unknown task type '" ~ singleton.task_type ~ "'"));
+			UserEntryPointDef ep;
+			ep.name = singleton.name;
+			ep.task_type = singleton.task_type;
+			ep.prompt_template = singleton.prompt_template;
+			ep.system = true;
+			result.user_entry_points ~= ep;
+			singletons ~= singleton;
+		}
+
+		return TaskTypeConfig(result.task_types, result.user_entry_points, singletons);
 	}
-
-	if (loadedPaths.length == 0)
-		throw new Exception("No task type files found in: " ~ paths.join(", "));
-
-	auto result = parseYamlConfigNode!TaskTypesFile(root, loadedPaths[0]);
-	removeDisabled(result, root);
-
-	// Ensure "blank" type always exists even if not in any config file.
-	if (result.task_types.byName("blank") is null)
-	{
-		TaskTypeDef blank;
-		blank.name = "blank";
-		blank.icon = "blank";
-		blank.model_class = DjinjaTemplate("large");
-		blank.allow_native_subagents = true;
-		result.task_types = blank ~ result.task_types;
-	}
-	if (result.user_entry_points.byName("blank") is null)
-	{
-		UserEntryPointDef ep;
-		ep.name = "blank";
-		ep.task_type = "blank";
-		ep.description = "Raw agent session with no prompt wrapping or tool restrictions";
-		ep.prompt_template = "prompts/blank.md";
-		result.user_entry_points = ep ~ result.user_entry_points;
-	}
-
-	SingletonDef[] singletons;
-	foreach (ref singleton; result.singletons)
-	{
-		auto target = root["singletons"][singleton.name]["task_type"];
-		enforce(result.user_entry_points.byName(singleton.name) is null,
-			atYamlNode(target, "singletons: '" ~ singleton.name ~ "' is already an entry point"));
-		if (singleton.task_type.length == 0)
-			continue;
-		enforce(result.task_types.byName(singleton.task_type) !is null,
-			atYamlNode(target, "singletons: '" ~ singleton.name ~ "' has unknown task type '" ~ singleton.task_type ~ "'"));
-		UserEntryPointDef ep;
-		ep.name = singleton.name;
-		ep.task_type = singleton.task_type;
-		ep.prompt_template = singleton.prompt_template;
-		ep.system = true;
-		result.user_entry_points ~= ep;
-		singletons ~= singleton;
-	}
-
-	return TaskTypeConfig(result.task_types, result.user_entry_points, singletons);
+	catch (Exception e)
+		throw new ConfigFileException(ConfigErrorKind.invalid, paths, e.msg);
 }
 
 unittest
@@ -487,8 +505,133 @@ unittest
 	scope (exit) remove(base);
 	write(overlay, "- invalid overlay\n");
 	scope (exit) remove(overlay);
-	auto error = collectException(loadTaskTypes(base, overlay));
-	assert(error !is null && error.msg == overlay ~ ":1: task type YAML root must be a mapping");
+	auto error = collectException!ConfigFileException(loadTaskTypes(base, overlay));
+	assert(error !is null && error.kind == ConfigErrorKind.invalid && error.path == overlay);
+	assert(error.msg == overlay ~ ": invalid: " ~ overlay ~ ":1: task type YAML root must be a mapping");
+}
+
+unittest // A syntax error identifies the malformed layer.
+{
+	import std.exception : collectException;
+
+	enum overlay = "syntax-overlay.yaml";
+	auto error = collectException!ConfigFileException(composeTaskTypeLayers([
+		TaskTypeLayerSource("base.yaml", "task_types: {}\n"),
+		TaskTypeLayerSource(overlay, "# comment\ntask_types: ]\n"),
+	]));
+	assert(error !is null && error.kind == ConfigErrorKind.syntax && error.path == overlay);
+	assert(error.msg.canFind("\n" ~ overlay ~ ":2,"), error.msg);
+}
+
+unittest // A YAML constructor failure identifies the malformed layer.
+{
+	import std.exception : collectException;
+
+	enum overlay = "timestamp-overlay.yaml";
+	auto error = collectException!ConfigFileException(composeTaskTypeLayers([
+		TaskTypeLayerSource("base.yaml", "task_types: {}\n"),
+		TaskTypeLayerSource(overlay, "task_types: !!timestamp garbage\n"),
+	]));
+	assert(error !is null && error.kind == ConfigErrorKind.syntax && error.path == overlay);
+	assert(error.msg.canFind(overlay ~ ": syntax error: Unable to parse timestamp value: garbage"), error.msg);
+}
+
+unittest // Schema errors include the merged paths and the offending layer's YAML mark.
+{
+	import std.exception : collectException;
+	import std.typecons : tuple;
+
+	enum base = "schema-base.yaml";
+	enum overlay = "schema-overlay.yaml";
+	foreach (test; [tuple("read_only: [true]", "read_only"), tuple("bogus: true", "bogus")])
+	{
+		auto error = collectException!ConfigFileException(composeTaskTypeLayers([
+			TaskTypeLayerSource(base, "task_types:\n  sample:\n    agent_description: Base\n"),
+			TaskTypeLayerSource(overlay, "task_types:\n  sample:\n    " ~ test[0] ~ "\n"),
+		]));
+		assert(error !is null && error.kind == ConfigErrorKind.invalid, test[0]);
+		assert(error.path == base ~ ", " ~ overlay, error.msg);
+		assert(error.msg.canFind(overlay ~ "(2:") && error.msg.canFind(test[1]), error.msg);
+	}
+}
+
+unittest // A non-mapping override cannot replace a mapping.
+{
+	import std.exception : collectException;
+	import std.typecons : tuple;
+
+	enum base = "mapping-base.yaml";
+	enum overlay = "mapping-overlay.yaml";
+	foreach (test; [
+		tuple("task_types: [true]\n", ":1: task_types: expected a mapping"),
+		tuple("task_types:\n  sample: invalid\n", ":2: task_types.sample: expected a mapping"),
+	])
+	{
+		auto error = collectException!ConfigFileException(composeTaskTypeLayers([
+			TaskTypeLayerSource(base, "task_types:\n  sample: {}\n"),
+			TaskTypeLayerSource(overlay, test[0]),
+		]));
+		assert(error !is null && error.kind == ConfigErrorKind.invalid, test[0]);
+		assert(error.path == overlay && error.msg.canFind(overlay ~ test[1]), error.msg);
+	}
+}
+
+unittest // A later mapping cannot hide a conflicting scalar in an earlier layer.
+{
+	import std.exception : collectException;
+
+	auto shipped = TaskTypeLayerSource("shipped.yaml",
+		"task_types:\n  conversation:\n    creatable_tasks: {research: {}}\n  research: {}\n");
+	auto user = TaskTypeLayerSource("user.yaml",
+		"task_types:\n  conversation:\n    creatable_tasks: wrong\n");
+	auto project = TaskTypeLayerSource("project.yaml",
+		"task_types:\n  conversation:\n    creatable_tasks: {}\n");
+
+	// Cover both conflict directions, including a scalar introduced at a new key.
+	foreach (layers; [[shipped, user, project], [user, project]])
+	{
+		auto error = collectException!ConfigFileException(composeTaskTypeLayers(layers));
+		assert(error !is null && error.kind == ConfigErrorKind.invalid);
+		assert(error.path == user.path, error.msg);
+		assert(error.msg.canFind("user.yaml:3: task_types.conversation.creatable_tasks"), error.msg);
+	}
+}
+
+unittest // Null and empty mappings both preserve inherited task definitions.
+{
+	auto base = TaskTypeLayerSource("inherited.yaml",
+		"task_types:\n  conversation:\n    read_only: true\n    creatable_tasks:\n"
+		~ "      research: {}\n  research: {}\n");
+	auto inherited = composeTaskTypeLayers([base]);
+	auto conversation = inherited.types.byName("conversation");
+	assert(conversation.read_only && conversation.creatable_tasks.length == 1);
+
+	foreach (value; ["", " {}"])
+	{
+		auto overrideSource = TaskTypeLayerSource("override.yaml",
+			"task_types:\n  conversation:" ~ value ~ "\n");
+		assert(composeTaskTypeLayers([base, overrideSource]) == inherited);
+	}
+}
+
+unittest // An absent layer is skipped while an existing dangling link is unreadable.
+{
+	import std.exception : collectException;
+	import std.file : mkdir, rmdirRecurse, symlink, tempDir, write;
+	import std.path : buildPath;
+
+	auto root = buildPath(tempDir, "cydo-test-task-type-layer-read");
+	mkdir(root);
+	scope (exit) rmdirRecurse(root);
+	auto base = buildPath(root, "base.yaml");
+	auto missing = buildPath(root, "missing.yaml");
+	auto dangling = buildPath(root, "dangling.yaml");
+	write(base, "task_types:\n  sample: {}\n");
+	assert(loadTaskTypes(base, missing).types.byName("sample") !is null);
+
+	symlink(missing, dangling);
+	auto error = collectException!ConfigFileException(loadTaskTypes(base, dangling));
+	assert(error !is null && error.kind == ConfigErrorKind.unreadable && error.path == dangling);
 }
 
 unittest
@@ -520,7 +663,8 @@ unittest
 
 	write(path, types ~ "singletons:\n  integrator:\n    task_type: missing\n" ~ singletonFields);
 	auto error = collectException(loadTaskTypes(path));
-	assert(error !is null && error.msg == path ~ ":6: singletons: 'integrator' has unknown task type 'missing'");
+	assert(error !is null && error.msg == path ~ ": invalid: " ~ path
+		~ ":6: singletons: 'integrator' has unknown task type 'missing'");
 
 	enum collidingEntryPoint = "user_entry_points:\n  integrator:\n    task_type: lander\n"
 		~ "    description: Lands\n";
@@ -529,7 +673,8 @@ unittest
 	{
 		write(path, types ~ collidingEntryPoint ~ declaration);
 		error = collectException(loadTaskTypes(path));
-		assert(error !is null && error.msg == path ~ ":10: singletons: 'integrator' is already an entry point");
+		assert(error !is null && error.msg == path ~ ": invalid: " ~ path
+			~ ":10: singletons: 'integrator' is already an entry point");
 	}
 
 	write(path, types ~ disabledSingleton);
@@ -772,7 +917,6 @@ YAML");
 
 unittest
 {
-	import configy.exceptions : ConfigException;
 	import std.exception : assertThrown;
 	import std.file : remove, tempDir, write;
 	import std.path : buildPath;
@@ -815,7 +959,7 @@ unittest
 	])
 	{
 		write(path, types ~ routes);
-		assertThrown!ConfigException(loadTaskTypes(path), routes);
+		assertThrown!ConfigFileException(loadTaskTypes(path), routes);
 	}
 
 	write(path, types ~ "  backup: {}\n  parent:\n    creatable_tasks:\n      worker:\n      backup:\n");
@@ -868,7 +1012,7 @@ unittest
 		write(path, test[0]);
 		auto error = collectException(loadTaskTypes(path));
 		assert(error !is null, test[2]);
-		assert(error.msg == format("%s:%s: %s", path, test[1], test[2]), error.msg);
+		assert(error.msg == format("%s: invalid: %s:%s: %s", path, path, test[1], test[2]), error.msg);
 	}
 }
 
@@ -960,14 +1104,22 @@ unittest // Preserve the text of a task-type entry point description.
 	assert(entryPoint.description == "no", entryPoint.description);
 }
 
-/// Deep-merge two YAML nodes. For mappings, keys from `overlay` are merged
-/// into `base` recursively. For all other types, `overlay` wins outright.
-private Node deepMerge(Node base, Node overlay)
+/// Merge mappings recursively, treating null as an empty mapping when paired
+/// with a mapping. Reject shape conflicts before another layer can hide them.
+private Node deepMerge(Node base, Node overlay, string keyPath = "")
 {
-	if (base.nodeID != NodeID.mapping)
+	auto baseMapping = base.nodeID == NodeID.mapping;
+	auto overlayMapping = overlay.nodeID == NodeID.mapping;
+	if (!baseMapping && !overlayMapping)
 		return overlay;
-	if (overlay.nodeID != NodeID.mapping)
-		return base;
+	if (baseMapping != overlayMapping)
+	{
+		auto value = baseMapping ? overlay : base;
+		if (value.nodeID == NodeID.scalar && value == YAMLNull())
+			return baseMapping ? base : overlay;
+		throw new ConfigFileException(ConfigErrorKind.invalid, value.startMark.name,
+			atYamlNode(value, keyPath ~ ": expected a mapping"));
+	}
 
 	auto basePairs = base.get!(Node.Pair[]).dup;
 	outer: foreach (ref oPair; overlay.get!(Node.Pair[]))
@@ -976,7 +1128,9 @@ private Node deepMerge(Node base, Node overlay)
 		{
 			if (bPair.key == oPair.key)
 			{
-				bPair.value = deepMerge(bPair.value, oPair.value);
+				auto key = oPair.key.nodeID == NodeID.scalar ? oPair.key.as!string : "<non-scalar key>";
+				auto childPath = keyPath.length ? keyPath ~ "." ~ key : key;
+				bPair.value = deepMerge(bPair.value, oPair.value, childPath);
 				continue outer;
 			}
 		}
