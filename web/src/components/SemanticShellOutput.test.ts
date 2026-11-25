@@ -554,6 +554,25 @@ describe("SemanticShellOutput document and numbered rendering", () => {
   });
 });
 
+it("renders adjacent searches as one numbered search result", async () => {
+  const result = await parseShellSemantic("grep -n x a.d && grep -n y b.d");
+  assert(result.ok && result.value.kind === "output");
+  const view = shellOutputView(result.value.output);
+  assert(view.ok && view.value.kind === "plan");
+
+  const html = renderSemantic("3:x\n7:y\n", view.value.plan, view.value.search);
+  expect(html).toContain('data-testid="semantic-shell-output-search"');
+  expect(html).not.toContain("semantic-shell-raw");
+  expect(
+    html.match(
+      /data-testid="semantic-shell-line-prefix" class="line-number">[^<]*<\/span>/g,
+    ),
+  ).toEqual([
+    'data-testid="semantic-shell-line-prefix" class="line-number">3:</span>',
+    'data-testid="semantic-shell-line-prefix" class="line-number">7:</span>',
+  ]);
+});
+
 describe("SemanticShellOutput numbered search context", () => {
   async function reportedSearchView() {
     const result = await parseShellSemantic(

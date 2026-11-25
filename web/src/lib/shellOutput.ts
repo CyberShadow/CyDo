@@ -148,6 +148,7 @@ export function derivePlan(
         const content: ContentFormat = { kind: "content", language };
         const numbering = segment.numbering;
         const runs = [content];
+        let searchContext = numbering?.kind === "grep" && numbering.context;
         let previousLastRowMayBeUnterminated =
           numbering?.kind === "nl" && numbering.lastRowMayBeUnterminated;
         const rowKind = numbering?.kind ?? "file";
@@ -192,18 +193,14 @@ export function derivePlan(
             previousLastRowMayBeUnterminated =
               next.numbering.lastRowMayBeUnterminated;
             runs.push({ kind: "content", language: rowsLanguage(next.source) });
-          } else if (rowKind === "grep") {
-            return {
-              ok: false,
-              reason:
-                "search output cannot be concatenated with other search output",
-            };
           } else {
             const mismatch = rowsLanguageMismatch(
               language,
               rowsLanguage(next.source),
             );
             if (mismatch) return mismatch;
+            searchContext ||=
+              next.numbering?.kind === "grep" && next.numbering.context;
           }
           next = output[++index];
         }
@@ -234,7 +231,7 @@ export function derivePlan(
             kind: "individual-lines",
             format: { kind: "line-number-prefixed", format: content },
           };
-          validator = numbering.context
+          validator = searchContext
             ? "line-number-prefixed-with-context"
             : "colon-line-number-prefixed";
         } else {

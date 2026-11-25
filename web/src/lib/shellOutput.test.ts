@@ -142,11 +142,24 @@ describe("derivePlan", () => {
     ]);
   });
 
-  it("rejects adjacent search rows", () => {
-    expect(derivePlan([rows("a.d", grep), rows("b.d", grep)])).toEqual({
-      ok: false,
-      reason: "search output cannot be concatenated with other search output",
-    });
+  it("combines adjacent same-language search rows into one block", () => {
+    expect(blocks([rows("a.d", grep), rows("b.d", grep)])).toEqual([
+      {
+        id: "0",
+        format: {
+          kind: "individual-lines",
+          format: {
+            kind: "line-number-prefixed",
+            format: { kind: "content", language: "d" },
+          },
+        },
+        location: {
+          kind: "from-cursor",
+          end: { kind: "end-of-output", requiresComplete: true },
+          validator: "colon-line-number-prefixed",
+        },
+      },
+    ]);
   });
 
   it.each([

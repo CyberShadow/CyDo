@@ -2943,11 +2943,99 @@ describe("search without -n", () => {
     });
   });
 
-  it("still rejects a standalone grep member in a list", async () => {
-    await expect(parseShellSemantic("cat a.d && grep x b.d")).resolves.toEqual({
+  it("plans a standalone unnumbered grep member alongside file rows", async () => {
+    const result = await parseShellSemantic("cat a.d && grep x b.d");
+    assert(result.ok);
+    expect(plan(result.value)?.blocks).toEqual([
+      {
+        id: "0",
+        format: { kind: "content", language: "d" },
+        location: {
+          kind: "from-cursor",
+          end: { kind: "end-of-output", requiresComplete: true },
+          validator: "non-empty",
+        },
+      },
+    ]);
+  });
+});
+
+describe("search lists", () => {
+  it("rejects an unnumbered standalone rg list member", async () => {
+    await expect(parseShellSemantic("cat a.d && rg x b.d")).resolves.toEqual({
+      ok: false,
+      code: "unsupported_option",
+      reason:
+        "rg without -n/--line-number is not planned: its output depends on whether the operand is a directory",
+    });
+  });
+
+  it.each([
+    ["grep -n x a.d && grep -n y b.d", "colon-line-number-prefixed"],
+    ["grep -n x a.d && grep -n -A1 y b.d", "line-number-prefixed-with-context"],
+    ["rg -n -A1 x a.d && rg -n y b.d", "line-number-prefixed-with-context"],
+  ])("%s plans one D search block", async (command, validator) => {
+    const result = await parseShellSemantic(command);
+    assert(result.ok);
+    expect(plan(result.value)?.blocks).toEqual([
+      {
+        id: "0",
+        format: {
+          kind: "individual-lines",
+          format: {
+            kind: "line-number-prefixed",
+            format: { kind: "content", language: "d" },
+          },
+        },
+        location: {
+          kind: "from-cursor",
+          end: { kind: "end-of-output", requiresComplete: true },
+          validator,
+        },
+      },
+    ]);
+  });
+
+  it.each(["grep -n x a.d && echo done", "cat a.d | grep -n x && echo done"])(
+    "%s preserves the search and trailing literal",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      assert(result.ok);
+      expect(segmentsOf(result.value)).toEqual([
+        fileRows("a.d", all, grep),
+        literal("done\n"),
+      ]);
+      expect(plan(result.value)?.blocks.map((block) => block.location)).toEqual(
+        [
+          {
+            kind: "from-cursor",
+            end: { kind: "before-block", blockId: "1" },
+            validator: "colon-line-number-prefixed",
+          },
+          { kind: "unique-literal", text: "done\n", include: "self" },
+        ],
+      );
+    },
+  );
+
+  it.each([
+    [
+      "grep -n x a.d && grep -n y b.py",
+      "concatenated rows have different languages: d, python",
+    ],
+    [
+      "grep -n x a.d && cat b.d",
+      "search rows cannot be concatenated with file rows",
+    ],
+    [
+      "echo a && echo b",
+      "list must contain at least one file-content or search command",
+    ],
+  ])("rejects %s", async (command, reason) => {
+    await expect(parseShellSemantic(command)).resolves.toEqual({
       ok: false,
       code: "unsupported_command",
-      reason: "unsupported command in list: grep",
+      reason,
     });
   });
 });

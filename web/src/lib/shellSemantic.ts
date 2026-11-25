@@ -148,7 +148,17 @@ function basename(value: string): string {
 // Layer 3: Classifier
 // ---------------------------------------------------------------------------
 
-const READ_COMMANDS = new Set<string>(["cat", "nl", "sed", "head", "tail"]);
+const STREAM_COMMANDS = new Set<string>([
+  "cat",
+  "nl",
+  "sed",
+  "head",
+  "tail",
+  "grep",
+  "rg",
+  "git",
+  "diff",
+]);
 
 const OPAQUE_TRANSFORM_COMMANDS = new Set<string>([
   "wc",
@@ -1147,12 +1157,7 @@ function classifyGenericList(
     }
 
     let memberOutput: OutputSegment[];
-    if (
-      member.length === 1 &&
-      !READ_COMMANDS.has(cmd.name ?? "") &&
-      cmd.name !== "git" &&
-      cmd.name !== "diff"
-    ) {
+    if (member.length === 1 && !STREAM_COMMANDS.has(cmd.name ?? "")) {
       if (cmd.name === "echo" || cmd.name === "printf" || cmd.name === "wc") {
         const redirectRejection = rejectRedirectEffect(cmd);
         if (redirectRejection) return redirectRejection;
@@ -1182,10 +1187,10 @@ function classifyGenericList(
 
   if (singleResult) return singleResult;
 
-  if (!output.some((s) => s.kind === "rows" && s.numbering?.kind !== "grep")) {
+  if (!output.some((s) => s.kind === "rows")) {
     return reject(
       "unsupported_command",
-      "list must contain at least one read command",
+      "list must contain at least one file-content or search command",
     );
   }
 
@@ -2048,13 +2053,7 @@ function classifyNormalizedAST(
   if (ast.type === "simple") {
     const name = ast.command.name;
     if (!name) return reject("empty", "empty command");
-    if (
-      READ_COMMANDS.has(name) ||
-      name === "rg" ||
-      name === "grep" ||
-      name === "git" ||
-      name === "diff"
-    ) {
+    if (STREAM_COMMANDS.has(name)) {
       return (
         wrapperRejection ?? classifyPipeline([ast.command], originalCommand, "")
       );
