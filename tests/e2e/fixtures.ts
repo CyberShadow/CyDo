@@ -92,6 +92,11 @@ export async function enterSession(page: Page) {
   });
 }
 
+/** Scope per-task controls to this pane because other loaded panes stay mounted while hidden. */
+export function taskPane(page: Page, tid: number): Locator {
+  return page.locator(`div[data-tid="${tid}"]`);
+}
+
 /** Send a message from whichever input is currently visible. */
 export async function sendMessage(page: Page, text: string) {
   const input = page.locator(".input-textarea:visible").first();

@@ -4,6 +4,7 @@ import {
   test,
   expect,
   enterSession,
+  taskPane,
   sendMessage,
   assistantText,
   currentTaskTid,
@@ -771,9 +772,14 @@ test("on_yield does not fire on non-zero exit", { tag: "@no-codex" }, async ({ p
     (e) => e.relation_type === "subtask",
   )!.tid;
 
-  // Kill the sub-task. getByRole targets only accessible elements, so it
-  // finds the sub-task's Kill button and ignores hidden buttons from other tasks.
-  await page.getByRole("button", { name: "Kill" }).click();
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${subTaskTid}"]`),
+  ).toHaveClass(/\bactive\b/);
+
+  // Other task panes stay mounted while hidden, so scope Kill to the child.
+  await taskPane(page, subTaskTid)
+    .getByRole("button", { name: "Kill", exact: true })
+    .click();
 
   // Wait for the sub-task to show as dead via broadcast task_updated.
   await expect(async () => {
