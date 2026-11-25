@@ -4,7 +4,7 @@
 /// See docs/task-types.md for the design document.
 module cydo.domain.task_types.definition;
 
-import configy.attributes : Key, Optional;
+import configy.attributes : Key, Name, Optional;
 import cydo.domain.policy.unsandboxed_command : defaultUnsandboxedCommandExecutionExpr,
 	evaluateUnsandboxedCommandExecution;
 
@@ -114,6 +114,7 @@ struct CreatableEntryPointDef
 	string name; // entry point name from the YAML mapping key
 	@Optional string description;
 	@Optional bool enabled = true;
+	@Optional @Name("default") bool default_;
 }
 
 struct UserEntryPointDef
@@ -380,7 +381,8 @@ string formatCompactCreatableEntryPointToolSummary(TaskTypeDef[] types,
 {
 	return creatableEntryPointsOf(types, entryPoints, typeName).map!((entry) {
 		auto description = entry.edge.description.length ? entry.edge.description : entry.target.description;
-		return "- " ~ entry.edge.name ~ ": " ~ (description.length ? description.lineSplitter.front : "");
+		return "- " ~ entry.edge.name ~ (entry.edge.default_ ? " (default)" : "")
+			~ ": " ~ (description.length ? description.lineSplitter.front : "");
 	}).join("\n");
 }
 
@@ -682,26 +684,49 @@ task_types:
   caller:
     creatable_entry_points:
       a:
-      b: {description: X}
+      b: {description: X, default: true}
       disabled_edge: {enabled: false}
   worker: {}
 user_entry_points:
-  a: {task_type: worker, description: Start A}
-  b: {task_type: worker, description: Start B}
-  disabled_edge: {task_type: worker, description: Start disabled edge target}
+  a: {task_type: worker, description: Start A, prompt_template: worker.md}
+  b: {task_type: worker, description: Start B, prompt_template: worker.md}
+  disabled_edge: {task_type: worker, description: Start disabled edge target, prompt_template: worker.md}
 YAML");
 	scope(exit) remove(basePath);
 	auto config = loadTaskTypes(basePath);
 	assert(config.types.byName("caller").creatable_entry_points.map!(edge => edge.name).array == ["a", "b"]);
+	assert(!config.types.byName("caller").creatable_entry_points.byName("a").default_);
+	assert(config.types.byName("caller").creatable_entry_points.byName("b").default_);
 	assert(config.entryPoints.byName("disabled_edge") !is null);
 	assert(formatCompactCreatableEntryPointToolSummary(config.types, config.entryPoints, "caller")
-		== "- a: Start A\n- b: X");
+		== "- a: Start A\n- b (default): X");
 
-	write(overlayPath, "task_types:\n  caller:\n    creatable_entry_points:\n      b: {enabled: false}\n");
+	string[] validationErrors()
+	{
+		return validateTaskTypes(config.types, config.entryPoints, config.singletons, &isKnownTestAgent);
+	}
+
+	write(overlayPath, "task_types:\n  caller:\n    creatable_entry_points:\n      a: {default: true}\n");
 	scope(exit) remove(overlayPath);
 	config = loadTaskTypes(basePath, overlayPath);
+	auto errors = validationErrors();
+	assert(errors == ["caller: multiple default creatable_entry_points: a, b"], errors.to!string);
+
+	write(overlayPath, "task_types:\n  caller:\n    creatable_entry_points:\n      b: {enabled: false}\n");
+	config = loadTaskTypes(basePath, overlayPath);
 	assert(config.types.byName("caller").creatable_entry_points.map!(edge => edge.name).array == ["a"]);
+	assert(!config.types.byName("caller").creatable_entry_points.byName("a").default_);
 	assert(config.entryPoints.byName("b") !is null);
+	errors = validationErrors();
+	assert(errors.length == 0, errors.to!string);
+
+	write(overlayPath, "task_types:\n  caller:\n    creatable_entry_points:\n"
+		~ "      a: {default: true}\n      b: {default: false}\n");
+	config = loadTaskTypes(basePath, overlayPath);
+	assert(config.types.byName("caller").creatable_entry_points.byName("a").default_);
+	assert(!config.types.byName("caller").creatable_entry_points.byName("b").default_);
+	errors = validationErrors();
+	assert(errors.length == 0, errors.to!string);
 
 	write(overlayPath, "user_entry_points:\n  a: {enabled: false}\n");
 	config = loadTaskTypes(basePath, overlayPath);
@@ -1064,6 +1089,10 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 				errors ~= format("%s: creatable_entry_points '%s' targets system entry point",
 					def.name, edge.name);
 		}
+
+		auto defaults = def.creatable_entry_points.filter!(edge => edge.default_).map!(edge => edge.name).array;
+		if (defaults.length > 1)
+			errors ~= format("%s: multiple default creatable_entry_points: %s", def.name, defaults.join(", "));
 
 		// Check continuation references
 		foreach (cname, ref cont; def.continuations)

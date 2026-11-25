@@ -135,7 +135,7 @@ task_types:
     read_only: true
     output_type: []
     creatable_entry_points:
-      agentic: {}
+      agentic: { default: true }
     creatable_tasks:
       quick_research:
         prompt_template: prompts/quick_research.md

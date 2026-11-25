@@ -195,14 +195,19 @@ landing work.
 A task type can list named user entry points under
 `creatable_entry_points`. Each edge can override the entry point's
 description in the CreateTask tool. Disabling an entry point also
-removes edges that target it. CyDo ships with only the `agentic` entry
-point offered to the `conversation` type.
+removes edges that target it. At most one enabled edge per task type can
+set `default: true`. A pack overlay that moves the default between
+enabled edges must set `default: false` on the old edge and
+`default: true` on the new edge. CyDo ships with `agentic` as the
+default edge for `conversation`.
 
 CreateTask creates an independent top-level task. It defaults to a
-draft in the caller's project. If the call omits the entry point, the
-target workspace's configured default must match an allowed edge by
-name. The target workspace also supplies the default agent. The tool
-can start a task immediately only in the caller's workspace.
+draft in the caller's project. If the call omits `entry_point`,
+CreateTask uses the caller's edge marked `(default)` in the tool
+description. If the caller has no default edge, `entry_point` is
+required. The selected entry point must exist in the target project.
+The target workspace supplies the default agent. The tool can start
+a task immediately only in the caller's workspace.
 
 CyDo records the creator in `creator_tid` and links to that task from
 the created task's header.

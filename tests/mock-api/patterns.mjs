@@ -328,7 +328,7 @@ export function matchPattern(userText) {
     return {
       type: "tool_call",
       name: "mcp__cydo__CreateTask",
-      input: { title: match[1].trim(), prompt: match[2].trim(), entry_point: "agentic" },
+      input: { title: match[1].trim(), prompt: match[2].trim() },
     };
 
   // "call task <type> <prompt>" → MCP Task tool call (create sub-task)

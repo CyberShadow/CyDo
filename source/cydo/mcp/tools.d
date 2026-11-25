@@ -224,7 +224,7 @@ interface CydoTools
 		string prompt,
 		@Description("Short title for the task list. Omit to derive it from the prompt")
 		string title = "",
-		@Description("Entry point to create the task at, from the list above. Defaults to the target workspace's default entry point")
+		@Description("Entry point to create the task at, from the list above. Omit to use the one marked (default)")
 		string entry_point = "",
 		@Description("Absolute path of the project to create the task in. Defaults to your current project")
 		string project = "",

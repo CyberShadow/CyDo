@@ -655,7 +655,6 @@ class App
 			taskAlive: &taskAlive,
 			singletonForTask: &singletonForTask,
 			workspacesWithProject: &workspacesWithProject,
-			defaultEntryPoint: &defaultTaskType,
 			createUserTask: &createUserTask,
 			startUserTask: &startUserTask,
 			singletonsForProject: &taskTypeCatalog.singletonsForProject,

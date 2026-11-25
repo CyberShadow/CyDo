@@ -23,7 +23,7 @@ import std.path : baseName, buildPath;
 import std.process : environment;
 import std.stdio : File, writeln;
 import std.string : indexOf, lineSplitter, strip;
-import std.traits : EnumMembers, FieldNameTuple;
+import std.traits : EnumMembers, FieldNameTuple, getUDAs;
 
 import core.stdc.errno : ENOENT;
 import object : Throwable;
@@ -301,10 +301,19 @@ private Node at(Node node, string[] path)
 
 private void assertKeys(T)(Node node, string[] omitted = null)
 {
+	import configy.attributes : Name;
+
 	string[] expected;
 	foreach (name; FieldNameTuple!T)
-		if (omitted is null || !omitted.canFind(name))
-			expected ~= name;
+	{
+		alias names = getUDAs!(__traits(getMember, T, name), Name);
+		static if (names.length)
+			enum key = names[0].name;
+		else
+			enum key = name;
+		if (!omitted.canFind(key))
+			expected ~= key;
+	}
 	expected.sort;
 	assert(nodeKeys(node) == expected, "schema key mismatch for " ~ T.stringof);
 }
@@ -503,8 +512,9 @@ unittest
 	import cydo.domain.task_types.definition : creatableEntryPointsOf;
 
 	auto packaged = loadTaskTypes(packagedTaskTypesPath());
-	assert(creatableEntryPointsOf(packaged.types, packaged.entryPoints, "conversation")
-		.map!(edge => edge.target.name).array == ["agentic"]);
+	auto conversationEntries = creatableEntryPointsOf(packaged.types, packaged.entryPoints, "conversation");
+	assert(conversationEntries.map!(entry => entry.target.name).array == ["agentic"]);
+	assert(conversationEntries[0].edge.default_);
 	foreach (ref type; packaged.types)
 		if (type.name != "conversation")
 			assert(creatableEntryPointsOf(packaged.types, packaged.entryPoints, type.name).length == 0,

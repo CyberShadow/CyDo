@@ -123,7 +123,6 @@ struct WorkflowToolsHost
 	/// Find or start the named singleton.
 	Promise!int delegate(int callerTid, string name) singletonForTask;
 	string[] delegate(string projectPath) workspacesWithProject;
-	string delegate(string workspace) defaultEntryPoint;
 	int delegate(UserTaskSpec spec) createUserTask;
 	Promise!void delegate(int tid, string prompt) startUserTask;
 	SingletonDef[] delegate(string projectPath) singletonsForProject;
@@ -1115,8 +1114,8 @@ public:
 	Promise!McpResult handleCreateUserTask(string callerTidStr, string prompt, string title,
 		string entryPoint, string project, bool start)
 	{
-		import std.algorithm : canFind, map;
-		import std.array : join;
+		import std.algorithm : canFind, filter, map;
+		import std.array : array, join;
 		import std.conv : to;
 		import std.path : isAbsolute;
 
@@ -1155,19 +1154,25 @@ public:
 			}
 		}
 
-		auto name = entryPoint.length ? entryPoint : host_.defaultEntryPoint(workspace);
 		auto offered = creatableEntryPointsOf(host_.taskTypesForProject(caller.projectPath),
 			host_.entryPointsForProject(caller.projectPath), caller.taskType);
 		auto available = offered.map!(entry => entry.edge.name);
-		if (!name.length || !available.canFind(name))
+		auto name = entryPoint;
+		if (!name.length)
 		{
-			auto valid = offered.length ? available.join(", ") : "(none)";
-			if (!name.length)
-				return resolve(McpResult("Workspace '" ~ workspace
-					~ "' has no default entry point; pass entry_point. Available: " ~ valid, true));
-			return resolve(McpResult("Entry point '" ~ name
-				~ "' is not available to this task. Available: " ~ valid, true));
+			auto defaults = offered.filter!(entry => entry.edge.default_).map!(entry => entry.edge.name).array;
+			if (defaults.length == 0)
+				return resolve(McpResult("entry_point is required: this task has no default entry point. Available: "
+					~ (offered.length ? available.join(", ") : "(none)"), true));
+			if (defaults.length > 1)
+				return resolve(McpResult("entry_point is required: this task has multiple default entry points: "
+					~ defaults.join(", ") ~ ". Available: " ~ available.join(", "), true));
+			name = defaults[0];
 		}
+		else if (!available.canFind(name))
+			return resolve(McpResult("Entry point '" ~ name
+				~ "' is not available to this task. Available: "
+				~ (offered.length ? available.join(", ") : "(none)"), true));
 
 		auto target = host_.entryPointsForProject(projectPath).byName(name);
 		if (target is null || target.system)
@@ -2759,7 +2764,6 @@ version (unittest)
 		SingletonDef[] singletons;
 		UserEntryPointDef[][string] entryPointsByProject;
 		string[][string] projectWorkspaces;
-		string[string] defaultEntryPoints;
 		UserTaskSpec[] createdUserTasks;
 		int[] startedUserTids;
 		string[] startedUserPrompts;
@@ -2825,14 +2829,13 @@ version (unittest)
 			reactivationGate = new Promise!void;
 		}
 
-		void offerUserEntryPoint()
+		void offerUserEntryPoint(bool default_ = true)
 		{
-			taskTypes[0].creatable_entry_points = [CreatableEntryPointDef("review")];
+			taskTypes[0].creatable_entry_points = [CreatableEntryPointDef("review", default_: default_)];
 			entryPointsByProject[tasks[1].projectPath] = [
 				UserEntryPointDef("review", "child", "Review"),
 				UserEntryPointDef("other", "child", "Other"),
 			];
-			defaultEntryPoints["local"] = "review";
 		}
 
 		WorkflowToolsBackend makeBackend()
@@ -2858,7 +2861,6 @@ version (unittest)
 				taskTypesForProject: (string projectPath) => taskTypes,
 				entryPointsForProject: (string projectPath) => entryPointsByProject.get(projectPath, null),
 				workspacesWithProject: (string projectPath) => projectWorkspaces.get(projectPath, null),
-				defaultEntryPoint: (string workspace) => defaultEntryPoints.get(workspace, ""),
 				createUserTask: (UserTaskSpec spec) {
 					createdUserTasks ~= spec;
 					return nextTid++;
@@ -3018,7 +3020,7 @@ unittest
 	import std.path : buildPath;
 
 	auto f = new BatchInvariantFixture;
-	f.offerUserEntryPoint();
+	f.offerUserEntryPoint(false);
 	auto backend = f.makeBackend();
 	auto project = canonicalProjectPath(tempDir());
 	auto missing = buildPath(project, "cydo-create-task-nonexistent-project");
@@ -3038,10 +3040,7 @@ unittest
 	assertRejected("prompt must not be empty", "\u00A0");
 	assertRejected("Entry point 'other' is not available to this task. Available: review",
 		"Review this", "other");
-	f.defaultEntryPoints["local"] = "";
-	assertRejected("Workspace 'local' has no default entry point; pass entry_point. Available: review");
-	f.defaultEntryPoints["local"] = "other";
-	assertRejected("Entry point 'other' is not available to this task. Available: review");
+	assertRejected("entry_point is required: this task has no default entry point. Available: review");
 	assertRejected("project must be an absolute path: relative", "Review this", "review", "relative");
 	assertRejected("Project path must be an existing directory: " ~ missing,
 		"Review this", "review", missing);
@@ -3060,6 +3059,13 @@ unittest
 	f.entryPointsByProject[project][0].system = false;
 	assertRejected("Cannot start a task in workspace 'remote': tasks can be started only in your own workspace "
 		~ "('local'). Create it as a draft instead (omit `start`).", "Review this", "review", project, true);
+
+	f.taskTypes[0].creatable_entry_points = [
+		CreatableEntryPointDef("other", default_: true),
+		CreatableEntryPointDef("review", default_: true),
+	];
+	assertRejected("entry_point is required: this task has multiple default entry points: other, review. "
+		~ "Available: other, review");
 }
 
 version (unittest) private void assertCreatedTaskResult(McpResult result, int tid,
@@ -3084,6 +3090,8 @@ unittest
 
 	auto f = new BatchInvariantFixture;
 	f.offerUserEntryPoint();
+	f.taskTypes[0].creatable_entry_points = [CreatableEntryPointDef("other")]
+		~ f.taskTypes[0].creatable_entry_points;
 	auto backend = f.makeBackend();
 	enum prompt = "\uFEFF  Review this  \u00A0";
 	enum title = "Review";
@@ -3107,8 +3115,6 @@ unittest
 	f.projectWorkspaces[project] = ["remote", "local"];
 	assertDraft(buildPath(tempDir(), "."), "local", project);
 	f.projectWorkspaces[project] = ["remote"];
-	f.defaultEntryPoints["remote"] = "review";
-	f.defaultEntryPoints["local"] = "other";
 	assertDraft(project, "remote", project);
 }
 

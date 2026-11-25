@@ -331,12 +331,20 @@ task_types: {}
 ## Purpose: Overrides the entry point's description in CreateTask.
 ## Type: String.
 ## Default: The entry point's description.
+##
+## default
+## Purpose: Selects this edge when CreateTask omits entry_point.
+## Type: Boolean. At most one enabled edge per task type can set it to true.
+## Default: False.
+## To move the default in a pack overlay, set default: false on the old edge
+## and default: true on the new edge.
 # task_types:
 #   research_console:
 #     creatable_entry_points:
 #       start_research:
 #         enabled: true
 #         description: Open a research task.
+#         default: true
 
 ## continuations
 ## Purpose: Defines named mode switches or handoffs.
@@ -555,6 +563,7 @@ task_types: {}
 #       start_research:
 #         enabled: true
 #         description: Open a research task.
+#         default: true
 #     creatable_tasks:
 #       coordinator:
 #         prompt_template: prompts/quick_research.md
