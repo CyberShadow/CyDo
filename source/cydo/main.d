@@ -137,6 +137,21 @@ unittest
 struct Program
 {
 static:
+	@(`Internal command that reads a shown file inside a task's sandbox.`)
+	void readShownFile(Parameter!(string, "Absolute file path.") path)
+	{
+		import core.stdc.stdlib : exit;
+		import std.stdio : stdout;
+		import cydo.workflow.show : readShowableFile;
+
+		try stdout.rawWrite(readShowableFile(path));
+		catch (Exception e)
+		{
+			stderr.writeln(e.msg);
+			exit(1);
+		}
+	}
+
 	@(`Install documented user configuration templates.`)
 	void init()
 	{
