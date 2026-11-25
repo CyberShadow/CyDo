@@ -931,6 +931,7 @@ version (unittest) private HttpResponse requestOverUnixSocket(
 	mkdir(webDistDir);
 	scope (exit) rmdirRecurse(webDistDir);
 	write(buildPath(webDistDir, "index.html"), "<html>CyDo</html>");
+	write(buildPath(webDistDir, "manifest.json"), `{"name":"CyDo"}`);
 
 	auto adapter = new TransportAdapter(webDistDir ~ "/", WebSocketCallbacks.init, null, McpCallbacks.init);
 	adapter.setAuthCredentials(user, pass);
@@ -944,8 +945,10 @@ version (unittest) private HttpResponse requestOverUnixSocket(
 	auto request = new HttpRequest();
 	request.resource = resource;
 	request.method = "GET";
-	request.headers["Host"] = host;
-	request.headers["Origin"] = origin;
+	if (host !is null)
+		request.headers["Host"] = host;
+	if (origin !is null)
+		request.headers["Origin"] = origin;
 
 	HttpResponse observedResponse;
 	string disconnectReason;
@@ -979,4 +982,37 @@ unittest
 {
 	auto response = requestOverUnixSocket("user", "pass", "/", "cydo.example");
 	assert(response.status == HttpStatusCode.Unauthorized, response.status.to!string);
+}
+
+// The no-auth Host check runs before serving the public manifest.
+unittest
+{
+	import cydo.web.request_policy : noAuthHostText;
+
+	auto allowed = requestOverUnixSocket("", "", "/manifest.json", "localhost:3940");
+	assert(allowed.status == HttpStatusCode.OK, allowed.status.to!string);
+	assert(allowed.headers.get("Content-Type", null) == "application/manifest+json");
+	assert(cast(string) allowed.data[].joinData().toGC() == `{"name":"CyDo"}`);
+
+	auto rejected = requestOverUnixSocket("", "", "/manifest.json", "evil.example:3940");
+	assert(rejected.status == HttpStatusCode.Forbidden, rejected.status.to!string);
+	assert(cast(string) rejected.data[].joinData().toGC() == noAuthHostText);
+}
+
+// A request without a Host header is forbidden when auth is disabled.
+unittest
+{
+	import cydo.web.request_policy : noAuthHostText;
+
+	auto response = requestOverUnixSocket("", "", "/", null);
+	assert(response.status == HttpStatusCode.Forbidden, response.status.to!string);
+	assert(cast(string) response.data[].joinData().toGC() == noAuthHostText);
+}
+
+// An allowed Host reaches the application index without credentials.
+unittest
+{
+	auto response = requestOverUnixSocket("", "", "/", "localhost:3940");
+	assert(response.status == HttpStatusCode.OK, response.status.to!string);
+	assert(cast(string) response.data[].joinData().toGC() == "<html>CyDo</html>");
 }

@@ -33,6 +33,12 @@ struct RequestRejection
 	string logMessage;
 }
 
+private enum loopbackHosts = ["localhost", "127.0.0.1", "[::1]"];
+
+enum noAuthHostText = "Authentication is disabled, so CyDo only accepts requests "
+	~ "addressed to localhost, 127.0.0.1 or [::1]. Set CYDO_AUTH_PASS to access CyDo "
+	~ "by other names.\n";
+
 enum originMismatchText = "WebSocket connection refused: the Origin header does "
 	~ "not match the Host header. If CyDo is behind a reverse proxy, the proxy must "
 	~ "forward the original Host header.\n";
@@ -107,10 +113,15 @@ Nullable!RequestRejection checkRequestPolicy(
 	const(string)[] hostHeaders, const(string)[] originHeaders,
 	bool webSocket, bool authEnabled, string resource)
 {
+	auto host = hostHeaders.length == 1 ? parseHostHeader(hostHeaders[0]) : Nullable!Authority.init;
+	if (!authEnabled && (host.isNull || !loopbackHosts.canFind(host.get.host)))
+		return Nullable!RequestRejection(RequestRejection(HttpStatusCode.Forbidden, noAuthHostText,
+			format!"Rejected request for %s: Host %s is not a loopback name and authentication is disabled"(
+				resource, describeHeaders(hostHeaders))));
+
 	if (!webSocket || originHeaders.length == 0)
 		return Nullable!RequestRejection.init;
 
-	auto host = hostHeaders.length == 1 ? parseHostHeader(hostHeaders[0]) : Nullable!Authority.init;
 	auto origin = originHeaders.length == 1 ? parseOrigin(originHeaders[0]) : Nullable!Origin.init;
 	if (!host.isNull && !origin.isNull)
 	{
@@ -239,4 +250,47 @@ unittest
 			~ expectedOrigin ~ " does not match Host " ~ expectedHost,
 			rejection.get.logMessage);
 	}
+}
+
+// Without auth, the same loopback names are accepted on HTTP and WebSocket routes.
+unittest
+{
+	foreach (host; ["localhost", "localhost:3940", "127.0.0.1", "127.0.0.1:80",
+		"[::1]", "[::1]:3940", "LOCALHOST:3940"])
+	{
+		assert(checkRequestPolicy([host], [], false, false, "/").isNull, host);
+		assert(checkRequestPolicy([host], [], true, false, "/ws").isNull, host);
+	}
+}
+
+// Without auth, every route requires one valid loopback Host.
+unittest
+{
+	import std.array : join;
+
+	foreach (hosts; [[], ["localhost", "localhost"], ["evil.example"],
+		["localhost.evil.example"], ["127.0.0.2"], ["0.0.0.0"], ["[::ffff:127.0.0.1]"],
+		["[0:0:0:0:0:0:0:1]"], ["localhost."], ["192.168.1.5:3940"], ["localhost:"]])
+	{
+		foreach (resource; ["/", "/manifest.json", "/ws"])
+		{
+			auto rejection = checkRequestPolicy(hosts, [], resource == "/ws", false, resource);
+			assert(!rejection.isNull, format!"Accepted Host %s for %s"(hosts, resource));
+			assert(rejection.get.status == HttpStatusCode.Forbidden);
+			assert(rejection.get.responseText == noAuthHostText);
+			auto expectedHost = hosts.length == 0 ? "(none)" : "\"" ~ hosts.join("\", \"") ~ "\"";
+			assert(rejection.get.logMessage == "Rejected request for " ~ resource ~ ": Host "
+				~ expectedHost ~ " is not a loopback name and authentication is disabled",
+				rejection.get.logMessage);
+		}
+	}
+}
+
+// The Host rejection takes precedence over an Origin mismatch.
+unittest
+{
+	auto rejection = checkRequestPolicy(["evil.example"], ["http://localhost"], true, false, "/ws");
+	assert(!rejection.isNull);
+	assert(rejection.get.status == HttpStatusCode.Forbidden);
+	assert(rejection.get.responseText == noAuthHostText);
 }
