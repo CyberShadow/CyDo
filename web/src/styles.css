@@ -1720,6 +1720,7 @@ body,
 
 .local-file-link-controls {
   display: inline-flex;
+  gap: 2px;
   margin-left: 4px;
   vertical-align: text-bottom;
 }
@@ -2150,10 +2151,6 @@ body,
   flex: 1;
   overflow: auto;
   padding: 8px;
-}
-
-.file-viewer .content-viewer-body .text-content {
-  padding: 8px 16px;
 }
 
 .file-viewer .edit-history {
@@ -3170,10 +3167,23 @@ body,
   background: var(--overlay-faint);
 }
 
+.content-viewer-body .write-content-markdown,
 .local-file-expansion-body .write-content-markdown {
   margin-top: 0;
-  padding: 0;
   background: transparent;
+}
+
+.content-viewer-body .text-content,
+.content-viewer-body .write-content-markdown {
+  padding: 8px 16px;
+}
+
+.local-file-expansion-body .write-content-markdown {
+  padding: 0;
+}
+
+.content-viewer-body > div > .markdown-diff-wrap {
+  margin-top: 0;
 }
 
 .source-tree-blocks {

@@ -11,12 +11,13 @@ import {
   langFromPath,
   renderHighlightedRow,
 } from "../highlight";
+import { LiveFilePreview } from "./file-preview/LiveFilePreview";
 import { HunkDiffView } from "./diff/DiffView";
 import { composeHunks } from "../lib/composeHunks";
 import type { PatchHunk } from "../lib/patches";
 import { parsePatchHunksFromText, toUnifiedPatch } from "../lib/patches";
 import { isMarkdownPath } from "../lib/fileFormats";
-import { LocalFileDocument } from "./LocalFileContext";
+import { LocalFileDocument, useLiveFileAccess } from "./LocalFileContext";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 
@@ -401,9 +402,21 @@ function computeDiffstatFromHunks(hunks: PatchHunk[]): {
 // Props
 // ---------------------------------------------------------------------------
 
-type ViewMode = "source" | "diff" | "cumulative" | "rendered";
+export type ViewMode = "source" | "diff" | "cumulative" | "rendered" | "live";
+
+export function fileViewerModeForSelection(
+  previous: ViewMode | undefined,
+  path: string,
+  hasResolvedEdits: boolean,
+  liveAvailable: boolean,
+): ViewMode {
+  if (liveAvailable && !hasResolvedEdits) return "live";
+  if (previous && (previous !== "live" || liveAvailable)) return previous;
+  return isMarkdownPath(path) ? "rendered" : "source";
+}
 
 interface FileViewerProps {
+  linkedFiles: readonly string[];
   trackedFiles: Map<string, TrackedFile>;
   blocks: Map<string, Block>;
   selectedFile: string | null;
@@ -734,6 +747,8 @@ function FragmentMarkdownView({
 
 const ContentViewer = memo(function ContentViewer({
   filePath,
+  liveAvailable,
+  hasResolvedEdits,
   displaySource,
   diffHunks,
   cumulativeHunks,
@@ -742,6 +757,8 @@ const ContentViewer = memo(function ContentViewer({
   onChangeViewMode,
 }: {
   filePath: string;
+  liveAvailable: boolean;
+  hasResolvedEdits: boolean;
   displaySource: SourceContent;
   diffHunks: PatchHunk[] | null;
   cumulativeHunks: PatchHunk[] | null;
@@ -754,43 +771,57 @@ const ContentViewer = memo(function ContentViewer({
   return (
     <div class="content-viewer">
       <div class="content-viewer-tabs">
-        <button
-          class={viewMode === "source" ? "active" : ""}
-          onClick={() => {
-            onChangeViewMode("source");
-          }}
-        >
-          Source
-        </button>
-        <button
-          class={viewMode === "diff" ? "active" : ""}
-          onClick={() => {
-            onChangeViewMode("diff");
-          }}
-        >
-          Diff
-        </button>
-        <button
-          class={viewMode === "cumulative" ? "active" : ""}
-          onClick={() => {
-            onChangeViewMode("cumulative");
-          }}
-        >
-          Cumulative
-        </button>
-        {isMarkdown && (
+        {hasResolvedEdits && (
+          <>
+            <button
+              class={viewMode === "source" ? "active" : ""}
+              onClick={() => {
+                onChangeViewMode("source");
+              }}
+            >
+              Source
+            </button>
+            <button
+              class={viewMode === "diff" ? "active" : ""}
+              onClick={() => {
+                onChangeViewMode("diff");
+              }}
+            >
+              Diff
+            </button>
+            <button
+              class={viewMode === "cumulative" ? "active" : ""}
+              onClick={() => {
+                onChangeViewMode("cumulative");
+              }}
+            >
+              Cumulative
+            </button>
+            {isMarkdown && (
+              <button
+                class={viewMode === "rendered" ? "active" : ""}
+                onClick={() => {
+                  onChangeViewMode("rendered");
+                }}
+              >
+                Rendered
+              </button>
+            )}
+          </>
+        )}
+        {liveAvailable && (
           <button
-            class={viewMode === "rendered" ? "active" : ""}
+            class={viewMode === "live" ? "active" : ""}
             onClick={() => {
-              onChangeViewMode("rendered");
+              onChangeViewMode("live");
             }}
           >
-            Rendered
+            Live
           </button>
         )}
       </div>
       <div class="content-viewer-body">
-        {isDeleted && (
+        {isDeleted && viewMode !== "live" && (
           <div class="file-viewer-empty">File deleted in this change.</div>
         )}
         {viewMode === "source" && (
@@ -813,6 +844,9 @@ const ContentViewer = memo(function ContentViewer({
           )}
         {viewMode === "rendered" && (
           <FragmentMarkdownView source={displaySource} filePath={filePath} />
+        )}
+        {viewMode === "live" && (
+          <LiveFilePreview key={filePath} path={filePath} />
         )}
       </div>
     </div>
@@ -891,6 +925,7 @@ function EditHistory({
 // ---------------------------------------------------------------------------
 
 export function FileViewer({
+  linkedFiles,
   trackedFiles,
   blocks,
   selectedFile,
@@ -905,9 +940,10 @@ export function FileViewer({
   onResize,
   onScrollToToolCall,
 }: FileViewerProps) {
-  const paths = [...trackedFiles.keys()];
+  const liveAvailable = useLiveFileAccess(selectedFile) !== null;
+  const paths = [...new Set([...trackedFiles.keys(), ...linkedFiles])];
   const treeNodes = buildFileTree(paths);
-  const file = selectedFile ? trackedFiles.get(selectedFile) : null;
+  const file = selectedFile ? trackedFiles.get(selectedFile) : undefined;
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Resolve file content on-demand — only computed when the viewer is open
@@ -1021,28 +1057,38 @@ export function FileViewer({
             />
           ))}
         </div>
-        {file && resolved ? (
+        {selectedFile &&
+        (resolved || (liveAvailable && paths.includes(selectedFile))) ? (
           <>
             <ContentViewer
-              filePath={file.path}
+              liveAvailable={liveAvailable}
+              filePath={selectedFile}
+              hasResolvedEdits={resolved !== null}
               displaySource={displaySource}
               diffHunks={diffHunks}
               cumulativeHunks={cumulativeHunks}
               isDeleted={
                 selectedResolvedEdit
                   ? !!selectedResolvedEdit.isDeleted
-                  : resolved.isDeleted
+                  : !!resolved?.isDeleted
               }
-              viewMode={viewMode}
+              viewMode={fileViewerModeForSelection(
+                viewMode,
+                selectedFile,
+                resolved !== null,
+                liveAvailable,
+              )}
               onChangeViewMode={onChangeViewMode}
             />
-            <EditHistory
-              file={file}
-              resolvedEdits={resolved.resolved}
-              selectedEditIndex={selectedEditIndex}
-              onSelectEdit={onSelectEdit}
-              onScrollToToolCall={onScrollToToolCall}
-            />
+            {file && resolved && (
+              <EditHistory
+                file={file}
+                resolvedEdits={resolved.resolved}
+                selectedEditIndex={selectedEditIndex}
+                onSelectEdit={onSelectEdit}
+                onScrollToToolCall={onScrollToToolCall}
+              />
+            )}
           </>
         ) : (
           <div class="content-viewer">

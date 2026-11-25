@@ -1,3 +1,4 @@
+import viewFileIcon from "../icons/view-file.svg?raw";
 import { parseCreatedTaskResult } from "../cydoToolResults";
 import { h, Fragment, ComponentChildren } from "preact";
 import { memo } from "preact/compat";
@@ -438,19 +439,10 @@ function ViewFileButton({
       }}
       title="View file"
     >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-        <circle cx="12" cy="12" r="3" />
-      </svg>
+      <span
+        class="action-icon"
+        dangerouslySetInnerHTML={{ __html: viewFileIcon }}
+      />
     </button>
   );
 }

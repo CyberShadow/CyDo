@@ -6,6 +6,7 @@ export interface LocalFileAccess {
   tid: number;
   baseDir: string | null;
   ancestorPaths: readonly string[];
+  openInFileViewer(path: string): void;
 }
 
 export const LocalFileContext = createContext<LocalFileAccess | null>(null);

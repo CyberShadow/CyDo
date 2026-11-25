@@ -20,6 +20,7 @@ import type {
 import type { HistoryBoundary } from "./types";
 import { itemBlockKey } from "./types";
 import { toolIs } from "./toolIdentity";
+import { normalizeFilePath } from "./lib/localFileLinks";
 import type {
   AgnosticEvent,
   AssistantContentBlock,
@@ -99,19 +100,11 @@ function appendRawSource(
   }
 }
 
-function toAbsolutePath(path: string, cwd?: string): string {
-  if (path.startsWith("/")) return path;
-  if (!cwd || cwd.length === 0) return path;
-  const base = cwd.endsWith("/") ? cwd.slice(0, -1) : cwd;
-  return `${base}/${path}`;
-}
-
 interface BuildEditsParams {
   toolUseId: string;
   messageId: string;
   status: FileEditStatus;
   source: FileEditSource;
-  cwd?: string;
   turnId?: string;
 }
 
@@ -125,7 +118,7 @@ function buildFileEdit(
   return {
     toolUseId: params.toolUseId,
     messageId: params.messageId,
-    filePath: toAbsolutePath(path, params.cwd),
+    filePath: path,
     type: op === "update" || op === "edit" ? "edit" : "write",
     op,
     status: params.status,
@@ -141,7 +134,6 @@ function buildEditsFromApplyPatchInput(
   toolUseId: string,
   messageId: string,
   status: FileEditStatus,
-  cwd?: string,
 ): FileEdit[] {
   const changes = getApplyPatchFileChanges(input);
   const edits: FileEdit[] = [];
@@ -157,7 +149,6 @@ function buildEditsFromApplyPatchInput(
           messageId,
           status,
           source: "codex-apply_patch-history",
-          cwd,
         },
         path,
         op,
@@ -174,7 +165,6 @@ function buildEditsFromCodexFileChangeEvent(
   toolUseId: string,
   messageId: string,
   status: FileEditStatus,
-  cwd?: string,
 ): FileEdit[] {
   const parsedRaw =
     typeof rawEvent === "string" ? tryParseJson(rawEvent) : rawEvent;
@@ -208,7 +198,6 @@ function buildEditsFromCodexFileChangeEvent(
           messageId,
           status,
           source: "codex-fileChange",
-          cwd,
           turnId,
         },
         path,
@@ -540,18 +529,12 @@ function appendTrackedEdits(
   if (edits.length === 0) return state;
   const trackedFiles = new Map(state.trackedFiles);
   for (const edit of edits) {
-    const existing = trackedFiles.get(edit.filePath);
-    if (existing) {
-      trackedFiles.set(edit.filePath, {
-        ...existing,
-        edits: [...existing.edits, edit],
-      });
-    } else {
-      trackedFiles.set(edit.filePath, {
-        path: edit.filePath,
-        edits: [edit],
-      });
-    }
+    const path = normalizeFilePath(edit.filePath, state.sessionInfo?.cwd);
+    const existing = trackedFiles.get(path);
+    trackedFiles.set(path, {
+      path,
+      edits: [...(existing?.edits ?? []), { ...edit, filePath: path }],
+    });
   }
   return { ...state, trackedFiles };
 }
@@ -683,7 +666,6 @@ function trackResultFileEdits(
               messageId,
               status: "applied",
               source: "claude-bashEditDiff",
-              cwd: state.sessionInfo?.cwd,
             },
             change.path!,
             toFileEditOperation(change.op)!,
@@ -709,7 +691,6 @@ function trackResultFileEdits(
         block.tool_use_id,
         messageId,
         "applied",
-        state.sessionInfo?.cwd,
       );
       state = appendTrackedEdits(state, edits);
       continue;
@@ -1355,7 +1336,6 @@ export function reduceItemStarted(
         event.item_id,
         msg.id,
         "pending",
-        state.sessionInfo?.cwd,
       );
       state = appendTrackedEdits(state, edits);
     } else if (
@@ -1366,7 +1346,6 @@ export function reduceItemStarted(
         event.item_id,
         msg.id,
         "pending",
-        state.sessionInfo?.cwd,
       );
       state = appendTrackedEdits(state, edits);
     }

@@ -1085,6 +1085,38 @@ describe("queue history reducer", () => {
 });
 
 describe("tracked file edits", () => {
+  it("tracks relative and absolute spellings of a file under one normalized path", () => {
+    const initial = makeState();
+    let state: TaskState = {
+      ...initial,
+      driver: "claude",
+      sessionInfo: { ...initial.sessionInfo, cwd: "/w" },
+    };
+    for (const [id, path] of [
+      ["relative", "./docs/x.md"],
+      ["absolute", "/w//docs/../docs/x.md"],
+    ] as const) {
+      state = reduceMessage(state, {
+        type: "item/started",
+        item_type: "tool_use",
+        item_id: id,
+        name: "Write",
+        input: { file_path: path, content: id },
+      });
+      state = reduceMessage(state, {
+        type: "item/result",
+        item_id: id,
+        content: [],
+      });
+    }
+
+    const path = "/w/docs/x.md";
+    expect([...state.trackedFiles.keys()]).toEqual([path]);
+    expect(
+      state.trackedFiles.get(path)?.edits.map((edit) => edit.filePath),
+    ).toEqual([path, path]);
+  });
+
   it("tracks every included Claude Bash edit-diff hunk at result time", () => {
     const started = reduceMessage(
       { ...makeState(), driver: "claude" },

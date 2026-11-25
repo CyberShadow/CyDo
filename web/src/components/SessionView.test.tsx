@@ -3,11 +3,20 @@ import { act } from "preact/test-utils";
 import { ownedRoots } from "../test-support/preactAct";
 import { describe, expect, it, vi } from "vitest";
 import renderToString from "preact-render-to-string";
+import { reduceMessage } from "../sessionReducer";
+import { resetTaskForHistoryReplay } from "../historyReplayReset";
 import { makeTaskState, type TaskState } from "../types";
 import { createOrdinaryDraftStore } from "../ordinaryDraftStore";
 import type { AgentUsageMessage } from "../protocol";
 
 vi.hoisted(() => {
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
   vi.stubGlobal("CSS", { supports: () => false });
   vi.stubGlobal("matchMedia", () => ({
     matches: true,
@@ -209,6 +218,22 @@ it.each([
 ] as const)(
   "renders assistant local embeds inert in %s",
   async (_name, exported, report, source) => {
+    const previousObserver = globalThis.IntersectionObserver;
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        constructor(
+          private readonly callback: (
+            entries: { isIntersecting: boolean }[],
+          ) => void,
+        ) {}
+
+        observe() {
+          this.callback([{ isIntersecting: true }]);
+        }
+        disconnect() {}
+      },
+    );
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(() => new Promise(() => {}));
@@ -269,6 +294,179 @@ it.each([
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       fetchMock.mockRestore();
+      vi.stubGlobal("IntersectionObserver", previousObserver);
     }
   },
 );
+
+describe("SessionView linked files", () => {
+  const report = "/w/report.md";
+  const notes = "/w/notes.md";
+
+  function linkedSession() {
+    const task = makeTaskState(7, false, false, undefined, true);
+    task.status = "completed";
+    task.messages = [
+      { id: "reply", type: "assistant", content: [], blockIds: ["text"] },
+    ];
+    task.blocks.set("text", {
+      itemId: "text",
+      type: "text",
+      text: `[Report](${report}) [Notes](${notes})`,
+      completed: true,
+      creationOrder: 0,
+    });
+    return task;
+  }
+
+  async function click(root: HTMLElement, selector: string) {
+    await act(() => {
+      const button = root.querySelector<HTMLButtonElement>(selector);
+      expect(button).not.toBeNull();
+      button!.click();
+    });
+  }
+
+  function openLink(root: HTMLElement, path: string) {
+    return click(root, `button[aria-label="Open ${path} in the file viewer"]`);
+  }
+
+  function selectedPath(root: HTMLElement) {
+    return root
+      .querySelector(".file-tree-item.selected")
+      ?.getAttribute("title");
+  }
+
+  it("opens a link in Live and keeps its tree entry when reopened via another link", async () => {
+    const root = roots.create();
+    const task = linkedSession();
+    roots.render(session(null, task), root);
+    await openLink(root, report);
+    expect(selectedPath(root)).toBe(report);
+    expect(
+      root.querySelector(".content-viewer-tabs .active")?.textContent,
+    ).toBe("Live");
+
+    await click(root, ".file-viewer-close");
+    expect(root.querySelector(".file-viewer")).toBeNull();
+
+    await openLink(root, notes);
+    expect(selectedPath(root)).toBe(notes);
+    expect(
+      root.querySelectorAll(`.file-tree-item[title="${report}"]`),
+    ).toHaveLength(1);
+  });
+
+  it("opens a relative Markdown link in the same entry as a tracked edit", async () => {
+    const root = roots.create();
+    let task = reduceMessage(linkedSession(), {
+      type: "session/init",
+      model: "claude-sonnet",
+      agent_version: "1.0.0",
+      session_id: "sid",
+      cwd: "/w",
+      tools: [],
+      permission_mode: "default",
+      agent: "claude",
+      supports_file_revert: false,
+    });
+    task = reduceMessage(task, {
+      type: "item/started",
+      item_type: "tool_use",
+      item_id: "write-report",
+      name: "Write",
+      input: { file_path: "./docs/report.md", content: "# Report" },
+    });
+    task = reduceMessage(task, {
+      type: "item/result",
+      item_id: "write-report",
+      content: [],
+    });
+    task = reduceMessage(task, {
+      type: "item/started",
+      item_type: "text",
+      item_id: "link-report",
+      text: "[Report](docs/report.md)",
+    });
+    roots.render(session(null, task), root);
+
+    const path = "/w/docs/report.md";
+    await click(root, 'button[title="View file"]');
+    expect(selectedPath(root)).toBe(path);
+    await openLink(root, path);
+    expect(selectedPath(root)).toBe(path);
+    expect(root.querySelectorAll(".file-tree-item")).toHaveLength(1);
+    expect(
+      Array.from(
+        root.querySelectorAll(".content-viewer-tabs button"),
+        (tab) => tab.textContent,
+      ),
+    ).toEqual(["Source", "Diff", "Cumulative", "Rendered", "Live"]);
+    expect(
+      root.querySelector(".content-viewer-tabs .active")?.textContent,
+    ).toBe("Live");
+  });
+
+  it("keeps edit-derived views available without Live in an exported session", async () => {
+    const root = roots.create();
+    const initial = { ...linkedSession(), driver: "claude" as const };
+    let task = reduceMessage(initial, {
+      type: "item/started",
+      item_type: "tool_use",
+      item_id: "write-export",
+      name: "Write",
+      input: { file_path: report, content: "# Exported edit" },
+    });
+    task = reduceMessage(task, {
+      type: "item/result",
+      item_id: "write-export",
+      content: [],
+    });
+
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    try {
+      roots.render(session(null, task, true), root);
+      await click(root, 'button[title="View file"]');
+      expect(selectedPath(root)).toBe(report);
+      expect(
+        Array.from(
+          root.querySelectorAll(".content-viewer-tabs button"),
+          (tab) => tab.textContent,
+        ),
+      ).toEqual(["Source", "Diff", "Cumulative", "Rendered"]);
+      expect(root.querySelector(".edit-history")).not.toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("keeps a linked selection open when replay clears its tracked entry", async () => {
+    const root = roots.create();
+    const task = linkedSession();
+    task.trackedFiles.set(report, {
+      path: report,
+      edits: [
+        {
+          toolUseId: "write",
+          messageId: "reply",
+          filePath: report,
+          type: "write",
+          op: "add",
+          status: "applied",
+          source: "claude-tool",
+          payload: { mode: "full_content", content: "# Original edit" },
+        },
+      ],
+    });
+    roots.render(session(null, task), root);
+    await openLink(root, report);
+    expect(selectedPath(root)).toBe(report);
+
+    roots.render(session(null, resetTaskForHistoryReplay(task, 1)), root);
+    expect(selectedPath(root)).toBe(report);
+    expect(
+      root.querySelector(".content-viewer-tabs .active")?.textContent,
+    ).toBe("Live");
+  });
+});

@@ -41,7 +41,14 @@ describe("LiveFilePreview", () => {
       roots.render(
         <LocalFileContext.Provider
           value={
-            withContext ? { tid: 7, baseDir: null, ancestorPaths: [] } : null
+            withContext
+              ? {
+                  tid: 7,
+                  baseDir: null,
+                  ancestorPaths: [],
+                  openInFileViewer() {},
+                }
+              : null
           }
         >
           <LiveFilePreview path={path} />

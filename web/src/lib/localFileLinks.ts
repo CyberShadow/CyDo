@@ -21,6 +21,11 @@ export function resolvePosixPath(base: string, path: string): string {
   return `/${parts.join("/")}`;
 }
 
+export function normalizeFilePath(path: string, cwd?: string): string {
+  if (!cwd && !path.startsWith("/")) return path;
+  return resolvePosixPath(cwd ?? "/", path);
+}
+
 export function classifyLinkTarget(
   url: string,
   baseDir: string | null,

@@ -1,3 +1,4 @@
+import viewFileIcon from "../icons/view-file.svg?raw";
 import {
   h,
   Fragment,
@@ -412,6 +413,7 @@ function LocalFileControls({
   expanded: boolean;
   toggle: () => void;
 }) {
+  const access = useContext(LocalFileContext)!;
   const action = expanded ? "Collapse" : "Expand";
   return (
     <span class="local-file-link-controls">
@@ -430,6 +432,20 @@ function LocalFileControls({
             />
           </svg>
         </span>
+      </button>
+      <button
+        type="button"
+        class="msg-action-btn"
+        aria-label={`Open ${path} in the file viewer`}
+        title="Open in file viewer"
+        onClick={() => {
+          access.openInFileViewer(path);
+        }}
+      >
+        <span
+          class="action-icon"
+          dangerouslySetInnerHTML={{ __html: viewFileIcon }}
+        />
       </button>
     </span>
   );

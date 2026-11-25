@@ -1,3 +1,4 @@
+import { normalizeFilePath } from "../lib/localFileLinks";
 import { LocalFileContext } from "./LocalFileContext";
 import type { CreatedByLink } from "../createdByLink";
 import { memo } from "preact/compat";
@@ -31,10 +32,13 @@ import { SessionConfig } from "./SessionConfig";
 import { AgentPicker } from "./AgentPicker";
 import { AskUserForm } from "./AskUserForm";
 import { PermissionPromptForm } from "./PermissionPromptForm";
-import { FileViewer } from "./FileViewer";
+import {
+  FileViewer,
+  fileViewerModeForSelection,
+  type ViewMode,
+} from "./FileViewer";
 import { requestNotificationPermissionFromGesture } from "../useNotifications";
 import { LogoBanner } from "./LogoBanner";
-import { isMarkdownPath } from "../lib/fileFormats";
 
 interface Props {
   task: TaskState;
@@ -170,37 +174,50 @@ function SessionViewInner({
     open: boolean;
     selectedFile: string | null;
     selectedEditIndex: number | null;
-    viewMode: "source" | "diff" | "cumulative" | "rendered";
+    viewMode: ViewMode;
     height: number;
   } | null>(null);
 
+  const [linkedFiles, setLinkedFiles] = useState<readonly string[]>([]);
   const trackedFilesRef = useRef(task.trackedFiles);
   const cwdRef = useRef(task.sessionInfo?.cwd);
   trackedFilesRef.current = task.trackedFiles;
   cwdRef.current = task.sessionInfo?.cwd;
 
-  const openFileViewer = useCallback((filePath: string) => {
-    const cwd = cwdRef.current;
-    const trackedFiles = trackedFilesRef.current;
-    const absolutePath =
-      !trackedFiles.has(filePath) &&
-      !filePath.startsWith("/") &&
-      cwd &&
-      trackedFiles.has(`${cwd}/${filePath}`)
-        ? `${cwd}/${filePath}`
-        : filePath;
-    const tracked = trackedFiles.get(absolutePath);
-    setFileViewerState((prev) => ({
-      open: true,
-      selectedFile: absolutePath,
-      selectedEditIndex:
-        tracked && tracked.edits.length > 0 ? tracked.edits.length - 1 : null,
-      viewMode:
-        prev?.viewMode ??
-        (isMarkdownPath(absolutePath) ? "rendered" : "source"),
-      height: prev?.height ?? 300,
-    }));
-  }, []); // stable — reads latest values from refs
+  const openFileViewer = useCallback(
+    (filePath: string, mode?: ViewMode) => {
+      const cwd = cwdRef.current;
+      const trackedFiles = trackedFilesRef.current;
+      const absolutePath = trackedFiles.has(filePath)
+        ? filePath
+        : normalizeFilePath(filePath, cwd);
+      const tracked = trackedFiles.get(absolutePath);
+      setFileViewerState((prev) => ({
+        open: true,
+        selectedFile: absolutePath,
+        selectedEditIndex:
+          tracked && tracked.edits.length > 0 ? tracked.edits.length - 1 : null,
+        viewMode: fileViewerModeForSelection(
+          mode ?? prev?.viewMode,
+          absolutePath,
+          tracked !== undefined,
+          !exportMode && absolutePath.startsWith("/"),
+        ),
+        height: prev?.height ?? 300,
+      }));
+    },
+    [exportMode],
+  );
+
+  const openLinkedFile = useCallback(
+    (path: string) => {
+      setLinkedFiles((files) =>
+        files.includes(path) ? files : [...files, path],
+      );
+      openFileViewer(path, "live");
+    },
+    [openFileViewer],
+  );
 
   const closeFileViewer = useCallback(() => {
     setFileViewerState(null);
@@ -208,9 +225,13 @@ function SessionViewInner({
 
   useEffect(() => {
     if (!fileViewerState?.selectedFile) return;
-    if (task.trackedFiles.has(fileViewerState.selectedFile)) return;
+    if (
+      task.trackedFiles.has(fileViewerState.selectedFile) ||
+      linkedFiles.includes(fileViewerState.selectedFile)
+    )
+      return;
     setFileViewerState(null);
-  }, [fileViewerState?.selectedFile, task.trackedFiles]);
+  }, [fileViewerState?.selectedFile, task.trackedFiles, linkedFiles]);
 
   const scrollToToolCall = useCallback((toolUseId: string) => {
     const el = document.getElementById(`tool-${toolUseId}`);
@@ -263,12 +284,9 @@ function SessionViewInner({
     setFileViewerState((s) => (s ? { ...s, selectedEditIndex: idx } : s));
   }, []);
 
-  const handleChangeViewMode = useCallback(
-    (mode: "source" | "diff" | "cumulative" | "rendered") => {
-      setFileViewerState((s) => (s ? { ...s, viewMode: mode } : s));
-    },
-    [],
-  );
+  const handleChangeViewMode = useCallback((mode: ViewMode) => {
+    setFileViewerState((s) => (s ? { ...s, viewMode: mode } : s));
+  }, []);
 
   const handleResize = useCallback((h: number) => {
     setFileViewerState((s) => (s ? { ...s, height: h } : s));
@@ -396,8 +414,13 @@ function SessionViewInner({
 
   const baseDir = task.sessionInfo?.cwd || null;
   const fileAccess = useMemo(
-    () => ({ tid, baseDir, ancestorPaths: [] }),
-    [tid, baseDir],
+    () => ({
+      tid,
+      baseDir,
+      ancestorPaths: [],
+      openInFileViewer: openLinkedFile,
+    }),
+    [tid, baseDir, openLinkedFile],
   );
 
   const view = (
@@ -438,6 +461,7 @@ function SessionViewInner({
       />
       {fileViewerState && (
         <FileViewer
+          linkedFiles={linkedFiles}
           trackedFiles={task.trackedFiles}
           blocks={task.blocks}
           itemIdMap={task.itemIdMap}

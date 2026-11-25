@@ -7,7 +7,12 @@ import { Markdown } from "./Markdown";
 import { FileContentPreview } from "./file-preview/FileContentPreview";
 
 const roots = ownedRoots();
-const context = { tid: 7, baseDir: "/w", ancestorPaths: [] };
+const context = {
+  tid: 7,
+  baseDir: "/w",
+  ancestorPaths: [],
+  openInFileViewer() {},
+};
 const fetchMock = vi.fn<typeof fetch>();
 
 beforeEach(() => {
@@ -86,6 +91,11 @@ describe("Markdown local file layout", () => {
     expect(anchor.textContent).toBe("shot");
     expect(paragraph.querySelector("a button")).toBeNull();
     expect(buttons.classList.contains("local-file-link-controls")).toBe(true);
+    expect(
+      buttons.querySelector(
+        'button[aria-label="Open /w/shot.png in the file viewer"]',
+      ),
+    ).not.toBeNull();
     const [toggle] = controls(buttons);
     expect(toggle?.getAttribute("aria-expanded")).toBe("true");
     expect(captions(paragraph.nextElementSibling!)).toEqual(["/w/shot.png"]);
