@@ -128,9 +128,18 @@ export function usageFillColor(
   return "rgb(173, 186, 73)";
 }
 
+export function percentUsageFillColor(utilizationPercent: number): string {
+  const pct = clamp01(utilizationPercent / 100) * 100;
+  const red = Math.round(255 * Math.min(1, pct / 50));
+  const green = Math.round(255 * Math.min(1, (100 - pct) / 50));
+  return `rgb(${red}, ${green}, 0)`;
+}
+
 function usageTitle(
   label: string,
   window: AgentUsageLimitWindow | undefined,
+  pct: number | null,
+  remaining: boolean,
 ): string {
   const status = window?.status ? `, status: ${window.status}` : "";
   const resetTs = window?.resetsAt;
@@ -138,9 +147,9 @@ function usageTitle(
     Number.isFinite(resetTs) && resetTs
       ? `, resets: ${new Date(resetTs * 1000).toLocaleString()}`
       : "";
-  const pct = usagePercent(window?.utilization);
   if (pct === null) return `${label}: unknown${status}${reset}`;
-  return `${label}: ${pct.toFixed(1)}%${status}${reset}`;
+  const suffix = remaining ? " remaining" : "";
+  return `${label}: ${pct.toFixed(1)}%${suffix}${status}${reset}`;
 }
 
 export function SystemBanner({
@@ -168,8 +177,10 @@ export function SystemBanner({
   onResume,
   exportMode,
   claudeUsage,
+  ui,
   createdBy,
 }: Props) {
+  const remaining = ui?.usage?.remaining ?? false;
   const [detailsOpen, setDetailsOpen] = useState(false);
   const liveStatus = normalizeSessionStatus(sessionStatus);
   let processingText: string | null = null;
@@ -282,25 +293,29 @@ export function SystemBanner({
               const color =
                 pct === null
                   ? "var(--border)"
-                  : usageFillColor(
-                      pct,
-                      row.window?.resetsAt,
-                      row.windowSeconds,
-                      nowSeconds,
-                    );
-              const valueText = pct === null ? "--" : `${pct.toFixed(0)}%`;
+                  : ui?.usage?.coloring === "percent"
+                    ? percentUsageFillColor(pct)
+                    : usageFillColor(
+                        pct,
+                        row.window?.resetsAt,
+                        row.windowSeconds,
+                        nowSeconds,
+                      );
+              const shownPct = pct !== null && remaining ? 100 - pct : pct;
+              const valueText =
+                shownPct === null ? "--" : `${shownPct.toFixed(0)}%`;
               return (
                 <div
                   key={row.label}
                   class="banner-usage-row"
-                  title={usageTitle(row.label, row.window)}
+                  title={usageTitle(row.label, row.window, shownPct, remaining)}
                 >
                   <span class="banner-usage-label">{row.label}</span>
                   <span class="banner-usage-bar">
                     <span
                       class="banner-usage-fill"
                       style={{
-                        width: pct === null ? "0%" : `${pct}%`,
+                        width: `${shownPct ?? 0}%`,
                         backgroundColor: color,
                       }}
                     />

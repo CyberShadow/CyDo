@@ -221,7 +221,7 @@ unittest
 	import std.algorithm : canFind;
 
 	auto status = buildServerStatus(false, false, "/nonexistent", UiConfig.init);
-	assert(status.canFind(`"ui":{}`), status);
+	assert(status.canFind(`"ui":{"usage":{"coloring":"pace","remaining":false}}`), status);
 }
 
 string buildNoticesList(Notice[string] activeNotices)

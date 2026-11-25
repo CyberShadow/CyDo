@@ -1,3 +1,4 @@
+import { readFileSync } from "fs";
 import {
   test,
   expect,
@@ -6,7 +7,7 @@ import {
   assistantText,
   responseTimeout,
 } from "./fixtures";
-import { writeTestConfig } from "./test-config";
+import { withTestAgentEnvironment, writeTestConfig } from "./test-config";
 
 test.use({
   backendEnv: {
@@ -48,6 +49,56 @@ test("usage banner reflects pushed rate_limit_event headers", async ({
     .filter({ hasText: "Week" })
     .first();
   await expect(weekRow.locator(".banner-usage-value")).toHaveText("71%");
+});
+
+test("usage banner updates when display settings are reloaded", { tag: "@claude-only" }, async ({
+  page,
+  agentType,
+}) => {
+  const configPath = "/tmp/playwright-home/.config/cydo/config.yaml";
+  const original = readFileSync(configPath, "utf8");
+  const sharedPrefix = withTestAgentEnvironment("").trimEnd() + "\n";
+  expect(original.startsWith(sharedPrefix)).toBe(true);
+  const config = original.slice(sharedPrefix.length);
+
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+  await sendMessage(page, "usage headers fixture 5h");
+  await expect(assistantText(page, "usage-headers-5h")).toHaveCount(1, {
+    timeout,
+  });
+
+  const fiveHourRow = page
+    .locator(".banner-usage-row")
+    .filter({ has: page.getByText("5h", { exact: true }) });
+  const value = fiveHourRow.locator(".banner-usage-value");
+  const fill = fiveHourRow.locator(".banner-usage-fill");
+  const width = () => fill.evaluate((element) => element.style.width);
+
+  await expect(value).toHaveText("42%");
+  await expect.poll(width).toBe("42%");
+  await expect(fill).toHaveCSS("background-color", "rgb(220, 67, 67)");
+
+  try {
+    writeTestConfig(
+      configPath,
+      `${config.trimEnd()}
+ui:
+  usage:
+    coloring: percent
+    remaining: true
+`,
+    );
+    await expect(value).toHaveText("58%");
+    await expect.poll(width).toBe("58%");
+    await expect(fill).toHaveCSS("background-color", "rgb(214, 255, 0)");
+  } finally {
+    writeTestConfig(configPath, config);
+  }
+
+  await expect(value).toHaveText("42%");
+  await expect.poll(width).toBe("42%");
+  await expect(fill).toHaveCSS("background-color", "rgb(220, 67, 67)");
 });
 
 test("custom Claude-backed agent still updates the Claude usage banner", { tag: "@claude-only" }, async ({

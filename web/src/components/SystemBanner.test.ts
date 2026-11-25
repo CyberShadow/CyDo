@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import { h } from "preact";
 import renderToString from "preact-render-to-string";
 import type { CreatedByLink } from "../createdByLink";
-import type { AgentUsageMessage } from "../protocol";
+import type { AgentUsageMessage, UiConfig } from "../protocol";
 import {
   computeUsagePaceRatio,
   isCompactingStatus,
   loginExpiryWarning,
   normalizeSessionStatus,
+  percentUsageFillColor,
   SystemBanner,
   usagePercent,
   usageFillColor,
@@ -19,12 +20,14 @@ function renderSystemBanner({
   tasksLoading = false,
   exportMode = false,
   createdBy,
+  ui,
 }: {
   claudeUsage?: AgentUsageMessage;
   connected?: boolean;
   tasksLoading?: boolean;
   exportMode?: boolean;
   createdBy?: CreatedByLink;
+  ui?: UiConfig;
 } = {}): string {
   return renderToString(
     h(SystemBanner, {
@@ -43,6 +46,7 @@ function renderSystemBanner({
       claudeUsage,
       exportMode,
       createdBy,
+      ui,
     }),
   );
 }
@@ -161,18 +165,47 @@ describe("SystemBanner Claude usage", () => {
     expect(html).not.toContain("--");
   });
 
-  it("renders usage when a Claude window has finite utilization", () => {
-    const futureTime = Math.floor(Date.now() / 1000) + 10000;
+  it("renders used share with pace coloring by default", () => {
     const html = renderSystemBanner({
       claudeUsage: usageMessage({
-        five_hour: { utilization: 0.42, resetsAt: futureTime },
+        five_hour: { utilization: 0.42 },
         seven_day: {},
       }),
     });
 
-    expect(html).toContain("banner-usage");
-    expect(html).toContain("42%");
+    expect(html).toContain('title="5h: 42.0%"');
+    expect(html).toContain(
+      'style="width:42%;background-color:rgb(220, 67, 67);"',
+    );
+    expect(html).toContain('class="banner-usage-value">42%</span>');
   });
+
+  it.each([
+    [0, "rgb(0, 255, 0)"],
+    [25, "rgb(128, 255, 0)"],
+    [50, "rgb(255, 255, 0)"],
+    [75, "rgb(255, 128, 0)"],
+    [100, "rgb(255, 0, 0)"],
+  ])("maps %i%% used to %s in percent mode", (used, color) => {
+    expect(percentUsageFillColor(used)).toBe(color);
+  });
+
+  it.each([
+    ["pace", "rgb(220, 67, 67)"],
+    ["percent", "rgb(214, 255, 0)"],
+  ] as const)(
+    "renders remaining share with %s coloring based on used share",
+    (coloring, color) => {
+      const html = renderSystemBanner({
+        claudeUsage: usageMessage({ five_hour: { utilization: 0.42 } }),
+        ui: { usage: { coloring, remaining: true } },
+      });
+
+      expect(html).toContain('title="5h: 58.0% remaining"');
+      expect(html).toContain(`style="width:58%;background-color:${color};"`);
+      expect(html).toContain('class="banner-usage-value">58%</span>');
+    },
+  );
 
   it("hides usage widget when all windows are expired", () => {
     const pastTime = Math.floor(Date.now() / 1000) - 100;

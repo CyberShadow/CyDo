@@ -167,8 +167,17 @@ struct WorkspaceConfig
 	@Optional string[] worktree_links;
 }
 
+enum UsageColoring { pace, percent }
+
+struct UsageUiConfig
+{
+	@Optional UsageColoring coloring = UsageColoring.pace;
+	@Optional bool remaining;
+}
+
 struct UiConfig
 {
+	@Optional UsageUiConfig usage;
 }
 
 struct CydoConfig
@@ -671,4 +680,19 @@ unittest
 	assert(settings.agents["codex"].permissions.prompt_timeout.value == 30);
 	assert(collectException(parseYamlConfigString!CydoConfig(
 		"workspaces: {}\nagents: {codex: {permissions: {policy: ask}}}\n", "config.yaml")));
+}
+
+unittest
+{
+	import std.exception : assertThrown;
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	auto config = parseYamlConfigString!CydoConfig(
+		"workspaces: {}\nui: { usage: { coloring: percent, remaining: true } }\n",
+		"config.yaml");
+	assert(config.ui.usage.coloring == UsageColoring.percent);
+	assert(config.ui.usage.remaining);
+
+	assertThrown!Exception(parseYamlConfigString!CydoConfig(
+		"workspaces: {}\nui: { usage: { coloring: rainbow } }\n", "config.yaml"));
 }

@@ -396,7 +396,14 @@ export interface DraftUpdatedMessage {
   new_draft: string;
   correlation_id?: string;
 }
-export type UiConfig = Record<string, never>;
+export interface UsageUiConfig {
+  coloring: "pace" | "percent";
+  remaining: boolean;
+}
+
+export interface UiConfig {
+  usage?: UsageUiConfig;
+}
 
 export interface ServerStatusMessage {
   type: "server_status";
