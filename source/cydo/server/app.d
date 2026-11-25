@@ -3232,26 +3232,12 @@ class App
 	/// links the persisted records of the user messages CyDo sent to their
 	/// live display: the echoed user line is a turn opener's canonical
 	/// record, and a queued_command attachment records one absorbed
-	/// mid-turn. The live queue lifecycle itself (queued, consumed,
-	/// withdrawn) is observed on the CLI's stdout, which reports it per
-	/// message, as it happens; Claude writes its session file once per turn.
+	/// mid-turn. Live queue lifecycle events arrive on the CLI's stdout.
 	private void onTailedJsonlLine(int tid, string line, int lineNum)
 	{
-		import std.algorithm : startsWith;
-
 		auto td = tid in tasks;
 		if (td is null)
 			return;
-
-		if (isQueueOperation(line))
-		{
-			auto op = jsonParse!QueueOperationProbe(line);
-			if (op.operation == "enqueue" && op.content.startsWith(systemMessagePrefix(
-				config.system_keyword,
-				KnownSystemMessageKind.postCompactionTaskModeReminder)))
-				td.compactionReminderInFlight = true;
-			return;
-		}
 
 		@JSONPartial static struct AttachmentProbe
 		{
@@ -8784,26 +8770,26 @@ unittest
 	assert(td.nativeSubmission("local-echo").tailState == SubmissionTailState.canonical);
 }
 
-@("Claude tail recognizes parent-linked queue bookkeeping")
+@("Post-compaction reminder echo arms the in-flight guard")
 unittest
 {
-	import cydo.agent.drivers.claude : claudeParentLinkedQueueFixture;
-
-	auto dbPath = buildPath(tempDir(), "cydo-app-parent-linked-queue.sqlite");
-	if (exists(dbPath)) remove(dbPath);
-	scope(exit) if (exists(dbPath)) remove(dbPath);
-	auto fixture = new GatedSubmissionFixture(dbPath);
+	auto fixture = new GatedSubmissionFixture(":memory:");
 	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	fixture.app.config.system_keyword = "SYSTEM";
 	auto td = &fixture.app.tasks[fixture.tid];
 	td.agentName = "claude";
 	auto reminder = systemMessagePrefix(fixture.app.config.system_keyword,
-		KnownSystemMessageKind.postCompactionTaskModeReminder);
-	foreach (i, queueType; ["queue-operation", "queue/operation"])
+		KnownSystemMessageKind.postCompactionTaskModeReminder) ~ "\n\nTask mode reminder";
+	foreach (parentToolUseId; [null, "parent-tool"])
 	{
 		td.compactionReminderInFlight = false;
-		fixture.app.onTailedJsonlLine(fixture.tid,
-			claudeParentLinkedQueueFixture(queueType, "enqueue", reminder), cast(int) i + 1);
-		assert(td.compactionReminderInFlight, queueType ~ ": parent-linked reminder was ignored");
+		ItemStartedEvent event;
+		event.item_id = "reminder-echo";
+		event.item_type = "user_message";
+		event.content = [ContentBlock("text", reminder)];
+		event.parent_tool_use_id = parentToolUseId;
+		fixture.app.planHistoryBroadcast(fixture.tid, TranslatedEvent(toJson(event), null));
+		assert(td.compactionReminderInFlight);
 	}
 }
 
@@ -8926,6 +8912,51 @@ unittest
 		assert(task.lastActive == task.createdAt);
 		assert(fixture.app.persistence.loadTasks()[0].lastActive == 0);
 	});
+}
+
+@("An armed guard suppresses a second post-compaction reminder")
+unittest
+{
+	import cydo.protocol : SessionCompactedEvent;
+
+	auto root = buildPath(tempDir(), "cydo-app-compaction-reminder");
+	if (exists(root)) rmdirRecurse(root);
+	scope(exit) rmdirRecurse(root);
+	mkdirRecurse(buildPath(root, "system_prompts"));
+	write(buildPath(root, "system_prompts", "master.md"), "{{ role_prompt }}");
+	write(buildPath(root, "system_prompts", "test.md"), "Test task instructions");
+	// The catalog synthesizes a blank entry point whose prompt must exist.
+	mkdirRecurse(buildPath(root, "prompts"));
+	write(buildPath(root, "prompts", "blank.md"), "Blank prompt\n");
+	auto definitions = buildPath(root, "task-types.yaml");
+	write(definitions,
+		"task_types:\n"
+		~ "  test:\n"
+		~ "    model_class: large\n"
+		~ "    system_prompt_template: system_prompts/test.md\n");
+
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	auto app = fixture.app;
+	auto td = &app.tasks[fixture.tid];
+	// Use the fixture's Codex agent, which receives task instructions as user messages.
+	td.agentName = "test";
+	td.projectPath = root;
+	app.config.system_keyword = "SYSTEM";
+	app.taskTypeCatalog = new TaskTypeCatalog(root, definitions, (string name) => true);
+	app.taskPathResolver = new TaskPathResolver(TaskPathResolverHost(
+		workspaces: () => [WorkspaceConfig(name: "local", root: root)],
+		taskDirTemplate: () => "{{ workspace_root }}/tasks/{{ tid }}",
+	));
+	app.systemMessageNormalizer = new SystemMessageNormalizer(SystemMessageNormalizerHost.init);
+
+	auto compacted = TranslatedEvent(toJson(SessionCompactedEvent.init), null);
+	app.planHistoryBroadcast(fixture.tid, compacted);
+	assert(fixture.session.sendCalls == 1, "The first compaction must submit a reminder");
+	assert(td.compactionReminderInFlight);
+
+	app.planHistoryBroadcast(fixture.tid, compacted);
+	assert(fixture.session.sendCalls == 1, "An in-flight reminder must suppress a second submission");
 }
 
 version (unittest) private final class DriverHistoryTurnFixture

@@ -65,9 +65,9 @@ struct JsonlTracker
 	void delegate(int tid, size_t seq, HistoryBoundary boundary, bool publish, ulong generation) onBoundaryResolved;
 	void delegate(int tid) onLineageInvalidated;
 	/// Called for every complete line the tail reads, with its absolute
-	/// (1-based) line number. Claude ≥2.1.2xx records queue operations only in
-	/// the session file, so this feed is where the live queue lifecycle of
-	/// user messages is observed.
+	/// (1-based) line number. This links user messages submitted by CyDo to
+	/// their persisted canonical or absorbed records. Claude's live queue
+	/// lifecycle comes from stdout command_lifecycle events.
 	void delegate(int tid, string line, int lineNum) onJsonlLine;
 
 	private RefCountedINotify rcINotify;
