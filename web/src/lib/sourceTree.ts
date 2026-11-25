@@ -191,3 +191,19 @@ export function projectDescendantSpan(
   }
   return current;
 }
+
+export function simplifyProjectionPoints(
+  points: readonly SourceProjectionPoint[],
+): readonly SourceProjectionPoint[] {
+  if (points.length <= 2) return points;
+  const keep = new Set<number>([0, points.length - 1]);
+  for (let i = 1; i < points.length; i++) {
+    const previous = points[i - 1]!;
+    const current = points[i]!;
+    if (current.parent - current.child !== previous.parent - previous.child) {
+      keep.add(i - 1);
+      keep.add(i);
+    }
+  }
+  return points.filter((_point, index) => keep.has(index));
+}

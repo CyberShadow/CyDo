@@ -1,12 +1,14 @@
+import { AsyncLruCache } from "./asyncLruCache";
 import { Parser, type Node, type Tree } from "web-tree-sitter";
 import {
   loadTreeSitterLanguage,
   requireTreeSitterAssets,
 } from "./treeSitterRuntime";
-import type {
-  SourceProjection,
-  SourceProjectionPoint,
-  SourceSpan,
+import {
+  simplifyProjectionPoints,
+  type SourceProjection,
+  type SourceProjectionPoint,
+  type SourceSpan,
 } from "./sourceTree";
 
 type ParsedShellSpan = SourceSpan;
@@ -347,54 +349,15 @@ export function preloadShellParser(): void {
 
 export function loadParsedShellDocument(source: string): Promise<ParseResult> {
   requireTreeSitterAssets();
-  const cached = parsedDocumentCache.get(source);
-  if (cached !== undefined) {
-    if (cached.kind === "settled") {
-      parsedDocumentCache.delete(source);
-      parsedDocumentCache.set(source, cached);
-      return Promise.resolve(cached.result);
-    }
-    parsedDocumentCache.delete(source);
-    parsedDocumentCache.set(source, cached);
-    return cached.promise;
-  }
-
-  const promise = parseSource(source).then(
-    (result) => {
-      const entry = parsedDocumentCache.get(source);
-      if (entry?.kind === "pending" && entry.promise === promise) {
-        parsedDocumentCache.set(source, {
-          kind: "settled",
-          result,
-        });
-        evictSettledEntries();
-      }
-      return result;
-    },
-    (error: unknown) => {
-      const entry = parsedDocumentCache.get(source);
-      if (entry?.kind === "pending" && entry.promise === promise)
-        parsedDocumentCache.delete(source);
-      throw error;
-    },
-  );
-  parsedDocumentCache.set(source, { kind: "pending", promise });
-  return promise;
+  return parsedDocumentCache.load(source, () => parseSource(source));
 }
 
 export function getCachedParsedShellDocument(
   source: string,
 ): ParseResult | undefined {
   requireTreeSitterAssets();
-  const cached = parsedDocumentCache.get(source);
-  if (cached === undefined) return undefined;
-  if (cached.kind === "pending") return undefined;
-  parsedDocumentCache.delete(source);
-  parsedDocumentCache.set(source, cached);
-  return cached.result;
+  return parsedDocumentCache.peek(source);
 }
-
-const PARSED_DOCUMENT_CACHE_CAPACITY = 8;
 
 const INTERPRETERS: Readonly<
   Record<string, Readonly<{ flags: readonly string[]; language: string }>>
@@ -414,17 +377,7 @@ const INTERPRETERS: Readonly<
   R: { flags: ["-e"], language: "r" },
 };
 
-type CacheEntry =
-  | Readonly<{
-      kind: "pending";
-      promise: Promise<ParseResult>;
-    }>
-  | Readonly<{
-      kind: "settled";
-      result: ParseResult;
-    }>;
-
-const parsedDocumentCache = new Map<string, CacheEntry>();
+const parsedDocumentCache = new AsyncLruCache<ParseResult>(8);
 let initializationPromise: Promise<void> | undefined;
 let initializedParser: Parser | undefined;
 let preloadReported = false;
@@ -438,23 +391,6 @@ async function initializeParser(): Promise<void> {
   const parser = new Parser();
   parser.setLanguage(language);
   initializedParser = parser;
-}
-
-function evictSettledEntries(): void {
-  let settledCount = 0;
-  for (const entry of parsedDocumentCache.values())
-    if (entry.kind === "settled") settledCount++;
-  while (settledCount > PARSED_DOCUMENT_CACHE_CAPACITY) {
-    let removed = false;
-    for (const [source, entry] of parsedDocumentCache) {
-      if (entry.kind !== "settled") continue;
-      parsedDocumentCache.delete(source);
-      settledCount--;
-      removed = true;
-      break;
-    }
-    if (!removed) throw new Error("settled parser cache eviction invariant");
-  }
 }
 
 function nodeSpan(node: Node): ParsedShellSpan {
@@ -500,22 +436,6 @@ function assertProjection(
     last.parent !== value.span.end - value.span.start
   )
     throw new Error("shell projection exceeds source span");
-}
-
-function simplifyProjectionPoints(
-  points: readonly ParsedShellProjectionPoint[],
-): readonly ParsedShellProjectionPoint[] {
-  if (points.length <= 2) return points;
-  const keep = new Set<number>([0, points.length - 1]);
-  for (let i = 1; i < points.length; i++) {
-    const previous = points[i - 1]!;
-    const current = points[i]!;
-    if (current.parent - current.child !== previous.parent - previous.child) {
-      keep.add(i - 1);
-      keep.add(i);
-    }
-  }
-  return points.filter((_point, index) => keep.has(index));
 }
 
 type LiteralWord = Extract<ParsedShellWord, { kind: "literal" }> & {
