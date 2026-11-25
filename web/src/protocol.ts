@@ -396,8 +396,11 @@ export interface DraftUpdatedMessage {
   new_draft: string;
   correlation_id?: string;
 }
+export type UiConfig = Record<string, never>;
+
 export interface ServerStatusMessage {
   type: "server_status";
+  ui: UiConfig;
   auth_enabled: boolean;
   dev_mode?: boolean;
   build_id?: string;

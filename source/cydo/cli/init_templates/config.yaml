@@ -796,5 +796,6 @@ workspaces: {}
 # dev_mode: false
 # log_level: info
 # system_keyword: SYSTEM
+# ui: {}
 # disk_cleanup_threshold_bytes: 10485760
 ## cydo-init: complete-example end

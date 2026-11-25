@@ -1,7 +1,11 @@
 import type { CreatedByLink } from "../createdByLink";
 import { useState } from "preact/hooks";
 import type { SessionInfo } from "../types";
-import type { AgentUsageLimitWindow, AgentUsageMessage } from "../protocol";
+import type {
+  AgentUsageLimitWindow,
+  AgentUsageMessage,
+  UiConfig,
+} from "../protocol";
 import type { Theme } from "../useTheme";
 import sunIcon from "../icons/sun.svg?raw";
 import moonIcon from "../icons/moon.svg?raw";
@@ -32,6 +36,7 @@ interface Props {
   onResume?: () => void;
   exportMode?: boolean;
   claudeUsage?: AgentUsageMessage;
+  ui?: UiConfig;
   createdBy?: CreatedByLink;
 }
 

@@ -16,6 +16,8 @@ import cydo.domain.tasks.model : AgentInfoEntry, AgentsListMessage, EntryPointEn
 import cydo.domain.task_types.definition : TaskTypeDef, UserEntryPointDef, byName,
 	resolveModelClass;
 
+import cydo.runtime.config : UiConfig;
+
 TaskListEntry buildTaskEntry(ref TaskData td, size_t childCount, bool alive,
 	bool canStop, string driver)
 {
@@ -203,14 +205,23 @@ string readBuildId(string webDistDir)
 	return m[1].idup;
 }
 
-string buildServerStatus(bool authEnabled, bool devMode, string webDistDir)
+string buildServerStatus(bool authEnabled, bool devMode, string webDistDir, UiConfig ui)
 {
 	return toJson(ServerStatusMessage(
 		"server_status",
 		authEnabled,
 		devMode,
 		readBuildId(webDistDir),
+		ui,
 	));
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	auto status = buildServerStatus(false, false, "/nonexistent", UiConfig.init);
+	assert(status.canFind(`"ui":{}`), status);
 }
 
 string buildNoticesList(Notice[string] activeNotices)

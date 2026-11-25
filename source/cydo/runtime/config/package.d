@@ -167,6 +167,10 @@ struct WorkspaceConfig
 	@Optional string[] worktree_links;
 }
 
+struct UiConfig
+{
+}
+
 struct CydoConfig
 {
 	@Key("name") WorkspaceConfig[] workspaces;
@@ -182,6 +186,7 @@ struct CydoConfig
 	@Optional bool suggestions = true;
 	@Optional bool dev_mode;
 	@Optional string log_level = "info";
+	@Optional UiConfig ui;
 	@Optional string system_keyword = "SYSTEM";
 	@Optional long disk_cleanup_threshold_bytes = 10_485_760;
 
@@ -364,6 +369,12 @@ version (unittest)
 	}
 
 	private enum workspacesYAML = "workspaces:\n  local:\n    root: /tmp\n";
+
+	unittest
+	{
+		parseYamlConfigString!CydoConfig(workspacesYAML, "/dev/null");
+		parseYamlConfigString!CydoConfig(workspacesYAML ~ "ui: {}\n", "/dev/null");
+	}
 
 	unittest
 	{

@@ -38,7 +38,7 @@ import cydo.cli.initialize : initializeUserConfiguration;
 import cydo.cli.tasktype_config : loadCliTaskTypes;
 import cydo.runtime.config.yaml : yamlConfigDiagnostic;
 import cydo.web.snapshots : buildAgentsList, buildNoticesList,
-	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
+	buildTaskEntry, buildTasksList, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
 import cydo.workflow.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
 	HistoryEventPipelineHost;

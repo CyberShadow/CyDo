@@ -8,7 +8,7 @@ import cydo.domain.task_types.definition : ContinuationDef, CreatableEntryPointD
 	byName, loadTaskTypes;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, loadConfig,
 	GitIdentityConfig, ModelSpecFields, PathMode, PermissionsConfig,
-	ProjectDiscoveryConfig, SandboxConfig, WorkspaceConfig;
+	ProjectDiscoveryConfig, SandboxConfig, UiConfig, WorkspaceConfig;
 import cydo.runtime.config.paths : configDir, configPath, userTaskTypesPath;
 import cydo.runtime.config.yaml : loadYamlString, parseYamlConfigString;
 import dyaml.node : Node;
@@ -336,6 +336,7 @@ unittest
 	auto config = parseYamlConfigString!CydoConfig(yaml, "config-template.yaml");
 	auto root = loadYamlString(yaml, "config-template.yaml");
 	assertKeys!CydoConfig(root);
+	assertKeys!UiConfig(at(root, ["ui"]));
 	assertKeys!WorkspaceConfig(at(root, ["workspaces", "example-project"]), ["name"]);
 	assertKeys!SandboxConfig(at(root, ["sandbox"]));
 	assertKeys!GitIdentityConfig(at(root, ["sandbox", "git"]));

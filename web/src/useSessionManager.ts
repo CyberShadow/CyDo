@@ -23,6 +23,7 @@ import type {
   HistoryBoundary,
   Notice,
   TaskListEntry,
+  UiConfig,
 } from "./protocol";
 import {
   resetControlledImageStore,
@@ -270,6 +271,7 @@ export interface TaskManager {
   serverError: { message: string; tid?: number } | null;
   dismissServerError: () => void;
   devMode: boolean;
+  ui: UiConfig;
   exportLoadError?: string | null;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
@@ -620,6 +622,7 @@ export function useTaskManager(
     tid?: number;
   } | null>(null);
   const [devMode, setDevMode] = useState(false);
+  const [ui, setUi] = useState<UiConfig>({});
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
   const prevNoticeIdsRef = useRef<Set<string>>(new Set());
@@ -2224,6 +2227,7 @@ export function useTaskManager(
         }
         case "server_status": {
           setDevMode(msg.dev_mode ?? false);
+          setUi(msg.ui);
           const serverBuildId = msg.build_id ?? "";
           if (
             serverBuildId.length > 0 &&
@@ -3386,6 +3390,7 @@ export function useTaskManager(
       setServerError(null);
     },
     devMode,
+    ui,
     exportLoadError: null,
     navigateHome,
     navigateToProject,

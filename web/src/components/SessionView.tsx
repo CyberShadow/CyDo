@@ -17,7 +17,7 @@ import type {
   AgentInfo,
   DraftView,
 } from "../useSessionManager";
-import type { AgentUsageMessage, Notice } from "../protocol";
+import type { AgentUsageMessage, Notice, UiConfig } from "../protocol";
 import type { OrdinaryDraftStore } from "../ordinaryDraftStore";
 import { NoticeBar } from "./NoticeBar";
 import { SystemBanner, normalizeSessionStatus } from "./SystemBanner";
@@ -77,6 +77,7 @@ interface Props {
   subtaskEnd?: SubtaskEnd;
   createdBy?: CreatedByLink;
   agentUsage?: Record<string, AgentUsageMessage>;
+  ui?: UiConfig;
 }
 
 /** The PermissionPrompt answered here, while the agent has yet to take the
@@ -135,6 +136,7 @@ function SessionViewInner({
   subtaskEnd,
   createdBy,
   agentUsage,
+  ui,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -424,6 +426,7 @@ function SessionViewInner({
         }}
         exportMode={exportMode}
         claudeUsage={claudeUsage}
+        ui={ui}
       />
       {fileViewerState && (
         <FileViewer
