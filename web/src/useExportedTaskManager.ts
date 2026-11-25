@@ -11,7 +11,8 @@ import type { TaskManager, TypeInfo } from "./useSessionManager";
 import type { AgnosticEvent } from "./protocol";
 import { makeTaskState } from "./types";
 import type { TaskState, TaskStatus } from "./types";
-import { reduceMessage } from "./sessionReducer";
+import { reduceMessageIn } from "./sessionReducer";
+import { WriteBatch } from "./writeBatch";
 import { createOrdinaryDraftStore } from "./ordinaryDraftStore";
 
 interface ExportTaskEntry {
@@ -102,10 +103,12 @@ function buildTasksFromExportData(data: ExportData): Map<string, TaskState> {
       entry.canStop ?? entry.alive ?? false,
       entry.driver,
     );
+    const batch = new WriteBatch();
     const events = data.events?.[String(entry.tid)] ?? [];
     for (let i = 0; i < events.length; i++) {
-      state = reduceMessage(state, events[i]!.event, i, undefined);
+      state = reduceMessageIn(batch, state, events[i]!.event, i, undefined);
     }
+    batch.close();
     taskMap.set(state.uuid, state);
   }
   return taskMap;
