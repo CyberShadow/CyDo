@@ -1968,6 +1968,95 @@ describe("task state reducer", () => {
     );
   }
 
+  const start = {
+    type: "task/started",
+    task_id: "task-1",
+    run_id: "run-1",
+    tool_use_id: "toolu_1",
+    is_backgrounded: true,
+  } as const;
+  const completed = {
+    type: "task/notification",
+    task_id: start.task_id,
+    run_id: start.run_id,
+    tool_use_id: start.tool_use_id,
+    status: "completed",
+    summary: "Agent finished",
+  } as const;
+
+  function issueTool() {
+    return reduceMessage(makeState(), {
+      type: "item/started",
+      item_type: "tool_use",
+      item_id: start.tool_use_id,
+      name: "Agent",
+    });
+  }
+
+  function toolBlock(s: TaskState) {
+    return [...s.blocks.values()].find((b) => b.itemId === start.tool_use_id);
+  }
+
+  it("tracks a background launch and completion on its tool call", () => {
+    let s = reduceMessage(issueTool(), {
+      type: "item/completed",
+      item_id: start.tool_use_id,
+    });
+    expect(toolBlock(s)).toBeDefined();
+    expect(toolBlock(s)?.nativeTask).toBeUndefined();
+    s = reduceMessage(s, start);
+    s = reduceMessage(s, {
+      type: "item/result",
+      item_id: start.tool_use_id,
+      content: "Agent launched",
+    });
+    expect(toolBlock(s)?.result?.content).toBe("Agent launched");
+    expect(toolBlock(s)?.nativeTask?.status).toBe("running");
+
+    s = reduceMessage(s, completed);
+    expect(toolBlock(s)?.nativeTask).toMatchObject({
+      status: "completed",
+      summary: "Agent finished",
+    });
+    expect(s.messages.map((m) => m.type)).toEqual(["assistant"]);
+  });
+
+  it("returns a completed agent to running when it resumes under a new run ID", () => {
+    let s = reduceMessage(issueTool(), {
+      type: "item/completed",
+      item_id: start.tool_use_id,
+    });
+    s = reduceMessage(s, start);
+    s = reduceMessage(s, {
+      type: "item/result",
+      item_id: start.tool_use_id,
+      content: "Agent launched",
+    });
+    s = reduceMessage(s, completed);
+    s = reduceMessage(s, { ...start, run_id: "run-2" });
+    expect(toolBlock(s)?.nativeTask).toEqual({
+      taskId: start.task_id,
+      runId: "run-2",
+      status: "running",
+      foreground: false,
+    });
+
+    s = reduceMessage(s, {
+      type: "task/updated",
+      task_id: start.task_id,
+      run_id: "run-2",
+      status: "completed",
+    });
+    expect(toolBlock(s)?.nativeTask?.status).toBe("completed");
+    s = reduceMessage(s, {
+      ...completed,
+      run_id: "run-2",
+      summary: "Resumed agent finished",
+    });
+    expect(toolBlock(s)?.nativeTask?.summary).toBe("Resumed agent finished");
+    expect(s.messages.map((m) => m.type)).toEqual(["assistant"]);
+  });
+
   it("tracks a task's state on the row that announced its start", () => {
     let s: TaskState = reduceMessage(
       makeState(),
@@ -2000,29 +2089,17 @@ describe("task state reducer", () => {
     });
   });
 
-  it("takes the final status from the task notification", () => {
-    let s: TaskState = reduceMessage(
-      makeState(),
-      asEvent({ type: "task/started", task_id: "t2" }),
-      1,
-    );
-    s = reduceMessage(
-      s,
-      asEvent({ type: "task/notification", task_id: "t2", status: "failed" }),
-      2,
-    );
+  it("keeps lifecycle rows when the launching tool call is absent", () => {
+    let s: TaskState = reduceMessage(makeState(), start, 1);
+    s = reduceMessage(s, { ...completed, status: "failed" }, 2);
     expect(startedRow(s)?.taskState).toEqual({ status: "failed" });
-  });
-
-  it("ignores updates for tasks started before the loaded history", () => {
-    const s = makeState();
-    expect(
-      reduceMessage(
-        s,
-        asEvent({ type: "task/updated", task_id: "gone", status: "killed" }),
-        1,
-      ).messages,
-    ).toEqual(s.messages);
+    expect(s.messages).toMatchObject([
+      { subtype: "task_lifecycle", rawSource: start },
+      {
+        subtype: "task_lifecycle",
+        content: [{ type: "text", text: "Task failed: Agent finished" }],
+      },
+    ]);
   });
 });
 

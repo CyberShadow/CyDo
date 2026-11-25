@@ -363,6 +363,11 @@ export const AssistantMessage = memo(
                             | undefined) ?? tryParsePartialJson(block.text))
                     }
                     result={block.completed ? block.result : undefined}
+                    nativeTask={
+                      block.nativeTask?.foreground
+                        ? undefined
+                        : block.nativeTask
+                    }
                     permission={block.permission}
                     onViewFile={onViewFile}
                     enrichment={itemEnrichments?.get(

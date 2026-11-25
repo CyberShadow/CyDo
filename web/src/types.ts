@@ -155,6 +155,15 @@ export interface ToolResult {
   toolResult?: unknown;
 }
 
+export interface NativeTaskRun {
+  taskId: string;
+  runId?: string;
+  foreground: boolean;
+  status: string;
+  summary?: string;
+  error?: string;
+}
+
 export type FileEditOp = "add" | "update" | "delete" | "edit" | "write";
 
 export type FileEditStatus = "pending" | "applied" | "cancelled";
@@ -224,6 +233,7 @@ interface BlockBase {
   completed: boolean; // false while streaming, true after item/completed or turn/stop
   creationOrder: number; // monotonic counter for stable ordering
   result?: ToolResult; // tool result (tool_use only, set by item/result)
+  nativeTask?: NativeTaskRun;
   denial?: { by: ItemDenier; reason?: string }; // the agent refused this call unasked (item/denied)
   narration?: boolean; // thinking only: prose written for the user, not reasoning (live only)
   permission?: ItemPermissionStage; // where the permission decision for this call stands (item/permission)

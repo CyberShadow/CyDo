@@ -145,7 +145,9 @@ export interface SessionRateLimitEvent {
 export interface TaskStartedEvent {
   type: "task/started";
   task_id: string;
+  run_id?: string;
   tool_use_id?: string;
+  is_backgrounded?: boolean;
   description?: string;
   task_type?: string;
   extras?: Record<string, unknown>;
@@ -154,6 +156,7 @@ export interface TaskStartedEvent {
 export interface TaskUpdatedEvent {
   type: "task/updated";
   task_id: string;
+  run_id?: string;
   status?: string;
   error?: string;
   extras?: Record<string, unknown>;
@@ -162,6 +165,8 @@ export interface TaskUpdatedEvent {
 export interface TaskNotificationEvent {
   type: "task/notification";
   task_id: string;
+  run_id?: string;
+  tool_use_id?: string;
   status: string;
   output_file?: string;
   summary?: string;

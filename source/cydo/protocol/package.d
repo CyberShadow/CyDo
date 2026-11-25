@@ -191,7 +191,9 @@ struct TaskStartedEvent
 {
 	string type = "task/started";
 	string task_id;
+	@JSONOptional string run_id;
 	@JSONOptional string tool_use_id;
+	@JSONOptional bool is_backgrounded;
 	@JSONOptional string description;
 	@JSONOptional string task_type;
 	@JSONOptional JSONFragment extras;
@@ -202,6 +204,7 @@ struct TaskUpdatedEvent
 {
 	string type = "task/updated";
 	string task_id;
+	@JSONOptional string run_id;
 	/// pending, running, completed, failed, killed or paused
 	@JSONOptional string status;
 	@JSONOptional string error;
@@ -213,6 +216,8 @@ struct TaskNotificationEvent
 {
 	string type = "task/notification";
 	string task_id;
+	@JSONOptional string run_id;
+	@JSONOptional string tool_use_id;
 	string status;
 	@JSONOptional string output_file;
 	@JSONOptional string summary;

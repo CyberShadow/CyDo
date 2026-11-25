@@ -223,3 +223,26 @@ test(
     }
   },
 );
+
+test(
+  "a detached command shows its lifecycle on the Bash header",
+  { tag: "@claude-only" },
+  async ({ page }) => {
+    const fifo = uniquePath();
+    try {
+      await enterSession(page);
+      await sendMessage(page, `run detached command ${blockOn(fifo)}`);
+      const header = page.locator(".tool-header").filter({ hasText: "Bash" });
+      const icon = header.locator(".tool-icon");
+      await expect(icon.getByTitle("Running in background")).toBeVisible();
+      await expect.poll(() => existsSync(fifo)).toBe(true);
+      await expect(page.locator(".task-lifecycle-message")).toHaveCount(0);
+
+      writeFileSync(fifo, "release\n");
+      await expect(icon.getByTitle(/completed \(exit code 0\)/)).toBeVisible();
+      await expect(page.locator(".task-lifecycle-message")).toHaveCount(0);
+    } finally {
+      rmSync(fifo, { force: true });
+    }
+  },
+);

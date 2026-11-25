@@ -1,3 +1,4 @@
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import {
   assistantText,
   enterSession,
@@ -54,29 +55,49 @@ test(
     expect(await documentWidth(), "document with task bar").toBe(390);
 
     const path = `/tmp/${"longbackgroundcommandpath".repeat(5)}output`;
-    await sendMessage(
-      page,
-      `run detached command sleep 5 && printf %s ${path} with description ${path}`,
-    );
+    const fifo = `/tmp/mobile-overflow-${Math.random().toString(36).slice(2, 10)}`;
+    const header = page
+      .locator(".message-list .tool-header")
+      .filter({
+        has: page.locator(".tool-name").getByText("Bash", { exact: true }),
+      })
+      .filter({ hasText: path });
+    const icon = header.locator(".tool-icon");
 
-    const messageList = page.locator(".message-list");
-    const row = messageList.locator(".task-started").filter({ hasText: path });
-    await expect(row).toBeVisible();
-    await row.scrollIntoViewIfNeeded();
+    const expectNoOverflow = async (phase: string) => {
+      await header.scrollIntoViewIfNeeded();
+      const widths = await header.evaluate((element) => {
+        const list = element.closest(".message-list")!;
+        return {
+          header: { scroll: element.scrollWidth, client: element.clientWidth },
+          list: { scroll: list.scrollWidth, client: list.clientWidth },
+        };
+      });
+      expect(
+        widths.header.scroll,
+        `Bash header scroll width ${phase}`,
+      ).toBeLessThanOrEqual(widths.header.client);
+      expect(
+        widths.list.scroll,
+        `message list scroll width ${phase}`,
+      ).toBeLessThanOrEqual(widths.list.client);
+      expect(await documentWidth(), `document width ${phase}`).toBe(390);
+    };
 
-    const widths = await row.evaluate((element) => {
-      const list = element.closest(".message-list")!;
-      return {
-        row: { scroll: element.scrollWidth, client: element.clientWidth },
-        list: { scroll: list.scrollWidth, client: list.clientWidth },
-      };
-    });
-    expect(widths.row.scroll, "lifecycle row scroll width").toBeLessThanOrEqual(
-      widths.row.client,
-    );
-    expect(widths.list.scroll, "message list scroll width").toBeLessThanOrEqual(
-      widths.list.client,
-    );
-    expect(await documentWidth(), "document with lifecycle row").toBe(390);
+    try {
+      await sendMessage(
+        page,
+        `run detached command mkfifo ${fifo} && read r < ${fifo} && printf %s ${path} with description ${path}`,
+      );
+      await expect(icon.getByTitle("Running in background")).toBeVisible();
+      await expect.poll(() => existsSync(fifo)).toBe(true);
+      await expectNoOverflow("while running");
+
+      writeFileSync(fifo, "release\n");
+      await expect(icon.getByTitle(/completed \(exit code 0\)/)).toBeVisible();
+      await expectNoOverflow("after completion");
+    } finally {
+      rmSync(fifo, { force: true });
+    }
   },
 );

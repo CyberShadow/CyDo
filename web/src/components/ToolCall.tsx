@@ -5,7 +5,12 @@ import { memo } from "preact/compat";
 import { useState, useMemo, useEffect, useRef } from "preact/hooks";
 import { marked } from "marked";
 import type { ItemPermissionStage } from "../protocol";
-import type { ItemEnrichment, ToolResult, ToolResultContent } from "../types";
+import type {
+  ItemEnrichment,
+  NativeTaskRun,
+  ToolResult,
+  ToolResultContent,
+} from "../types";
 import { qualifiedToolKey, toolIs } from "../toolIdentity";
 import { sanitizeHtml } from "../sanitize";
 import {
@@ -235,6 +240,7 @@ interface Props {
   toolUseId?: string;
   input: Record<string, unknown>;
   result?: ToolResult;
+  nativeTask?: NativeTaskRun;
   /** Where the permission decision for this call stands, if reported. */
   permission?: ItemPermissionStage;
   streaming?: boolean;
@@ -3048,6 +3054,7 @@ export const ToolCall = memo(
     toolUseId,
     input,
     result,
+    nativeTask,
     permission,
     streaming,
     children,
@@ -3306,11 +3313,16 @@ export const ToolCall = memo(
         return false;
       })();
 
+    const taskFailed =
+      nativeTask?.status === "failed" ||
+      nativeTask?.status === "killed" ||
+      nativeTask?.status === "stopped";
+    const taskFinished = taskFailed || nativeTask?.status === "completed";
     return (
       <div
         id={toolUseId ? `tool-${toolUseId}` : undefined}
         class={`tool-call${streaming ? " streaming" : ""}${
-          result?.isError ? " tool-error" : ""
+          (nativeTask ? taskFailed : result?.isError) ? " tool-error" : ""
         }`}
       >
         <div
@@ -3322,7 +3334,36 @@ export const ToolCall = memo(
           }}
         >
           <span class="tool-icon">
-            {result ? (
+            {nativeTask ? (
+              taskFinished ? (
+                <span
+                  class="action-icon"
+                  title={
+                    nativeTask.error ??
+                    nativeTask.summary ??
+                    `Task ${nativeTask.status}`
+                  }
+                  dangerouslySetInnerHTML={{
+                    __html: taskFailed ? errorIcon : checkIcon,
+                  }}
+                />
+              ) : (
+                <span class="action-icon" title="Running in background">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    aria-hidden="true"
+                  >
+                    <circle cx="8" cy="8" r="6" />
+                    <path d="M8 4.5V8l2.5 1.5" />
+                  </svg>
+                </span>
+              )
+            ) : result ? (
               result.isError ? (
                 <span
                   class="action-icon"
@@ -3645,6 +3686,7 @@ export const ToolCall = memo(
     prev.result === next.result &&
     prev.enrichment === next.enrichment &&
     prev.getTaskHref === next.getTaskHref &&
+    prev.nativeTask === next.nativeTask &&
     prev.permission === next.permission &&
     prev.streaming === next.streaming &&
     prev.children === next.children &&

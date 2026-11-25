@@ -1102,3 +1102,121 @@ describe("MessageList approval reconciliation", () => {
     },
   );
 });
+
+describe("native task status in tool headers", () => {
+  it("shows the background state and completion on the nested launching call", async () => {
+    const root = document.createElement("div");
+    let s = makeTaskState(1);
+    const apply = (...events: AgnosticEvent[]) => {
+      for (const event of events) s = reduceMessage(s, event);
+    };
+    const draw = () =>
+      act(() => {
+        render(
+          <MessageList
+            taskTid={1}
+            messages={s.messages}
+            replacementEvents={new Map()}
+            blocks={s.blocks}
+            isProcessing={false}
+            bandStatus=""
+          />,
+          root,
+        );
+      });
+    const parent = "#tool-parent-agent > .tool-header";
+    const child = ".sub-agent-messages #tool-child-agent > .tool-header";
+    const running = '[title="Running in background"]';
+    const foregroundStart = {
+      type: "task/started",
+      task_id: "parent-task",
+      run_id: "parent-run",
+      tool_use_id: "parent-agent",
+      is_backgrounded: false,
+    } as const;
+
+    try {
+      apply(
+        {
+          type: "item/started",
+          item_type: "tool_use",
+          item_id: "parent-agent",
+          name: "Agent",
+        },
+        { type: "item/completed", item_id: "parent-agent" },
+        foregroundStart,
+        {
+          type: "item/started",
+          item_type: "tool_use",
+          item_id: "child-agent",
+          parent_tool_use_id: "parent-agent",
+          name: "Agent",
+        },
+        { type: "item/completed", item_id: "child-agent" },
+      );
+      await draw();
+      expect(root.querySelector(`${child} .tool-icon-spinner`)).not.toBeNull();
+
+      apply(
+        {
+          type: "task/started",
+          task_id: "child-task",
+          run_id: "run-1",
+          tool_use_id: "child-agent",
+          is_backgrounded: true,
+        },
+        {
+          type: "item/result",
+          item_id: "child-agent",
+          content: "Agent launched",
+        },
+      );
+      await draw();
+      expect(root.querySelector(`${child} ${running}`)).not.toBeNull();
+      expect(root.querySelector(`${child} .tool-icon-spinner`)).toBeNull();
+      expect(root.querySelector(`${parent} ${running}`)).toBeNull();
+
+      apply({
+        type: "task/notification",
+        task_id: "child-task",
+        run_id: "run-1",
+        tool_use_id: "child-agent",
+        status: "completed",
+        summary: "Child finished",
+      });
+      await draw();
+      expect(
+        root.querySelector(`${child} [title="Child finished"]`),
+      ).not.toBeNull();
+      expect(root.querySelector(`${child} ${running}`)).toBeNull();
+      apply({
+        ...foregroundStart,
+        type: "task/notification",
+        status: "completed",
+        summary: "Parent finished",
+      });
+      await draw();
+      expect(root.querySelector(`${parent} .tool-icon-spinner`)).not.toBeNull();
+      expect(
+        root.querySelector(`${parent} [title="Parent finished"]`),
+      ).toBeNull();
+
+      apply({
+        type: "item/result",
+        item_id: "parent-agent",
+        content: "Agent done",
+      });
+      await draw();
+      expect(root.querySelector(`${parent} .tool-icon svg`)).not.toBeNull();
+      expect(root.querySelector(`${parent} .tool-icon-spinner`)).toBeNull();
+      expect(
+        root.querySelector(`${parent} [title="Parent finished"]`),
+      ).toBeNull();
+      expect(root.querySelector(".task-lifecycle-message")).toBeNull();
+    } finally {
+      await act(() => {
+        render(null, root);
+      });
+    }
+  });
+});

@@ -1,5 +1,6 @@
 import type { CreatedByLink } from "../createdByLink";
 import { TaskOrigin } from "./TaskOrigin";
+import { partitionTimeline } from "../lib/timeline";
 import { memo } from "preact/compat";
 import {
   useEffect,
@@ -1099,20 +1100,8 @@ export function MessageList({
   const prevResolvedBlocksRef = useRef(new Map<string, Block[]>());
   const { childrenByParent, topLevelMessages, resolvedBlocksByMsg } =
     useMemo(() => {
-      const newMap = new Map<string, DisplayMessage[]>();
-      const topLevelMessages: DisplayMessage[] = [];
-      for (const msg of composedMessages) {
-        if (msg.parentToolUseId) {
-          let list = newMap.get(msg.parentToolUseId);
-          if (!list) {
-            list = [];
-            newMap.set(msg.parentToolUseId, list);
-          }
-          list.push(msg);
-        } else {
-          topLevelMessages.push(msg);
-        }
-      }
+      const { childrenByParent: newMap, topLevelMessages } =
+        partitionTimeline(composedMessages);
 
       // Stabilize arrays: reuse previous entry arrays when content hasn't changed
       // (same length and same item references). This prevents AssistantMessage

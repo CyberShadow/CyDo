@@ -6,6 +6,7 @@
 import type {
   TaskState as SessionState,
   DisplayMessage,
+  NativeTaskRun,
   ToolResultContent,
   FileEdit,
   FileChangePayload,
@@ -418,12 +419,55 @@ function reduceCompactBoundary(
   return t;
 }
 
+function withNativeTaskState(
+  b: WriteBatch,
+  s: SessionState,
+  event: SystemTaskNotificationMessage | TaskUpdatedEvent,
+  change: Partial<NativeTaskRun>,
+): SessionState | undefined {
+  for (const [key, block] of s.blocks) {
+    const task = block.nativeTask;
+    if (task?.taskId !== event.task_id || task.runId !== event.run_id) continue;
+    const t = b.object(s);
+    t.blocks = b.map(t.blocks);
+    const updated = b.object(block);
+    updated.nativeTask = { ...task, ...change };
+    t.blocks.set(key, updated);
+    return t;
+  }
+  return undefined;
+}
+
 function reduceTaskLifecycle(
   b: WriteBatch,
   s: SessionState,
   msg: SystemTaskStartedMessage | SystemTaskNotificationMessage,
   seq?: number,
 ): SessionState {
+  if (msg.type === "task/started" && msg.tool_use_id !== undefined) {
+    const key = s.itemIdMap.get(msg.tool_use_id) ?? msg.tool_use_id;
+    const block = s.blocks.get(key);
+    if (block?.type === "tool_use") {
+      const t = b.object(s);
+      t.blocks = b.map(t.blocks);
+      const updated = b.object(block);
+      updated.nativeTask = {
+        taskId: msg.task_id,
+        runId: msg.run_id,
+        status: "running",
+        foreground: !msg.is_backgrounded,
+      };
+      t.blocks.set(key, updated);
+      return t;
+    }
+  }
+  if (msg.type === "task/notification") {
+    const next = withNativeTaskState(b, s, msg, {
+      status: msg.status,
+      summary: msg.summary,
+    });
+    if (next !== undefined) return next;
+  }
   const t = b.object(s);
   const id = `task-${++t.msgIdCounter}`;
   let text: string;
@@ -435,7 +479,7 @@ function reduceTaskLifecycle(
     text = `Task ${msg.status}: ${msg.summary || msg.task_id}`;
   }
   if (msg.type === "task/notification") {
-    withTaskState(b, t, msg.task_id, { status: msg.status });
+    withTaskState(b, t, msg, { status: msg.status });
   }
   t.messages = b.array(t.messages);
   t.messages.push(
@@ -454,29 +498,32 @@ function reduceTaskLifecycle(
   return t;
 }
 
-/** Show a task's changed state on the row that announced its start. */
 function reduceTaskUpdated(
   b: WriteBatch,
   s: SessionState,
   msg: TaskUpdatedEvent,
 ): SessionState {
   if (msg.status === undefined && msg.error === undefined) return s;
-  return withTaskState(b, s, msg.task_id, {
+  const change = {
     ...(msg.status !== undefined && { status: msg.status }),
     ...(msg.error !== undefined && { error: msg.error }),
-  });
+  };
+  return (
+    withNativeTaskState(b, s, msg, change) ?? withTaskState(b, s, msg, change)
+  );
 }
 
 function withTaskState(
   b: WriteBatch,
   s: SessionState,
-  taskId: string,
+  event: SystemTaskNotificationMessage | TaskUpdatedEvent,
   change: { status?: string; error?: string },
 ): SessionState {
   const index = s.messages.findIndex(
     (m) =>
       m.taskState !== undefined &&
-      (m.rawSource as SystemTaskStartedMessage).task_id === taskId,
+      (m.rawSource as SystemTaskStartedMessage).task_id === event.task_id &&
+      (m.rawSource as SystemTaskStartedMessage).run_id === event.run_id,
   );
   // The start may predate the loaded history.
   if (index < 0) return s;
