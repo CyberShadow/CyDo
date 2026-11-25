@@ -282,7 +282,7 @@ static:
 		import std.file : getcwd;
 		import cydo.foundation.platform.path : canonicalProjectPath;
 		import std.process : browse, environment, execute, spawnProcess;
-		import std.string : replace, strip;
+		import std.string : indexOf, replace, strip;
 
 		auto config = loadConfig();
 
@@ -328,7 +328,9 @@ static:
 		auto listenPort = environment.get("CYDO_LISTEN_PORT", "3940");
 		auto authUser = environment.get("CYDO_AUTH_USER", null);
 
-		string hostPort = listenAddr ~ ":" ~ listenPort;
+		string hostPort = listenAddr.indexOf(':') >= 0
+			? "[" ~ listenAddr ~ "]:" ~ listenPort
+			: listenAddr ~ ":" ~ listenPort;
 
 		// Build path portion: /{workspace}/{encoded-project}
 		// Project names use : instead of / in URLs
