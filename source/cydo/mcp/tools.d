@@ -277,12 +277,14 @@ class CydoToolsImpl : CydoTools
 {
 	private ToolsBackend app;
 	private string callerTid;
+	private string itemId;
 	private ToolCallCancellation cancellation;
 
-	this(ToolsBackend app, string callerTid, ToolCallCancellation cancellation = null)
+	this(ToolsBackend app, string callerTid, string itemId, ToolCallCancellation cancellation = null)
 	{
 		this.app = app;
 		this.callerTid = callerTid;
+		this.itemId = itemId;
 		this.cancellation = cancellation;
 	}
 
@@ -499,7 +501,7 @@ unittest
 		}
 	}
 
-	auto impl = new CydoToolsImpl(new FakeToolsBackend, "17");
+	auto impl = new CydoToolsImpl(new FakeToolsBackend, "17", "tool-call");
 	auto result = impl.createTasks([
 		TaskSpec("first", "alpha", "prompt a"),
 		TaskSpec("second", "beta", "prompt b"),

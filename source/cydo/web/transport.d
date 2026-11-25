@@ -61,7 +61,7 @@ struct WebSocketCallbacks
 
 struct McpCallbacks
 {
-	Promise!McpResult delegate(string tool, string tid, JSONFragment args, ToolCallCancellation cancellation) dispatchTool;
+	Promise!McpResult delegate(string tool, string tid, string itemId, JSONFragment args, ToolCallCancellation cancellation) dispatchTool;
 	bool delegate(string tid) interruptForPendingContinuation;
 	void delegate(string tid, McpResult result) onDeliveryFailed;
 	void delegate(string tid, McpResult result) onDelivered;
@@ -357,6 +357,7 @@ class TransportAdapter
 		{
 			string tid;
 			string tool;
+			string item_id;
 			JSONFragment args;
 		}
 
@@ -419,7 +420,7 @@ class TransportAdapter
 			finishDelivery(reply, connected);
 		}
 
-		mcpCallbacks_.dispatchTool(call.tool, call.tid, call.args, cancellation).then((McpResult result) {
+		mcpCallbacks_.dispatchTool(call.tool, call.tid, call.item_id, call.args, cancellation).then((McpResult result) {
 			if (!conn.connected)
 			{
 				finishDelivery(result, false);
@@ -460,7 +461,7 @@ version (unittest) private HttpRequest mcpTransportTestRequest()
 	request.resource = "/mcp/call";
 	request.method = "POST";
 	request.headers["Host"] = "localhost";
-	auto body = `{"tid":"17","tool":"Ask","args":{}}`;
+	auto body = `{"tid":"17","tool":"Ask","item_id":"call_transport","args":{}}`;
 	request.data = DataVec(Data(body.asBytes));
 	return request;
 }
@@ -500,7 +501,7 @@ version (unittest) private void assertMcpDispatchFailureIsTerminal(bool throwInF
 		WebSocketCallbacks.init,
 		null,
 		McpCallbacks(
-			dispatchTool: (string tool, string tid, JSONFragment args, ToolCallCancellation cancellation) {
+			dispatchTool: (string tool, string tid, string itemId, JSONFragment args, ToolCallCancellation cancellation) {
 				auto promise = new Promise!McpResult;
 				if (throwInFulfillment)
 					promise.fulfill(McpResult("unused", false, JSONFragment.init,
@@ -590,7 +591,7 @@ version (unittest) private void assertMcpDisconnectedClientFailsDelivery(bool se
 		WebSocketCallbacks.init,
 		null,
 		McpCallbacks(
-			dispatchTool: (string tool, string tid, JSONFragment args, ToolCallCancellation cancellation) {
+			dispatchTool: (string tool, string tid, string itemId, JSONFragment args, ToolCallCancellation cancellation) {
 				dispatchCancellation = cancellation;
 				assert(!cancellation.cancelled);
 				return dispatchPromise;
@@ -662,13 +663,15 @@ version (unittest) private void assertMcpSettledDispatchIsNotCancelled(bool with
 	int failedSettlements;
 	int deliveryFailedCalls;
 	int deliveredCalls;
+	string dispatchedItemId;
 	ToolCallCancellation dispatchCancellation;
 	auto adapter = new TransportAdapter(
 		"",
 		WebSocketCallbacks.init,
 		null,
 		McpCallbacks(
-			dispatchTool: (string tool, string tid, JSONFragment args, ToolCallCancellation cancellation) {
+			dispatchTool: (string tool, string tid, string itemId, JSONFragment args, ToolCallCancellation cancellation) {
+				dispatchedItemId = itemId;
 				dispatchCancellation = cancellation;
 				auto promise = new Promise!McpResult;
 				promise.fulfill(McpResult("tool output", false, JSONFragment.init, (bool delivered) {
@@ -701,6 +704,7 @@ version (unittest) private void assertMcpSettledDispatchIsNotCancelled(bool with
 
 	socketManager.loop();
 
+	assert(dispatchedItemId == "call_transport", dispatchedItemId);
 	assert(dispatchCancellation !is null && !dispatchCancellation.cancelled);
 	if (withholdResponse)
 	{
@@ -756,7 +760,7 @@ version (unittest) private void assertMcpCleanupFailureEscapes(
 		WebSocketCallbacks.init,
 		null,
 		McpCallbacks(
-			dispatchTool: (string tool, string tid, JSONFragment args, ToolCallCancellation cancellation) => dispatchPromise,
+			dispatchTool: (string tool, string tid, string itemId, JSONFragment args, ToolCallCancellation cancellation) => dispatchPromise,
 			interruptForPendingContinuation: (string) => false,
 			onDeliveryFailed: (string, McpResult result) {
 				deliveryFailedCalls++;

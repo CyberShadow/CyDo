@@ -1369,7 +1369,7 @@ class App
 	/// Dispatch an MCP tool call. Returns a promise that resolves when the
 	/// tool completes — immediately for sync tools, later for async tools
 	/// (e.g. Task, which awaits the child task's completion in a fiber).
-	private Promise!McpResult dispatchTool(string tool, string tid, JSONFragment args,
+	private Promise!McpResult dispatchTool(string tool, string tid, string itemId, JSONFragment args,
 		ToolCallCancellation cancellation)
 	{
 		import ae.utils.promise.await : async;
@@ -1403,7 +1403,7 @@ class App
 			scope (exit)
 				if (hasParsedTid)
 					inFlightToolCalls.deregister(parsedTid, cancellation);
-			auto impl = new CydoToolsImpl(workflowTools, tid, cancellation);
+			auto impl = new CydoToolsImpl(workflowTools, tid, itemId, cancellation);
 			auto dispatcher = mcpToolDispatcher!CydoTools(impl);
 			return dispatcher.dispatch(tool, args);
 		});
@@ -3096,8 +3096,8 @@ class App
 			import cydo.agent.drivers.copilot : CopilotAgent;
 			if (auto ca = cast(CopilotAgent) a)
 			{
-				ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args, ToolCallCancellation cancellation) =>
-					dispatchTool(tool, callerTid, args, cancellation);
+				ca.toolDispatch_ = (string tool, string callerTid, string itemId, JSONFragment args, ToolCallCancellation cancellation) =>
+					dispatchTool(tool, callerTid, itemId, args, cancellation);
 				ca.onToolResultDelivered_ = (string callerTid, McpResult result) =>
 					workflowTools.onToolCallDelivered(callerTid, result);
 				ca.onToolResultDeliveryFailed_ = (string callerTid, McpResult result) =>
@@ -6425,7 +6425,7 @@ unittest
 	auto previousTid = latestTid();
 	auto sendsBeforePreparationFailure = fixture.session.sendCalls;
 	McpResult[] toolResults;
-	fixture.app.dispatchTool("CreateTask", format!"%d"(fixture.tid),
+	fixture.app.dispatchTool("CreateTask", format!"%d"(fixture.tid), "create-task-call",
 		JSONFragment(`{"prompt":"Review the project","entry_point":"isolated","start":true}`),
 		new ToolCallCancellation)
 		.then((McpResult result) { toolResults ~= result; }).ignoreResult();
@@ -7357,7 +7357,7 @@ unittest // Preparing an ask policy cannot authorize tools if session creation f
 	}
 	auto args = JSONFragment(toJson(CommandArgs("printf ran > marker", projectPath, 5)));
 	bool completed;
-	app.dispatchTool("UnsandboxedCommand", "41", args, new ToolCallCancellation)
+	app.dispatchTool("UnsandboxedCommand", "41", "host-command-call", args, new ToolCallCancellation)
 		.then((McpResult result) {
 			assert(result.isError && result.text == "Cancelled by the agent", result.text);
 			completed = true;

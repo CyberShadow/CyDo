@@ -277,7 +277,7 @@ unittest
 		onNextTick: (void delegate() cb) { onNextTick(socketManager, cb); }, generateTitle: (int tid, string prompt) {},
 	));
 
-	auto tools = new CydoToolsImpl(backend, "1");
+	auto tools = new CydoToolsImpl(backend, "1", "tool-call");
 	bool resolved;
 	McpResult result;
 	async({ return tools.createTasks([TaskSpec("child startup", "child", "trigger child startup failure")]); }).then((McpResult r) { resolved = true; result = r; });
@@ -2636,7 +2636,7 @@ unittest
 		generateTitle: (int tid, string prompt) {},
 	));
 
-	auto tools = new CydoToolsImpl(backend, "1");
+	auto tools = new CydoToolsImpl(backend, "1", "tool-call");
 	bool resolved;
 	McpResult result;
 	async({
@@ -5110,7 +5110,7 @@ unittest
 			sent ~= tid;
 			return resolve();
 		};
-	auto tools = new CydoToolsImpl(b, "1");
+	auto tools = new CydoToolsImpl(b, "1", "tool-call");
 	McpResult[] results;
 	async({
 		return tools.createTasks([TaskSpec("one", "child", "first"),
@@ -5192,7 +5192,7 @@ unittest
 					: commitFailure);
 			};
 
-		auto tools = new CydoToolsImpl(b, "1");
+		auto tools = new CydoToolsImpl(b, "1", "tool-call");
 		McpResult[] results;
 		async({
 			return tools.createTasks([

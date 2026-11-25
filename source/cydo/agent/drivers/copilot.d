@@ -49,7 +49,7 @@ import cydo.mcp.tools : answerToolDescription, askToolDescription, createTaskToo
 import cydo.foundation.text.title : truncateTitle;
 
 // Callback type for dispatching custom tool calls.
-alias ToolDispatchFn = Promise!McpResult delegate(string tool, string tid, JSONFragment args, ToolCallCancellation cancellation);
+alias ToolDispatchFn = Promise!McpResult delegate(string tool, string tid, string itemId, JSONFragment args, ToolCallCancellation cancellation);
 
 @JSONPartial
 private struct CpPersistedEventBase
@@ -1639,7 +1639,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 					onToolResultDelivered_(to!string(tid), reply);
 			});
 		}
-		toolDispatch_(toolName, to!string(tid), JSONFragment(params.arguments.toJson()), new ToolCallCancellation)
+		enforce(params.toolCallId.length, "Copilot tool.call is missing toolCallId");
+		toolDispatch_(toolName, to!string(tid), params.toolCallId, JSONFragment(params.arguments.toJson()), new ToolCallCancellation)
 			.then(&finish, (Exception e) { finish(McpResult(e.msg, true)); })
 			.except((Exception e) {
 				onNextTick(socketManager, () { throw e; });
@@ -1653,11 +1654,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	/// same dispatch path as handleToolCall and send the result back via
 	/// session.tools.handlePendingToolCall.
 	///
-	/// We also emit item/started here so the UI shows the tool call immediately.
-	/// After the tool resolves we emit item/completed + item/result and mark
-	/// the tool as externallyHandled so that any subsequent tool.execution_start
-	/// event (which Copilot fires for MCP tools after receiving the result) is
-	/// silently ignored instead of creating a duplicate UI entry.
+	/// The native start arrives on the same stream before the request and
+	/// carries the parent tool ID. Only completion and result are emitted here.
 	private void handleExternalToolRequested(JSONFragment data)
 	{
 		import std.algorithm : startsWith;
@@ -1668,6 +1666,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		@JSONPartial static struct ExtToolReq
 		{
 			string requestId;
+			@JSONOptional string toolCallId;
 			string toolName;
 			JSONFragment arguments;
 		}
@@ -1679,52 +1678,22 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		if (req.requestId.length == 0 || req.toolName.length == 0)
 			return;
 
+		enforce(req.toolCallId.length, "Copilot external_tool.requested is missing toolCallId");
+
 		// Strip cydo- prefix for backend dispatch (same as handleToolCall).
 		auto dispatchName = req.toolName;
 		if (dispatchName.startsWith("cydo-"))
 			dispatchName = dispatchName[5 .. $];
-		auto displayName = req.toolName;
-		bool isCydo = displayName.startsWith("cydo-");
-		if (isCydo)
-			displayName = displayName[5 .. $];
+		auto itemId = req.toolCallId;
+		auto tool = itemId in activeTools;
+		enforce(tool !is null,
+			"Copilot external_tool.requested has no preceding tool.execution_start for " ~ itemId);
+		tool.externallyHandled = true;
+		string inputJson = req.arguments.json.length > 0 ? req.arguments.json : "{}";
 
-		// Set up a tool item for UI rendering before the async dispatch.
-		// If handleToolExecutionStart already created an entry for the
-		// same tool (race: events arrive via different I/O channels), reuse
-		// it instead of creating a duplicate.
-		string inputJson = req.arguments.json !is null && req.arguments.json.length > 0
-			? req.arguments.json : "{}";
-
-		// Look for an existing tool entry that matches (by name, not yet externally handled).
-		string itemId;
-		bool found;
-		foreach (ref tool; activeTools)
-		{
-			if (tool.name == displayName && !tool.externallyHandled)
-			{
-				tool.externallyHandled = true;
-				itemId = tool.id;
-				found = true;
-				break;
-			}
-		}
-		if (!found)
-		{
-			finalizeActiveTextItem();
-			itemId = "cp-ext-" ~ req.requestId;
-			activeTools[itemId] = ToolItem(itemId, displayName, inputJson, "", "", true);
-			ItemStartedEvent extStartEv;
-			extStartEv.item_id   = itemId;
-			extStartEv.item_type = "tool_use";
-			extStartEv.name      = displayName;
-			if (isCydo) { extStartEv.tool_server = "cydo"; extStartEv.tool_source = "mcp"; }
-			extStartEv.input     = JSONFragment(inputJson);
-			emitEvent(toJson(extStartEv), currentRawJson_);
-			hadItemsSinceLastStop_ = true;
-		}
 		auto rawJson = currentRawJson_; // capture before async dispatch
 
-		toolDispatch_(dispatchName, to!string(tid), req.arguments, new ToolCallCancellation)
+		toolDispatch_(dispatchName, to!string(tid), itemId, req.arguments, new ToolCallCancellation)
 		.then((McpResult mcpResult) {
 			// Emit completion events for the UI.
 			ItemCompletedEvent extCompEv;
@@ -1983,16 +1952,6 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		ToolStart ts;
 		try ts = jsonParse!ToolStart(data.json);
 		catch (Exception) return;
-
-		// Skip if this tool was already handled by handleExternalToolRequested.
-		if (auto p = ts.toolCallId in activeTools)
-		{
-			if (p.externallyHandled)
-			{
-				activeTools.remove(ts.toolCallId);
-				return;
-			}
-		}
 
 		// Finalize any active text/thinking item (tools don't interrupt each other).
 		finalizeActiveTextItem();
@@ -2614,8 +2573,11 @@ unittest
 		auto dispatch = new Promise!McpResult;
 		auto session = new CopilotSession(server, 7, "legacy-exit",
 			"test-model", "/test/workdir", null,
-			(string tool, string tid, JSONFragment args,
-				ToolCallCancellation cancellation) => dispatch);
+			(string tool, string tid, string itemId, JSONFragment args,
+				ToolCallCancellation cancellation) {
+				assert(itemId == "legacy-tool-call");
+				return dispatch;
+			});
 		server.registerSession("legacy-exit", session);
 
 		int delivered, failed, settlements;
@@ -2631,6 +2593,7 @@ unittest
 		};
 		SdkToolCallRequest request;
 		request.toolName = "cydo-Ask";
+		request.toolCallId = "legacy-tool-call";
 		request.arguments = jsonParse!(typeof(request.arguments))("{}");
 		session.handleToolCall(request).ignoreResult();
 		drainNextTicksAndDueTimers();
@@ -3302,6 +3265,89 @@ unittest
 	assert(output.length == 3);
 	assert(output[2].canFind(`"type":"turn/stop"`));
 	assert(output[2].canFind(`"uuid":"native-assistant-1"`));
+}
+
+unittest
+{
+	foreach (requestOrder; [["call-a", "call-b"], ["call-b", "call-a"]])
+	{
+		string[] dispatchedIds;
+		ToolDispatchFn dispatch = (string tool, string tid, string itemId,
+			JSONFragment args, ToolCallCancellation cancellation) {
+			assert(tool == "Ask");
+			dispatchedIds ~= itemId;
+			return new Promise!McpResult;
+		};
+		auto session = new CopilotSession(null, 1, "same-name-tools", "", ".", null, dispatch);
+		ItemStartedEvent[] starts;
+		session.onOutput = (TranslatedEvent event) {
+			auto started = jsonParse!ItemStartedEvent(event.translated);
+			if (started.type == "item/started")
+				starts ~= started;
+		};
+
+		void sendEvent(string type, string data)
+		{
+			SdkEvent event;
+			event.type = type;
+			event.timestamp = "2026-03-30T14:29:14.993Z";
+			event.data = jsonParse!(typeof(event.data))(data);
+			session.handleEvent(event);
+		}
+
+		auto startOrder = ["call-a", "call-b"];
+		foreach (id; startOrder)
+			sendEvent("tool.execution_start", format!(
+				`{"toolCallId":"%s","toolName":"cydo-Ask","parentToolCallId":"parent-%s","arguments":{}}`)(id, id));
+		assert(starts.length == startOrder.length, toJson(starts));
+		foreach (i, id; startOrder)
+		{
+			assert(starts[i].item_type == "tool_use");
+			assert(starts[i].item_id == id);
+			assert(starts[i].parent_tool_use_id == "parent-" ~ id);
+		}
+
+		foreach (id; requestOrder)
+			sendEvent("external_tool.requested", format!(
+				`{"requestId":"request-%s","toolCallId":"%s","toolName":"cydo-Ask","arguments":{}}`)(id, id));
+
+		assert(starts.length == startOrder.length, toJson(starts));
+		assert(dispatchedIds == requestOrder, toJson(dispatchedIds));
+	}
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+	import std.exception : assertThrown;
+
+	string[] dispatchedIds;
+	ToolDispatchFn dispatch = (string tool, string tid, string itemId,
+		JSONFragment args, ToolCallCancellation cancellation) {
+		dispatchedIds ~= itemId;
+		return new Promise!McpResult;
+	};
+	auto session = new CopilotSession(null, 1, "request-before-start", "", ".", null, dispatch);
+	string[] output;
+	session.onOutput = (TranslatedEvent event) { output ~= event.translated; };
+
+	SdkEvent request;
+	request.type = "external_tool.requested";
+	request.timestamp = "2026-03-30T14:29:14.993Z";
+	request.data = jsonParse!(typeof(request.data))(
+		`{"requestId":"request-early","toolCallId":"call-early","toolName":"cydo-Ask","arguments":{}}`);
+	void handleRequest()
+	{
+		try session.handleEvent(request);
+		catch (Exception error)
+		{
+			assert(error.msg.canFind("call-early"), error.msg);
+			throw error;
+		}
+	}
+	assertThrown!Exception(handleRequest());
+	assert(output.length == 0, toJson(output));
+	assert(dispatchedIds.length == 0, toJson(dispatchedIds));
 }
 
 unittest

@@ -7,6 +7,7 @@ module cydo.mcp.server;
 version (Posix):
 
 import std.conv : to;
+import std.exception : enforce;
 import std.process : environment;
 import std.logger : infof, tracef, warningf;
 
@@ -202,7 +203,17 @@ class McpServerImpl : McpProtocol
 	{
 		auto promise = new Promise!SO;
 
-		auto backendRequest = BackendToolCall(tid, params.name, JSONFragment(params.arguments.toJson()));
+		auto itemId = params.meta.claudeToolUseId.length ? params.meta.claudeToolUseId : params.meta.callId;
+		enforce(!params.meta.callId.length || params.meta.callId == itemId,
+			"Conflicting tool-call IDs in Claude and Codex metadata");
+		if (!itemId.length)
+		{
+			promise.reject(new JsonRpcException(JsonRpcErrorCode.invalidParams,
+				"Missing tool-call ID in _meta: expected claudecode/toolUseId or callId"));
+			return promise;
+		}
+
+		auto backendRequest = BackendToolCall(tid, params.name, itemId, JSONFragment(params.arguments.toJson()));
 		auto bodyJson = toJson(backendRequest);
 
 		tracef("MCP proxy: tools/call %s → backend", params.name);
@@ -295,6 +306,8 @@ struct ToolsCallParams
 struct ToolsCallMeta
 {
 	@JSONOptional SO progressToken;
+	@JSONName("claudecode/toolUseId") @JSONOptional string claudeToolUseId;
+	@JSONOptional string callId;
 }
 
 private JsonRpcRequest buildProgressNotification(SO progressToken, int progress)
@@ -399,10 +412,15 @@ unittest
 
 unittest
 {
-	auto params = `{"name":"Task","arguments":{},"_meta":{"progressToken":42,"x-codex-turn-metadata":{}}}`
+	auto claudeParams = `{"name":"Task","arguments":{},"_meta":{"claudecode/toolUseId":"toolu_x","progressToken":1}}`
+		.jsonParse!ToolsCallParams;
+	auto codexParams = `{"name":"Task","arguments":{},"_meta":{"callId":"call_y","itemId":"fc_unrelated","progressToken":42,"x-codex-turn-metadata":{}}}`
 		.jsonParse!ToolsCallParams;
 	auto noTokenParams = `{"name":"Task","arguments":{}}`.jsonParse!ToolsCallParams;
-	assert(toJson(params.meta.progressToken) == "42");
+	assert(claudeParams.meta.claudeToolUseId == "toolu_x");
+	assert(toJson(claudeParams.meta.progressToken) == "1");
+	assert(codexParams.meta.callId == "call_y");
+	assert(toJson(codexParams.meta.progressToken) == "42");
 	assert(!noTokenParams.meta.progressToken);
 
 	auto stringToken = buildProgressNotification(`"token"`.jsonParse!SO, 1);
@@ -440,13 +458,35 @@ unittest
 
 unittest
 {
+	import std.algorithm.searching : canFind;
+
+	auto proxy = new McpServerImpl("/unused", "17", (JsonRpcRequest) {
+		assert(false, "unexpected progress notification");
+	});
+	auto request = `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"Ask","arguments":{},"_meta":{"itemId":"fc_unrelated"}}}`
+		.jsonParse!JsonRpcRequest;
+	JsonRpcResponse response;
+	proxy.handleRequest(request).then((JsonRpcResponse value) { response = value; }).ignoreResult();
+	assert(proxy.inFlight.length == 0, "call with missing metadata reached backend forwarding");
+	socketManager.loop();
+
+	assert(response.id.toJson() == "7");
+	assert(response.isError);
+	auto error = response.error.get;
+	assert(error.code == JsonRpcErrorCode.invalidParams);
+	assert(error.message.canFind("_meta") && error.message.canFind("claudecode/toolUseId")
+		&& error.message.canFind("callId"), error.message);
+}
+
+unittest
+{
 	import std.array : array, replicate;
 	import ae.sys.timing : mainTimer;
 
 	auto proxy = new McpServerImpl("/" ~ "x".replicate(256), "17", (JsonRpcRequest) {
 		assert(false, "unexpected progress notification");
 	});
-	auto request = `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"Ask","arguments":{},"_meta":{"progressToken":42}}}`
+	auto request = `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"Ask","arguments":{},"_meta":{"callId":"call_sync_failure","progressToken":42}}}`
 		.jsonParse!JsonRpcRequest;
 
 	auto pendingTimers = mainTimer.pendingTasks().array;
@@ -494,14 +534,12 @@ unittest
 	}
 
 	enum result = `{"content":[{"type":"text","text":"tool output"}]}`;
-	JsonRpcRequest call(int id)
+	JsonRpcRequest call(int id, string params)
 	{
 		JsonRpcRequest request;
 		request.method = "tools/call";
 		request.id = SO(id);
-		request.params = (id == 6
-			? `{"name":"Read","arguments":{},"_meta":{"progressToken":42}}`
-			: `{"name":"Ask","arguments":{},"_meta":{"progressToken":42}}`).jsonParse!SO;
+		request.params = params.jsonParse!SO;
 		return request;
 	}
 
@@ -532,14 +570,17 @@ unittest
 		import ae.sys.dataset : joinData;
 		assert(request.resource == "/mcp/call");
 		auto body = cast(string) request.data[].joinData().toGC();
-		assert(body.jsonParse!BackendToolCall.tool == "Ask");
+		auto forwarded = body.jsonParse!BackendToolCall;
+		assert(forwarded.tool == "Ask");
 		backendRequests++;
 		if (backendRequests == 2)
 		{
+			assert(forwarded.item_id == "call_y", forwarded.item_id);
 			conn.sendResponse((new HttpResponseEx).serveData(result));
 			return;
 		}
 		assert(backendRequests == 1);
+		assert(forwarded.item_id == "toolu_x", forwarded.item_id);
 
 		auto keepalive = proxy.inFlight["7"].keepalive;
 		assert(keepalive.timer.isWaiting());
@@ -557,7 +598,9 @@ unittest
 			}
 			backendSawDisconnect = true;
 			assert(!keepalive.timer.isWaiting());
-			proxy.handleRequest(call(8)).then(&recordResponse).ignoreResult();
+			proxy.handleRequest(call(8,
+				`{"name":"Ask","arguments":{},"_meta":{"callId":"call_y","itemId":"fc_unrelated","progressToken":42}}`))
+				.then(&recordResponse).ignoreResult();
 			outstandingClient = proxy.inFlight["8"].client;
 		}
 
@@ -569,18 +612,22 @@ unittest
 		}, 1.msecs);
 	};
 
-	proxy.handleRequest(call(6)).then((JsonRpcResponse) {
-		assert(false, "call cancelled before sending produced a JSON-RPC response");
-	}).ignoreResult();
+	proxy.handleRequest(call(6,
+		`{"name":"Read","arguments":{},"_meta":{"callId":"call_unsent","progressToken":42}}`))
+		.then((JsonRpcResponse) {
+			assert(false, "call cancelled before sending produced a JSON-RPC response");
+		}).ignoreResult();
 	auto unsent = proxy.inFlight["6"];
 	cancel(6);
 	assert("6" !in proxy.inFlight);
 	assert(!unsent.keepalive.timer.isWaiting());
 	assert(unsent.client.handleResponse is null);
 
-	proxy.handleRequest(call(7)).then((JsonRpcResponse) {
-		assert(false, "cancelled call produced a JSON-RPC response");
-	}).ignoreResult();
+	proxy.handleRequest(call(7,
+		`{"name":"Ask","arguments":{},"_meta":{"claudecode/toolUseId":"toolu_x","progressToken":1}}`))
+		.then((JsonRpcResponse) {
+			assert(false, "cancelled call produced a JSON-RPC response");
+		}).ignoreResult();
 	outstandingClient = proxy.inFlight["7"].client;
 	socketManager.loop();
 	assert(!timedOut, "MCP proxy test timed out");
@@ -593,6 +640,7 @@ struct BackendToolCall
 {
 	string tid;
 	string tool;
+	string item_id;
 	JSONFragment args;
 }
 
