@@ -78,7 +78,6 @@ function clamp01(value: number): number {
 export function usagePercent(utilization?: number): number | null {
   if (!Number.isFinite(utilization)) return null;
   let pct = utilization as number;
-  if (pct >= 0 && pct <= 1) pct *= 100;
   if (pct < 0) pct = 0;
   if (pct > 100) pct = 100;
   return pct;

@@ -110,7 +110,6 @@ describe("SystemBanner status helpers", () => {
   it("treats missing utilization as unknown", () => {
     expect(usagePercent(undefined)).toBeNull();
     expect(usagePercent(Number.NaN)).toBeNull();
-    expect(usagePercent(0.42)).toBe(42);
   });
 });
 
@@ -168,7 +167,7 @@ describe("SystemBanner Claude usage", () => {
   it("renders used share with pace coloring by default", () => {
     const html = renderSystemBanner({
       claudeUsage: usageMessage({
-        five_hour: { utilization: 0.42 },
+        five_hour: { utilization: 42 },
         seven_day: {},
       }),
     });
@@ -178,6 +177,14 @@ describe("SystemBanner Claude usage", () => {
       'style="width:42%;background-color:rgb(220, 67, 67);"',
     );
     expect(html).toContain('class="banner-usage-value">42%</span>');
+  });
+
+  it("renders sub-one-percent utilization as a percentage", () => {
+    const html = renderSystemBanner({
+      claudeUsage: usageMessage({ five_hour: { utilization: 0.5 } }),
+    });
+
+    expect(html).toContain('class="banner-usage-value">1%</span>');
   });
 
   it.each([
@@ -197,7 +204,7 @@ describe("SystemBanner Claude usage", () => {
     "renders remaining share with %s coloring based on used share",
     (coloring, color) => {
       const html = renderSystemBanner({
-        claudeUsage: usageMessage({ five_hour: { utilization: 0.42 } }),
+        claudeUsage: usageMessage({ five_hour: { utilization: 42 } }),
         ui: { usage: { coloring, remaining: true } },
       });
 
@@ -211,8 +218,8 @@ describe("SystemBanner Claude usage", () => {
     const pastTime = Math.floor(Date.now() / 1000) - 100;
     const html = renderSystemBanner({
       claudeUsage: usageMessage({
-        five_hour: { utilization: 0.5, resetsAt: pastTime },
-        seven_day: { utilization: 0.8, resetsAt: pastTime },
+        five_hour: { utilization: 50, resetsAt: pastTime },
+        seven_day: { utilization: 80, resetsAt: pastTime },
       }),
     });
 
@@ -224,8 +231,8 @@ describe("SystemBanner Claude usage", () => {
     const futureTime = Math.floor(Date.now() / 1000) + 10000;
     const html = renderSystemBanner({
       claudeUsage: usageMessage({
-        five_hour: { utilization: 0.3, resetsAt: pastTime },
-        seven_day: { utilization: 0.6, resetsAt: futureTime },
+        five_hour: { utilization: 30, resetsAt: pastTime },
+        seven_day: { utilization: 60, resetsAt: futureTime },
       }),
     });
 
