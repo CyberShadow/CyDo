@@ -1033,6 +1033,7 @@ describe("MessageList approval reconciliation", () => {
       const pending: TaskState = {
         ...makeTaskState(1),
         msgIdCounter: 1,
+        streamingMessageCount: streaming ? 1 : 0,
         messages: [
           ...(streaming ? [assistant] : []),
           {

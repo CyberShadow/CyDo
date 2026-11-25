@@ -320,6 +320,7 @@ export interface TaskState {
   tid: number | null;
   status: TaskStatus;
   messages: DisplayMessage[];
+  streamingMessageCount: number;
   replacementEvents: Map<number, import("./protocol").AgnosticEvent>;
   sessionInfo: SessionInfo | null;
   sessionStatus?: string | null;
@@ -438,6 +439,7 @@ export function makeTaskState(
     tid,
     status,
     messages: [],
+    streamingMessageCount: 0,
     replacementEvents: new Map(),
     sessionInfo: null,
     sessionStatus: null,

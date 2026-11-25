@@ -55,6 +55,14 @@ function serialize(state: TaskState) {
   );
 }
 
+function checkStreamingMessageCount(state: TaskState, context: string) {
+  expect(state.streamingMessageCount, context).toBe(
+    state.messages.filter(
+      (message) => message.type === "assistant" && message.streaming === true,
+    ).length,
+  );
+}
+
 function checkSeqOwnership(state: TaskState, operation: number) {
   const owners = new Map<number, number>();
   for (const [index, message] of state.messages.entries()) {
@@ -172,7 +180,11 @@ function checkBatches(
   size: () => number,
 ) {
   deepFreeze(operations);
-  const expected = operations.reduce((state, op) => apply(state, op), initial);
+  const expected = operations.reduce((state, op, i) => {
+    const next = apply(state, op);
+    checkStreamingMessageCount(next, `Unbatched operation ${i + 1}`);
+    return next;
+  }, initial);
   let state = initial;
   for (let start = 0; start < operations.length; ) {
     const end = Math.min(start + size(), operations.length);
@@ -185,6 +197,8 @@ function checkBatches(
       state = apply(state, operations[i]!, batch);
       checkSeqOwnership(reference, i + 1);
       checkSeqOwnership(state, i + 1);
+      checkStreamingMessageCount(reference, `Reference operation ${i + 1}`);
+      checkStreamingMessageCount(state, `Batched operation ${i + 1}`);
     }
     batch.close();
     expect(serialize(input), `input to operations ${start + 1}–${end}`).toBe(
@@ -224,6 +238,64 @@ const stop = {
   uuid: "X",
   history_boundary: { kind: "agent_turn", anchor: "X" },
 } satisfies Parameters<typeof reduceMessage>[1];
+const turnResult = {
+  type: "turn/result",
+  subtype: "success",
+  is_error: false,
+  num_turns: 1,
+  duration_ms: 10,
+  total_cost_usd: 0.03,
+  usage: { input_tokens: 10, output_tokens: 5 },
+} satisfies Parameters<typeof reduceMessage>[1];
+
+function completedTurn() {
+  const streaming = reduceMessage(makeTaskState(1), readA, 1);
+  return deepFreeze(reduceMessage(streaming, stop, 2));
+}
+
+it("leaves a completed turn unchanged when another turn stop arrives", () => {
+  const state = completedTurn();
+
+  expect(state.streamingMessageCount).toBe(0);
+  expect(reduceMessage(state, stop, 3)).toBe(state);
+});
+
+it("appends the result after an already completed turn", () => {
+  const state = completedTurn();
+  const output = reduceMessage(state, turnResult, 3);
+
+  expect(output.streamingMessageCount).toBe(0);
+  expect(output.messages).toHaveLength(2);
+  expect(output.messages[0]).toBe(state.messages[0]);
+  expect(output.messages[1]).toMatchObject({
+    type: "result",
+    seq: 3,
+    resultData: { subtype: "success", isError: false },
+  });
+});
+
+it("throws when the count is positive but no assistant is streaming", () => {
+  const state = { ...completedTurn(), streamingMessageCount: 1 };
+
+  expect(() => reduceMessage(state, stop, 3)).toThrow(
+    "Streaming message count is inconsistent",
+  );
+});
+
+it("leaves a streaming assistant alone when a different subagent stops", () => {
+  const state = deepFreeze(
+    reduceMessage(
+      makeTaskState(1),
+      { ...readA, parent_tool_use_id: "streaming-subagent" },
+      1,
+    ),
+  );
+
+  expect(state.streamingMessageCount).toBe(1);
+  expect(
+    reduceMessage(state, { ...stop, parent_tool_use_id: "other-subagent" }, 2),
+  ).toBe(state);
+});
 
 const imageCompanionStreams = [
   {

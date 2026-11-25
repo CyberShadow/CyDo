@@ -779,29 +779,27 @@ function reduceResultMessage(
   t.messages = b.array(t.messages);
   const messages = t.messages;
 
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]!;
-    if (m.type === "assistant" && m.streaming === true) {
-      const updated = b.object(m);
-      updated.streaming = false;
-      messages[i] = updated;
+  const i = findStreamingMessage(t);
+  if (i >= 0) {
+    const updated = b.object(messages[i]!);
+    updated.streaming = false;
+    messages[i] = updated;
 
-      // Mark all incomplete blocks as completed so partial text remains visible.
-      let blocksChanged = false;
-      for (const itemId of updated.blockIds ?? []) {
-        const block = t.blocks.get(itemId);
-        if (block && !block.completed) {
-          if (!blocksChanged) {
-            t.blocks = b.map(t.blocks);
-            blocksChanged = true;
-          }
-          const complete = b.object(block);
-          t.blocks.set(itemId, complete);
-          complete.completed = true;
+    // Mark all incomplete blocks as completed so partial text remains visible.
+    let blocksChanged = false;
+    for (const itemId of updated.blockIds ?? []) {
+      const block = t.blocks.get(itemId);
+      if (block && !block.completed) {
+        if (!blocksChanged) {
+          t.blocks = b.map(t.blocks);
+          blocksChanged = true;
         }
+        const complete = b.object(block);
+        t.blocks.set(itemId, complete);
+        complete.completed = true;
       }
-      break;
     }
+    t.streamingMessageCount--;
   }
 
   const id = `result-${++t.msgIdCounter}`;
@@ -836,23 +834,35 @@ function reduceResultMessage(
   return msg.is_error ? cancelPendingFileEdits(b, t) : t;
 }
 
+function findStreamingMessage(
+  s: SessionState,
+  parentToolUseId?: string,
+): number {
+  if (s.streamingMessageCount === 0) return -1;
+  let sawStreaming = false;
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const message = s.messages[i]!;
+    if (message.type !== "assistant" || !message.streaming) continue;
+    if (!parentToolUseId || message.parentToolUseId === parentToolUseId)
+      return i;
+    sawStreaming = true;
+  }
+  if (!sawStreaming) throw new Error("Streaming message count is inconsistent");
+  return -1;
+}
+
 /** Insert a message before any in-progress streaming assistant message.
  *  User messages should always precede the assistant's response, but the
  *  protocol may deliver the user echo after streaming has already started. */
 function insertBeforeStreaming(
   b: WriteBatch,
-  messages: DisplayMessage[],
+  s: SessionState,
   msg: DisplayMessage,
 ): DisplayMessage[] {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]!.type === "assistant" && messages[i]!.streaming === true) {
-      const result = b.array(messages);
-      result.splice(i, 0, msg);
-      return result;
-    }
-  }
-  const result = b.array(messages);
-  result.push(msg);
+  const i = findStreamingMessage(s);
+  const result = b.array(s.messages);
+  if (i >= 0) result.splice(i, 0, msg);
+  else result.push(msg);
   return result;
 }
 
@@ -868,16 +878,8 @@ function getOrCreateStreamingMessage(
   parentToolUseId?: string,
   ts?: number,
 ): number {
-  for (let i = s.messages.length - 1; i >= 0; i--) {
-    const message = s.messages[i]!;
-    if (
-      message.type === "assistant" &&
-      message.streaming &&
-      (!parentToolUseId || message.parentToolUseId === parentToolUseId)
-    ) {
-      return i;
-    }
-  }
+  const i = findStreamingMessage(s, parentToolUseId);
+  if (i >= 0) return i;
   const placeholder = b.adopt<DisplayMessage>({
     id: `streaming-${++s.msgIdCounter}`,
     type: "assistant",
@@ -890,6 +892,7 @@ function getOrCreateStreamingMessage(
   if (parentToolUseId) placeholder.parentToolUseId = parentToolUseId;
   s.messages = b.array(s.messages);
   s.messages.push(placeholder);
+  s.streamingMessageCount++;
   return s.messages.length - 1;
 }
 
@@ -1115,7 +1118,7 @@ function reduceItemStartedUserMessage(
       state.messages = b.array(state.messages);
       state.messages.push(echoMsg);
     } else {
-      state.messages = insertBeforeStreaming(b, state.messages, echoMsg);
+      state.messages = insertBeforeStreaming(b, state, echoMsg);
     }
     return state;
   }
@@ -1156,7 +1159,7 @@ function reduceItemStartedUserMessage(
     state.messages = b.array(state.messages);
     state.messages.push(echoMsg);
   } else {
-    state.messages = insertBeforeStreaming(b, state.messages, echoMsg);
+    state.messages = insertBeforeStreaming(b, state, echoMsg);
   }
 
   return state;
@@ -1489,6 +1492,8 @@ function reduceItemAbandoned(
       updated.blockIds = b.adopt(blockIds);
     } else {
       t.messages.splice(i, 1);
+      if (message.type === "assistant" && message.streaming)
+        t.streamingMessageCount--;
     }
   }
   return t;
@@ -1576,38 +1581,28 @@ function reduceTurnDelta(
   event: TurnDeltaEvent,
   seq?: number,
 ): SessionState {
-  for (let i = s.messages.length - 1; i >= 0; i--) {
-    const m = s.messages[i]!;
-    if (m.type === "assistant" && m.streaming === true) {
-      // Skip messages that belong to a different (sub-agent) context.
-      if (
-        event.parent_tool_use_id &&
-        m.parentToolUseId !== event.parent_tool_use_id
-      )
-        continue;
-      const t = b.object(s);
-      t.messages = b.array(t.messages);
-      const messages = t.messages;
-      const updated = b.object(m);
-      messages[i] = updated;
+  const i = findStreamingMessage(s, event.parent_tool_use_id);
+  if (i < 0) return s;
+  const t = b.object(s);
+  t.messages = b.array(t.messages);
+  const messages = t.messages;
+  const updated = b.object(messages[i]!);
+  messages[i] = updated;
 
-      // Apply turn-level metadata eagerly.
-      if (event.model) updated.model ??= event.model;
-      if (event.usage) updated.usage = event.usage;
-      if (event.parent_tool_use_id)
-        updated.parentToolUseId ??= event.parent_tool_use_id;
-      if (event.is_sidechain) updated.isSidechain = event.is_sidechain;
-      const deltaExtras = getExtras(event);
-      if (deltaExtras) updated.extraFields = deltaExtras;
-      if (event.uuid) updated.uuid = event.uuid;
+  // Apply turn-level metadata eagerly.
+  if (event.model) updated.model ??= event.model;
+  if (event.usage) updated.usage = event.usage;
+  if (event.parent_tool_use_id)
+    updated.parentToolUseId ??= event.parent_tool_use_id;
+  if (event.is_sidechain) updated.isSidechain = event.is_sidechain;
+  const deltaExtras = getExtras(event);
+  if (deltaExtras) updated.extraFields = deltaExtras;
+  if (event.uuid) updated.uuid = event.uuid;
 
-      // Attach to rawSource for "View source" → "Raw".
-      appendRawSource(b, updated, event, seq);
+  // Attach to rawSource for "View source" → "Raw".
+  appendRawSource(b, updated, event, seq);
 
-      return t;
-    }
-  }
-  return s;
+  return t;
 }
 
 function reduceTurnStop(
@@ -1616,58 +1611,49 @@ function reduceTurnStop(
   event: TurnStopEvent,
   seq?: number,
 ): SessionState {
-  for (let i = s.messages.length - 1; i >= 0; i--) {
-    const m = s.messages[i]!;
-    if (m.type === "assistant" && m.streaming === true) {
-      // Skip messages that belong to a different (sub-agent) context.
-      if (
-        event.parent_tool_use_id &&
-        m.parentToolUseId !== event.parent_tool_use_id
-      )
-        continue;
-      const t = b.object(s);
-      t.messages = b.array(t.messages);
-      const messages = t.messages;
-      const updated = b.object(m);
-      messages[i] = updated;
+  const i = findStreamingMessage(s, event.parent_tool_use_id);
+  if (i < 0) return s;
+  const t = b.object(s);
+  t.messages = b.array(t.messages);
+  const messages = t.messages;
+  const updated = b.object(messages[i]!);
+  messages[i] = updated;
 
-      // Apply metadata if present (history path where no turn/delta preceded).
-      // ??= guards prevent overwriting values already set by turn/delta.
-      if (event.model) updated.model ??= event.model;
-      if (event.usage) updated.usage ??= event.usage;
-      if (event.parent_tool_use_id)
-        updated.parentToolUseId ??= event.parent_tool_use_id;
-      if (event.is_sidechain) updated.isSidechain ??= event.is_sidechain;
-      const stopExtras = getExtras(event);
-      if (stopExtras) updated.extraFields ??= stopExtras;
-      if (event.uuid) updated.uuid ??= event.uuid;
+  // Apply metadata if present (history path where no turn/delta preceded).
+  // ??= guards prevent overwriting values already set by turn/delta.
+  if (event.model) updated.model ??= event.model;
+  if (event.usage) updated.usage ??= event.usage;
+  if (event.parent_tool_use_id)
+    updated.parentToolUseId ??= event.parent_tool_use_id;
+  if (event.is_sidechain) updated.isSidechain ??= event.is_sidechain;
+  const stopExtras = getExtras(event);
+  if (stopExtras) updated.extraFields ??= stopExtras;
+  if (event.uuid) updated.uuid ??= event.uuid;
 
-      // Always append to rawSource — every raw Claude Code event that
-      // contributes to the message should be visible via "View source" → "Raw".
-      appendRawSource(b, updated, event, seq);
+  // Always append to rawSource — every raw Claude Code event that
+  // contributes to the message should be visible via "View source" → "Raw".
+  appendRawSource(b, updated, event, seq);
 
-      updated.streaming = false;
+  updated.streaming = false;
+  t.streamingMessageCount--;
 
-      // Mark all incomplete blocks as completed (safety net — prevents
-      // orphaned incomplete blocks from persisting past the turn boundary).
-      let blocksChanged = false;
-      for (const itemId of updated.blockIds ?? []) {
-        const block = t.blocks.get(itemId);
-        if (block && !block.completed) {
-          if (!blocksChanged) {
-            t.blocks = b.map(t.blocks);
-            blocksChanged = true;
-          }
-          const complete = b.object(block);
-          t.blocks.set(itemId, complete);
-          complete.completed = true;
-        }
+  // Mark all incomplete blocks as completed (safety net — prevents
+  // orphaned incomplete blocks from persisting past the turn boundary).
+  let blocksChanged = false;
+  for (const itemId of updated.blockIds ?? []) {
+    const block = t.blocks.get(itemId);
+    if (block && !block.completed) {
+      if (!blocksChanged) {
+        t.blocks = b.map(t.blocks);
+        blocksChanged = true;
       }
-
-      return t;
+      const complete = b.object(block);
+      t.blocks.set(itemId, complete);
+      complete.completed = true;
     }
   }
-  return s;
+
+  return t;
 }
 
 function reduceStderr(
@@ -1770,9 +1756,8 @@ function reduceTaskDiagnostic(
     msg.type === "agent/notice" && msg.collapsible
       ? { stdout: msg.stdout, stderr: msg.stderr, output: msg.output }
       : undefined;
-  for (let i = s.messages.length - 1; i >= 0; i--) {
-    if (s.messages[i]!.type !== "assistant" || !s.messages[i]!.streaming)
-      continue;
+  const i = findStreamingMessage(s);
+  if (i >= 0) {
     const t = b.object(s);
     t.messages = b.array(t.messages);
     const messages = t.messages;
@@ -1965,13 +1950,7 @@ export function reduceMessageIn(
 
     case "agent/unrecognized": {
       // If mid-turn, embed in the streaming message to preserve temporal order.
-      let streamingMsgIdx = -1;
-      for (let i = s.messages.length - 1; i >= 0; i--) {
-        if (s.messages[i]!.type === "assistant" && s.messages[i]!.streaming) {
-          streamingMsgIdx = i;
-          break;
-        }
-      }
+      const streamingMsgIdx = findStreamingMessage(s);
       if (streamingMsgIdx >= 0) {
         const t = b.object(s);
         t.messages = b.array(t.messages);

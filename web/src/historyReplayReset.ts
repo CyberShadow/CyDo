@@ -76,6 +76,7 @@ function resetTaskTimeline(
   return {
     ...task,
     messages: [],
+    streamingMessageCount: 0,
     replacementEvents: new Map(),
     sessionInfo: null,
     sessionStatus: null,
