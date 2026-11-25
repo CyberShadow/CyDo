@@ -59,6 +59,27 @@ async function buildLoadedShellSourceTree(source: string) {
 }
 
 describe("source tree render plan", () => {
+  it("carries the embed's document into its rich render piece", () => {
+    const text = "<svg></svg>";
+    const span = { start: 0, end: text.length };
+    const segment = {
+      kind: "embed" as const,
+      span,
+      presentation: { kind: "rich" as const },
+      document: { filePath: "x.svg" },
+      content: {
+        language: "xml",
+        text,
+        segments: [{ kind: "text" as const, span }],
+      },
+    };
+    const root: SourceNode = { language: "bash", text, segments: [segment] };
+
+    expect(buildSourceRenderPieces(root)).toMatchObject([
+      { kind: "rich", document: { filePath: "x.svg" } },
+    ]);
+  });
+
   it("isLineBoundaryEmbed returns false for quoted wrapper payload", async () => {
     const command =
       "/run/current-system/sw/bin/zsh -lc 'program --some-flag -y \"hello world\"'";

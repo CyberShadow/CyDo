@@ -767,3 +767,23 @@ it.for([
       );
     }),
 );
+
+it.for(["cat >x.svg", "tee x.svg >/dev/null"])(
+  "renders an SVG image preview for %s",
+  (writer, context) =>
+    run(context, async ({ root, poll }) => {
+      const command = [
+        `${writer} <<'EOF'`,
+        '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32"/></svg>',
+        "EOF",
+      ].join("\n");
+      void act(() => {
+        render(toolInput(command, "dark"), root);
+      });
+      const preview = '.source-tree-rich-block img[alt="SVG preview"]';
+      await poll({
+        description: "rendered SVG image preview",
+        ready: () => root.querySelector(preview) !== null,
+      });
+    }),
+);

@@ -62,12 +62,10 @@ export function SourceInlineEmbedView({
 export function SourceRichEmbedView({
   piece,
   preClass,
-  renderableFilePath,
   blockClass,
 }: {
   piece: Extract<SourceRenderPiece, { kind: "rich" }>;
   preClass: string;
-  renderableFilePath?: string;
   blockClass?: string;
 }) {
   const tokens = useHighlight(
@@ -102,11 +100,11 @@ export function SourceRichEmbedView({
     );
   }
 
-  if (renderableFilePath) {
+  if (piece.document) {
     return (
       <div class={`source-tree-rich-block${blockClassName}`}>
         <FileContentPreview
-          filePath={renderableFilePath}
+          filePath={piece.document.filePath}
           content={piece.text}
           sourceContent={piece.sourceText}
           defaultSource={false}
@@ -249,12 +247,10 @@ export function SourceNodeView({
   root,
   copyText,
   preClass = "write-content",
-  renderableFilePath,
 }: {
   root: SourceNode;
   copyText: string;
   preClass?: string;
-  renderableFilePath?: string;
 }) {
   const pieces = buildSourceRenderPieces(root);
   const blocks = toRenderBlocks(pieces);
@@ -278,7 +274,6 @@ export function SourceNodeView({
             key={block.id}
             piece={block.piece}
             preClass={preClass}
-            renderableFilePath={renderableFilePath}
             blockClass={blockClass}
           />
         );

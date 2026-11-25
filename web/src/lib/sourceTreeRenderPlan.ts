@@ -29,6 +29,7 @@ export type SourceRenderPiece =
       sourceText: string;
       language: string;
       mode: Exclude<SourceEmbedRenderMode, "inline">;
+      document?: EmbedSegment["document"];
       sourceSpan: SourceSpan;
     };
 
@@ -142,6 +143,7 @@ function walkSourceRenderPieces(
       sourceText: rawText,
       language: segment.content.language,
       mode,
+      document: segment.document,
       sourceSpan,
     });
   }

@@ -58,7 +58,6 @@ import {
 import { shellOutputView } from "../lib/shellOutput";
 import {
   useShellSemantic,
-  type ShellHeredocWriteSemantic,
   type ShellScriptExecSemantic,
 } from "../lib/shellSemantic";
 import { splitOutputRows } from "../lib/outputPlan";
@@ -797,14 +796,11 @@ function ShellCommandInput({
 
   // Heredoc write: render header/content/footer
   if (isHeredocWrite) {
-    const writeVal = (
-      semantic as { ok: true; value: ShellHeredocWriteSemantic }
-    ).value;
     if (displayCommand && parsedSourceTree) {
       return formatGenericInput(
         remaining,
         <div class="semantic-shell-command" data-testid="semantic-shell-write">
-          {renderSourceTreeCommand(parsedSourceTree, writeVal.filePath)}
+          {renderSourceTreeCommand(parsedSourceTree)}
         </div>,
       );
     }
@@ -909,17 +905,8 @@ function hasWrapperSourceTree(root: SourceNode): boolean {
   );
 }
 
-function renderSourceTreeCommand(
-  root: SourceNode,
-  renderableFilePath?: string,
-): h.JSX.Element {
-  const sourceTreeView = (
-    <SourceNodeView
-      root={root}
-      copyText={root.text}
-      renderableFilePath={renderableFilePath}
-    />
-  );
+function renderSourceTreeCommand(root: SourceNode): h.JSX.Element {
+  const sourceTreeView = <SourceNodeView root={root} copyText={root.text} />;
   return hasWrapperSourceTree(root) ? (
     <div data-testid="semantic-shell-wrapper-input">{sourceTreeView}</div>
   ) : (

@@ -21,6 +21,7 @@ export type SourceSegment =
       origin?: SourceEmbedOrigin;
       presentation?: SourceEmbedPresentation;
       projection?: SourceProjection;
+      document?: Readonly<{ filePath: string }>;
     };
 
 export interface SourceSpan {

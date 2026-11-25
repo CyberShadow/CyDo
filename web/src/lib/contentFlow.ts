@@ -121,7 +121,7 @@ function buildSegments(
       throw new Error("source-tree candidate span invariant");
     const before = textSegment(cursor, candidate.span.start);
     if (before) segments.push(before);
-    const { language } = resolveFlowLanguage(candidate.sinks);
+    const { language, document } = resolveFlowLanguage(candidate.sinks);
     const content =
       candidate.child === null
         ? plainNode(language, candidate.value.text)
@@ -132,6 +132,7 @@ function buildSegments(
       content,
       origin: candidate.origin,
       projection: candidate.value.projection,
+      document: document ?? undefined,
       presentation: shouldUseRichPresentation(
         candidate.layout,
         content.language,
