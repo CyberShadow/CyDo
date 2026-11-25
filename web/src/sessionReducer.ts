@@ -548,6 +548,13 @@ function appendTrackedEdits(
   for (const edit of edits) {
     const path = normalizeFilePath(edit.filePath, t.sessionInfo?.cwd);
     const tracked = b.adopt({ ...edit, filePath: path });
+    const paths = t.trackedEditPathsByToolUseId.get(edit.toolUseId);
+    if (!paths?.has(path)) {
+      t.trackedEditPathsByToolUseId = b.map(t.trackedEditPathsByToolUseId);
+      const updated = paths ? b.map(paths) : b.adopt(new Map<string, true>());
+      t.trackedEditPathsByToolUseId.set(edit.toolUseId, updated);
+      updated.set(path, true);
+    }
     const existing = t.trackedFiles.get(path);
     if (existing) {
       const file = b.object(existing);
@@ -567,11 +574,17 @@ function updateEditStatusByToolUseId(
   toolUseId: string,
   status: FileEditStatus,
 ): SessionState {
+  const paths = state.trackedEditPathsByToolUseId.get(toolUseId);
+  if (!paths) return state;
   let t = state;
-  for (const [path, file] of state.trackedFiles) {
+  for (const path of paths.keys()) {
+    const file = state.trackedFiles.get(path)!;
+    let found = false;
     for (let i = 0; i < file.edits.length; i++) {
       const edit = file.edits[i]!;
-      if (edit.toolUseId !== toolUseId || edit.status === status) continue;
+      if (edit.toolUseId !== toolUseId) continue;
+      found = true;
+      if (edit.status === status) continue;
       t = b.object(t);
       t.trackedFiles = b.map(t.trackedFiles);
       const updated = b.object(t.trackedFiles.get(path)!);
@@ -581,18 +594,9 @@ function updateEditStatusByToolUseId(
       updated.edits[i] = ownedEdit;
       ownedEdit.status = status;
     }
+    if (!found) throw new Error(`No tracked edit for ${toolUseId} at ${path}`);
   }
   return t;
-}
-
-function hasTrackedEditsForToolUseId(
-  state: SessionState,
-  toolUseId: string,
-): boolean {
-  for (const file of state.trackedFiles.values()) {
-    if (file.edits.some((edit) => edit.toolUseId === toolUseId)) return true;
-  }
-  return false;
 }
 
 function cancelPendingFileEdits(
@@ -684,7 +688,7 @@ function trackResultFileEdits(
       const bashEditDiff = getBashEditDiff(toolResult);
       if (!bashEditDiff) continue;
       if (bashEditDiff.skipped) continue;
-      if (hasTrackedEditsForToolUseId(state, block.tool_use_id)) continue;
+      if (state.trackedEditPathsByToolUseId.has(block.tool_use_id)) continue;
       const edits = getBashEditDiffFileChanges(bashEditDiff).map(
         (change, changeIndex) =>
           buildFileEdit(
@@ -712,7 +716,7 @@ function trackResultFileEdits(
         "codex/apply_patch",
       )
     ) {
-      if (hasTrackedEditsForToolUseId(state, block.tool_use_id)) continue;
+      if (state.trackedEditPathsByToolUseId.has(block.tool_use_id)) continue;
       const edits = buildEditsFromApplyPatchInput(
         input,
         block.tool_use_id,

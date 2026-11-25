@@ -55,7 +55,7 @@ function serialize(state: TaskState) {
   );
 }
 
-function checkMessageInvariants(state: TaskState, context: string) {
+function checkStateInvariants(state: TaskState, context: string) {
   expect(state.streamingMessageCount, context).toBe(
     state.messages.filter(
       (message) => message.type === "assistant" && message.streaming === true,
@@ -67,6 +67,20 @@ function checkMessageInvariants(state: TaskState, context: string) {
       `${context}: echoPending message with a cleared flag`,
     ).toBe(false);
   }
+
+  const expectedPaths = new Map<string, Map<string, true>>();
+  for (const [path, file] of state.trackedFiles) {
+    for (const { toolUseId } of file.edits) {
+      const paths = expectedPaths.get(toolUseId) ?? new Map<string, true>();
+      paths.set(path, true);
+      expectedPaths.set(toolUseId, paths);
+    }
+  }
+
+  expect(
+    state.trackedEditPathsByToolUseId,
+    `${context}: tracked edit index`,
+  ).toEqual(expectedPaths);
 }
 
 function checkSeqOwnership(state: TaskState, operation: number) {
@@ -188,7 +202,7 @@ function checkBatches(
   deepFreeze(operations);
   const expected = operations.reduce((state, op, i) => {
     const next = apply(state, op);
-    checkMessageInvariants(next, `Unbatched operation ${i + 1}`);
+    checkStateInvariants(next, `Unbatched operation ${i + 1}`);
     return next;
   }, initial);
   let state = initial;
@@ -203,8 +217,8 @@ function checkBatches(
       state = apply(state, operations[i]!, batch);
       checkSeqOwnership(reference, i + 1);
       checkSeqOwnership(state, i + 1);
-      checkMessageInvariants(reference, `Reference operation ${i + 1}`);
-      checkMessageInvariants(state, `Batched operation ${i + 1}`);
+      checkStateInvariants(reference, `Reference operation ${i + 1}`);
+      checkStateInvariants(state, `Batched operation ${i + 1}`);
     }
     batch.close();
     expect(serialize(input), `input to operations ${start + 1}–${end}`).toBe(
@@ -218,6 +232,59 @@ function checkBatches(
   }
   expect(serialize(state)).toBe(serialize(expected));
 }
+
+it("indexes a path once when a tool records multiple edits to it", () => {
+  const path = "/tmp/project/repeated.md";
+  const state = reduceMessage(
+    { ...makeTaskState(1), driver: "codex" },
+    {
+      type: "item/started",
+      item_type: "tool_use",
+      item_id: "multi-edit",
+      name: "fileChange",
+      input: {
+        changes: [
+          { path, kind: { type: "add" }, diff: "first" },
+          { path, kind: { type: "add" }, diff: "second" },
+        ],
+      },
+    },
+    1,
+  );
+
+  expect(state.trackedFiles.get(path)?.edits).toHaveLength(2);
+  expect(state.trackedEditPathsByToolUseId.get("multi-edit")).toEqual(
+    new Map([[path, true]]),
+  );
+});
+
+it("indexes every distinct path from a single file change event", () => {
+  const paths = Array.from(
+    { length: 128 },
+    (_, i) => `/tmp/project/file-${i}.md`,
+  );
+  const state = reduceMessage(
+    { ...makeTaskState(1), driver: "codex" },
+    {
+      type: "item/started",
+      item_type: "tool_use",
+      item_id: "many-paths",
+      name: "fileChange",
+      input: {
+        changes: paths.map((path) => ({
+          path,
+          kind: { type: "add" },
+          diff: "new content",
+        })),
+      },
+    },
+    1,
+  );
+
+  expect(state.trackedEditPathsByToolUseId).toEqual(
+    new Map([["many-paths", new Map(paths.map((path) => [path, true]))]]),
+  );
+});
 
 const readA = {
   type: "item/started",

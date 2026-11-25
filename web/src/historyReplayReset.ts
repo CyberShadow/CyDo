@@ -95,6 +95,7 @@ function resetTaskTimeline(
     pendingPermission: undefined,
     submittedPermission: undefined,
     trackedFiles: new Map(),
+    trackedEditPathsByToolUseId: new Map(),
     blocks: new Map(),
     itemIdMap: new Map(),
     itemEnrichments: new Map(),

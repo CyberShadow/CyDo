@@ -402,6 +402,7 @@ export interface TaskState {
   submittedPermission?: PermissionPromptState;
   /** Files modified by the agent, keyed by absolute file path. */
   trackedFiles: Map<string, TrackedFile>;
+  trackedEditPathsByToolUseId: Map<string, Map<string, true>>;
   /** Flat block store keyed by unique block key — source of truth for assistant message content. */
   blocks: Map<string, Block>;
   /** Maps raw event item_id → block key (item IDs are only unique within a turn). */
@@ -473,6 +474,7 @@ export function makeTaskState(
     createdAt: createdAt || undefined,
     lastActive: lastActive || undefined,
     trackedFiles: new Map(),
+    trackedEditPathsByToolUseId: new Map(),
     blocks: new Map(),
     itemIdMap: new Map(),
     itemEnrichments: new Map(),
