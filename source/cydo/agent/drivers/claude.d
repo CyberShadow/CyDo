@@ -823,22 +823,38 @@ class ClaudeCodeAgent : Agent
 		foreach (line; content.lineSplitter)
 		{
 			lineNum++;
-			auto row = parseHistoryRow(line);
-			auto kind = row.kind;
-			if (endMessage !is null && endsHistoryMessage(kind))
-				endMessage();
-			auto boundary = historyBoundary(row, kind, lineNum);
-			if (!boundary.isNull)
+			visitPersistedHistoryRow(line, lineNum, visitBoundary, endMessage);
+		}
+	}
+
+	package(cydo) void visitPersistedHistoryRows(const(string)[] rows, int firstLine,
+		scope void delegate(PersistedHistoryBoundary, int firstBlockIndex, int lastBlockIndex, bool joinedApiReply) visitBoundary,
+		scope void delegate() endMessage = null)
+	{
+		foreach (i, row; rows)
+			visitPersistedHistoryRow(row, firstLine == 0 ? 0 : firstLine + cast(int) i,
+				visitBoundary, endMessage);
+	}
+
+	private static void visitPersistedHistoryRow(string line, int lineNum,
+		scope void delegate(PersistedHistoryBoundary, int firstBlockIndex, int lastBlockIndex, bool joinedApiReply) visitBoundary,
+		scope void delegate() endMessage)
+	{
+		auto row = parseHistoryRow(line);
+		auto kind = row.kind;
+		if (endMessage !is null && endsHistoryMessage(kind))
+			endMessage();
+		auto boundary = historyBoundary(row, kind, lineNum);
+		if (!boundary.isNull)
+		{
+			auto last = row.apiBlockIndex;
+			if (row.apiBlockIndex >= 0)
 			{
-				auto last = row.apiBlockIndex;
-				if (row.apiBlockIndex >= 0)
-				{
-					auto blocks = jsonParse!(JSONFragment[])(row.message.content.json);
-					assert(blocks.length > 0, "Claude indexed assistant row requires content");
-					last += cast(int) blocks.length - 1;
-				}
-				visitBoundary(boundary.get, row.apiBlockIndex, last, row.joinedApiReply);
+				auto blocks = jsonParse!(JSONFragment[])(row.message.content.json);
+				assert(blocks.length > 0, "Claude indexed assistant row requires content");
+				last += cast(int) blocks.length - 1;
 			}
+			visitBoundary(boundary.get, row.apiBlockIndex, last, row.joinedApiReply);
 		}
 	}
 
@@ -854,10 +870,13 @@ class ClaudeCodeAgent : Agent
 				return Nullable!PersistedHistoryBoundary(PersistedHistoryBoundary(
 					row.message.id, PersistedHistoryBoundaryKind.agent_turn, null, lineNum));
 			case HistoryRowKind.prompt:
+				enforce(lineNum != 0 || row.uuid.length > 0, "Claude mirrored prompt without uuid");
 				auto anchor = row.uuid.length > 0 ? row.uuid : format!"line:%d"(lineNum);
 				return Nullable!PersistedHistoryBoundary(PersistedHistoryBoundary(
 					anchor, PersistedHistoryBoundaryKind.user, null, lineNum));
 			case HistoryRowKind.enqueue:
+				if (lineNum == 0)
+					return Nullable!PersistedHistoryBoundary.init;
 				return Nullable!PersistedHistoryBoundary(PersistedHistoryBoundary(
 					format!"enqueue-%d"(lineNum), PersistedHistoryBoundaryKind.provisional_user, null, lineNum));
 			default:
@@ -7557,6 +7576,51 @@ unittest
 	].join("\n"), 0, (boundary, first, last, joined) { firstIndexes ~= first; lastIndexes ~= last; });
 	assert(firstIndexes == [3, 0, 0, 1, 0]);
 	assert(lastIndexes == [3, 0, 0, 1, 1]);
+}
+
+@("Claude mirrored persisted prompts require a UUID")
+unittest
+{
+	import std.exception : assertThrown;
+
+	auto agent = new ClaudeCodeAgent();
+	assertThrown(agent.visitPersistedHistoryRows([
+		`{"type":"user","message":{"content":"hello"}}`,
+	], 0, (boundary, first, last, joined) { assert(0, "unexpected boundary"); }));
+}
+
+@("Claude mirrored persisted rows expose UUID boundaries without line numbers")
+unittest
+{
+	auto agent = new ClaudeCodeAgent();
+	PersistedHistoryBoundary[] boundaries;
+	agent.visitPersistedHistoryRows([
+		`{"type":"queue-operation","operation":"enqueue"}`,
+		`{"type":"user","uuid":"prompt-uuid","message":{"content":"hello"}}`,
+		`{"type":"queue-operation","operation":"enqueue"}`,
+	], 0, (boundary, first, last, joined) { boundaries ~= boundary; });
+
+	assert(boundaries.length == 1);
+	assert(boundaries[0].kind == PersistedHistoryBoundaryKind.user);
+	assert(boundaries[0].anchor == "prompt-uuid");
+	assert(boundaries[0].sourceLine == 0);
+}
+
+@("Claude numbered persisted rows use physical lines for fallback anchors")
+unittest
+{
+	auto agent = new ClaudeCodeAgent();
+	PersistedHistoryBoundary[] boundaries;
+	agent.visitPersistedHistoryRows([
+		`{"type":"user","message":{"content":"hello"}}`,
+		`{"type":"queue-operation","operation":"enqueue"}`,
+	], 7, (boundary, first, last, joined) { boundaries ~= boundary; });
+
+	assert(boundaries.length == 2);
+	assert(boundaries[0].kind == PersistedHistoryBoundaryKind.user);
+	assert(boundaries[0].anchor == "line:7" && boundaries[0].sourceLine == 7);
+	assert(boundaries[1].kind == PersistedHistoryBoundaryKind.provisional_user);
+	assert(boundaries[1].anchor == "enqueue-8" && boundaries[1].sourceLine == 8);
 }
 
 @("Claude replay closes the open message at every queue operation")
