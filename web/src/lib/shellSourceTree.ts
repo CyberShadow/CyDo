@@ -10,7 +10,7 @@ import {
   type ParsedShellEmbeddedInvocation,
   type ParsedShellHeredocRedirect,
 } from "./shellParser";
-import { shellArgumentWords, shellFdTable } from "./shellFdTable";
+import { fileSink, shellArgumentWords, shellFdTable } from "./shellFdTable";
 import { ownsWholeCommand } from "./shellInvocationOwnership";
 import type {
   SourceSegment,
@@ -21,27 +21,59 @@ import type {
 type SourceEmbedSegment = Extract<SourceSegment, { kind: "embed" }>;
 type SourceTreeRejection = Extract<SourceTreeParseResult, { ok: false }>;
 
+const unknownSink = { kind: "unknown" } as const;
+
 function heredocSinks(
   document: ParsedShellDocument,
   redirect: ParsedShellHeredocRedirect,
 ): readonly FlowSink[] {
   const owner = document.commands[redirect.ownerId]!;
-  if (owner.name.kind !== "literal") return [{ kind: "unknown" }];
-  if (owner.name.value.split("/").pop() !== "cat") return [{ kind: "unknown" }];
-  if (
-    redirect.header.continuation ||
-    shellArgumentWords(
-      redirect.header.arguments,
-      owner.redirectIds.map((id) => document.redirects[id]!),
-    ).length > 0
-  )
-    return [{ kind: "unknown" }];
+  if (owner.name.kind !== "literal" || redirect.header.continuation)
+    return [unknownSink];
+  const executable = owner.name.value.split("/").at(-1);
+  if (executable !== "cat" && executable !== "tee") return [unknownSink];
+
   const fds = shellFdTable(document, redirect.ownerId);
-  const stdin = fds.get(0);
-  const stdout = fds.get(1);
-  if (stdin?.kind !== "source" || stdin.redirectId !== redirect.id)
-    return [{ kind: "unknown" }];
-  return stdout?.kind === "file" ? [stdout] : [{ kind: "unknown" }];
+  const stdin = fds.get(0)!;
+  if (stdin.kind !== "source" || stdin.redirectId !== redirect.id)
+    return [unknownSink];
+  const output = fds.get(1)!;
+  const stdout =
+    output.kind === "source" || output.kind === "inherited-stdin"
+      ? unknownSink
+      : output;
+  const args = shellArgumentWords(
+    [...owner.arguments, ...redirect.header.arguments],
+    owner.redirectIds.map((id) => document.redirects[id]!),
+  );
+  if (executable === "cat") {
+    return args.every((word) => word.kind === "literal" && word.value === "-")
+      ? [stdout]
+      : [unknownSink];
+  }
+
+  let mode: "overwrite" | "append" = "overwrite";
+  let options = true;
+  const paths: (string | null)[] = [];
+  for (const word of args) {
+    if (word.kind !== "literal") {
+      paths.push(null);
+    } else if (options && word.value === "--") {
+      options = false;
+    } else if (options && (word.value === "-a" || word.value === "--append")) {
+      mode = "append";
+    } else if (options && word.value.startsWith("-") && word.value !== "-") {
+      return [unknownSink];
+    } else {
+      paths.push(word.value);
+    }
+  }
+  return [
+    ...paths.map((path) =>
+      path === null ? unknownSink : fileSink(path, mode),
+    ),
+    stdout,
+  ];
 }
 
 function heredocOrigin(

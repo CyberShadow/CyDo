@@ -11,6 +11,7 @@ import {
 } from "./shellParser";
 import { ownsWholeCommand } from "./shellInvocationOwnership";
 import {
+  analyzeShellDocument,
   buildShellSourceTree,
   isShellCommandWrapperEmbed,
 } from "./shellSourceTree";
@@ -1408,7 +1409,7 @@ describe("sourceTree projection parser", () => {
       ["cat", '>|"000"', "text"],
       ["cat", '&>"2"', "text"],
       ["cat", "&>>'03'", "text"],
-      ["tee", ">/tmp/output.py", "text"],
+      ["tee", ">/tmp/output.py", "python"],
       ["/usr/bin/cat", ">/tmp/output.py", "python"],
       ["cat", ">&/tmp/output.py", "python"],
       ["cat", "2>/tmp/output.py 1>&2", "python"],
@@ -1945,4 +1946,155 @@ describe("sourceTree projection parser", () => {
       issue: "error_node",
     });
   });
+});
+
+describe("heredoc routing", () => {
+  const body = "\n# Title\n- a\nEOF";
+
+  it.each([
+    ["cat", "cat >note.md <<'EOF'", "markdown"],
+    ["assigned-cat", "X=1 cat >note.md <<'EOF'", "markdown"],
+    ["cat-stdin-operand", "cat - >note.md <<'EOF'", "markdown"],
+    ["cat-file-operand", "cat a >note.md <<'EOF'", "text"],
+    ["cat-overflow-operand", "cat 2147483648>out.md <<'EOF'", "text"],
+    ["cat-null", "cat >/dev/null <<'EOF'", "text"],
+    ["cat-stderr", "cat <<'EOF' >&2", "text"],
+    ["cat-stderr-file", "cat 2>note.md 1>&2 <<'EOF'", "markdown"],
+    ["cat-stderr-late-file", "cat 1>&2 2>note.md <<'EOF'", "text"],
+    ["tee", "tee note.md >/dev/null <<'EOF'", "markdown"],
+    ["tee-assigned", "X=1 tee note.md >/dev/null <<'EOF'", "markdown"],
+    ["tee-append", "tee -a note.md 1>/dev/null <<'EOF'", "markdown"],
+    ["tee-clobber-null", "tee note.md >|/dev/null <<'EOF'", "markdown"],
+    ["tee-conflict", "tee note.md other.py >/dev/null <<'EOF'", "text"],
+    ["tee-consensus", "tee note.md other.md >/dev/null <<'EOF'", "markdown"],
+    ["tee-stdout-conflict", "tee note.md >other.py <<'EOF'", "text"],
+    [
+      "tee-untyped-other",
+      "tee note.md other.txt >/dev/null <<'EOF'",
+      "markdown",
+    ],
+    [
+      "tee-dynamic-other",
+      "tee note.md \"$TARGET\" >/dev/null <<'EOF'",
+      "markdown",
+    ],
+    ["tee-json", "tee out.json >/dev/null <<'EOF'", "json"],
+    ["tee-python", "tee out.py >/dev/null <<'EOF'", "python"],
+    ["tee-bash", "tee out.sh >/dev/null <<'EOF'", "bash"],
+    ["tee-yaml", "tee out.yaml >/dev/null <<'EOF'", "yaml"],
+    ["python-program", "python <<'EOF'", "python"],
+    ["tee-append-f", "tee -a f.md 1>/dev/null <<'EOF'", "markdown"],
+    ["tee-no-operand", "tee >f.py <<'EOF'", "python"],
+    ["tee-conflict-f", "tee a.md b.py >/dev/null <<'EOF'", "text"],
+    ["tee-untyped-f", "tee a.md log.txt >/dev/null <<'EOF'", "markdown"],
+    ["cat-file-f", "cat a >f.md <<'EOF'", "text"],
+    ["cat-stdin-f", "cat - >f.md <<'EOF'", "markdown"],
+    ["cat-option-f", "cat -n >f.md <<'EOF'", "text"],
+    ["cat-dup-python", "cat 2>f.py 1>&2 <<'EOF'", "python"],
+    ["cat-dup-python-late", "cat 1>&2 2>f.py <<'EOF'", "text"],
+    ["tee-assigned-f", "X=1 tee f.md >/dev/null <<'EOF'", "markdown"],
+    ["cd-cat", "cd d && cat >f.md <<'EOF'", "markdown"],
+    ["cat-svg", "cat >x.svg <<'EOF'", "xml"],
+    ["tee-svg", "tee x.svg >/dev/null <<'EOF'", "xml"],
+    ["cat-stdin-operands", "cat - - >note.md <<'EOF'", "markdown"],
+    ["cat-dynamic-operand", "cat \"$INPUT\" >note.md <<'EOF'", "text"],
+    ["tee-long-append", "tee --append note.md >/dev/null <<'EOF'", "markdown"],
+    ["tee-end-options", "tee -- -note.md >/dev/null <<'EOF'", "markdown"],
+    ["tee-unknown-option", "tee --unknown note.md >out.py <<'EOF'", "text"],
+    ["tee-heredoc-on-stderr", "tee note.md <in >/dev/null 2<<'EOF'", "text"],
+  ])("routes %s using its sinks", async (_label, header, language) => {
+    const tree = await buildLoadedShellSourceTree(header + body);
+    expect(tree).toMatchObject({ ok: true });
+    if (!tree.ok) throw new Error(tree.reason);
+    const embed = findFirstEmbed(tree.value.segments);
+    expect(embed?.content.language).toBe(language);
+    expect(embed?.presentation?.kind).toBe(
+      language === "text" || language === "bash" ? undefined : "rich",
+    );
+  });
+
+  it("keeps Markdown when tee has an additional numeric file sink", async () => {
+    const parsed = await loadParsedShellDocument(
+      "tee out.md 2147483648>/dev/null <<'EOF'" + body,
+    );
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const { sources } = analyzeShellDocument(parsed.document);
+    expect(sources).toMatchObject([
+      {
+        sinks: [
+          { kind: "file", path: "out.md", mode: "overwrite" },
+          { kind: "file", path: "2147483648", mode: "overwrite" },
+          { kind: "discard" },
+        ],
+      },
+    ]);
+    const tree = buildShellSourceTree(parsed.document);
+    if (!tree.ok) throw new Error(tree.reason);
+    expect(findFirstEmbed(tree.value.segments)).toMatchObject({
+      content: { language: "markdown" },
+      presentation: { kind: "rich" },
+    });
+  });
+
+  it("keeps Python program input when stdout is redirected to JSON", async () => {
+    const tree = await buildLoadedShellSourceTree(
+      "python3 - <<PY > out.json\nprint(1)\nPY",
+    );
+    expect(tree).toMatchObject({ ok: true });
+    if (!tree.ok) throw new Error(tree.reason);
+    expect(findFirstEmbed(tree.value.segments)).toMatchObject({
+      content: { language: "python", text: "print(1)" },
+      presentation: { kind: "rich" },
+    });
+  });
+
+  it.each([
+    ["cat-late-file-operand", "cat >note.md <<'EOF' a"],
+    ["tee-late-operand", "tee >/dev/null <<'EOF' note.md"],
+  ])("rejects the unsupported header in %s", async (_label, header) => {
+    expect(await buildLoadedShellSourceTree(header + body)).toMatchObject({
+      ok: false,
+      code: "invalid_heredoc",
+      reason: "shell parser rejected heredoc header",
+    });
+  });
+
+  it.each([
+    ["cat-fd0-replaced", "cat >note.md <<'EOF' 0>out"],
+    ["cat-dup-stdin", "cat 3<<'EOF' 0<&3 >note.md"],
+  ])("keeps the parser rejection for %s", async (_label, header) => {
+    expect(await loadParsedShellDocument(header + body)).toMatchObject({
+      ok: false,
+      reason: "unsafe_shell_syntax",
+      issue: "error_node",
+    });
+  });
+
+  const markdownBody =
+    "\n# Title\n\nSome *markdown* with a list:\n- a\n- b\nEOF";
+
+  it.each([
+    ["trigger", " && ", "tee 21420/doc.md >/dev/null", body],
+    ["tee-and", " && ", "tee 21420/doc.md >/dev/null", markdownBody],
+    ["tee-newline", "\n", "tee 21420/doc.md >/dev/null", markdownBody],
+    ["cat-and", " && ", "cat >21420/doc.md", markdownBody],
+    ["cat-newline", "\n", "cat >21420/doc.md", markdownBody],
+  ])(
+    "routes the nested [0, 0] heredoc in %s",
+    async (_label, joiner, writer, heredoc) => {
+      const command = `/run/current-system/sw/bin/zsh -lc "mkdir -p 21420${joiner}${writer} <<'EOF'${heredoc}"`;
+      const tree = await buildLoadedShellSourceTree(command);
+      expect(tree).toMatchObject({ ok: true });
+      if (!tree.ok) throw new Error(tree.reason);
+      const wrapper = findFirstEmbed(tree.value.segments);
+      expect(wrapper?.content.language).toBe("bash");
+      expect(findFirstEmbed(wrapper!.content.segments)).toMatchObject({
+        content: {
+          language: "markdown",
+          text: heredoc.slice(1, -"\nEOF".length),
+        },
+        presentation: { kind: "rich" },
+      });
+    },
+  );
 });

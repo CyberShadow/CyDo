@@ -696,3 +696,74 @@ it.for(orphanedRows)(
       }
     }),
 );
+
+const markdownBody = "# Title\n\nSome *markdown* with a list:\n- a\n- b";
+const markdownTee = "tee 21420/doc.md >/dev/null";
+const markdownCat = "cat >21420/doc.md";
+
+function wrappedHeredoc(joiner: string, writer: string, content: string) {
+  return `/run/current-system/sw/bin/zsh -lc "mkdir -p 21420${joiner}${writer} <<'EOF'\n${content}\nEOF"`;
+}
+
+it.for([
+  ["tee after &&", " && ", markdownTee],
+  ["cat after &&", " && ", markdownCat],
+  ["tee after a newline", "\n", markdownTee],
+  ["cat after a newline", "\n", markdownCat],
+] as const)(
+  "renders wrapped Markdown heredoc and shows highlighted source for %s",
+  ([, joiner, writer], context) =>
+    run(context, async ({ root, poll }) => {
+      void act(() => {
+        render(
+          toolInput(wrappedHeredoc(joiner, writer, markdownBody), "dark"),
+          root,
+        );
+      });
+      const preview = ".source-tree-rich-block .text-content";
+      await poll({
+        description: "rendered Markdown list",
+        ready: () => root.querySelectorAll(`${preview} li`).length === 2,
+      });
+      expect(root.querySelector(`${preview} h1`)?.textContent).toBe("Title");
+      expect(root.querySelector(`${preview} em`)?.textContent).toBe("markdown");
+      expect(root.querySelectorAll(`${preview} li`)).toHaveLength(2);
+
+      const toggle = root.querySelector<HTMLButtonElement>(
+        '.source-tree-rich-block button[title="Show source"]',
+      );
+      expect(toggle).not.toBeNull();
+      await actStep(() => {
+        toggle!.click();
+      });
+
+      const source = ".source-tree-rich-block pre";
+      await poll(coloredPre(root, source));
+      expectHighlightedPre(root, source);
+      expect(root.querySelector(source)?.textContent).toBe(markdownBody);
+      expect(root.querySelector(preview)).toBeNull();
+    }),
+);
+
+it.for([
+  ["a variable", "$X"],
+  ["a backtick substitution", "`printf inline`"],
+] as const)(
+  "renders the raw wrapped command when the wrapper expands %s",
+  ([, expansion], context) =>
+    run(context, async ({ root, poll }) => {
+      const command = wrappedHeredoc(
+        " && ",
+        markdownTee,
+        `${markdownBody}\n${expansion}`,
+      );
+      void act(() => {
+        render(toolInput(command, "dark"), root);
+      });
+      await poll(coloredPre(root, "pre.write-content"));
+      expect(root.querySelector(".source-tree-rich-block")).toBeNull();
+      expect(root.querySelector("pre.write-content")?.textContent).toBe(
+        command,
+      );
+    }),
+);
