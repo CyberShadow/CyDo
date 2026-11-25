@@ -13,10 +13,10 @@ import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial, jsonPa
 import ae.utils.time.types : AbsTime;
 
 import cydo.agent.drivers.codex.app_server : extractCodexErrorMessage;
-import cydo.agent.drivers.codex.rollout : extractCommandInput,
-	isCodexSessionStartPrompt;
-import cydo.agent.drivers.codex.user_message : isCodexContextualFragment, isCodexSystemFramedText;
+import cydo.agent.drivers.codex.rollout : extractCommandInput;
+import cydo.agent.drivers.codex.user_message : isCodexContextualFragment, isCodexPermissionsInstructionsText;
 import cydo.agent.drivers.codex.rpc : SO, ThreadItem, ThreadItemEntry, ThreadMetadata, Turn;
+import cydo.foundation.system.framing : isSystemFramed;
 import cydo.protocol : ContentBlock, HistoryBoundary, HistoryBoundaryKind,
 	ItemCompletedEvent, ItemResultEvent, ItemStartedEvent, SessionCompactedEvent,
 	SessionInitEvent, TranslatedEvent, TurnEndReason, TurnResultEvent,
@@ -434,7 +434,7 @@ TurnResultEvent turnResultEvent(Turn turn, string lastAgentText)
 /// other turn was complete before that session attached. A turn that follows
 /// a live turn without being one belongs to neither side and is an error.
 TranslatedEvent[] translateThreadHistory(ThreadMetadata thread, Turn[] turns,
-	ThreadItemEntry[] items, const bool[string] liveTurnIds = null)
+	ThreadItemEntry[] items, string systemKeyword, const bool[string] liveTurnIds = null)
 {
 	ThreadItem[][string] itemsByTurn;
 	bool seenLiveTurn;
@@ -518,10 +518,10 @@ TranslatedEvent[] translateThreadHistory(ThreadMetadata thread, Turn[] turns,
 					auto text = userMessageText(item);
 					import std.algorithm : any;
 
-					auto context = isCodexSystemFramedText(text) || ev.content.any!(
+					ev.is_meta = isCodexPermissionsInstructionsText(text) || ev.content.any!(
 						block => block.type == "text" && isCodexContextualFragment(block.text));
-					ev.is_meta = context && !isCodexSessionStartPrompt(text);
-					attachUserBoundary(ev, turn.id, context, seenUserMessage);
+					attachUserBoundary(ev, turn.id, ev.is_meta || isSystemFramed(systemKeyword, text),
+						seenUserMessage);
 					events ~= TranslatedEvent(toJson(ev), rawItem, ts);
 					foreach (event; unrecognized)
 						events ~= TranslatedEvent(event, rawItem, ts);
@@ -742,7 +742,7 @@ version (unittest)
 unittest
 {
 	auto turns = ascendingTurns(nineTurnTurnsPage);
-	auto events = translateThreadHistory(fixtureThread(), turns, pageItems(nineTurnItemsPage));
+	auto events = translateThreadHistory(fixtureThread(), turns, pageItems(nineTurnItemsPage), "SYSTEM");
 	assertOutline(outline(events, turns), [
 		"session/init",
 		// reasoning
@@ -1010,7 +1010,7 @@ unittest
 	auto turns = ascendingTurns(nineTurnTurnsPage)[0 .. 1];
 	auto items = pageItems(nineTurnItemsPage)[0 .. 1];
 	items[0].item.content = unknown.content;
-	assertOutline(outline(translateThreadHistory(fixtureThread(), turns, items), turns), [
+	assertOutline(outline(translateThreadHistory(fixtureThread(), turns, items, "SYSTEM"), turns), [
 		"session/init",
 		"user [look] user=before:T1",
 		"agent/unrecognized",
@@ -1031,9 +1031,40 @@ unittest
 	items[0].item.content = jsonParse!ThreadItem(`{"type":"userMessage","id":"user-1",`
 		~ `"content":[{"type":"text","text":"Ordinary text","text_elements":[]},`
 		~ `{"type":"text","text":"<environment_context>cwd</environment_context>","text_elements":[]}]}`).content;
-	assertOutline(outline(translateThreadHistory(fixtureThread(), turns, items), turns), [
+	assertOutline(outline(translateThreadHistory(fixtureThread(), turns, items, "SYSTEM"), turns), [
 		"session/init",
 		"user [Ordinary text] [<environment_context>cwd</environment_context>] meta",
+		"turn success",
+	]);
+}
+
+unittest
+{
+	auto turns = ascendingTurns(nineTurnTurnsPage)[0 .. 2];
+	auto page = pageItems(nineTurnItemsPage);
+	auto openers = [page[0], page[3]];
+	enum modeSwitch = "[CYDO: Mode switch: a -> b]\n\nx\n\n[/CYDO]";
+	enum ordinary = "[SYSTEM: not ours]";
+	openers[0].item.content = jsonParse!SO(`[{"type":"text","text":` ~ toJson(modeSwitch) ~ `}]`);
+	openers[1].item.content = jsonParse!SO(`[{"type":"text","text":` ~ toJson(ordinary) ~ `}]`);
+	assertOutline(outline(translateThreadHistory(fixtureThread(), turns, openers, "CYDO"), turns), [
+		"session/init",
+		"user [" ~ modeSwitch ~ "]",
+		"turn success",
+		"user [" ~ ordinary ~ "] user=before:T2",
+		"turn success",
+	]);
+}
+
+unittest
+{
+	auto turns = ascendingTurns(nineTurnTurnsPage)[0 .. 1];
+	auto items = pageItems(nineTurnItemsPage)[0 .. 1];
+	enum taskPrompt = "[SYSTEM: Task prompt: x]\n\nbody\n\n[/SYSTEM]";
+	items[0].item.content = jsonParse!SO(`[{"type":"text","text":` ~ toJson(taskPrompt) ~ `}]`);
+	assertOutline(outline(translateThreadHistory(fixtureThread(), turns, items, "SYSTEM"), turns), [
+		"session/init",
+		"user [" ~ taskPrompt ~ "]",
 		"turn success",
 	]);
 }
@@ -1076,7 +1107,7 @@ unittest
 
 	// A turn whose agent ran a tool and said nothing still ends in a turn/stop.
 	assert(items[5].item.type == "agentMessage");
-	assertOutline(outline(translateThreadHistory(fixtureThread(), turns, items[0 .. 5]), turns)[8 .. $], [
+	assertOutline(outline(translateThreadHistory(fixtureThread(), turns, items[0 .. 5], "SYSTEM"), turns)[8 .. $], [
 		`user [run command printf success-marker] user=before:T2`,
 		"start tool_use call_mock_00001 commandExecution",
 		"done call_mock_00001",
@@ -1090,8 +1121,8 @@ unittest
 	context[3].item.content = jsonParse!SO(
 		`[{"type":"text","text":"[SYSTEM: Session start]\n\nrun it","text_elements":[]}]`);
 	context[5].item = context[0].item;
-	assertOutline(outline(translateThreadHistory(fixtureThread(), turns, context), turns)[8 .. $], [
-		"user [[SYSTEM: Session start]\n\nrun it] meta",
+	assertOutline(outline(translateThreadHistory(fixtureThread(), turns, context, "SYSTEM"), turns)[8 .. $], [
+		"user [[SYSTEM: Session start]\n\nrun it]",
 		"start tool_use call_mock_00001 commandExecution",
 		"done call_mock_00001",
 		"result call_mock_00001",
@@ -1102,7 +1133,7 @@ unittest
 
 	context[3].item.content = jsonParse!SO(
 		`[{"type":"text","text":"<environment_context>context</environment_context>"}]`);
-	auto replayed = outline(translateThreadHistory(fixtureThread(), turns, context), turns);
+	auto replayed = outline(translateThreadHistory(fixtureThread(), turns, context, "SYSTEM"), turns);
 	assert(replayed[8] == "user [<environment_context>context</environment_context>] meta");
 }
 
@@ -1110,7 +1141,7 @@ unittest
 unittest
 {
 	auto turns = ascendingTurns(autoCompactionTurnsPage);
-	auto events = translateThreadHistory(fixtureThread(), turns, pageItems(autoCompactionItemsPage));
+	auto events = translateThreadHistory(fixtureThread(), turns, pageItems(autoCompactionItemsPage), "SYSTEM");
 	assertOutline(outline(events, turns)[11 .. $], [
 		"session/compacted",
 		`user [reply with "after compaction"] user=before:T3`,
@@ -1145,7 +1176,7 @@ unittest
 
 		string[] result;
 		foreach (ref event; translateThreadHistory(fixtureThread(), ascendingTurns(turnsPage),
-			pageItems(itemsPage)))
+			pageItems(itemsPage), "SYSTEM"))
 		{
 			auto anchor = jsonParse!Probe(event.translated).history_boundary.anchor;
 			if (anchor.length == 0)
@@ -1182,20 +1213,20 @@ unittest
 	auto items = pageItems(nineTurnItemsPage)[0 .. 9];
 	auto thread = fixtureThread();
 
-	auto durable = outline(translateThreadHistory(thread, turns[0 .. 2], items[0 .. 6]), turns);
+	auto durable = outline(translateThreadHistory(thread, turns[0 .. 2], items[0 .. 6], "SYSTEM"), turns);
 	assert(durable.length == 16 && durable[$ - 2] == "turn/stop agent_turn=through:T2");
-	assert(outline(translateThreadHistory(thread, turns, items, [turns[2].id: true]), turns) == durable);
+	assert(outline(translateThreadHistory(thread, turns, items, "SYSTEM", [turns[2].id: true]), turns) == durable);
 
 	// A turn after a live one that the session did not start.
-	assert(collectExceptionMsg(translateThreadHistory(thread, turns, items, [turns[1].id: true]))
+	assert(collectExceptionMsg(translateThreadHistory(thread, turns, items, "SYSTEM", [turns[1].id: true]))
 		== "Codex turn " ~ turns[2].id ~ " follows a turn of the live session, which did not start it");
 	// A turn still running without a live session to run it.
 	auto running = turns.dup;
 	running[2].status = "inProgress";
-	assert(collectExceptionMsg(translateThreadHistory(thread, running, items))
+	assert(collectExceptionMsg(translateThreadHistory(thread, running, items, "SYSTEM"))
 		== "Codex turn " ~ turns[2].id ~ " is inProgress but no live session runs it");
 	// An item of a turn the thread does not list.
-	assert(collectExceptionMsg(translateThreadHistory(thread, turns[0 .. 2], items))
+	assert(collectExceptionMsg(translateThreadHistory(thread, turns[0 .. 2], items, "SYSTEM"))
 		== "Codex item " ~ items[6].item.id ~ " belongs to turn " ~ turns[2].id
 			~ ", which the thread does not list");
 }

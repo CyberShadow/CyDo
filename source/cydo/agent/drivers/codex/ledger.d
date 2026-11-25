@@ -278,7 +278,7 @@ private void decodeContent(ref RolloutLineEvidence evidence,
 	}
 	evidence.user = parseCodexUserItem(content);
 	if (!valid)
-		evidence.user = CodexUserItem(CodexUserItemKind.unrecognized, null, false,
+		evidence.user = CodexUserItem(CodexUserItemKind.unrecognized, null,
 			evidence.user.classification);
 }
 

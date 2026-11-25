@@ -98,7 +98,7 @@ import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule;
 import cydo.domain.task_types.definition : DjinjaTemplate, TaskTypeDef, UserEntryPointDef, OutputType, WorktreeMode, byName, loadTaskTypes,
 	loadTaskTypeSystemPrompt, formatCompactSingletonToolSummary, singletonsOfferedTo, promptTemplateSource, renderPrompt, substituteVars,
 	loadProjectMemory, resolveAgent;
-import cydo.foundation.system.framing : prependTaskFraming, validateTemplateSource;
+import cydo.foundation.system.framing : isSystemFramed, prependTaskFraming, validateTemplateSource;
 import cydo.foundation.system.known_messages : KnownSystemMessageKind,
 	sessionStartSubject, systemMessagePrefix, wrapKnownSystemMessage,
 	tryKnownSystemMessageMatch, KnownSystemMessageMatch;
@@ -2608,10 +2608,8 @@ class App
 
 	private string toJsonWithSyntheticUserMeta(string text, ItemStartedEvent ev, int tid = -1)
 	{
-		import std.algorithm : startsWith;
-
 		auto translated = toJson(ev);
-		return text.startsWith("[" ~ config.system_keyword ~ ":")
+		return isSystemFramed(config.system_keyword, text)
 			? systemMessageNormalizer.normalizeKnownSystemMessageMeta(translated, tid)
 			: translated;
 	}
@@ -3857,6 +3855,7 @@ class App
 				if (reuseExisting)
 				{
 					(*existing).setModelAliases(ac.model_aliases);
+					(*existing).setSystemKeyword(config.system_keyword);
 					rebuilt[name] = *existing;
 				}
 			}
@@ -5531,7 +5530,7 @@ unittest
 	auto fixture = new GatedSubmissionFixture(dbPath);
 	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	AgentSession[] sessions = [
-		cast(AgentSession) new CodexSession(null, fixture.tid, SessionConfig.init),
+		cast(AgentSession) new CodexSession(null, fixture.tid, SessionConfig.init, "SYSTEM"),
 		new CopilotSession(null, fixture.tid, "copilot-undo", "", "."),
 	];
 	foreach (session; sessions)

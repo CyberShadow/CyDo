@@ -23,6 +23,7 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
 	SdkEvent, EmptyResult;
 version (unittest) import cydo.agent.sdk : makeTestSdkProcess;
+import cydo.foundation.system.framing : isSystemFramed;
 import cydo.agent.contract : Agent, HistoryReplay, DiscoveredSession, InterruptedToolCallRepair,
 	PersistedHistoryBoundary, PersistedHistoryBoundaryKind, OneShotHandle,
 	RewindResult, SessionConfig, SessionMeta;
@@ -101,6 +102,7 @@ private struct CpUserMsgEvent
 class CopilotAgent : Agent
 {
 	private ModelSpec[string] modelAliasOverrides;
+	private string systemKeyword_;
 	// Shared SDK process for one-shot requests.
 	package SdkProcess sharedSdkServer_;
 	package string sharedWorkDir_;
@@ -328,6 +330,11 @@ class CopilotAgent : Agent
 			tracef("readSessionMeta(copilot, %s): error: %s", session.sessionId, e.msg);
 		}
 		return meta;
+	}
+
+	void setSystemKeyword(string keyword)
+	{
+		systemKeyword_ = keyword;
 	}
 
 	void setModelAliases(ModelSpec[string] aliases)
@@ -696,7 +703,6 @@ class CopilotAgent : Agent
 
 	PersistedHistoryBoundary[] extractPersistedHistoryBoundaries(string content, int lineOffset = 0)
 	{
-		import std.algorithm : startsWith;
 		import std.string : lineSplitter;
 
 		@JSONPartial static struct TypeIdProbe { string type; string id;
@@ -713,7 +719,7 @@ class CopilotAgent : Agent
 				auto probe = jsonParse!TypeIdProbe(line);
 				if (probe.type != "user.message" && probe.type != "assistant.message")
 					continue;
-				if (probe.type == "user.message" && probe.data.content.startsWith("[SYSTEM:"))
+				if (probe.type == "user.message" && isSystemFramed(systemKeyword_, probe.data.content))
 					continue;
 				if (probe.id.length > 0)
 					ids ~= PersistedHistoryBoundary(probe.id,
@@ -3259,6 +3265,7 @@ unittest
 unittest
 {
 	auto agent = new CopilotAgent;
+	agent.setSystemKeyword("SYSTEM");
 	auto content = `{"type":"user.message","id":"system-id","data":{"content":"[SYSTEM: bootstrap"}}`
 		~ "\n"
 		~ `{"type":"user.message","id":"native-user-id","data":{"content":"ordinary"}}`
@@ -3266,6 +3273,19 @@ unittest
 	auto boundaries = agent.extractPersistedHistoryBoundaries(content);
 	assert(boundaries.length == 1);
 	assert(boundaries[0].anchor == "native-user-id");
+	assert(boundaries[0].kind == PersistedHistoryBoundaryKind.user);
+}
+
+unittest
+{
+	auto agent = new CopilotAgent;
+	agent.setSystemKeyword("CYDO");
+	auto content = `{"type":"user.message","id":"cydo-id","data":{"content":"[CYDO: bootstrap"}}`
+		~ "\n"
+		~ `{"type":"user.message","id":"system-id","data":{"content":"[SYSTEM: bootstrap"}}`;
+	auto boundaries = agent.extractPersistedHistoryBoundaries(content);
+	assert(boundaries.length == 1);
+	assert(boundaries[0].anchor == "system-id");
 	assert(boundaries[0].kind == PersistedHistoryBoundaryKind.user);
 }
 

@@ -1720,7 +1720,7 @@ unittest
 
 		this()
 		{
-			super(cast(AppServerProcess) null, tid, SessionConfig.init);
+			super(cast(AppServerProcess) null, tid, SessionConfig.init, "SYSTEM");
 		}
 
 		override @property bool canRevertThread() const

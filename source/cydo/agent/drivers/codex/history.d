@@ -9,14 +9,14 @@ import ae.utils.json : jsonParse, toJson;
 import ae.utils.promise : Promise;
 
 import cydo.agent.contract : DriverHistory;
-import cydo.agent.drivers.codex.rollout : computeRollbackSkipLines,
-	isCodexSessionStartPrompt, scanRollout;
+import cydo.agent.drivers.codex.rollout : computeRollbackSkipLines, scanRollout;
 import cydo.agent.drivers.codex : CodexAgent;
 import cydo.agent.drivers.codex.user_message : CodexUserItemKind;
 import cydo.agent.drivers.codex.rpc : ThreadItemEntry, ThreadItemsListParams,
 	ThreadItemsListResult, ThreadMetadata, ThreadMetadataResult, ThreadReadParams,
 	ThreadTurnsListParams, ThreadTurnsListResult, Turn;
 import cydo.agent.drivers.codex.thread_items : attachUserBoundary, translateThreadHistory;
+import cydo.foundation.system.framing : isSystemFramed;
 import cydo.protocol : HistoryBoundary, HistoryBoundaryKind, ItemStartedEvent,
 	TranslatedEvent, TurnStopEvent;
 
@@ -41,7 +41,7 @@ private T resultOf(T)(JsonRpcResponse response)
 
 /// Read the whole history of `threadId`. `liveTurnIds` is asked once all of
 /// it has arrived, so a turn the live session started meanwhile is left to it.
-Promise!DriverHistory readThreadHistory(CodexRequest request, string threadId,
+Promise!DriverHistory readThreadHistory(CodexRequest request, string threadId, string systemKeyword,
 	const(bool[string]) delegate() liveTurnIds, string delegate(string path) readRollout)
 {
 	auto result = new Promise!DriverHistory;
@@ -78,7 +78,7 @@ Promise!DriverHistory readThreadHistory(CodexRequest request, string threadId,
 				if (page.nextCursor.length > 0)
 					return readItems(page.nextCursor);
 				result.fulfill(DriverHistory(
-					translateThreadHistory(thread, turns, items, liveTurnIds()),
+					translateThreadHistory(thread, turns, items, systemKeyword, liveTurnIds()),
 					CodexHistoryMode.paginated));
 			});
 	}
@@ -112,7 +112,7 @@ Promise!DriverHistory readThreadHistory(CodexRequest request, string threadId,
 				case "legacy":
 					enforce(thread.path.length > 0, "Codex named no rollout file for a legacy thread");
 					result.fulfill(DriverHistory(
-						decodeLegacyRollout(readRollout(thread.path), liveTurnIds()),
+						decodeLegacyRollout(readRollout(thread.path), systemKeyword, liveTurnIds()),
 						CodexHistoryMode.legacy));
 					break;
 				default:
@@ -125,7 +125,8 @@ Promise!DriverHistory readThreadHistory(CodexRequest request, string threadId,
 /// Translate a legacy rollout. Its turns are the stretches that follow a
 /// `task_started` record; the ones that record carries an id for get the
 /// boundaries Codex can cut at.
-TranslatedEvent[] decodeLegacyRollout(string content, const bool[string] liveTurnIds)
+TranslatedEvent[] decodeLegacyRollout(string content, string systemKeyword,
+	const bool[string] liveTurnIds)
 {
 	import std.conv : to;
 	import std.string : lineSplitter;
@@ -184,7 +185,7 @@ TranslatedEvent[] decodeLegacyRollout(string content, const bool[string] liveTur
 		{
 			auto user = jsonParse!ItemStartedEvent(events[pendingUser].translated);
 			attachUserBoundary(user, turnId,
-				user.is_meta || isCodexSessionStartPrompt(pendingUserText), seenUserMessage);
+				user.is_meta || isSystemFramed(systemKeyword, pendingUserText), seenUserMessage);
 			events[pendingUser].translated = toJson(user);
 		}
 		pendingUser = -1;
@@ -241,9 +242,10 @@ version (unittest)
 		@JSONOptional HistoryBoundary history_boundary;
 	}
 
-	private TranslatedEvent[] decodeLegacy(string content, const bool[string] liveTurnIds = null)
+	private TranslatedEvent[] decodeLegacy(string content, const bool[string] liveTurnIds = null,
+		string systemKeyword = "SYSTEM")
 	{
-		return decodeLegacyRollout(content, liveTurnIds);
+		return decodeLegacyRollout(content, systemKeyword, liveTurnIds);
 	}
 
 	/// The boundaries of `events`, as "<event type> <anchor>".
@@ -298,6 +300,29 @@ unittest
 	foreach (probe; users)
 		assert(probe.uuid.length == 0
 			&& (probe.is_meta || probe.item_id.length > "codex-user-hist-".length));
+}
+
+unittest
+{
+	import std.array : join;
+
+	void checkOpener(string text, HistoryBoundary boundary)
+	{
+		auto response = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":`
+			~ toJson(text) ~ "}]}}";
+		auto event = `{"type":"event_msg","payload":{"type":"user_message","message":`
+			~ toJson(text) ~ "}}";
+		auto events = decodeLegacy([legacyLines()[1], response, event].join("\n"), null, "CYDO");
+		assert(events.length == 1);
+		auto user = jsonParse!ItemStartedEvent(events[0].translated);
+		assert(user.item_type == "user_message" && user.content[0].text == text);
+		assert(!user.is_meta);
+		assert(user.history_boundary == boundary);
+	}
+
+	checkOpener("[CYDO: Task prompt: x]\n\nbody\n\n[/CYDO]", HistoryBoundary.init);
+	checkOpener("[SYSTEM: not ours]",
+		HistoryBoundary("before:" ~ legacyRolloutFirstTurn, HistoryBoundaryKind.user));
 }
 
 unittest
@@ -465,7 +490,7 @@ version (unittest) private ReadOutcome readWith(FakeAppServer server,
 
 	ReadOutcome outcome;
 	bool settled;
-	readThreadHistory(&server.request, "01a1feae-9e4c-7d83-a43c-dbd595e0221d",
+	readThreadHistory(&server.request, "01a1feae-9e4c-7d83-a43c-dbd595e0221d", "SYSTEM",
 		liveTurnIds is null ? delegate const(bool[string])() => null : liveTurnIds,
 		(string path) {
 			assert(rolloutPath !is null, "a paginated thread is read over the app-server only");
@@ -507,7 +532,7 @@ unittest
 	assert(read.failure is null, read.failure);
 	assert(read.history.mode == CodexHistoryMode.paginated);
 	assert(read.history.events.map!(event => event.translated).array
-		== translateThreadHistory(thread, turns, items).map!(event => event.translated).array);
+		== translateThreadHistory(thread, turns, items, "SYSTEM").map!(event => event.translated).array);
 
 	assert(server.calls.map!(call => call.method).array == ["thread/read",
 		"thread/turns/list", "thread/turns/list", "thread/items/list", "thread/items/list"]);
@@ -538,7 +563,7 @@ unittest
 	assert(asked && read.failure is null, read.failure);
 	assert(read.history.events.map!(event => event.translated).array
 		== translateThreadHistory(thread, turns[0 .. $ - 1],
-			items.filter!(entry => entry.turnId != lastTurn).array)
+			items.filter!(entry => entry.turnId != lastTurn).array, "SYSTEM")
 			.map!(event => event.translated).array);
 
 	// Without a session to account for it, such an item is an error, and so
@@ -744,7 +769,7 @@ unittest
 		auto events = decodeLegacy(taggedLegacyUser(content, kinds));
 		auto translated = events[$ - 1].translated;
 		auto user = jsonParse!ItemStartedEvent(translated);
-		assert(user.is_meta && user.meta_kinds == expected);
+		assert(user.is_meta == (expected.length > 0) && user.meta_kinds == expected);
 		assert(user.content.length == 1 && user.content[0].text == prompt);
 
 		auto normalized = jsonParse!Normalized(normalizer.normalizeKnownSystemMessageMeta(translated));

@@ -1,6 +1,6 @@
 /// System message framing, template compilation, and round-trip matching.
 ///
-/// Provides the `[SYSTEM: ...]` wrapper format and the regex-based
+/// Provides the `[<keyword>: ...]` wrapper format and the regex-based
 /// reverse-matcher that recovers template vars from a rendered body.
 ///
 /// IMPORTANT — D `std.regex` backreference quirk:
@@ -78,6 +78,22 @@ bool tryParseSystemFraming(string keyword, string text, out ParsedSystemFraming 
         return false;
     result = ParsedSystemFraming(subject, body);
     return true;
+}
+
+/// Whether text carries CyDo's `[<keyword>: …]` system framing.
+bool isSystemFramed(string keyword, string text)
+{
+    assert(keyword.length > 0, "system framing keyword must be configured");
+    return text.startsWith("[" ~ keyword ~ ":");
+}
+
+unittest
+{
+    assert(isSystemFramed("SYSTEM", "[SYSTEM: x]"));
+    assert(!isSystemFramed("CYDO", "[SYSTEM: x]"));
+    assert(isSystemFramed("CYDO", "[CYDO: Task prompt: a -> b]\n\nbody\n\n[/CYDO]"));
+    assert(!isSystemFramed("SYSTEM", " [SYSTEM: x]"));
+    assert(!isSystemFramed("SYSTEM", "[SYSTEMS: x]"));
 }
 
 /// Extract only the subject from the first line of a wrapped system message.

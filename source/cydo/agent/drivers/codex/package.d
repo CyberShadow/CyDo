@@ -24,6 +24,7 @@ version (unittest) import ae.net.asockets : ConnectionState, DisconnectType,
 	IConnection;
 version (unittest) import ae.utils.jsonrpc : JsonRpcRequest;
 
+import cydo.foundation.system.framing : isSystemFramed;
 import cydo.agent.contract : Agent, HistoryReplay, DiscoveredSession, DriverHistory, DriverHistoryLaunch,
 	DriverServedHistoryAgent, InterruptedToolCallRepair,
 	PersistedHistoryBoundary, OneShotHandle, RewindResult, SessionConfig,
@@ -32,7 +33,7 @@ import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.drivers.codex.app_server : CodexSessionRouteTarget;
 import cydo.agent.drivers.codex.history : readThreadHistory;
 public import cydo.agent.drivers.codex.process : AppServerProcess;
-import cydo.agent.drivers.codex.user_message : isCodexContextualFragment, isCodexSystemFramedText;
+import cydo.agent.drivers.codex.user_message : isCodexContextualFragment, isCodexPermissionsInstructionsText;
 public import cydo.agent.drivers.codex.rollout;
 public import cydo.agent.drivers.codex.rpc;
 public import cydo.agent.drivers.codex.thread_items;
@@ -160,6 +161,7 @@ class CodexAgent : DriverServedHistoryAgent
 	private AppServerProcess[string] serverPool; // keyed by workspace+sandbox signature
 	private AppServerStartupGate[string] appServerStartupGates;
 	private ModelSpec[string] modelAliasOverrides;
+	private string systemKeyword_;
 	private string lastMcpConfigPath_;
 	HistoryReplay createHistoryReplay()
 	{
@@ -281,7 +283,7 @@ class CodexAgent : DriverServedHistoryAgent
 	private CodexSession makeSession(AppServerProcess server, int routeTid,
 		SessionConfig config, RouteOwnerKind ownerKind)
 	{
-		auto session = new CodexSession(server, routeTid, config);
+		auto session = new CodexSession(server, routeTid, config, systemKeyword_);
 		final switch (ownerKind)
 		{
 		case RouteOwnerKind.task:
@@ -418,7 +420,7 @@ class CodexAgent : DriverServedHistoryAgent
 		});
 		server.onReady(() {
 			readThreadHistory((string method, string params) => server.sendRequest(method, params),
-				threadId, liveTurnIds, (string path) => readText(path))
+				threadId, systemKeyword_, liveTurnIds, (string path) => readText(path))
 			.then((DriverHistory history) {
 				settle(() { result.fulfill(history); });
 			}, (Exception e) {
@@ -685,6 +687,11 @@ class CodexAgent : DriverServedHistoryAgent
 		}
 
 		return "";
+	}
+
+	void setSystemKeyword(string keyword)
+	{
+		systemKeyword_ = keyword;
 	}
 
 	void setModelAliases(ModelSpec[string] aliases)
@@ -1449,7 +1456,7 @@ unittest
 
 	auto connection = new TestCodexConnection;
 	auto server = makeTestAppServerProcess(connection);
-	auto session = new CodexSession(server, 1, SessionConfig.init);
+	auto session = new CodexSession(server, 1, SessionConfig.init, "SYSTEM");
 	string[] order;
 	session.onRouteReady = {
 		assert(server.hasThreadRouteForTest("codex-native-id"));
@@ -1471,7 +1478,7 @@ unittest
 
 	auto lateConnection = new TestCodexConnection;
 	auto lateServer = makeTestAppServerProcess(lateConnection);
-	auto lateSession = new CodexSession(lateServer, 2, SessionConfig.init);
+	auto lateSession = new CodexSession(lateServer, 2, SessionConfig.init, "SYSTEM");
 	ThreadStartResult lateStarted;
 	lateStarted.thread.id = "codex-late-id";
 	lateSession.onThreadStarted(lateStarted, "codex-late-id", "test-model",
@@ -2084,6 +2091,7 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 
 	private string sessionId;
 	private string agentName_;
+	private string systemKeyword_;
 
 	private enum SubmissionOperation { queued, starting, steering }
 
@@ -2128,12 +2136,13 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 	private void delegate() toolCallsAbandonedHandler_;
 	private void delegate() revertAvailabilityChangedHandler_;
 
-	this(AppServerProcess server, int tid, SessionConfig config)
+	this(AppServerProcess server, int tid, SessionConfig config, string systemKeyword)
 	{
 		this.server = server;
 		this.tid = tid;
 		this.alive_ = true;
 		this.agentName_ = config.agentName;
+		this.systemKeyword_ = systemKeyword;
 	}
 
 	package @property string currentThreadId() { return threadId; }
@@ -2881,8 +2890,9 @@ class CodexSession : AgentSession, AbortedToolCallCorrection
 			// The context bootstrap occupies the opener position too.
 			assert(activeTurnId_.length > 0, "Codex user message belongs to no turn");
 			attachUserBoundary(ev, activeTurnId_, submission.isContextBootstrap
-				|| isCodexSystemFramedText(submission.text)
-				|| isCodexContextualFragment(submission.text), turnHasUserOpener_);
+				|| isSystemFramed(systemKeyword_, submission.text)
+				|| isCodexContextualFragment(submission.text)
+				|| isCodexPermissionsInstructionsText(submission.text), turnHasUserOpener_);
 			auto translated = TranslatedEvent(toJson(ev), rawNotification,
 				AbsTime.init, 0, submission.isContextBootstrap);
 			if (submission.accepted)
@@ -3062,7 +3072,7 @@ version (unittest) package(cydo) CodexSession makeUnattachedCodexSessionForTest(
 	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
 
 	auto server = makeTestAppServerProcess(new TestCodexConnection);
-	auto session = new CodexSession(server, tid, config);
+	auto session = new CodexSession(server, tid, config, "SYSTEM");
 	server.registerSessionByTid(tid, session.asRouteTarget());
 	return session;
 }
@@ -3255,7 +3265,7 @@ unittest
 	@JSONPartial struct CompletedNotification { ItemCompletedParams params; }
 	import cydo.protocol : TurnStopEvent;
 
-	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 	string[] emitted;
 	void sink(TranslatedEvent ev) { emitted ~= ev.translated; }
 	session.onOutput(&sink);
@@ -3295,7 +3305,7 @@ unittest
 
 	// A terminal turn failure (e.g. usage limit exceeded) must surface the
 	// error in the turn/result event instead of reporting an empty success.
-	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 	string[] emitted;
 	session.onOutput((TranslatedEvent ev) { emitted ~= ev.translated; });
 	auto failed = jsonParse!CompletedNotification(
@@ -3416,7 +3426,7 @@ unittest
 		~ toJson(userCommand)
 		~ `}]}}}`;
 
-	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 	string[] emitted;
 	void sink(TranslatedEvent ev) { emitted ~= ev.translated; }
 	session.onOutput(&sink);
@@ -3455,7 +3465,7 @@ unittest
 	}
 
 	@JSONPartial struct StartedNotification { ItemStartedParams params; }
-	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 	TranslatedEvent[] emitted;
 	void sink(TranslatedEvent ev) { emitted ~= ev; }
 	session.onOutput(&sink);
@@ -3495,8 +3505,8 @@ unittest
 		submission.settled = true;
 		session.expectedEchoMessages_ ~= submission;
 		session.handleItemStarted(jsonParse!StartedNotification(`{"params":{"turnId":"`
-			~ turnId ~ `","item":{"id":"` ~ text ~ `","type":"userMessage","content":`
-			~ `[{"type":"text","text":"` ~ text ~ `"}]}}}`).params, text);
+			~ turnId ~ `","item":{"id":` ~ toJson(text) ~ `,"type":"userMessage","content":`
+			~ `[{"type":"text","text":` ~ toJson(text) ~ `}]}}}`).params, text);
 		drainPromiseNextTicks();
 	}
 	echo("turn-1", "steer");
@@ -3526,6 +3536,24 @@ unittest
 	assert(confirmed.correlation_id == contextPrefixedPrompt ~ "-nonce");
 	assert(!confirmed.is_meta, "A confirmed submission echo must remain non-meta");
 	assert(confirmed.history_boundary == HistoryBoundary("before:turn-3", HistoryBoundaryKind.user));
+
+	session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "CYDO");
+	emitted = null;
+	session.onOutput(&sink);
+	echo("turn-1", "[CYDO: Mode switch: a -> b]\n\nx\n\n[/CYDO]");
+	assert(emitted.length == 1);
+	auto modeSwitch = jsonParse!ItemStartedEvent(emitted[0].translated);
+	assert(!modeSwitch.is_meta);
+	assert(modeSwitch.history_boundary == HistoryBoundary.init);
+
+	session.handleTurnCompleted(jsonParse!CompletedNotification(
+		`{"params":{"threadId":"thread","turn":{"id":"turn-1","status":"completed"}}}`).params,
+		"completed");
+	auto beforeEcho = emitted.length;
+	echo("turn-2", "[SYSTEM: not ours]");
+	assert(emitted.length == beforeEcho + 1);
+	auto nextOpener = jsonParse!ItemStartedEvent(emitted[$ - 1].translated);
+	assert(nextOpener.history_boundary == HistoryBoundary("before:turn-2", HistoryBoundaryKind.user));
 }
 
 unittest
@@ -3542,7 +3570,7 @@ unittest
 	// be correlated to whichever matching submission happens to be queued.
 	{
 		auto session = new CodexSession(cast(AppServerProcess) null, 1,
-			SessionConfig.init);
+			SessionConfig.init, "SYSTEM");
 		session.onOutput(&ignoreOutput);
 		auto first = new CodexSession.PendingMessage(
 			[ContentBlock("text", "first")], "first", "first-nonce", false);
@@ -3562,7 +3590,7 @@ unittest
 	// acceptance, so a second native echo for that submission is invalid.
 	{
 		auto session = new CodexSession(cast(AppServerProcess) null, 1,
-			SessionConfig.init);
+			SessionConfig.init, "SYSTEM");
 		session.onOutput(&ignoreOutput);
 		auto submission = new CodexSession.PendingMessage(
 			[ContentBlock("text", "once")], "once", "once-nonce", false);
@@ -3579,7 +3607,7 @@ unittest
 	// violation rather than an uncorrelated output event.
 	{
 		auto session = new CodexSession(cast(AppServerProcess) null, 1,
-			SessionConfig.init);
+			SessionConfig.init, "SYSTEM");
 		session.onOutput(&ignoreOutput);
 		auto unexpected = jsonParse!StartedNotification(
 			`{"params":{"turnId":"turn-1","item":{"id":"native-unexpected","type":"userMessage","content":[{"type":"text","text":"unexpected"}]}}}`);
@@ -3599,7 +3627,7 @@ unittest
 	enum startedPayload =
 		`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"019f815e-a188-7ae1-8802-4bb069784c21","turnId":"019f8595-526f-7df3-9824-f7bda4b4c0f9","item":{"type":"commandExecution","id":"exec-24065314-fcdb-4934-8299-1cd7bd4095bc","command":"/run/current-system/sw/bin/zsh -lc \"wc -l /home/vladimir/work/cydo/.cydo/tasks/32026/output.md && sed -n '1,520p' /home/vladimir/work/cydo/.cydo/tasks/32026/output.md\"","cwd":"/home/vladimir/work/cydo/.cydo/tasks/31903/worktree","status":"inProgress","processId":"16474","commandActions":[{"type":"read","command":"sed -n '1,520p' /home/vladimir/work/cydo/.cydo/tasks/32026/output.md","name":"output.md","path":"/home/vladimir/work/cydo/.cydo/tasks/32026/output.md"}],"source":"unifiedExecStartup"}}}`;
 
-	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 	string[] emitted;
 	void sink(TranslatedEvent ev) { emitted ~= ev.translated; }
 	session.onOutput(&sink);
@@ -3646,7 +3674,7 @@ unittest
 
 		this()
 		{
-			super(new AppServerProcess([]), 1, SessionConfig.init);
+			super(new AppServerProcess([]), 1, SessionConfig.init, "SYSTEM");
 		}
 
 		override protected Promise!JsonRpcResponse sendCodexRequest(string method,
@@ -3704,7 +3732,7 @@ unittest
 
 	// A message queued before thread/start retains its own UUID until the
 	// thread is ready and drainPendingMessages resubmits it.
-	auto queuedStart = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	auto queuedStart = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 	queuedStart.sendMessage([ContentBlock("text", "queued start")], "uuid-queued-start").ignoreResult();
 	assert(queuedStart.pendingMessages_.length == 1
 		&& queuedStart.pendingMessages_[0].correlationId == "uuid-queued-start"
@@ -3712,7 +3740,7 @@ unittest
 
 	// The same association is retained while waiting for an active turn's
 	// native ID, before the message is resubmitted as turn/steer.
-	auto queuedSteer = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	auto queuedSteer = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 	queuedSteer.threadId = "thread-queued-steer";
 	queuedSteer.turnInProgress = true;
 	queuedSteer.sendMessage([ContentBlock("text", "queued steer")], "uuid-queued-steer").ignoreResult();
@@ -3879,7 +3907,7 @@ unittest
 	enum completedPayload =
 		`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread-ask","item":{"id":"mcp-call-ask","type":"mcpToolCall","result":{"content":[{"type":"text","text":"User has answered your questions: \"Do you agree?\"=\"Yes\"."}]}}}}`;
 
-	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 	string[] emitted;
 	void sink(TranslatedEvent ev) { emitted ~= ev.translated; }
 	session.onOutput(&sink);
@@ -3979,7 +4007,7 @@ unittest
 	enum completedPayload =
 		`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread-task-failed","item":{"id":"call_qQ5hScvoPoBX2kntB3IYtUM9","status":"failed","type":"mcpToolCall","result":null,"server":"cydo","tool":"Task","error":{"message":"tool call error: tool call failed for cydo/Task\n\nCaused by:\n    Transport closed"}}}}`;
 
-	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 	string[] emitted;
 	void sink(TranslatedEvent ev) { emitted ~= ev.translated; }
 	session.onOutput(&sink);
@@ -4201,7 +4229,7 @@ unittest
 	{
 		auto connection = new TestCodexConnection;
 		auto server = makeTestAppServerProcess(connection);
-		auto session = new CodexSession(server, 1, SessionConfig.init);
+		auto session = new CodexSession(server, 1, SessionConfig.init, "SYSTEM");
 		auto first = new TestSubmissionOutcome(session.sendMessage(
 			[ContentBlock("text", "first")], "first-nonce", true));
 		assert(session.pendingMessages_.length == 1);
@@ -4283,7 +4311,7 @@ unittest
 	{
 		auto connection = new TestCodexConnection;
 		auto server = makeTestAppServerProcess(connection);
-		auto session = new CodexSession(server, 1, SessionConfig.init);
+		auto session = new CodexSession(server, 1, SessionConfig.init, "SYSTEM");
 		session.threadId = "echo-order";
 
 		bool firstAccepted;
@@ -4339,7 +4367,7 @@ unittest
 	{
 		auto connection = new TestCodexConnection;
 		auto server = makeTestAppServerProcess(connection);
-		auto session = new CodexSession(server, 1, SessionConfig.init);
+		auto session = new CodexSession(server, 1, SessionConfig.init, "SYSTEM");
 		session.threadId = "thread";
 
 		auto rejected = new TestSubmissionOutcome(session.sendMessage(
@@ -4371,7 +4399,7 @@ unittest
 	{
 		auto connection = new TestCodexConnection;
 		auto server = makeTestAppServerProcess(connection);
-		auto session = new CodexSession(server, 1, SessionConfig.init);
+		auto session = new CodexSession(server, 1, SessionConfig.init, "SYSTEM");
 		session.threadId = "thread";
 
 		auto first = new TestSubmissionOutcome(session.sendMessage(
@@ -4409,7 +4437,7 @@ unittest
 	{
 		auto connection = new TestCodexConnection;
 		auto server = makeTestAppServerProcess(connection);
-		auto session = new CodexSession(server, 1, SessionConfig.init);
+		auto session = new CodexSession(server, 1, SessionConfig.init, "SYSTEM");
 		session.threadId = "thread-" ~ label;
 
 		auto inFlight = new TestSubmissionOutcome(session.sendMessage(
@@ -4515,7 +4543,7 @@ unittest
 	enum completedPayload =
 		`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread-task-structured","item":{"id":"call_structuredTask","status":"completed","type":"mcpToolCall","server":"cydo","tool":"Task","result":{"content":[{"type":"text","text":"{\"status\":\"success\",\"tid\":2,\"summary\":\"structured-success\"}"}],"structuredContent":{"status":"success","tid":2,"summary":"structured-success"}}}}}`;
 
-	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 	string[] emitted;
 	void sink(TranslatedEvent ev) { emitted ~= ev.translated; }
 	session.onOutput(&sink);
@@ -4590,7 +4618,7 @@ unittest
 	// `deltas`: the summary deltas to deliver between the item's start and end.
 	string liveText(string[] deltas)
 	{
-		auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+		auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 		TranslatedEvent[] live;
 		session.onOutput((TranslatedEvent event) { live ~= event; });
 		foreach (line; reasoningLiveNotifications.lineSplitter)
@@ -4704,7 +4732,7 @@ unittest
 	@JSONPartial struct Notification { string method; JSONFragment params; }
 
 	auto thread = fixtureThread();
-	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 	session.model = thread.model;
 	TranslatedEvent[] live;
 	session.onOutput((TranslatedEvent event) { live ~= event; });
@@ -4774,7 +4802,7 @@ unittest
 		}
 	}
 
-	auto replay = translateThreadHistory(thread, turns, [bootstrap] ~ items);
+	auto replay = translateThreadHistory(thread, turns, [bootstrap] ~ items, "SYSTEM");
 
 	auto liveEvents = comparable(live);
 	auto replayEvents = comparable(replay);
@@ -4800,7 +4828,7 @@ unittest
 	CodexSession attached(TestCodexConnection connection)
 	{
 		auto session = new CodexSession(makeTestAppServerProcess(connection), 1,
-			SessionConfig.init);
+			SessionConfig.init, "SYSTEM");
 		session.onOutput = (TranslatedEvent event) {};
 		ThreadStartResult started;
 		started.thread.id = "thread";
@@ -4825,7 +4853,7 @@ unittest
 	// the thread is sent, and the continuation's message follows it.
 	auto connection = new TestCodexConnection;
 	auto session = new CodexSession(makeTestAppServerProcess(connection), 1,
-		SessionConfig.init);
+		SessionConfig.init, "SYSTEM");
 	session.onOutput = (TranslatedEvent event) {};
 	observe(session.correctAbortedToolCall("the call was accepted"));
 	session.sendMessage([ContentBlock("text", "continue")], "nonce").ignoreResult();
@@ -4952,6 +4980,7 @@ unittest
 	}
 	auto profile = NativeHistoryProfile(AgentDriver.codex, "/profile");
 	auto agent = new CodexAgent;
+	agent.setSystemKeyword("SYSTEM");
 	string[] outcomes;
 	void observe(Promise!DriverHistory read)
 	{
@@ -5030,7 +5059,9 @@ version (unittest) private struct TestCodexStartup
 
 	static TestCodexStartup create()
 	{
-		return TestCodexStartup(new CodexAgent, new TestCodexConnection);
+		auto agent = new CodexAgent;
+		agent.setSystemKeyword("SYSTEM");
+		return TestCodexStartup(agent, new TestCodexConnection);
 	}
 
 	IConnection spawn(string[] args)
@@ -5210,6 +5241,7 @@ unittest
 	auto server = makeTestAppServerProcess(connection, true);
 	auto initialize = connection.takeRequest("initialize");
 	auto agent = new CodexAgent;
+	agent.setSystemKeyword("SYSTEM");
 	ProcessLaunch launch;
 	launch.nativeHistoryProfile = NativeHistoryProfile(AgentDriver.codex, "/profile");
 	launch.executablePath = "/unused/codex";

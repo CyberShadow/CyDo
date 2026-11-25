@@ -28,13 +28,11 @@ package struct CodexUserItem
 {
 	CodexUserItemKind kind;
 	CodexContentItem[] inputs;
-	bool systemFramed;
 
 	/// Legacy per-block classification used for rollback.
 	CodexUserMessageLineClassification classification;
 
 	bool isTurnBoundary() const { return kind == CodexUserItemKind.message; }
-	bool isPrompt() const { return isTurnBoundary && !systemFramed; }
 
 	string message() const
 	{
@@ -88,8 +86,6 @@ package CodexUserItem parseCodexUserItem(const(CodexContentItem)[] content)
 		}
 		if (isCodexContextualFragment(block.text))
 			result.kind = Kind.context;
-		if (isCodexSystemFramedText(block.text))
-			result.classification = Classification.contextOnly;
 	}
 
 	if (!result.isTurnBoundary)
@@ -108,17 +104,15 @@ package CodexUserItem parseCodexUserItem(const(CodexContentItem)[] content)
 		else if (result.isTurnBoundary && (block.type == Type.inputImage || block.type == Type.inputAudio))
 			result.inputs ~= block;
 	}
-	result.systemFramed = result.isTurnBoundary && isCodexSystemFramedText(result.message());
 	return result;
 }
 
-/// CyDo's framing is ordinary user text to Codex.
-package bool isCodexSystemFramedText(string text)
+/// Legacy Codex permissions preamble, emitted as native context.
+package bool isCodexPermissionsInstructionsText(string text)
 {
 	import std.string : startsWith, stripLeft;
 
-	auto trimmed = text.stripLeft;
-	return trimmed.startsWith("[SYSTEM:") || trimmed.startsWith("<permissions instructions>");
+	return text.stripLeft.startsWith("<permissions instructions>");
 }
 
 package bool isCodexContextualFragment(string text)
@@ -263,7 +257,7 @@ unittest
 		"<subagent_notification>Example</subagent_notification> What does this mean?",
 		"<agent_message_board_notification>unfinished example",
 	])
-		assert(parseCodexUserItem([CodexContentItem(Type.inputText, prompt)]).isPrompt, prompt);
+		assert(parseCodexUserItem([CodexContentItem(Type.inputText, prompt)]).isTurnBoundary, prompt);
 
 	auto agents = CodexContentItem(Type.inputText, "# AGENTS.md instructions\n<INSTRUCTIONS>Use Nix.</INSTRUCTIONS>");
 	auto environment = CodexContentItem(Type.inputText, "<environment_context>cwd</environment_context>");
@@ -273,10 +267,9 @@ unittest
 
 	auto framed = CodexContentItem(Type.inputText, "[SYSTEM: Task prompt: x]\n\nbody\n\n[/SYSTEM]");
 	auto system = parseCodexUserItem([framed]);
-	assert(system.isTurnBoundary && system.systemFramed && !system.isPrompt);
-	assert(system.classification == CodexUserMessageLineClassification.contextOnly);
+	assert(system.isTurnBoundary && system.classification == CodexUserMessageLineClassification.normal);
 	auto mixed = parseCodexUserItem([ordinary, framed]);
-	assert(mixed.isPrompt && mixed.classification == CodexUserMessageLineClassification.contextOnly);
+	assert(mixed.isTurnBoundary && mixed.classification == CodexUserMessageLineClassification.normal);
 
 	auto wrappedImage = [
 		CodexContentItem(Type.inputText, `<image name=[Image #1] path="/w/d.png">`),
@@ -284,7 +277,7 @@ unittest
 		CodexContentItem(Type.inputText, "</image>"),
 	];
 	auto image = parseCodexUserItem(wrappedImage);
-	assert(image.isPrompt && image.inputs.length == 1 && image.inputs[0].type == Type.inputImage);
+	assert(image.isTurnBoundary && image.inputs.length == 1 && image.inputs[0].type == Type.inputImage);
 	assert(image.message() == "" && image.preview() == "[Image]");
 	auto text = CodexContentItem(Type.inputText, "Explain this diagram.");
 	auto imageAndText = parseCodexUserItem(wrappedImage ~ text);
@@ -295,7 +288,7 @@ unittest
 
 	auto output = CodexContentItem(Type.outputText, "<goal_context>Continue.</goal_context>");
 	auto outputOnly = parseCodexUserItem([output]);
-	assert(outputOnly.isPrompt && outputOnly.inputs.length == 0 && outputOnly.preview() is null);
+	assert(outputOnly.isTurnBoundary && outputOnly.inputs.length == 0 && outputOnly.preview() is null);
 	auto prefixed = CodexContentItem(Type.inputText, "## My request for Codex: do X");
 	assert(parseCodexUserItem([prefixed]).preview() == "do X");
 }
@@ -309,7 +302,7 @@ unittest
 		CodexContentItem(Type.inputText, "</audio>"),
 	];
 	auto audio = parseCodexUserItem(wrappedAudio);
-	assert(audio.isPrompt && audio.message() == "" && audio.preview() == "[Audio]");
+	assert(audio.isTurnBoundary && audio.message() == "" && audio.preview() == "[Audio]");
 	auto fileImage = CodexContentItem(Type.inputImage);
 	assert(parseCodexUserItem(wrappedAudio ~ fileImage).preview() == "[Image]");
 }

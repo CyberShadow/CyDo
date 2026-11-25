@@ -52,22 +52,8 @@ PersistedHistoryBoundary[] applyRollbackToIdsWithInfo(PersistedHistoryBoundary[]
 	return [];
 }
 
-package bool isCodexSessionStartPrompt(string text)
-{
-	import cydo.foundation.system.framing : ParsedSystemFraming, tryParseSystemFraming;
-	import cydo.foundation.system.known_messages : KnownSystemMessageKind,
-		KnownSystemMessageMatch, tryKnownSystemMessageMatch;
-
-	ParsedSystemFraming framing;
-	KnownSystemMessageMatch match;
-	return tryParseSystemFraming("SYSTEM", text, framing)
-		&& tryKnownSystemMessageMatch(framing.subject, match)
-		&& match.kind == KnownSystemMessageKind.sessionStart;
-}
-
 /// True when a parsed role=user response item represents a Codex rollback turn.
-/// `[SYSTEM:]` retains its existing replay semantics; the Codex-generated
-/// abort fragment does not form a separate rollback turn.
+/// The Codex-generated abort fragment does not form a separate rollback turn.
 package bool isCodexRollbackEligibleUserMessage(
 	CodexUserMessageLineClassification classification)
 {
@@ -766,9 +752,9 @@ private string[] translateRolloutMessage(string role, string contentJson, string
 	}
 }
 
-/// Translate a decoded user message. A message is meta when it is not a prompt,
-/// precedes the first turn, or carries harness `metaKinds`, which Codex's
-/// content kinds can only add to and never remove.
+/// A decoded user message is meta when it is Codex context, precedes the
+/// first turn, or carries harness `metaKinds`. CyDo framing stays non-meta,
+/// matching live echoes.
 package string[] translateCodexUserItem(const CodexUserItem user, string forkId, bool forceMeta,
 	string[] metaKinds = null)
 {
@@ -783,7 +769,7 @@ package string[] translateCodexUserItem(const CodexUserItem user, string forkId,
 	ev.item_id = "codex-user-hist";
 	ev.item_type = "user_message";
 	ev.is_meta = forceMeta || metaKinds.length > 0
-		|| (!user.isPrompt && !isCodexSessionStartPrompt(user.message()));
+		|| !user.isTurnBoundary || isCodexPermissionsInstructionsText(user.message());
 	ev.meta_kinds = metaKinds;
 	ev.uuid = forkId;
 	foreach (ref input; user.inputs)
@@ -964,12 +950,13 @@ unittest
 	assert(repeated.meta_kinds == ["environments.environment_context", "agents_md.instructions"]);
 }
 
-// user.text preserves the existing prompt-framing rules.
+// CyDo framing leaves user.text non-meta.
 unittest
 {
 	foreach (prompt, isMeta; [
 		"Run the tests": false,
-		"[SYSTEM: something]": true,
+		"[SYSTEM: something]": false,
+		"<permissions instructions>": true,
 		"[SYSTEM: Session start: test]\n\nRun the tests\n\n[/SYSTEM]": false,
 	])
 	{

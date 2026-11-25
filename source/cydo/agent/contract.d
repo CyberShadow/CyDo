@@ -140,6 +140,9 @@ interface Agent
 	/// These take precedence over the hardcoded defaults in resolveModelSpec.
 	void setModelAliases(ModelSpec[string] aliases);
 
+	/// The configured keyword of CyDo's [<keyword>: …] system framing.
+	void setSystemKeyword(string keyword);
+
 	/// Map a model class label to the driver-specific model name and launch
 	/// parameters. "small"/"medium"/"large" have per-driver defaults; any other
 	/// label resolves to itself unless overridden.

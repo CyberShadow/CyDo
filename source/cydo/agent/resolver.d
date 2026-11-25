@@ -42,7 +42,9 @@ Agent createAgentByDriver(AgentDriver driver)
 Agent createConfiguredAgent(ref CydoConfig config, string agentName)
 {
 	auto resolved = resolveConfiguredAgent(config, agentName);
-	return createAgentByDriver(resolved.driver);
+	auto agent = createAgentByDriver(resolved.driver);
+	agent.setSystemKeyword(config.system_keyword);
+	return agent;
 }
 
 Agent tryCreateConfiguredAgent(ref CydoConfig config, string agentName)
@@ -50,6 +52,20 @@ Agent tryCreateConfiguredAgent(ref CydoConfig config, string agentName)
 	if (!isConfiguredAgentName(config, agentName))
 		return null;
 	return createConfiguredAgent(config, agentName);
+}
+
+unittest
+{
+	CydoConfig config;
+	config.system_keyword = "CYDO";
+	AgentConfig configured;
+	configured.driver = SetInfo!AgentDriver(AgentDriver.copilot, true);
+	config.agents["custom-copilot"] = configured;
+	auto agent = tryCreateConfiguredAgent(config, "custom-copilot");
+	auto boundaries = agent.extractPersistedHistoryBoundaries(
+		`{"type":"user.message","id":"wrapped","data":{"content":"[CYDO: bootstrap]"}}` ~ "\n"
+		~ `{"type":"user.message","id":"ordinary","data":{"content":"[SYSTEM: bootstrap]"}}`);
+	assert(boundaries.length == 1 && boundaries[0].anchor == "ordinary");
 }
 
 /// How tool calls of a task of the configured agent `agentName` in

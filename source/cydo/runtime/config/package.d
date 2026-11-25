@@ -190,6 +190,8 @@ struct CydoConfig
 	void validate() const
 	{
 		import std.format : format;
+		if (system_keyword.length == 0)
+			throw new Exception("system_keyword must be nonempty");
 		if (disk_cleanup_threshold_bytes <= 0)
 			throw new Exception("disk_cleanup_threshold_bytes must be positive");
 		validateSandbox(sandbox, "sandbox");
@@ -362,6 +364,19 @@ version (unittest)
 	}
 
 	private enum workspacesYAML = "workspaces:\n  local:\n    root: /tmp\n";
+
+	unittest
+	{
+		try
+		{
+			parseYamlConfigString!CydoConfig(workspacesYAML ~ "system_keyword: ''\n", "/dev/null");
+			assert(false, "expected an empty system keyword to be rejected");
+		}
+		catch (Exception e)
+		{
+			assert(e.toString().canFind("system_keyword must be nonempty"));
+		}
+	}
 
 	// 1. A scalar entry parses to model == the scalar, effort == "".
 	unittest

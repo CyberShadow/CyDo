@@ -294,6 +294,9 @@ class ClaudeCodeAgent : Agent
 		return meta;
 	}
 
+	// Claude does not classify CyDo framing.
+	void setSystemKeyword(string keyword) {}
+
 	void setModelAliases(ModelSpec[string] aliases)
 	{
 		modelAliasOverrides = aliases;
