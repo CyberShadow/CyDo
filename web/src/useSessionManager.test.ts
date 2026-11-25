@@ -264,6 +264,36 @@ describe("draft projection validation", () => {
     entryPoint: "entry",
   };
 
+  const projected = { ...task, title: form.text, agentName: form.agent };
+  const catalog = new Map([
+    [
+      task.projectPath,
+      [
+        {
+          name: form.entryPoint,
+          task_type: task.taskType,
+          description: "",
+          model_class: "",
+          read_only: false,
+        },
+      ],
+    ],
+  ]);
+
+  it("reuses the task when the draft projection is already applied", () => {
+    expect(projectDraftTask(projected, 71, form, catalog)).toBe(projected);
+  });
+
+  it.each(["title", "entryPoint", "agentName", "taskType"] as const)(
+    "replaces the task when the projected %s changes",
+    (field) => {
+      const previous = Object.freeze({ ...projected, [field]: "old value" });
+      const next = projectDraftTask(previous, 71, form, catalog);
+      expect(next).not.toBe(previous);
+      expect(next).toEqual(projected);
+    },
+  );
+
   it("projects an unresolved agent without changing the underlying task agent", () => {
     expect(
       projectDraftTask(

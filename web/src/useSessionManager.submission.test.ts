@@ -8,6 +8,10 @@ import {
 } from "./controlledImageStore";
 import type { OutboxEntry } from "./outbox";
 import type { AgnosticEvent, ControlMessage } from "./protocol";
+import { reduceMessage, replaceHistoryBoundary } from "./sessionReducer";
+import { replayStream, type ReplayOperation } from "./testing/replayStreams";
+import type { TaskState } from "./types";
+import { WriteBatch } from "./writeBatch";
 import { deepFreeze } from "./testing/deepFreeze";
 import type {
   DraftViewSnapshot,
@@ -213,6 +217,7 @@ vi.mock("./connection", () => {
 vi.mock("./outbox", () => ({ outbox: testState.outbox }));
 
 import {
+  getLiveTaskForTest,
   projectDraftTask,
   taskStateFromEntry,
   useTaskManager,
@@ -240,8 +245,11 @@ function seedEditorImage(editorId: string) {
   return entry;
 }
 
+let observedTasks: Set<TaskManager["tasks"]> | undefined;
+
 function ManagerProbe() {
   manager = useTaskManager(testState.addToast, imageStore);
+  observedTasks?.add(manager.tasks);
   return null;
 }
 
@@ -2232,17 +2240,18 @@ describe("submission acknowledgement routing", () => {
     });
     const connection = testState.connection!;
     expect(connection.deleteTask).not.toHaveBeenCalled();
+    const expected = {
+      type: "user",
+      content: [{ type: "text", text: "A became active" }],
+    };
     const originalClearTimeout = globalThis.clearTimeout;
     let sawControllerHandoff = false;
     const clearTimeoutSpy = vi
       .spyOn(globalThis, "clearTimeout")
       .mockImplementation((handle) => {
         sawControllerHandoff = true;
-        expect(manager!.getByTid(71)?.messages).toContainEqual(
-          expect.objectContaining({
-            type: "user",
-            content: [{ type: "text", text: "A became active" }],
-          }),
+        expect(getLiveTaskForTest!(71)?.messages).toContainEqual(
+          expect.objectContaining(expected),
         );
         originalClearTimeout(handle);
       });
@@ -2257,6 +2266,9 @@ describe("submission acknowledgement routing", () => {
         });
       });
       expect(sawControllerHandoff).toBe(true);
+      expect(manager!.getByTid(71)?.messages).toContainEqual(
+        expect.objectContaining(expected),
+      );
       expect((await renderManager()).draftView).toBeNull();
     } finally {
       clearTimeoutSpy.mockRestore();
@@ -2278,18 +2290,19 @@ describe("submission acknowledgement routing", () => {
 
     const connection = testState.connection!;
     expect(connection.deleteTask).not.toHaveBeenCalled();
+    const expected = {
+      type: "user",
+      nonce: "a-agent-ack",
+      ackState: 2,
+    };
     const originalClearTimeout = globalThis.clearTimeout;
     let sawControllerHandoff = false;
     const clearTimeoutSpy = vi
       .spyOn(globalThis, "clearTimeout")
       .mockImplementation((handle) => {
         sawControllerHandoff = true;
-        expect(manager!.getByTid(71)?.messages).toContainEqual(
-          expect.objectContaining({
-            type: "user",
-            nonce: "a-agent-ack",
-            ackState: 2,
-          }),
+        expect(getLiveTaskForTest!(71)?.messages).toContainEqual(
+          expect.objectContaining(expected),
         );
         originalClearTimeout(handle);
       });
@@ -2299,6 +2312,9 @@ describe("submission acknowledgement routing", () => {
         connection.onAgentAck?.(71, "a-agent-ack");
       });
       expect(sawControllerHandoff).toBe(true);
+      expect(manager!.getByTid(71)?.messages).toContainEqual(
+        expect.objectContaining(expected),
+      );
       expect((await renderManager()).draftView).toBeNull();
     } finally {
       clearTimeoutSpy.mockRestore();
@@ -4443,6 +4459,7 @@ describe("submission acknowledgement routing", () => {
       "survive-reconnect",
     );
 
+    const beforeRejection = manager!.tasks;
     await act(() => {
       connection.onControlMessage?.({
         type: "cydo/submission_rejected",
@@ -4452,6 +4469,7 @@ describe("submission acknowledgement routing", () => {
         reason: "rejected on new connection",
       } satisfies ControlMessage);
     });
+    expect(manager!.tasks).toBe(beforeRejection);
     expect(testState.outboxEntries).toMatchObject([
       { nonce: "survive-reconnect", recoveredDraft: "replay after reset" },
     ]);
@@ -6034,5 +6052,96 @@ describe("submission acknowledgement routing", () => {
         Object.defineProperty(globalThis, "window", restoreWindow);
       else Reflect.deleteProperty(globalThis, "window");
     }
+  });
+
+  type ReplayEvent = Extract<ReplayOperation, { kind: "event" }>;
+
+  function generatedEvents(count: number, agent: string): ReplayEvent[] {
+    const events: ReplayEvent[] = [];
+    for (const operation of replayStream("claude", 7)) {
+      if (operation.kind !== "event") continue;
+      const { event } = operation;
+      events.push(
+        event.type === "session/init"
+          ? { ...operation, event: { ...event, agent } }
+          : operation,
+      );
+      if (events.length === count) break;
+    }
+    expect(events).toHaveLength(count);
+    return events;
+  }
+
+  function reduceEvent(task: TaskState, { event, seq, ts }: ReplayEvent) {
+    const next = reduceMessage(task, event, seq, ts);
+    return (event.type === "item/started" || event.type === "turn/stop") &&
+      event.history_boundary
+      ? replaceHistoryBoundary(next, event, seq)
+      : next;
+  }
+
+  async function recoverEditableDraft() {
+    const view = await prepareEditableDraft();
+    const nonce = "recovered-nonce";
+    testState.uuid = nonce;
+    await act(() => {
+      view.onSubmit(view.text, []);
+    });
+    await act(() => {
+      rejectSubmission(nonce, 71);
+    });
+    expect(manager!.draftView).toMatchObject({
+      editorId: view.editorId,
+      text: view.text,
+      disabled: false,
+    });
+    const projection = {
+      title: view.text,
+      entryPoint: "entry",
+      agentName: "agent",
+      taskType: "blank",
+    };
+    expect(manager!.getByTid(71)).toMatchObject(projection);
+    return projection;
+  }
+
+  describe("recovered draft editor", () => {
+    it("seals and publishes once per loaded-task flush", async () => {
+      const projection = await recoverEditableDraft();
+      const connection = testState.connection!;
+      await act(() => {
+        connection.onControlMessage?.({ type: "task_history_end", tid: 71 });
+      });
+      const start = manager!.getByTid(71)!;
+      expect(start.historyLoaded).toBe(true);
+      deepFreeze(manager!.tasks);
+      const events = generatedEvents(90, projection.agentName);
+      testState.hidden = false;
+
+      const close = vi.spyOn(WriteBatch.prototype, "close");
+      try {
+        for (let offset = 0; offset < events.length; offset += 30) {
+          const before = manager!.tasks;
+          close.mockClear();
+          observedTasks = new Set();
+          for (const { event, seq, ts } of events.slice(offset, offset + 30)) {
+            connection.onTaskMessage?.(71, event, seq, ts);
+          }
+          expect(manager!.tasks).toBe(before);
+          await flushAnimationFrames();
+          expect(close).toHaveBeenCalledOnce();
+          expect(manager!.tasks).not.toBe(before);
+          expect(observedTasks).toEqual(new Set([manager!.tasks]));
+          deepFreeze(manager!.tasks);
+        }
+        expect(manager!.getByTid(71)).toEqual(
+          events.reduce(reduceEvent, start),
+        );
+        expect(manager!.getByTid(71)).toMatchObject(projection);
+      } finally {
+        observedTasks = undefined;
+        close.mockRestore();
+      }
+    });
   });
 });

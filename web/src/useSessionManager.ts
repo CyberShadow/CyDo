@@ -37,12 +37,13 @@ import {
 import type { CydoMeta, TaskState, UndoPending } from "./types";
 import { makeTaskState } from "./types";
 import {
-  reduceAgentAck,
-  reduceMessage,
+  reduceAgentAckIn,
+  reduceMessageIn,
   rejectOrdinarySubmission,
-  replaceHistoryBoundary,
+  replaceHistoryBoundaryIn,
 } from "./sessionReducer";
 import { deepFreeze } from "./testing/deepFreeze";
+import { WriteBatch } from "./writeBatch";
 import { outbox } from "./outbox";
 import {
   canonicalUserTextFromContentAndMeta,
@@ -535,19 +536,20 @@ export function projectDraftTask(
     }
     taskType = task.taskType;
   }
-  return {
-    ...projectDraftText(task, form.text),
-    entryPoint: form.entryPoint,
-    agentName: form.agent ?? task.agentName,
-    taskType,
-  };
+  const title = projectedTitle(form.text);
+  const agentName = form.agent ?? task.agentName;
+  if (
+    title === task.title &&
+    form.entryPoint === task.entryPoint &&
+    agentName === task.agentName &&
+    taskType === task.taskType
+  )
+    return task;
+  return { ...task, title, entryPoint: form.entryPoint, agentName, taskType };
 }
 
-function projectDraftText(task: TaskState, text: string): TaskState {
-  return {
-    ...task,
-    title: text.trim().split("\n")[0]?.slice(0, 100) || undefined,
-  };
+function projectedTitle(text: string): string | undefined {
+  return text.trim().split("\n")[0]?.slice(0, 100) || undefined;
 }
 
 /// Extract text content from a user message event (for unconfirmed display).
@@ -563,6 +565,27 @@ function extractTextContent(msg: AgnosticEvent): string {
 // background tabs.
 const liveStates = new Map<string, TaskState>();
 
+const taskBatches = new Map<string, WriteBatch>();
+
+function batchFor(uuid: string): WriteBatch {
+  let batch = taskBatches.get(uuid);
+  if (!batch) {
+    batch = new WriteBatch();
+    taskBatches.set(uuid, batch);
+  }
+  return batch;
+}
+
+function sealTask(uuid: string): void {
+  taskBatches.get(uuid)?.close();
+  taskBatches.delete(uuid);
+}
+
+function markDirty(dirty: Set<string>, uuid: string, next: TaskState): void {
+  liveStates.set(uuid, next);
+  dirty.add(uuid);
+}
+
 // Index: backend tid → frontend uuid. Maintained in lockstep with liveStates.
 const tidToUuid = new Map<number, string>();
 
@@ -571,13 +594,21 @@ function findByTid(tid: number): TaskState | undefined {
   return uuid ? liveStates.get(uuid) : undefined;
 }
 
+export const getLiveTaskForTest =
+  import.meta.env.MODE === "test" ? findByTid : undefined;
+
 function useTaskPublication() {
   const [tasks, setTasks] = useState(new Map<string, TaskState>());
+  const publishedTasksRef = useRef(tasks);
   const operations = useMemo(() => {
     const publish = (
       update: (previous: Map<string, TaskState>) => Map<string, TaskState>,
     ) => {
-      setTasks(update);
+      const previous = publishedTasksRef.current;
+      const next = update(previous);
+      if (next === previous) return;
+      publishedTasksRef.current = next;
+      setTasks(next);
     };
 
     const publishState = (state: TaskState) =>
@@ -590,7 +621,10 @@ function useTaskPublication() {
       next: TaskState,
       publication: "always" | "if-present" = "always",
     ) => {
+      if (next === liveStates.get(uuid))
+        throw new Error(`Commit of unchanged task ${uuid}`);
       liveStates.set(uuid, next);
+      sealTask(uuid);
       publish((previous) => {
         if (publication === "if-present" && !previous.has(uuid))
           return previous;
@@ -599,7 +633,10 @@ function useTaskPublication() {
     };
 
     const commitTasks = (entries: Map<string, TaskState>) => {
-      for (const [uuid, state] of entries) liveStates.set(uuid, state);
+      for (const [uuid, state] of entries) {
+        liveStates.set(uuid, state);
+        sealTask(uuid);
+      }
       publish((previous) => {
         const next = new Map(previous);
         for (const [uuid, state] of entries)
@@ -608,8 +645,26 @@ function useTaskPublication() {
       });
     };
 
+    const publishDirtyTasks = (dirty: Set<string>) => {
+      if (dirty.size === 0) return;
+      const entries = new Map<string, TaskState>();
+      for (const uuid of dirty) {
+        const state = liveStates.get(uuid);
+        if (state && taskBatches.has(uuid)) entries.set(uuid, state);
+      }
+      if (entries.size !== 0) commitTasks(entries);
+    };
+
+    const getPublishedTask = (tid: number) => {
+      const uuid = tidToUuid.get(tid);
+      return uuid === undefined
+        ? undefined
+        : publishedTasksRef.current.get(uuid);
+    };
+
     /** Hide a task pending deletion while retaining its live state. */
     const unpublishTask = (uuid: string) => {
+      sealTask(uuid);
       publish((previous) => {
         if (!previous.has(uuid)) return previous;
         const next = new Map(previous);
@@ -624,11 +679,20 @@ function useTaskPublication() {
     };
 
     const clearTasks = () => {
+      for (const uuid of taskBatches.keys()) sealTask(uuid);
       liveStates.clear();
       publish(() => new Map());
     };
 
-    return { commitTask, commitTasks, unpublishTask, removeTask, clearTasks };
+    return {
+      commitTask,
+      commitTasks,
+      unpublishTask,
+      removeTask,
+      clearTasks,
+      publishDirtyTasks,
+      getPublishedTask,
+    };
   }, [setTasks]);
   return { tasks, ...operations };
 }
@@ -673,6 +737,8 @@ export function useTaskManager(
     unpublishTask,
     removeTask,
     clearTasks,
+    publishDirtyTasks,
+    getPublishedTask,
   } = useTaskPublication();
   const [ordinaryDraftStore] = useState(createOrdinaryDraftStore);
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
@@ -771,8 +837,7 @@ export function useTaskManager(
   }, [path, rememberRouteProject]);
 
   const taskContext = useCallback(
-    (tid: number): [string | null, string | null] => {
-      const t = findByTid(tid);
+    (t: TaskState | undefined): [string | null, string | null] => {
       if (!t || !t.workspace || !t.projectPath) return [null, null];
       const projName = findProjectName(
         workspacesRef.current,
@@ -807,14 +872,17 @@ export function useTaskManager(
   );
 
   const taskRoute = useCallback(
-    (id: string): ReturnType<typeof parseRoute> => {
+    (
+      id: string,
+      lookupTask: (tid: number) => TaskState | undefined,
+    ): ReturnType<typeof parseRoute> => {
       if (id === "archive" || id === "import") {
         return { ...readBrowserRoute(), tid: id };
       }
       const archiveMatch = id.match(/^archive:(\d+)$/);
       const tid = parseInt(archiveMatch?.[1] ?? id, 10);
       if (isNaN(tid)) return { workspace: null, project: null, tid: null };
-      const [workspace, project] = taskContext(tid);
+      const [workspace, project] = taskContext(lookupTask(tid));
       return { workspace, project, tid: id };
     },
     [taskContext],
@@ -840,8 +908,8 @@ export function useTaskManager(
   );
 
   const getTaskHref = useCallback(
-    (id: string) => routeHref(taskRoute(id)),
-    [routeHref, taskRoute],
+    (id: string) => routeHref(taskRoute(id, getPublishedTask)),
+    [getPublishedTask, routeHref, taskRoute],
   );
 
   const navigate = useCallback(
@@ -880,9 +948,9 @@ export function useTaskManager(
 
   const setActiveTaskId = useCallback(
     (id: string) => {
-      navigate(taskRoute(id));
+      navigate(taskRoute(id, getPublishedTask));
     },
-    [navigate, taskRoute],
+    [getPublishedTask, navigate, taskRoute],
   );
 
   const navigateHome = useCallback(() => {
@@ -1063,13 +1131,14 @@ export function useTaskManager(
 
   const projectDraft = useCallback(
     (tid: number, form: ProjectedDraftForm) => {
+      const task = findByTid(tid);
       const updated = projectDraftTask(
-        findByTid(tid),
+        task,
         tid,
         form,
         draftStateRef.current.metadata.catalogs,
       );
-      commitTask(updated.uuid, updated);
+      if (updated !== task) commitTask(updated.uuid, updated);
     },
     [commitTask],
   );
@@ -1482,7 +1551,13 @@ export function useTaskManager(
   );
 
   const handleTaskMessage = useCallback(
-    (tid: number, msg: AgnosticEvent, seq?: number, ts?: number) => {
+    (
+      dirty: Set<string>,
+      tid: number,
+      msg: AgnosticEvent,
+      seq?: number,
+      ts?: number,
+    ) => {
       if (tombstoneTidToEditorRef.current.has(tid)) return;
       const editorId = controlledOwnerByTidRef.current.get(tid)?.editorId;
       const effects = editorId
@@ -1501,9 +1576,10 @@ export function useTaskManager(
         ...makeTaskState(tid, true),
         uuid,
       };
-      let updated = reduceMessage(prev, msg, seq, ts);
+      const batch = batchFor(uuid);
+      let updated = reduceMessageIn(batch, prev, msg, seq, ts);
       if (hasHistoryBoundary(msg) && seq !== undefined)
-        updated = replaceHistoryBoundary(updated, msg, seq);
+        updated = replaceHistoryBoundaryIn(batch, updated, msg, seq);
       if (
         msg.type === "user_message/consumed" &&
         msg.consumed_as === "cancelled" &&
@@ -1512,18 +1588,17 @@ export function useTaskManager(
       ) {
         const text = unsendRequestsRef.current.get(msg.correlation_id)!;
         unsendRequestsRef.current.delete(msg.correlation_id);
-        updated = { ...updated, inputDraft: text };
+        updated = batch.object(updated);
+        updated.inputDraft = text;
       }
       if (!updated.historyLoaded && updated.historyTotal !== undefined) {
-        updated = {
-          ...updated,
-          historyReceived: (updated.historyReceived ?? 0) + 1,
-        };
+        updated = batch.object(updated);
+        updated.historyReceived = (updated.historyReceived ?? 0) + 1;
       }
-      commitTask(uuid, updated);
+      markDirty(dirty, uuid, updated);
       executeDraftEffectsRef.current(effects);
     },
-    [applyDraftEvent, commitTask],
+    [applyDraftEvent],
   );
 
   const handleDraftUpdatedMessage = useCallback(
@@ -1919,7 +1994,7 @@ export function useTaskManager(
           let recovered = false;
           if (task) {
             const updated = rejectOrdinarySubmission(task, correlation_id);
-            commitTask(task.uuid, updated);
+            if (updated !== task) commitTask(task.uuid, updated);
 
             if (kind !== "task_unavailable") {
               const text = canonicalUserTextFromContentAndMeta(
@@ -1973,7 +2048,7 @@ export function useTaskManager(
               ? currentId === null || isNaN(currentTid)
               : currentId === String(fromTid);
           if (matches && tidToUuid.has(toTid)) {
-            setActiveTaskId(String(toTid));
+            navigate(taskRoute(String(toTid), findByTid));
           }
           break;
         }
@@ -2256,7 +2331,7 @@ export function useTaskManager(
       navigate,
       rememberRouteProject,
       returnFromDeletedDraft,
-      setActiveTaskId,
+      taskRoute,
       executeDraftEffects,
       materializeDraftTask,
       removeTaskIdentity,
@@ -2317,7 +2392,7 @@ export function useTaskManager(
     let flushId: number | null = null;
     let flushTimerId: ReturnType<typeof setTimeout> | null = null;
 
-    const handleAgentAck = (tid: number, nonce: string) => {
+    const handleAgentAck = (dirty: Set<string>, tid: number, nonce: string) => {
       if (tombstoneTidToEditorRef.current.has(tid)) return;
       const editorId = controlledOwnerByTidRef.current.get(tid)?.editorId;
       const effects = editorId
@@ -2337,10 +2412,11 @@ export function useTaskManager(
         executeDraftEffects(effects);
         return;
       }
-      const updated = reduceAgentAck(t, nonce);
-      if (updated !== t) {
-        commitTask(uuid, updated);
-      }
+      // An unchanged identity can also mean the open batch edited in place.
+      const existingBatch = taskBatches.get(uuid);
+      const updated = reduceAgentAckIn(batchFor(uuid), t, nonce);
+      if (updated !== t) markDirty(dirty, uuid, updated);
+      else if (!existingBatch) sealTask(uuid);
       executeDraftEffects(effects);
     };
 
@@ -2352,6 +2428,7 @@ export function useTaskManager(
       }
       const batch = buffer;
       buffer = [];
+      const dirty = new Set<string>();
       for (const item of batch) {
         if (!isCurrentOpenEpoch(item.epoch)) continue;
         if (item.kind === "draftUpdated")
@@ -2359,7 +2436,8 @@ export function useTaskManager(
         else if (item.kind === "control") handleControlMessage(item.msg);
         else if (item.kind === "unconfirmed")
           handleUnconfirmedUserMessage(item.tid, item.msg, item.correlationId);
-        else if (item.kind === "agentAck") handleAgentAck(item.tid, item.nonce);
+        else if (item.kind === "agentAck")
+          handleAgentAck(dirty, item.tid, item.nonce);
         else if (item.kind === "historyBoundary") {
           if (tombstoneTidToEditorRef.current.has(item.tid)) continue;
           const uuid = tidToUuid.get(item.tid);
@@ -2379,14 +2457,19 @@ export function useTaskManager(
             pendingHistoryBoundaries.set(item.tid, pending);
             continue;
           }
-          const updated = replaceHistoryBoundary(task, item.msg, item.seq);
-          commitTask(uuid, updated);
+          const updated = replaceHistoryBoundaryIn(
+            batchFor(uuid),
+            task,
+            item.msg,
+            item.seq,
+          );
+          markDirty(dirty, uuid, updated);
         } else {
           if (tombstoneTidToEditorRef.current.has(item.tid)) {
             pendingHistoryBoundaries.delete(item.tid);
             continue;
           }
-          handleTaskMessage(item.tid, item.msg, item.seq, item.ts);
+          handleTaskMessage(dirty, item.tid, item.msg, item.seq, item.ts);
           const pending = pendingHistoryBoundaries.get(item.tid);
           if (pending && item.seq !== undefined) {
             const matching = pending.filter(
@@ -2399,14 +2482,16 @@ export function useTaskManager(
               const initialTask = liveStates.get(uuid);
               if (initialTask === undefined)
                 throw new Error(`Replacement for unknown task ${item.tid}`);
+              const taskBatch = batchFor(uuid);
               let updated = initialTask;
               for (const replacement of matching)
-                updated = replaceHistoryBoundary(
+                updated = replaceHistoryBoundaryIn(
+                  taskBatch,
                   updated,
                   replacement.msg,
                   replacement.seq,
                 );
-              commitTask(uuid, updated);
+              markDirty(dirty, uuid, updated);
               const remaining = pending.filter(
                 (replacement) => replacement.seq !== item.seq,
               );
@@ -2417,6 +2502,7 @@ export function useTaskManager(
           }
         }
       }
+      publishDirtyTasks(dirty);
     };
 
     // Batch via rAF when visible for render-aligned updates. When hidden,
@@ -2590,13 +2676,13 @@ export function useTaskManager(
     };
   }, [
     clearTasks,
-    commitTask,
     controlledImageStore,
     handleTaskMessage,
     handleDraftUpdatedMessage,
     handleControlMessage,
     handleUnconfirmedUserMessage,
     isCurrentOpenEpoch,
+    publishDirtyTasks,
     ordinaryDraftStore,
   ]);
 
@@ -2605,15 +2691,13 @@ export function useTaskManager(
   // rather than teaching its consumers to tolerate a mismatch.
   //
   // `tasks` and `workspaces` are load-bearing dependencies and must not be removed
-  // by a later cleanup. `taskContext` is a `useCallback([])` that reads a
-  // module-level map and a ref, so neither the task list nor the workspace list
-  // arriving would re-run this effect on its own — `tasks` and `workspaces` are
-  // what make it fire.
+  // by a later cleanup. The task and workspace lookups read refs, so
+  // `tasks` and `workspaces` trigger this effect when either list changes.
   useEffect(() => {
     const current = readBrowserRoute();
     const tid = parseTaskId(current.tid);
     if (tid === null) return;
-    const [ws, proj] = taskContext(tid);
+    const [ws, proj] = taskContext(getPublishedTask(tid));
     const target = canonicalTaskRedirect({
       tid,
       taskWorkspace: ws,
@@ -2630,6 +2714,7 @@ export function useTaskManager(
     tasks,
     workspaces,
     taskContext,
+    getPublishedTask,
     navigate,
   ]);
 
@@ -2771,7 +2856,7 @@ export function useTaskManager(
 
   const selectedTid = activeTaskId === null ? null : parseTaskId(activeTaskId);
   const selectedTask =
-    selectedTid === null ? undefined : findByTid(selectedTid);
+    selectedTid === null ? undefined : getPublishedTask(selectedTid);
   const openPersistedEvent = useMemo<Extract<
     DraftEvent,
     { type: "open-persisted" }
@@ -3271,10 +3356,13 @@ export function useTaskManager(
     return result;
   }, [tasks, draftRevision, activeWorkspace, activeProject, workspaces]);
 
-  const getProjectedByTid = useCallback((tid: number) => {
-    if (tombstoneTidToEditorRef.current.has(tid)) return undefined;
-    return findByTid(tid);
-  }, []);
+  const getProjectedByTid = useCallback(
+    (tid: number) => {
+      if (tombstoneTidToEditorRef.current.has(tid)) return undefined;
+      return getPublishedTask(tid);
+    },
+    [getPublishedTask],
+  );
 
   const tasksLoaded =
     tasksListEpoch !== null &&
