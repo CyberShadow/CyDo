@@ -11,6 +11,10 @@ import std.string : toStringz;
 import std.uni : toLower;
 import std.utf : validate, UTFException;
 
+import ae.utils.promise : Promise;
+import cydo.runtime.launch.sandbox : cydoBinaryPath;
+import cydo.workflow.sessions.task_runner : SandboxedCommandResult;
+
 enum size_t showMaxBytes = 16 * 1024 * 1024;
 
 immutable(ubyte)[] readShowableFile(string path)
@@ -45,6 +49,32 @@ struct ShownFile
 {
 	string mediaType;
 	immutable(ubyte)[] bytes;
+}
+
+Promise!ShownFile readShownFile(Promise!SandboxedCommandResult delegate(int, string[]) run,
+	int tid, string path)
+{
+	import std.algorithm : canFind;
+	import std.string : strip;
+
+	enforce(isAbsolute(path), "The file path must be absolute");
+	enforce(!path.canFind('\0'), "The file path contains a NUL character");
+	return run(tid, [cydoBinaryPath, "read-shown-file", "--", path])
+		.then((SandboxedCommandResult result) {
+			enforce(result.status == 0, result.stderr.strip);
+			return classifyShownFile(path, result.stdout);
+		});
+}
+
+unittest
+{
+	import std.exception : collectException;
+
+	auto failure = collectException(readShownFile(
+		delegate Promise!SandboxedCommandResult(int, string[]) {
+			assert(0, "A path containing NUL must never reach the sandbox runner");
+		}, 1, "/tmp/first\0second"));
+	assert(failure !is null && failure.msg == "The file path contains a NUL character");
 }
 
 ShownFile classifyShownFile(string path, immutable(ubyte)[] bytes)

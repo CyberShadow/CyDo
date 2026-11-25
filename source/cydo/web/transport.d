@@ -52,6 +52,21 @@ struct RawSourceLookupResult
 	string raw;
 }
 
+enum LiveFileLookupStatus
+{
+	ok,
+	taskNotFound,
+	unavailable,
+}
+
+struct LiveFileLookupResult
+{
+	LiveFileLookupStatus status;
+	string mediaType;
+	immutable(ubyte)[] bytes;
+	string reason;
+}
+
 struct WebSocketCallbacks
 {
 	void delegate(WebSocketAdapter ws) onAccepted;
@@ -68,6 +83,7 @@ struct McpCallbacks
 }
 
 alias RawSourceReady = void delegate(RawSourceLookupResult);
+alias LiveFileReady = void delegate(LiveFileLookupResult);
 
 private final class McpConnection : ConnectionAdapter
 {
@@ -109,18 +125,21 @@ class TransportAdapter
 	private string authPass_;
 	private WebSocketCallbacks websocketCallbacks_;
 	private void delegate(int tid, size_t seq, RawSourceReady ready) rawSourceLookup_;
+	private void delegate(int tid, string path, LiveFileReady ready) liveFileLookup_;
 	private McpCallbacks mcpCallbacks_;
 
 	this(
 		string webDistDir,
 		WebSocketCallbacks websocketCallbacks,
 		void delegate(int tid, size_t seq, RawSourceReady ready) rawSourceLookup,
+		void delegate(int tid, string path, LiveFileReady ready) liveFileLookup,
 		McpCallbacks mcpCallbacks,
 	)
 	{
 		webDistDir_ = webDistDir;
 		websocketCallbacks_ = websocketCallbacks;
 		rawSourceLookup_ = rawSourceLookup;
+		liveFileLookup_ = liveFileLookup;
 		mcpCallbacks_ = mcpCallbacks;
 	}
 
@@ -234,6 +253,12 @@ class TransportAdapter
 			return;
 		}
 
+		if (request.path == "/api/live-file")
+		{
+			handleLiveFileRequest(request, conn);
+			return;
+		}
+
 		auto response = new HttpResponseEx();
 		auto path = request.resource[1 .. $];
 		if (path == "" || !exists(webDistDir_ ~ path) || !isFile(webDistDir_ ~ path))
@@ -343,6 +368,56 @@ class TransportAdapter
 
 			response.headers["Content-Type"] = "application/json";
 			conn.sendResponse(response.serveData(result.raw !is null ? result.raw : "null"));
+		});
+	}
+
+	private void handleLiveFileRequest(HttpRequest request, HttpServerConnection conn)
+	{
+		import std.algorithm.searching : canFind;
+		import std.exception : enforce;
+		import std.path : isAbsolute;
+
+		auto response = new HttpResponseEx();
+		int tid;
+		string path;
+		try
+		{
+			auto params = request.urlParameters;
+			auto tidStr = params.get("tid", "");
+			path = params.get("path", "");
+			enforce!ConvException(tidStr.length && path.length, "Missing tid or path");
+			tid = tidStr.to!int;
+			enforce!ConvException(isAbsolute(path), "The file path must be absolute");
+			enforce!ConvException(!path.canFind('\0'), "The file path contains a NUL character");
+		}
+		catch (ConvException e)
+		{
+			response.setStatus(HttpStatusCode.BadRequest);
+			conn.sendResponse(response.serveText(e.msg));
+			return;
+		}
+
+		conn.conn.handleReadData = null;
+		liveFileLookup_(tid, path, (LiveFileLookupResult result) {
+			if (!conn.connected)
+				return;
+			final switch (result.status)
+			{
+			case LiveFileLookupStatus.ok:
+				response.headers["X-Content-Type-Options"] = "nosniff";
+				response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'";
+				response.headers["Cache-Control"] = "no-store";
+				conn.sendResponse(response.serveData(Data(result.bytes), result.mediaType));
+				return;
+			case LiveFileLookupStatus.taskNotFound:
+				response.setStatus(HttpStatusCode.NotFound);
+				conn.sendResponse(response.serveText("Task not found"));
+				return;
+			case LiveFileLookupStatus.unavailable:
+				response.setStatus(HttpStatusCode.UnprocessableContent);
+				break;
+			}
+			conn.sendResponse(response.serveText(result.reason));
 		});
 	}
 
@@ -500,6 +575,7 @@ version (unittest) private void assertMcpDispatchFailureIsTerminal(bool throwInF
 		"",
 		WebSocketCallbacks.init,
 		null,
+		null,
 		McpCallbacks(
 			dispatchTool: (string tool, string tid, string itemId, JSONFragment args, ToolCallCancellation cancellation) {
 				auto promise = new Promise!McpResult;
@@ -590,6 +666,7 @@ version (unittest) private void assertMcpDisconnectedClientFailsDelivery(bool se
 		"",
 		WebSocketCallbacks.init,
 		null,
+		null,
 		McpCallbacks(
 			dispatchTool: (string tool, string tid, string itemId, JSONFragment args, ToolCallCancellation cancellation) {
 				dispatchCancellation = cancellation;
@@ -668,6 +745,7 @@ version (unittest) private void assertMcpSettledDispatchIsNotCancelled(bool with
 	auto adapter = new TransportAdapter(
 		"",
 		WebSocketCallbacks.init,
+		null,
 		null,
 		McpCallbacks(
 			dispatchTool: (string tool, string tid, string itemId, JSONFragment args, ToolCallCancellation cancellation) {
@@ -758,6 +836,7 @@ version (unittest) private void assertMcpCleanupFailureEscapes(
 	auto adapter = new TransportAdapter(
 		"",
 		WebSocketCallbacks.init,
+		null,
 		null,
 		McpCallbacks(
 			dispatchTool: (string tool, string tid, string itemId, JSONFragment args, ToolCallCancellation cancellation) => dispatchPromise,
@@ -881,6 +960,7 @@ version (unittest) private void assertDeferredRawSourceReplyOwnsItsRequest()
 				ready(RawSourceLookupResult(RawSourceLookupStatus.ok, `{"first":true}`));
 			}, 100.msecs);
 		},
+		null,
 		McpCallbacks.init,
 	);
 
@@ -937,7 +1017,7 @@ version (unittest) private HttpResponse requestOverUnixSocket(
 	write(buildPath(webDistDir, "index.html"), "<html>CyDo</html>");
 	write(buildPath(webDistDir, "manifest.json"), `{"name":"CyDo"}`);
 
-	auto adapter = new TransportAdapter(webDistDir ~ "/", WebSocketCallbacks.init, null, McpCallbacks.init);
+	auto adapter = new TransportAdapter(webDistDir ~ "/", WebSocketCallbacks.init, null, null, McpCallbacks.init);
 	adapter.setAuthCredentials(user, pass);
 	adapter.startHttpServer(null, null);
 
@@ -1019,4 +1099,103 @@ unittest
 	auto response = requestOverUnixSocket("", "", "/", "localhost:3940");
 	assert(response.status == HttpStatusCode.OK, response.status.to!string);
 	assert(cast(string) response.data[].joinData().toGC() == "<html>CyDo</html>");
+}
+
+unittest // The live-file route serves status, headers and bytes over HTTP.
+{
+	import std.algorithm.searching : canFind, endsWith, startsWith;
+	import std.string : indexOf;
+	import std.uni : toLower;
+
+	auto socketPath = mcpTransportTestSocketPath("live-file");
+	if (exists(socketPath))
+		remove(socketPath);
+
+	immutable(ubyte)[] bytes = [0x89, 0x50, 0, 0xFF];
+	enum reason = "The task is archived";
+	string[] lookups;
+	SocketConnection client;
+
+	void request(string query, string method, bool close)
+	{
+		auto headers = "Host: localhost\r\n" ~ (close ? "Connection: close\r\n" : "");
+		client.send(Data((method ~ " /api/live-file?" ~ query ~ " HTTP/1.1\r\n"
+			~ headers ~ "\r\n").asBytes));
+	}
+
+	auto adapter = new TransportAdapter("", WebSocketCallbacks.init, null,
+		(int tid, string path, LiveFileReady ready) {
+			assert(tid == 17);
+			lookups ~= path;
+			switch (path)
+			{
+			case "/file":
+				request("tid=17&path=/unknown", "HEAD", true);
+				setTimeout({
+					assert(lookups == ["/file"], "The pending reply must keep its request");
+					ready(LiveFileLookupResult(LiveFileLookupStatus.ok, "image/png", bytes));
+				}, 100.msecs);
+				break;
+			case "/unknown":
+				ready(LiveFileLookupResult(LiveFileLookupStatus.taskNotFound));
+				break;
+			case "/archived":
+				ready(LiveFileLookupResult(status: LiveFileLookupStatus.unavailable, reason: reason));
+				break;
+			default:
+				assert(0, path);
+			}
+		}, McpCallbacks.init);
+
+	string exchange(string query, bool close)
+	{
+		adapter.startHttpServer(null, null);
+		auto server = adapter.server;
+		auto address = AddressInfo(AddressFamily.UNIX, SocketType.STREAM,
+			cast(ProtocolType) 0, new UnixAddress(socketPath), socketPath);
+		server.listen([address]);
+		scope (exit)
+			if (exists(socketPath))
+				remove(socketPath);
+
+		string received;
+		client = new SocketConnection();
+		client.handleConnect = { request(query, "GET", close); };
+		client.handleReadData = (Data data) { received ~= cast(string) data.toGC(); };
+		client.handleDisconnect = (string reason, DisconnectType type) { server.close(); };
+		client.connect([address]);
+		socketManager.loop();
+		return received;
+	}
+
+	foreach (query; ["tid=17", "tid=17&path=relative", "tid=17&path=/with%00nul",
+		"path=/file", "tid=invalid&path=/file"])
+	{
+		auto badRequest = exchange(query, true);
+		assert(badRequest.startsWith("HTTP/1.1 400 "), query ~ ": " ~ badRequest);
+		assert(lookups.length == 0, query);
+	}
+
+	auto success = exchange("tid=17&path=/file", false);
+	assert(lookups == ["/file", "/unknown"]);
+	assert(success.startsWith("HTTP/1.1 200 "), success);
+	auto headerEnd = success.indexOf("\r\n\r\n");
+	assert(headerEnd >= 0, success);
+	auto headers = success[0 .. headerEnd + 2].toLower;
+	assert(headers.canFind("\r\ncontent-type: image/png\r\n"), headers);
+	assert(headers.canFind("\r\nx-content-type-options: nosniff\r\n"), headers);
+	assert(headers.canFind("\r\ncontent-security-policy: sandbox; default-src 'none'\r\n"), headers);
+	assert(headers.canFind("\r\ncache-control: no-store\r\n"), headers);
+
+	auto bodyStart = headerEnd + 4;
+	auto nextResponse = bodyStart + bytes.length;
+	assert(success.length >= nextResponse, success);
+	assert(success[bodyStart .. nextResponse].asBytes == bytes);
+	auto notFound = success[nextResponse .. $];
+	assert(notFound.startsWith("HTTP/1.1 404 ") && notFound.endsWith("\r\n\r\n"), notFound);
+
+	auto unavailable = exchange("tid=17&path=/archived", true);
+	assert(lookups == ["/file", "/unknown", "/archived"]);
+	assert(unavailable.startsWith("HTTP/1.1 422 ") && unavailable.endsWith("\r\n\r\n" ~ reason),
+		unavailable);
 }

@@ -72,7 +72,8 @@ import cydo.domain.tasks.yield_gate : YieldGate;
 import cydo.workflow.sessions.yield_gates : YieldGateFinding, evaluateWorktreeBranchGate;
 import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
-import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
+import cydo.web.transport : LiveFileLookupResult, LiveFileLookupStatus, LiveFileReady,
+	McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
 	RawSourceReady, TransportAdapter, WebSocketCallbacks;
 import cydo.workflow.usage.service : ClaudeUsageService;
 
@@ -373,6 +374,7 @@ class App
 				onDisconnected: &onWebSocketDisconnected,
 			),
 			&lookupRawSource,
+			&lookupLiveFile,
 			McpCallbacks(
 				dispatchTool: &dispatchTool,
 				interruptForPendingContinuation: &interruptForPendingContinuation,
@@ -1223,6 +1225,44 @@ class App
 		if (recovered != 0)
 			infof("Recovered last_active for %d tasks (%d transcripts scanned) in %d ms",
 				recovered, scanned, sw.peek.total!"msecs");
+	}
+
+	private void lookupLiveFile(int tid, string path, LiveFileReady ready)
+	{
+		import cydo.workflow.show : readShownFile, ShownFile;
+
+		alias Status = LiveFileLookupStatus;
+		auto task = tid in tasks;
+		if (task is null)
+		{
+			ready(LiveFileLookupResult(Status.taskNotFound));
+			return;
+		}
+		if (task.status == TaskStatus.importable)
+		{
+			ready(LiveFileLookupResult(status: Status.unavailable, reason: "The task is importable"));
+			return;
+		}
+		if (task.archived || isArchiveTransitioning(tid))
+		{
+			ready(LiveFileLookupResult(status: Status.unavailable, reason: "The task is archived"));
+			return;
+		}
+		void unavailable(Exception e)
+		{
+			ready(LiveFileLookupResult(status: Status.unavailable, reason: e.msg));
+		}
+		Promise!ShownFile read;
+		try
+			read = readShownFile(&taskSessionRunner.runInTaskSandbox, tid, path);
+		catch (Exception e)
+		{
+			unavailable(e);
+			return;
+		}
+		read.then((ShownFile file) {
+			ready(LiveFileLookupResult(Status.ok, file.mediaType, file.bytes));
+		}, &unavailable).ignoreResult();
 	}
 
 	private void lookupRawSource(int tid, size_t seq, RawSourceReady ready)
@@ -8448,4 +8488,112 @@ unittest
 		&& eventReply.canFind("Editing events is not supported for this agent"),
 		"Expected both Codex offer edits to be refused: " ~ messageReply ~ " / " ~ eventReply);
 	assert(editLoads == 0 && readText(fixture.rolloutPath) == "{}\n");
+}
+
+unittest // Live-file lookup reads through the task's existing launch.
+{
+	import std.path : isAbsolute;
+	import std.uuid : randomUUID;
+
+	auto cli = environment.get("CYDO_TEST_CYDO_BIN", "");
+	assert(isAbsolute(cli) && exists(cli),
+		"CYDO_TEST_CYDO_BIN must name an existing absolute path. "
+		~ "Run nix develop -ic dub build and set CYDO_TEST_CYDO_BIN=$PWD/build/cydo.");
+
+	auto tmp = buildPath(tempDir(), "cydo-live-file-" ~ randomUUID().toString());
+	mkdirRecurse(tmp);
+	scope (exit) rmdirRecurse(tmp);
+	auto missing = buildPath(tmp, "missing.md");
+	auto binary = buildPath(tmp, "binary.bin");
+	auto markdown = buildPath(tmp, "a note.md");
+	auto png = buildPath(tmp, "image.png");
+	enum markdownText = "# Héading\n";
+	immutable(ubyte)[] pngBytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+	write(binary, [cast(ubyte) 0xFF]);
+	write(markdown, markdownText);
+	write(png, pngBytes);
+
+	enum tid = 41;
+	auto app = new App();
+	app.tasks[tid] = TaskData(tid, "local", tmp);
+	auto task = &app.tasks[tid];
+	task.launch.nativeHistoryProfile.root = buildPath(tmp, "live-profile");
+	// The runner supplies the test executable as $2. Forward the CLI arguments.
+	task.launch.cmdPrefix = ["/bin/sh", "-c", `exec "$1" "$3" "$4" "$5"`, "cydo", cli];
+	app.archiveManager = new ArchiveManager(ArchiveManagerHost(
+		tryGetTask: (int id, out ArchiveTaskSnapshot snapshot) {
+			assert(id == tid);
+			snapshot.tid = id;
+			snapshot.archiving = task.archiving;
+			return true;
+		},
+	));
+	app.taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost(
+		getTask: (int id) {
+			assert(id == tid);
+			return task;
+		},
+		agentForTask: delegate Agent(int id) {
+			assert(0, "A live-file read must reuse the existing launch");
+		},
+	));
+
+	LiveFileLookupResult lookup(string path)
+	{
+		Nullable!LiveFileLookupResult result;
+		app.lookupLiveFile(tid, path, (LiveFileLookupResult value) { result = value; });
+		socketManager.loop();
+		assert(!result.isNull, "Live-file lookup did not settle for " ~ path);
+		return result.get;
+	}
+
+	auto missingResult = lookup(missing);
+	assert(missingResult.status == LiveFileLookupStatus.unavailable);
+	assert(missingResult.reason.canFind(missing)
+		&& missingResult.reason.canFind("No such file or directory"), missingResult.reason);
+
+	auto binaryResult = lookup(binary);
+	assert(binaryResult.status == LiveFileLookupStatus.unavailable);
+	assert(binaryResult.reason == binary ~ " is neither a PNG/JPEG/GIF/WebP image nor UTF-8 text",
+		binaryResult.reason);
+
+	auto markdownResult = lookup(markdown);
+	assert(markdownResult.status == LiveFileLookupStatus.ok, markdownResult.reason);
+	assert(markdownResult.mediaType == "text/plain; charset=utf-8");
+	assert(markdownResult.bytes == cast(immutable(ubyte)[]) markdownText);
+
+	auto pngResult = lookup(png);
+	assert(pngResult.status == LiveFileLookupStatus.ok, pngResult.reason);
+	assert(pngResult.mediaType == "image/png");
+	assert(pngResult.bytes == pngBytes);
+}
+
+unittest // An archived task refuses live-file reads before building a launch or loading history.
+{
+	enum tid = 42;
+	auto app = new App();
+	app.tasks[tid] = TaskData(tid, "local", "/tmp/cydo-archived-live-file");
+	auto task = &app.tasks[tid];
+	task.archived = true;
+	task.history.reset(Watermark.driverServed());
+	app.historyPipeline = new HistoryEventPipeline(HistoryEventPipelineHost(
+		getTask: (int id) => id in app.tasks,
+		resolveTaskHistory: delegate TaskHistoryResolution(int id) {
+			assert(0, "An archived live-file read must not resolve cold history");
+		},
+	));
+	app.taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost(
+		getTask: (int id) => id in app.tasks,
+		agentForTask: delegate Agent(int id) {
+			assert(0, "An archived live-file read must not build a launch");
+		},
+	));
+
+	Nullable!LiveFileLookupResult result;
+	app.lookupLiveFile(tid, "/tmp/file.md", (LiveFileLookupResult value) { result = value; });
+
+	assert(!result.isNull);
+	assert(result.get.status == LiveFileLookupStatus.unavailable);
+	assert(result.get.reason == "The task is archived");
+	assert(!task.history.isLoaded && !task.history.isLoading);
 }
