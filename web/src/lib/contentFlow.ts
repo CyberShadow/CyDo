@@ -60,6 +60,18 @@ export function resolveFlowLanguage(sinks: readonly FlowSink[]): Readonly<{
   };
 }
 
+export function isFileWriteFlow(sinks: readonly FlowSink[]): boolean {
+  return (
+    sinks.some((sink) => sink.kind === "file") &&
+    sinks.every(
+      (sink) =>
+        sink.kind === "file" ||
+        sink.kind === "discard" ||
+        sink.kind === "tool-output",
+    )
+  );
+}
+
 function textSegment(start: number, end: number): SourceSegment | null {
   if (end <= start) return null;
   return { kind: "text", span: { start, end } };

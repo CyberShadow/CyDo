@@ -120,47 +120,14 @@ vi.mock("../lib/shellSemantic", async () => {
       if (command.startsWith("cat > README.md <<EOF")) {
         const writeResult: ShellSemanticResult = {
           ok: true,
-          value: {
-            kind: "write",
-            commandName: "cat",
-            command,
-            filePath: "README.md",
-            heredoc: {
-              delimiter: "EOF",
-              quoted: false,
-              commandLine: "cat > README.md <<EOF",
-              content: "# Title",
-              terminator: "EOF",
-            },
-            segments: [
-              { kind: "command-header", text: "cat > README.md <<EOF" },
-            ],
-          },
+          value: { kind: "write", command },
         };
         return writeResult;
       }
       if (command.startsWith("cat > /tmp/a/output.svg <<'EOF'")) {
         const writeResult: ShellSemanticResult = {
           ok: true,
-          value: {
-            kind: "write",
-            commandName: "cat",
-            command,
-            filePath: "/tmp/a/output.svg",
-            heredoc: {
-              delimiter: "EOF",
-              quoted: true,
-              commandLine: "cat > /tmp/a/output.svg <<'EOF'",
-              content: "<svg></svg>",
-              terminator: "EOF",
-            },
-            segments: [
-              {
-                kind: "command-header",
-                text: "cat > /tmp/a/output.svg <<'EOF'",
-              },
-            ],
-          },
+          value: { kind: "write", command },
         };
         return writeResult;
       }

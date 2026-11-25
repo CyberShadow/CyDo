@@ -13,12 +13,9 @@ import type {
   ReadRange,
   RowsSegment,
 } from "./shellOutput";
-import { buildShellSourceTree } from "./shellSourceTree";
-import type {
-  ShellHeredocWriteSemantic,
-  ShellScriptExecSemantic,
-  ShellSemantic,
-} from "./shellSemantic";
+import { analyzeShellDocument, buildShellSourceTree } from "./shellSourceTree";
+import { isFileWriteFlow, resolveFlowLanguage } from "./contentFlow";
+import type { ShellScriptExecSemantic, ShellSemantic } from "./shellSemantic";
 
 const all = { type: "all" } as const;
 const nl = {
@@ -1685,58 +1682,138 @@ describe("echo in lists (R6: unified classifier)", () => {
 // ---------------------------------------------------------------------------
 
 describe("heredoc writes", () => {
-  it.each(["café.md", "漢字.md", "🧪.md"])(
-    "classifies a heredoc write to the bare Unicode path %s",
-    async (path) => {
-      const source = `cat >${path} <<EOF\nbody\nEOF`;
-      await expect(parseShellSemantic(source)).resolves.toMatchObject({
-        ok: true,
-        value: { kind: "write", filePath: path, heredoc: { content: "body" } },
+  // Standalone assignments are opaque until P2 normalizes them as setup.
+  it("keeps standalone assignment setup on the unsupported path", async () => {
+    const command = "X=1\ncat >f.md <<'EOF'\nbody\nEOF";
+    await expect(parseShellSemantic(command)).resolves.toMatchObject({
+      ok: false,
+      code: "invalid_heredoc",
+    });
+    const parsed = await loadParsedShellDocument(command);
+    assert(parsed.ok);
+    expect(buildShellSourceTree(parsed.document)).toMatchObject({
+      ok: false,
+      code: "unsafe_shell_syntax",
+    });
+  });
+
+  it.each([
+    "cat >café.md <<EOF",
+    "cat >漢字.md <<EOF",
+    "cat >🧪.md <<EOF",
+    "cat > README.md <<EOF",
+    "cat <<'EOF' > README.md",
+    "tee f.md <<'EOF'",
+    "tee -a f.md 1>/dev/null <<'EOF'",
+    "X=1 cat > f.md <<'EOF'",
+    "cd d && cat > f.md <<'EOF'",
+    "mkdir -p a && mkdir -p b && cat > d/f.md <<'EOF'",
+  ])("classifies %s as a write with no output plan", async (header) => {
+    const command = `${header}\n# Title\nEOF`;
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: true,
+      value: { kind: "write", command, output: undefined },
+    });
+  });
+
+  it.each([
+    "cat a > f.md <<'EOF'",
+    "cat 2147483648>out.md <<'EOF'",
+    "cat >/dev/null <<'EOF'",
+    "tee a.md \"$f\" <<'EOF'",
+  ])(
+    "rejects %s when the flow does not establish a file write",
+    async (header) => {
+      await expect(
+        parseShellSemantic(`${header}\n# Title\nEOF`),
+      ).resolves.toEqual({
+        ok: false,
+        code: "unsupported_command",
+        reason: "unsupported heredoc command",
       });
     },
   );
 
-  it("cat > README.md <<EOF\\n# Title\\nEOF → write", async () => {
-    const cmd = "cat > README.md <<EOF\n# Title\nEOF";
-    const r = await parseShellSemantic(cmd);
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("write");
-    const v = r.value as ShellHeredocWriteSemantic;
-    expect(v.filePath).toBe("README.md");
-    expect(v.heredoc.content).toBe("# Title");
-    expect(v.heredoc.quoted).toBe(false);
+  it("rejects a non-setup command before a heredoc write as invalid_heredoc", async () => {
+    await expect(
+      parseShellSemantic("echo x && cat > f.md <<'EOF'\n# Title\nEOF"),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: "invalid_heredoc",
+    });
   });
 
-  it("cat <<'EOF' > README.md\\n# Title\\nEOF → write with quoted heredoc", async () => {
-    const cmd = "cat <<'EOF' > README.md\n# Title\nEOF";
-    const r = await parseShellSemantic(cmd);
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("write");
-    const v = r.value as ShellHeredocWriteSemantic;
-    expect(v.filePath).toBe("README.md");
-    expect(v.heredoc.quoted).toBe(true);
+  it("rejects a command after the heredoc delimiter in the header", async () => {
+    await expect(
+      parseShellSemantic("cat > f.md <<'EOF' && echo x\n# Title\nEOF"),
+    ).resolves.toMatchObject({
+      ok: false,
+    });
   });
 
-  it("heredoc segments concatenate back to the original command", async () => {
-    const cmd = "cat > README.md <<EOF\n# Title\nEOF";
-    const r = await parseShellSemantic(cmd);
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellHeredocWriteSemantic;
-    const reconstructed = v.segments.map((s) => s.text).join("");
-    expect(reconstructed).toBe(cmd);
+  it("plans readback of tee's overflow operand as a numeric file", async () => {
+    const command =
+      "tee out.md 2147483648>/dev/null <<'EOF'\n# Title\nEOF\nls -l 2147483648 && sed -n '1,2p' 2147483648";
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: true,
+      value: {
+        kind: "write",
+        command,
+        output: [
+          summaryLine(),
+          fileRows("2147483648", { type: "lines", start: 1, end: 2 }),
+        ],
+      },
+    });
   });
 
-  it("quoted heredoc segments concatenate back to the original command", async () => {
-    const cmd = "cat <<'EOF' > README.md\n# Title\nEOF";
-    const r = await parseShellSemantic(cmd);
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellHeredocWriteSemantic;
-    const reconstructed = v.segments.map((s) => s.text).join("");
-    expect(reconstructed).toBe(cmd);
+  it.each([
+    [
+      "tee a.md f.md >/dev/null",
+      [summaryLine(), fileRows("f.md", { type: "lines", start: 1, end: 2 })],
+    ],
+    ["tee a.md >/dev/null", undefined],
+    ["tee f.md", undefined],
+  ])(
+    "plans readback of f.md after %s only when it is a file sink and stdout is suppressed",
+    async (writer, output) => {
+      const command = `${writer} <<'EOF'\n# Title\nEOF\nls -l f.md && sed -n '1,2p' f.md`;
+      await expect(parseShellSemantic(command)).resolves.toEqual({
+        ok: true,
+        value: { kind: "write", command, output },
+      });
+    },
+  );
+
+  it.each([
+    ["cd sub && cat >f.md", "f.md", "sub/f.md"],
+    ["cd sub && tee f.md >/dev/null", "f.md", "sub/f.md"],
+    ["cd sub\ntee f.md >/dev/null", "f.md", "sub/f.md"],
+    ["cd sub && cd nested && cat >f.md", "f.md", "sub/nested/f.md"],
+    ["cd /output && cat >/output/f.md", "f.md", "/output/f.md"],
+    ["cd /output && cat >f.md", "/output/f.md", "/output/f.md"],
+  ])(
+    "plans readback of %s using %s at %s",
+    async (writer, readPath, filePath) => {
+      const command = `${writer} <<'EOF'\n# Title\nEOF\nls -l ${readPath} && sed -n '1,2p' ${readPath}`;
+      await expect(parseShellSemantic(command)).resolves.toEqual({
+        ok: true,
+        value: {
+          kind: "write",
+          command,
+          output: [
+            summaryLine(),
+            fileRows(filePath, { type: "lines", start: 1, end: 2 }),
+          ],
+        },
+      });
+    },
+  );
+
+  it("rejects unsupported cd options before a heredoc write", async () => {
+    await expect(
+      parseShellSemantic("cd -P sub && cat >f.md <<'EOF'\n# Title\nEOF"),
+    ).resolves.toMatchObject({ ok: false, code: "unsupported_option" });
   });
 
   it.each([
@@ -1750,6 +1827,81 @@ describe("heredoc writes", () => {
         code: "unsupported_command",
         reason: "unsupported heredoc command",
       });
+    },
+  );
+});
+
+describe("plain-context heredoc flow", () => {
+  // These toy headers mirror the flow harness. Setup chains and wrappers
+  // are covered separately because they have their own semantic policy.
+  // Omit cat-late-file-operand, cat-fd0-replaced, cat-dup-stdin, and
+  // tee-late-operand because their headers fail parsing or tree diagnostics.
+  it.each([
+    ["cat >note.md <<'EOF'", "markdown", true],
+    ["X=1 cat >note.md <<'EOF'", "markdown", true],
+    ["cat - >note.md <<'EOF'", "markdown", true],
+    ["cat a >note.md <<'EOF'", "text", false],
+    ["cat -n >f.md <<'EOF'", "text", false],
+    ["cat >/dev/null <<'EOF'", "text", false],
+    ["cat <<'EOF' >&2", "text", false],
+    ["cat 2>note.md 1>&2 <<'EOF'", "markdown", true],
+    ["cat 1>&2 2>note.md <<'EOF'", "text", false],
+    ["tee note.md >/dev/null <<'EOF'", "markdown", true],
+    ["X=1 tee note.md >/dev/null <<'EOF'", "markdown", true],
+    ["tee -a f.md 1>/dev/null <<'EOF'", "markdown", true],
+    ["tee note.md >|/dev/null <<'EOF'", "markdown", true],
+    ["tee a.md b.py >/dev/null <<'EOF'", "text", true],
+    ["tee note.md other.md >/dev/null <<'EOF'", "markdown", true],
+    ["tee note.md >other.py <<'EOF'", "text", true],
+    ["tee a.md log.txt >/dev/null <<'EOF'", "markdown", true],
+    ["tee note.md \"$TARGET\" >/dev/null <<'EOF'", "markdown", false],
+    ["tee >f.py <<'EOF'", "python", true],
+    ["tee out.json >/dev/null <<'EOF'", "json", true],
+    ["tee out.py >/dev/null <<'EOF'", "python", true],
+    ["tee out.sh >/dev/null <<'EOF'", "bash", true],
+    ["tee out.yaml >/dev/null <<'EOF'", "yaml", true],
+    ["cat 2>f.py 1>&2 <<'EOF'", "python", true],
+    ["cat 1>&2 2>f.py <<'EOF'", "text", false],
+    ["cat >x.svg <<'EOF'", "xml", true],
+    ["tee x.svg >/dev/null <<'EOF'", "xml", true],
+    ["python <<'EOF'", "python", false],
+    ["python3 - <<PY > out.json\nprint(1)\nPY", "python", false],
+  ] as const)(
+    "routes %s to %s and reports write=%s",
+    async (header, language, write) => {
+      const command = header.includes("\n")
+        ? header
+        : `${header}\n# Title\n- a\nEOF`;
+      const parsed = await loadParsedShellDocument(command);
+      assert(parsed.ok);
+      const source = analyzeShellDocument(parsed.document).sources.find(
+        ({ origin }) => origin.construct === "heredoc-body",
+      );
+      assert(source);
+
+      const tree = buildShellSourceTree(parsed.document);
+      expect(tree, command).toHaveProperty("ok", true);
+      assert(tree.ok);
+      const embed = tree.value.segments.find(
+        (segment) =>
+          segment.kind === "embed" &&
+          segment.origin?.construct === "heredoc-body",
+      );
+      assert(embed?.kind === "embed");
+      expect(embed.content.language).toBe(language);
+      expect(embed.content.language).toBe(
+        resolveFlowLanguage(source.sinks).language,
+      );
+      expect(embed.presentation).toEqual(
+        language === "text" || language === "bash"
+          ? undefined
+          : { kind: "rich" },
+      );
+
+      const result = await parseShellSemantic(command);
+      const classifiedWrite = result.ok && result.value.kind === "write";
+      expect(classifiedWrite).toBe(write);
+      expect(classifiedWrite).toBe(isFileWriteFlow(source.sinks));
     },
   );
 });
@@ -2738,18 +2890,48 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("conservative double-quoted wrapper rejects dynamic expansions", async () => {
-    const bad = [
-      '/run/current-system/sw/bin/zsh -lc "cat $HOME/README.md"',
-      '/run/current-system/sw/bin/zsh -lc "cat $(pwd)/README.md"',
-      '/run/current-system/sw/bin/zsh -lc "cat ${x}"',
-      '/run/current-system/sw/bin/zsh -lc "cat `pwd`/README.md"',
-    ];
-    for (const cmd of bad) {
-      const r = await parseShellSemantic(cmd);
-      expect(r.ok).toBe(false);
-    }
-  });
+  it.each(["$HOME", "$(pwd)", "${x}", "`pwd`"])(
+    "rejects dynamic outer wrapper payload %s",
+    async (expansion) => {
+      const command = `/run/current-system/sw/bin/zsh -lc "cat > ${expansion}/f.md <<'EOF'\n# Title\nEOF"`;
+      await expect(parseShellSemantic(command)).resolves.toEqual({
+        ok: false,
+        code: "unsupported_command",
+        reason: "nonliteral command",
+      });
+    },
+  );
+
+  it.each([
+    ["tee 21420/doc.md >/dev/null", " && "],
+    ["cat >21420/doc.md", " && "],
+    ["tee 21420/doc.md >/dev/null", "\n"],
+    ["cat >21420/doc.md", "\n"],
+  ])(
+    "classifies and preserves wrapped Markdown for %s with joiner %j",
+    async (writer, joiner) => {
+      const body = "# Title\n\nSome *markdown* with a list:\n- a\n- b";
+      const command = `/run/current-system/sw/bin/zsh -lc "mkdir -p 21420${joiner}${writer} <<'EOF'\n${body}\nEOF"`;
+      const tree = await buildLoadedShellSourceTree(command);
+      assert(tree.ok);
+      const wrapper = tree.value.segments.find(
+        (segment) => segment.kind === "embed",
+      );
+      assert(wrapper);
+      const heredoc = wrapper.content.segments.find(
+        (segment) => segment.kind === "embed",
+      );
+      expect(heredoc).toMatchObject({
+        origin: { construct: "heredoc-body" },
+        content: { language: "markdown", text: body },
+        presentation: { kind: "rich" },
+      });
+      await expect(parseShellSemantic(command)).resolves.toEqual({
+        ok: true,
+        value: { kind: "write", command, output: undefined },
+      });
+    },
+  );
 
   it("wrapped python heredoc preserves exact command and wrapper segments", async () => {
     const cmd =
@@ -2851,12 +3033,11 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
     assert(r.ok);
-    assert(r.value.kind === "write");
-    expect(r.value).toMatchObject({
-      filePath: "/tmp/a/output.md",
-      heredoc: { content: "# Title" },
+    expect(r.value).toEqual({
+      kind: "write",
+      command: cmd,
+      output: undefined,
     });
-    expect(segmentsOf(r.value)).toBeUndefined();
   });
 
   it("trailing here-string <<< after heredoc is not treated as second heredoc", async () => {
@@ -3885,7 +4066,7 @@ describe("Unit 2 public shell semantic contracts", () => {
   });
 
   it.each(["\n", "\r\n"] as const)(
-    "preserves interpreter and cat heredoc segments with %j line endings",
+    "preserves interpreter heredoc segments and the cat write command with %j line endings",
     async (lineEnding) => {
       const body = 'print("$HOME | && <<")';
       const interpreterCommand = `python3 - <<'PY'${lineEnding}${body}${lineEnding}PY`;
@@ -3905,37 +4086,27 @@ describe("Unit 2 public shell semantic contracts", () => {
       ).toBe(interpreterCommand);
 
       const catCommand = `cat >output.py <<'EOF'${lineEnding}${body}${lineEnding}EOF`;
-      const cat = await parseShellSemantic(catCommand);
-      expect(cat.ok, catCommand).toBe(true);
-      assert(cat.ok);
-      const write = cat.value;
-      assert(write.kind === "write");
-      expect(write.heredoc.content).toBe(body);
-      expect(
-        write.segments.map((segment) => segment.text).join(""),
-        catCommand,
-      ).toBe(catCommand);
+      await expect(parseShellSemantic(catCommand)).resolves.toEqual({
+        ok: true,
+        value: { kind: "write", command: catCommand, output: undefined },
+      });
     },
   );
 
   it.each([
-    ["cat 2>error.log >output.py <<EOF\nbody\nEOF", "output.py"],
-    ["cat &>all.log <<EOF\nbody\nEOF", "all.log"],
-    ["cat 2>$ERR >output.py <<EOF\nbody\nEOF", "output.py"],
-    ["cat >> out.md <<'EOF'\nx\nEOF", "out.md"],
-    ["cat >&all.log <<EOF\nbody\nEOF", "all.log"],
-    ["cat 2>&1 >out.md <<EOF\nbody\nEOF", "out.md"],
-  ] as const)(
-    "uses the literal stdout redirect for cat heredoc: %s",
-    async (command, filePath) => {
-      const result = await parseShellSemantic(command);
-      expect(result.ok, command).toBe(true);
-      if (!result.ok) return;
-      expect(result.value.kind, command).toBe("write");
-      expect(
-        (result.value as ShellHeredocWriteSemantic).filePath,
-        command,
-      ).toBe(filePath);
+    "cat 2>error.log >output.py <<EOF\nbody\nEOF",
+    "cat &>all.log <<EOF\nbody\nEOF",
+    "cat 2>$ERR >output.py <<EOF\nbody\nEOF",
+    "cat >> out.md <<'EOF'\nx\nEOF",
+    "cat >&all.log <<EOF\nbody\nEOF",
+    "cat 2>&1 >out.md <<EOF\nbody\nEOF",
+  ])(
+    "classifies a cat heredoc with a literal stdout file: %s",
+    async (command) => {
+      await expect(parseShellSemantic(command)).resolves.toEqual({
+        ok: true,
+        value: { kind: "write", command, output: undefined },
+      });
     },
   );
 

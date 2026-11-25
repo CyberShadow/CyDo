@@ -19,11 +19,9 @@ import {
   type ParsedShellUnit,
 } from "./shellParser";
 import { ownsWholeCommand } from "./shellInvocationOwnership";
-import {
-  redirectEffect,
-  shellArgumentWords,
-  shellFdTable,
-} from "./shellFdTable";
+import { redirectEffect, shellArgumentWords } from "./shellFdTable";
+import { isFileWriteFlow } from "./contentFlow";
+import { analyzeShellDocument } from "./shellSourceTree";
 
 // Public types
 // ---------------------------------------------------------------------------
@@ -49,22 +47,8 @@ export interface ShellSourceSpan {
 
 export interface ShellHeredocWriteSemantic {
   kind: "write";
-  output?: OutputSegment[];
-  commandName: "cat";
   command: string;
-  filePath: string;
-  heredoc: {
-    delimiter: string;
-    quoted: boolean;
-    commandLine: string;
-    content: string;
-    terminator: string;
-  };
-  segments: Array<
-    | { kind: "command-header"; text: string }
-    | { kind: "write-content"; text: string; filePath: string }
-    | { kind: "command-footer"; text: string }
-  >;
+  output?: OutputSegment[];
 }
 
 export interface ShellScriptExecSemantic {
@@ -110,7 +94,6 @@ export type ShellSemanticResult =
 
 // ---------------------------------------------------------------------------
 type SimpleCommand = {
-  id: number;
   name: string | null;
   args: CommandArg[];
   redirects: ParsedShellRedirect[];
@@ -1315,7 +1298,6 @@ function adaptCommand(
     });
   }
   return {
-    id: command.id,
     name: basename(command.name.value),
     args,
     redirects,
@@ -1563,30 +1545,8 @@ function heredocSegments(
   ];
 }
 
-function catHeredocSegments(
-  document: ParsedShellDocument,
-  redirect: Extract<ParsedShellRedirect, { kind: "heredoc" }>,
-  content: string,
-  filePath: string,
-): ShellHeredocWriteSemantic["segments"] {
-  const headerEnd = redirect.headerLineBreakSpan.end;
-  const contentEnd = redirect.contentSpan.end;
-  return [
-    {
-      kind: "command-header",
-      text: document.source.slice(redirect.headerSpan.start, headerEnd),
-    },
-    { kind: "write-content", text: content, filePath },
-    {
-      kind: "command-footer",
-      text: document.source.slice(contentEnd, redirect.terminatorSpan.end),
-    },
-  ];
-}
-
-type CatHeredocContext = {
+type HeredocWriteContext = {
   leading: readonly ParsedShellUnit[];
-  owner: ParsedShellUnit;
   trailing: readonly ParsedShellUnit[];
 };
 
@@ -1650,10 +1610,10 @@ function withoutBareTerminalColonNoop(
   };
 }
 
-function catHeredocContext(
+function heredocWriteContext(
   document: ParsedShellDocument,
   ownerId: number,
-): CatHeredocContext | null {
+): HeredocWriteContext | null {
   const suffixless = withoutBareTerminalColonNoop(document);
   const { children, boundaries } = suffixless ?? document.program;
   if (boundaries.length !== children.length - 1) return null;
@@ -1669,26 +1629,28 @@ function catHeredocContext(
     .filter((index) => index >= 0);
   if (ownerIndices.length !== 1) return null;
   const ownerIndex = ownerIndices[0]!;
+  const ownerUnit = children[ownerIndex]!;
+  const ownerBody =
+    ownerUnit.kind === "redirected_statement" ? ownerUnit.body : ownerUnit;
+  const steps = flattenAndUnits(ownerBody);
+  const owner = steps?.at(-1);
+  if (
+    steps === null ||
+    owner === undefined ||
+    directCommandId(owner) !== ownerId
+  )
+    return null;
   return {
-    leading: children.slice(0, ownerIndex),
-    owner: children[ownerIndex]!,
+    leading: [...children.slice(0, ownerIndex), ...steps.slice(0, -1)],
     trailing: children.slice(ownerIndex + 1),
   };
 }
 
-function directUnitCommand(
-  document: ParsedShellDocument,
-  unit: ParsedShellUnit,
-): SimpleCommand | null {
-  if (unit.kind === "command") return directCommand(document, unit);
-  if (unit.kind === "redirected_statement" && unit.body.kind === "command")
-    return directCommand(document, unit);
-  return null;
-}
-
-function trailingCatHeredocOutput(
+function trailingHeredocWriteOutput(
   document: ParsedShellDocument,
   units: readonly ParsedShellUnit[],
+  filePaths: ReadonlySet<string>,
+  cdPath: string,
 ): OutputSegment[] {
   if (units.length !== 1) return [];
   const unit = units[0]!;
@@ -1700,11 +1662,16 @@ function trailingCatHeredocOutput(
     )
       return [];
     const commands = unit.children.map((child) =>
-      directUnitCommand(document, child),
+      directCommand(document, child),
     );
     if (commands.some((command) => command === null)) return [];
-    const readback = parseLsReadbackCommands(commands as SimpleCommand[]);
-    return readback?.ok ? structuredReadbackOutput(readback.value) : [];
+    const readback = parseLsReadbackCommands(
+      commands as SimpleCommand[],
+      cdPath,
+    );
+    return readback?.ok && filePaths.has(readback.value.filePath)
+      ? structuredReadbackOutput(readback.value)
+      : [];
   }
   return [];
 }
@@ -1722,6 +1689,7 @@ function isMkdirSetup(command: SimpleCommand): boolean {
 
 function parseLsReadbackCommands(
   commands: readonly SimpleCommand[],
+  cdPath = "",
 ): ParseResult<{ filePath: string; sedStart: number; sedEnd: number }> | null {
   if (commands.length !== 2) return null;
   const ls = commands[0]!;
@@ -1738,9 +1706,10 @@ function parseLsReadbackCommands(
   )
     return null;
   const parsed = parseSedArgs(sed, true);
-  const filePath = ls.args[1]!.text;
   if (!parsed.ok) return parsed;
-  if (filePath !== parsed.value.filePath) return null;
+  const filePath = resolveAgainstCd(cdPath, ls.args[1]!.text);
+  if (filePath !== resolveAgainstCd(cdPath, parsed.value.filePath!))
+    return null;
   return {
     ok: true,
     value: { filePath, sedStart: parsed.value.start, sedEnd: parsed.value.end },
@@ -1796,73 +1765,61 @@ function classifyLsReadbackAST(
   };
 }
 
-function classifyCatHeredoc(
+function classifyHeredocWrite(
   document: ParsedShellDocument,
   redirect: Extract<ParsedShellRedirect, { kind: "heredoc" }>,
   originalCommand: string,
 ): ShellSemanticResult {
-  const command = adaptCommand(document, redirect.ownerId);
-  if (command === null || command.name !== "cat")
+  const source = analyzeShellDocument(document).sources.find(
+    ({ span, origin }) =>
+      origin.construct === "heredoc-body" &&
+      span.start === redirect.contentSpan.start &&
+      span.end === redirect.contentSpan.end,
+  )!;
+  if (!isFileWriteFlow(source.sinks))
     return reject("unsupported_command", "unsupported heredoc command");
-  if (command.args.length > 0)
-    return reject("invalid_heredoc", "unexpected arguments in heredoc command");
-  if (redirect.header.arguments.length > 0 || redirect.header.continuation)
-    return reject("invalid_heredoc", "unsupported heredoc header");
-  const fds = shellFdTable(document, redirect.ownerId);
-  const stdin = fds.get(0);
-  const stdout = fds.get(1);
-  if (stdin?.kind !== "source" || stdin.redirectId !== redirect.id)
-    return reject("invalid_heredoc", "heredoc is not effective stdin");
-  if (stdout?.kind !== "file")
-    return reject(
-      "missing_path",
-      "heredoc write requires a literal stdout path",
-    );
-  const content = document.source.slice(
-    redirect.contentSpan.start,
-    redirect.contentSpan.end,
-  );
-  const context = catHeredocContext(document, redirect.ownerId);
+
+  const context = heredocWriteContext(document, redirect.ownerId);
   if (context === null)
     return reject("unsafe_shell_syntax", "unsupported heredoc structure");
-  const ownerUnitCommand = directUnitCommand(document, context.owner);
-  if (ownerUnitCommand === null || ownerUnitCommand.id !== command.id)
-    return reject("unsafe_shell_syntax", "unsupported heredoc structure");
+  const rejectSetup = () =>
+    reject(
+      "invalid_heredoc",
+      "only leading setup commands are supported before a heredoc write",
+    );
+  let cdPath = "";
   for (const unit of context.leading) {
-    if (unit.kind !== "command")
-      return reject(
-        "invalid_heredoc",
-        "only leading mkdir -p setup is supported before heredoc",
-      );
-    const leading = directUnitCommand(document, unit);
-    if (leading === null || !isMkdirSetup(leading))
-      return reject(
-        "invalid_heredoc",
-        "only leading mkdir -p setup is supported before heredoc",
-      );
+    const steps = flattenAndUnits(unit);
+    if (steps === null) return rejectSetup();
+    for (const step of steps) {
+      const command = directCommand(document, step);
+      if (command?.name === "cd") {
+        const parsed = parseCdArgs(command);
+        if (!parsed.ok) return parsed;
+        cdPath = resolveAgainstCd(cdPath, parsed.value);
+      } else if (command === null || !isMkdirSetup(command)) {
+        return rejectSetup();
+      }
+    }
   }
-  const output = trailingCatHeredocOutput(document, context.trailing);
+
+  const output = source.sinks.some((sink) => sink.kind === "tool-output")
+    ? []
+    : trailingHeredocWriteOutput(
+        document,
+        context.trailing,
+        new Set(
+          source.sinks.flatMap((sink) =>
+            sink.kind === "file" ? [resolveAgainstCd(cdPath, sink.path)] : [],
+          ),
+        ),
+        cdPath,
+      );
   return {
     ok: true,
     value: {
       kind: "write",
       command: originalCommand,
-      commandName: "cat",
-      filePath: stdout.path,
-      heredoc: {
-        delimiter: redirect.delimiter.value,
-        quoted: redirect.delimiter.quoted,
-        commandLine: document.source.slice(
-          redirect.headerSpan.start,
-          redirect.headerSpan.end,
-        ),
-        content,
-        terminator: document.source.slice(
-          redirect.terminatorSpan.start,
-          redirect.terminatorSpan.end,
-        ),
-      },
-      segments: catHeredocSegments(document, redirect, content, stdout.path),
       output: output.length > 0 ? output : undefined,
     },
   };
@@ -2042,16 +1999,11 @@ function classifyNormalizedDocument(
       ? classifyInlineInvocation(document, invocation, originalCommand)
       : classifyScriptHeredoc(document, invocation, originalCommand);
   }
-  const heredocs = document.redirects.filter(
-    (redirect): redirect is Extract<ParsedShellRedirect, { kind: "heredoc" }> =>
-      redirect.kind === "heredoc",
+  const heredoc = document.redirects.find(
+    (redirect) => redirect.kind === "heredoc",
   );
-  if (heredocs.length > 0) {
-    const owner = commandForId(document, heredocs[0]!.ownerId);
-    if (owner.name.kind === "literal" && basename(owner.name.value) === "cat")
-      return classifyCatHeredoc(document, heredocs[0]!, originalCommand);
-    return reject("unsupported_command", "unsupported heredoc command");
-  }
+  if (heredoc !== undefined)
+    return classifyHeredocWrite(document, heredoc, originalCommand);
   return classifyNormalizedAST(
     adaptUnit(document, document.program),
     originalCommand,
