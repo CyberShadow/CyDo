@@ -22,7 +22,7 @@ struct SessionConfig
 	bool allowScheduledWakeups; /// When true, the agent may schedule prompts that start a later turn
 	string workspace;          /// Workspace name (Codex uses this as AppServerProcess pool key)
 	string workDir;            /// Working directory for the session
-	string taskDir;            /// The task's own directory (notes, output); exists at launch; empty = none
+	string tasksDir;           /// The directory of all tasks' directories: the task's own (notes, output) and the ones it reads (children's plans and outputs); exists at launch; empty = none
 	string agentName;          /// User-chosen agent name (config key) — populates SessionInitEvent.agent_name
 	string mcpSocketPath;      /// Absolute path to the backend's UNIX socket for MCP proxy
 	PermissionSettings permissions; /// How the workspace decides on tool calls

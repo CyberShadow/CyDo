@@ -943,7 +943,7 @@ public:
 
 		sessionConfig.workspace = context.workspaceName;
 		sessionConfig.workDir = chdir !is null ? chdir : "";
-		sessionConfig.taskDir = tdDir;
+		sessionConfig.tasksDir = tasksRoot;
 		RenderedCydoToolsOptions renderedToolOptions;
 		renderedToolOptions.includeBash = taskAgent.needsBash();
 		renderedToolOptions.includeUnsandboxedCommand = verdict != UnsandboxedCommandExecution.no;

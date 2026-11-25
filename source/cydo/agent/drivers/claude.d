@@ -1601,18 +1601,21 @@ class ClaudeCodeSession : AgentSession
 			claudeArgs ~= ["--permission-mode", "auto"];
 		claudeArgs ~= ["--permission-prompt-tool", "stdio"];
 
-		// The task writes its notes and output to its task directory, which
-		// may be reached through a symlink (`.cydo/tasks` on another volume).
-		// The CLI has a person confirm any write whose target, as spelled or
-		// fully resolved, lies outside its working directories, and a hook
-		// "allow" does not override that. It counts each working directory
+		// A task writes its notes and output to its task directory and reads
+		// other tasks' directories (its children's plans and outputs), all
+		// under the tasks directory, which may be reached through a symlink
+		// (`.cydo/tasks` on another volume). The CLI has a person confirm any
+		// write whose target, as spelled or fully resolved, lies outside its
+		// working directories, and a hook "allow" does not override that. A
+		// shell command counts as a write for all its paths, so `cp` from a
+		// child's directory is one too. The CLI counts each working directory
 		// both as given and resolved, but drops an --add-dir that, as spelled,
 		// already lies inside one. So pass both spellings: the resolved one
-		// covers the task directory when the cwd is the project, the given
-		// one when the cwd is a worktree inside the task directory.
-		if (config.taskDir.length > 0)
-			claudeArgs ~= ["--add-dir", config.taskDir,
-				"--add-dir", config.taskDir.realPath];
+		// covers the tasks directory when the cwd is the project, the given
+		// one when the cwd is a worktree inside a task directory.
+		if (config.tasksDir.length > 0)
+			claudeArgs ~= ["--add-dir", config.tasksDir,
+				"--add-dir", config.tasksDir.realPath];
 
 		if (mcpConfigPath !is null)
 			claudeArgs ~= ["--mcp-config", mcpConfigPath];
@@ -1678,18 +1681,18 @@ class ClaudeCodeSession : AgentSession
 		import std.file : mkdirRecurse, rmdirRecurse, symlink, tempDir;
 		import std.path : buildPath;
 
-		auto root = buildPath(tempDir, "cydo-claude-task-dir-args");
+		auto root = buildPath(tempDir, "cydo-claude-tasks-dir-args");
 		scope (exit) rmdirRecurse(root);
 		auto physical = buildPath(root, "volume", "tasks");
-		mkdirRecurse(buildPath(physical, "7"));
+		mkdirRecurse(physical);
 		mkdirRecurse(buildPath(root, "project", ".cydo"));
 		symlink(physical, buildPath(root, "project", ".cydo", "tasks"));
 
 		SessionConfig config;
-		config.taskDir = buildPath(root, "project", ".cydo", "tasks", "7");
+		config.tasksDir = buildPath(root, "project", ".cydo", "tasks");
 		auto args = buildSessionArgs("claude", null, null, null, config);
-		assert(args.canFind(["--add-dir", config.taskDir]));
-		assert(args.canFind(["--add-dir", buildPath(physical, "7")]));
+		assert(args.canFind(["--add-dir", config.tasksDir]));
+		assert(args.canFind(["--add-dir", physical]));
 
 		assert(!buildSessionArgs("claude", null, null, null, SessionConfig.init)
 			.canFind("--add-dir"));
