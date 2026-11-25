@@ -1063,7 +1063,8 @@ EOF
             buildPhase = ''
               runHook preBuild
             '' + runInTmpfsNs pkgs ''
-              dub test --skip-registry=all
+              # The builder inherits SIG_IGN for SIGPIPE, which would mask a missing runner initialization.
+              env --default-signal=PIPE dub test --skip-registry=all
             '' + ''
               runHook postBuild
             '';

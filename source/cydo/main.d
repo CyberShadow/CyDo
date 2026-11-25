@@ -36,6 +36,7 @@ import cydo.workflow.discovery.service : DiscoveryService, DiscoveryServiceHost,
 import cydo.cli.open_matching : findOpenProjectName, pathIsUnderRoot;
 import cydo.cli.initialize : initializeUserConfiguration;
 import cydo.cli.tasktype_config : loadCliTaskTypes;
+import cydo.foundation.platform.signals : initializeProcessSignals;
 import cydo.runtime.config.yaml : yamlConfigDiagnostic;
 import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 	buildTaskEntry, buildTasksList, buildTaskTypesList,
@@ -145,6 +146,7 @@ static:
 	@(`Start the CyDo backend.`)
 	void server()
 	{
+		initializeProcessSignals();
 		auto app = new App();
 		app.start();
 
@@ -364,6 +366,8 @@ static:
 		Parameter!(string, "Path to suggestion debug dump directory.") dumpDir,
 	)
 	{
+		initializeProcessSignals();
+
 		import std.file : exists, readText;
 		import std.path : buildPath;
 		import std.string : strip, splitLines;
@@ -483,6 +487,8 @@ static:
 		Option!(string, "Project directory (defaults to the current Git checkout root).") project = null,
 	)
 	{
+		initializeProcessSignals();
+
 		import std.file : write;
 		import std.format : format;
 		import std.path : buildPath;

@@ -7,6 +7,8 @@ import core.exception : AssertError;
 import core.runtime : Runtime, UnitTestResult;
 import core.stdc.stdio : fprintf, printf, stderr;
 
+import cydo.foundation.platform.signals : initializeProcessSignals;
+
 private extern (C) void _d_print_throwable(Throwable throwable);
 
 shared static this()
@@ -16,6 +18,9 @@ shared static this()
 
 private UnitTestResult runUnitTests()
 {
+	// The server sets this disposition, and Nix builder inheritance can hide its absence.
+	initializeProcessSignals();
+
 	UnitTestResult result;
 	result.summarize = true;
 	foreach (moduleInfo; ModuleInfo)
