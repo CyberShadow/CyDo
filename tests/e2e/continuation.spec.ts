@@ -419,6 +419,15 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
   }> = [];
   const liveInterruptionMarkers: Array<{ tid: number; uuid: string }> = [];
   const continuationReloads: ContinuationReload[] = [];
+  const taskStatusUpdates: Array<{ tid: number; status: string }> = [];
+  const focusHints: Array<{ fromTid: number; toTid: number }> = [];
+  const routeTids: Array<number | null> = [];
+  page.on("framenavigated", (frame) => {
+    if (frame !== page.mainFrame()) return;
+    const match = new URL(frame.url()).pathname.match(/\/task\/(\d+)$/);
+    const tid = match ? Number(match[1]) : null;
+    if (routeTids.at(-1) !== tid) routeTids.push(tid);
+  });
   page.on("websocket", (ws) => {
     ws.on("framereceived", (event) => {
       try {
@@ -437,6 +446,22 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
                 ? frame.relation_type
                 : undefined,
           });
+        } else if (
+          frame.type === "task_updated" &&
+          isJsonRecord(frame.task) &&
+          typeof frame.task.tid === "number" &&
+          typeof frame.task.status === "string"
+        ) {
+          taskStatusUpdates.push({
+            tid: frame.task.tid,
+            status: frame.task.status,
+          });
+        } else if (
+          frame.type === "focus_hint" &&
+          typeof frame.from_tid === "number" &&
+          typeof frame.to_tid === "number"
+        ) {
+          focusHints.push({ fromTid: frame.from_tid, toTid: frame.to_tid });
         }
         const interruptionUuid = interruptedClaudeUserUuid(frame);
         if (interruptionUuid && typeof frame.tid === "number") {
@@ -462,11 +487,11 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
     "call task test_handoff call handoff done test-prompt",
   );
 
-  // Wait for the task URL to settle so we can capture G's tid.
-  await expect(page).toHaveURL(/\/[^/]+\/[^/]+\/task\/\d+/);
-  const tidG = parseInt(
-    page.url().match(/\/[^/]+\/[^/]+\/task\/(\d+)/)?.[1] ?? "0",
-  );
+  const rootTaskTid = () => routeTids.find((tid) => tid !== null);
+  await expect
+    .poll(rootTaskTid, { message: "G's task route is visited" })
+    .toBeDefined();
+  const tidG = rootTaskTid()!;
   expect(tidG).toBeGreaterThan(0);
 
   // task_created is broadcast before A receives the initial prompt that calls
@@ -481,24 +506,60 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
   }).toPass();
   const handingOffTid = handingOffTasks()[0]!.tid;
 
-  // Flow: A calls Handoff → A completes → continuation C created → C auto-focused
-  //        → C responds → C exits → frontend should navigate to G (first alive ancestor)
-  //
-  // With the bug, it would navigate to A (completed direct parent).
-  // With the fix, it walks up through completed A to find alive G.
-  if (agentType === "codex") {
-    const successorTask = () =>
-      taskCreatedEvents.find(
-        (task) =>
-          task.relation_type === "continuation" && task.parent_tid === handingOffTid,
-      );
-    await expect.poll(successorTask).toBeDefined();
-    const item = page.locator(`.sidebar-item[data-tid="${successorTask()!.tid}"]`);
-    await expect(
-      item.locator(".task-type-icon.completed, .task-type-icon.resumable"),
-    ).toBeVisible({ timeout: responseTimeout(agentType) });
-  }
+  // Focus hints take the browser from G to A to C, then directly back to G.
+  const successorTid = () =>
+    taskCreatedEvents.find(
+      (task) =>
+        task.relation_type === "continuation" &&
+        task.parent_tid === handingOffTid,
+    )?.tid;
+  await expect
+    .poll(successorTid, { message: "A's continuation is created" })
+    .toBeDefined();
+  const tidC = successorTid()!;
+
+  await expect
+    .poll(
+      () =>
+        taskStatusUpdates.some(
+          (update) =>
+            update.tid === handingOffTid && update.status === "completed",
+        ),
+      { message: "A is completed" },
+    )
+    .toBe(true);
+
+  const item = page.locator(`.sidebar-item[data-tid="${tidC}"]`);
+  await expect(
+    item.locator(".task-type-icon.completed, .task-type-icon.resumable"),
+    "C reaches a terminal state",
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  await expect
+    .poll(
+      () =>
+        focusHints.some((hint) => hint.fromTid === tidC && hint.toTid === tidG),
+      { message: "C's batch result returns focus to G" },
+    )
+    .toBe(true);
+
+  await expect
+    .poll(
+      () => {
+        const fromC = routeTids.indexOf(tidC);
+        return fromC < 0 ? "C never visited" : routeTids.slice(fromC);
+      },
+      { message: "route from C" },
+    )
+    .toEqual([tidC, tidG]);
   await expect(page).toHaveURL(new RegExp(`/task/${tidG}$`));
+
+  await expect
+    .poll(
+      () => continuationReloads.some((reload) => reload.tid === handingOffTid),
+      { message: "A's continuation task_reload is received" },
+    )
+    .toBe(true);
 
   if (agentType === "codex") {
     const requests = captured!();
