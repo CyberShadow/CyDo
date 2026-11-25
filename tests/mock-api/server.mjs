@@ -1132,6 +1132,24 @@ function handleResponses(req, res) {
     // If input contains tool output, check for multi-command flow before
     // defaulting to "Done."
     if (isToolOutput) {
+      if (intent?.waitForExit) {
+        const result = input.findLast(
+          (item) => item.type === "function_call_output",
+        );
+        if (!result || typeof result.output !== "string")
+          throw new Error("Expected gated shell tool output to be a string");
+        const session = result.output.match(
+          /^Chunk ID: [^\n]+\nWall time: [^\n]+\nProcess running with session ID (\d+)\n/,
+        );
+        if (session) {
+          oaiStreamFunctionCallResponse(res, "write_stdin", {
+            session_id: Number(session[1]),
+            chars: "",
+            yield_time_ms: 10_000,
+          });
+          return;
+        }
+      }
       // Multi-background-command: if original message was "run two background
       // commands" and we've only sent one exec_command so far, send the second.
       const origText =
@@ -1248,7 +1266,7 @@ function handleResponses(req, res) {
         yield_time_ms: 500,
       });
     } else if (intent.type === "shell") {
-      if (intent.command.match(/sleep\s+\d+/)) {
+      if (!intent.waitForExit && intent.command.match(/sleep\s+\d+/)) {
         // Simulate blocking execution: send output_item.done immediately but
         // delay response.completed by 5s so turnInProgress stays true while
         // the test sends a second message.

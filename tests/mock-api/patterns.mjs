@@ -465,7 +465,8 @@ export function matchPattern(userText) {
     };
 
   // One child stays busy while the other releases the parent's Task carrier.
-  if (/call held-question-test/i.test(userText))
+  match = userText.match(/\bcall held-question-test (\/[\w./-]+)(?=\s|$)/);
+  if (match)
     return {
       type: "tool_call",
       name: "mcp__cydo__Task",
@@ -473,7 +474,7 @@ export function matchPattern(userText) {
         tasks: [
           {
             task_type: "research",
-            prompt: "run command sleep 15 && echo busy-child-done",
+            prompt: `run held-question gate ${match[1]}`,
             description: "Busy child",
           },
           {
@@ -913,6 +914,14 @@ export function matchPattern(userText) {
         timeout_ms: 60000,
         persistent: false,
       },
+    };
+
+  match = userText.match(/\brun held-question gate (\/[\w./-]+)(?=\s|$)/);
+  if (match)
+    return {
+      type: "shell",
+      command: `until test -f '${match[1]}'; do sleep 0.1; done && echo busy-child-done`,
+      waitForExit: true,
     };
 
   // "run command <cmd>"

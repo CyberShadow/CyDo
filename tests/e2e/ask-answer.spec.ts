@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 import type { Locator, Page } from "@playwright/test";
 
@@ -145,6 +148,22 @@ function observeTaskEvents(page: Page): ObservedTaskEvent[] {
     });
   });
   return taskEvents;
+}
+
+function observeTaskStatuses(page: Page, tid: number): string[] {
+  const statuses: string[] = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", ({ payload }) => {
+      try {
+        const frame = JSON.parse(payload.toString());
+        if (frame.type === "task_updated" && frame.task.tid === tid)
+          statuses.push(frame.task.status);
+      } catch {
+        // Ignore non-JSON frames and unrelated events.
+      }
+    });
+  });
+  return statuses;
 }
 
 async function waitForTaskEvent(
@@ -1470,61 +1489,76 @@ test("Ask/Answer: Ask to busy (waiting) sub-task is enqueued", async ({
 
 test("Ask/Answer: held question reaches a busy child at idle as a system message", async ({
   page,
+  backend,
 }) => {
+  const releasePath = join(backend.wsDir, `held-question-${randomUUID()}`);
+  const statuses = observeTaskStatuses(page, 1);
   const childEvents = observeTaskEvents(page);
   const parentResults = observeTaskResultItems(page);
-  await enterSession(page);
-  await sendMessage(page, "call held-question-test");
-  await page.locator('.sidebar-item[data-tid="3"]').waitFor({ state: "visible" });
-  await openTask(page, 2);
-  await expect(
-    currentMessageList(page).getByText(
-      "run command sleep 15 && echo busy-child-done",
-      { exact: true },
-    ),
-  ).toBeVisible();
-  await openTask(page, 1);
-  await waitForTaskResultItem(
-    parentResults,
-    (item) =>
-      item["status"] === "question" &&
-      item["message"] === "am I doing this right?",
-  );
-  await expect(
-    currentMessageList(page).getByText("Done.", { exact: true }).last(),
-  ).toBeVisible();
+  try {
+    await enterSession(page);
+    await sendMessage(page, `call held-question-test ${releasePath}`);
+    await page
+      .locator('.sidebar-item[data-tid="3"]')
+      .waitFor({ state: "visible" });
+    await openTask(page, 2);
+    await expect(
+      currentMessageList(page).getByText(
+        `run held-question gate ${releasePath}`,
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await openTask(page, 1);
+    await waitForTaskResultItem(
+      parentResults,
+      (item) =>
+        item["status"] === "question" &&
+        item["message"] === "am I doing this right?",
+    );
+    await expect(
+      currentMessageList(page).getByText("Done.", { exact: true }).last(),
+    ).toBeVisible();
 
-  const askIndex = childEvents.length;
-  await sendMessage(page, "call ask 2 held non-direct question?");
-  await expect(
-    page.locator('.sidebar-item[data-tid="1"] .task-type-icon.waiting'),
-  ).toBeVisible();
-  const questionReached = ({ tid, event }: ObservedTaskEvent) =>
-    tid === 2 &&
-    event.type === "item/started" &&
-    event.item_type === "user_message" &&
-    eventText(event).includes("held non-direct question?");
-  const busyTurnEnd = await waitForTaskEvent(
-    childEvents,
-    ({ tid, event }) => tid === 2 && event.type === "turn/stop",
-    { sinceIndex: askIndex },
-  );
-  const delivered = await waitForTaskEvent(
-    childEvents,
-    questionReached,
-    { sinceIndex: askIndex },
-  );
-  expect(busyTurnEnd.index).toBeLessThan(delivered.index);
-  expect(eventText(delivered.event)).toContain(
-    "[SYSTEM: Question from task 1 (qid=",
-  );
-  await waitForTaskResultItem(
-    parentResults,
-    (item) =>
-      item["status"] === "answered" &&
-      String(item["message"]).startsWith("non-direct-answer") &&
-      item["qid"] !== undefined,
-  );
+    const statusIndex = statuses.length;
+    const askIndex = childEvents.length;
+    expect(statuses.at(-1)).not.toBe("waiting");
+    await sendMessage(page, "call ask 2 held non-direct question?");
+    await expect.poll(() => statuses.slice(statusIndex)).toContain("waiting");
+    await expect(
+      page.locator('.sidebar-item[data-tid="1"] .task-type-icon.waiting'),
+    ).toBeVisible();
+    // Claude emits a turn/stop at the end of each model response, including
+    // the tool-use response. The driver uses turn/result to signal idle.
+    const busyTurnFinished = ({ tid, event }: ObservedTaskEvent) =>
+      tid === 2 && event.type === "turn/result";
+    const questionReached = ({ tid, event }: ObservedTaskEvent) =>
+      tid === 2 &&
+      event.type === "item/started" &&
+      event.item_type === "user_message" &&
+      eventText(event).includes("held non-direct question?");
+    expect(childEvents.find(busyTurnFinished)).toBeUndefined();
+    expect(childEvents.slice(askIndex).find(questionReached)).toBeUndefined();
+    writeFileSync(releasePath, "");
+    const busyTurnEnd = await waitForTaskEvent(childEvents, busyTurnFinished, {
+      sinceIndex: askIndex,
+    });
+    const delivered = await waitForTaskEvent(childEvents, questionReached, {
+      sinceIndex: askIndex,
+    });
+    expect(busyTurnEnd.index).toBeLessThan(delivered.index);
+    expect(eventText(delivered.event)).toContain(
+      "[SYSTEM: Question from task 1 (qid=",
+    );
+    await waitForTaskResultItem(
+      parentResults,
+      (item) =>
+        item["status"] === "answered" &&
+        String(item["message"]).startsWith("non-direct-answer") &&
+        item["qid"] !== undefined,
+    );
+  } finally {
+    rmSync(releasePath, { force: true });
+  }
 });
 
 test("Ask/Answer: question for a completed child arrives as a system message", async ({
