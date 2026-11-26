@@ -1419,11 +1419,13 @@ function normalizedCommandSpan(
     }),
   ].filter((span) => span.end > span.start);
   if (spans.length === 0) return command.name.rawSpan;
-  return sourceSpan(
-    state.source,
-    Math.min(...spans.map((span) => span.start)),
-    Math.max(...spans.map((span) => span.end)),
-  );
+  let start = spans[0]!.start;
+  let end = spans[0]!.end;
+  for (const span of spans) {
+    start = Math.min(start, span.start);
+    end = Math.max(end, span.end);
+  }
+  return sourceSpan(state.source, start, end);
 }
 
 class TypedNormalizationFailure extends Error {
@@ -1884,7 +1886,8 @@ function normalizeCommand(
   const directRedirects = node
     .childrenForFieldName("redirect")
     .map((child) => ensureRedirect(child, node.id, commandSpan.start, state));
-  command.directNativeRedirectIds.push(...directRedirects);
+  for (const redirect of directRedirects)
+    command.directNativeRedirectIds.push(redirect);
   command.span = normalizedCommandSpan(command, state);
   return { kind: "command", span: commandSpan, commandId: command.id };
 }
@@ -3324,7 +3327,9 @@ function assertParsedUnitStart(
         (redirectId) => parsedRedirectForId(document, redirectId).span.start,
       ),
     ];
-    const start = Math.min(...memberStarts);
+    const start = memberStarts.reduce((first, member) =>
+      Math.min(first, member),
+    );
     if (unit.span.start !== start)
       parsedShellDocumentInvariant("command unit start");
     const commandMembers = [
@@ -3381,7 +3386,9 @@ function assertParsedUnitStart(
       ...redirectStarts,
     ];
     if (memberStarts.length === 0) return null;
-    const start = Math.min(...memberStarts);
+    const start = memberStarts.reduce((first, member) =>
+      Math.min(first, member),
+    );
     if (unit.span.start !== start)
       parsedShellDocumentInvariant("redirected statement unit start");
     for (const redirectId of unit.redirectIds)
@@ -4200,7 +4207,7 @@ function finalizeDocument(
     const { owner } = entry;
     if (owner === null) continue;
     const existing = trailingArgumentsByCommandId.get(owner.id) ?? [];
-    existing.push(...trailing);
+    for (const node of trailing) existing.push(node);
     trailingArgumentsByCommandId.set(owner.id, existing);
   }
   const state: NormalizationState = {
