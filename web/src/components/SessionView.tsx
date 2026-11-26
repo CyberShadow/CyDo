@@ -138,13 +138,6 @@ function SessionViewInner({
 
   const tid = task.tid as number;
   const canMutateHistory = task.status !== "importable";
-  const undoPreview =
-    canMutateHistory &&
-    task.undoPending &&
-    task.undoPending.kind !== "requesting"
-      ? task.undoPending
-      : null;
-
   const handleSend = useCallback(
     (text: string, images?: ImageAttachment[]) => {
       requestNotificationPermissionFromGesture();
@@ -284,17 +277,6 @@ function SessionViewInner({
   const handleInputDraftConsumed = useCallback(() => {
     onClearInputDraft(tid);
   }, [onClearInputDraft, tid]);
-
-  const handleUndoConfirm = useCallback(
-    (rc: boolean, rf: boolean) => {
-      onUndoConfirm(tid, rc, rf);
-    },
-    [onUndoConfirm, tid],
-  );
-
-  const handleUndoDismiss = useCallback(() => {
-    onUndoDismiss(tid);
-  }, [onUndoDismiss, tid]);
 
   const handleAskUserSubmit = useCallback(
     (answers: Record<string, string>) => {
@@ -536,6 +518,9 @@ function SessionViewInner({
           )}
           onFork={canMutateHistory ? onFork : undefined}
           onUndo={canMutateHistory ? onUndo : undefined}
+          undoPending={canMutateHistory ? task.undoPending : null}
+          onUndoConfirm={onUndoConfirm}
+          onUndoDismiss={onUndoDismiss}
           onUnsend={
             task.alive && task.driver === "claude" ? onUnsend : undefined
           }
@@ -550,17 +535,6 @@ function SessionViewInner({
           itemEnrichments={task.itemEnrichments}
           getTaskHref={getTaskHref}
           subtaskEnd={subtaskEnd}
-        />
-      )}
-      {undoPreview && undoPreview.messagesRemoved >= 0 && (
-        <UndoConfirmDialog
-          messagesRemoved={undoPreview.messagesRemoved}
-          countUnit={undoPreview.kind}
-          canRevertFiles={undoPreview.canRevertFiles}
-          retainsPrompt={undoPreview.retainsPrompt}
-          supportsFileRevert={undoPreview.supportsFileRevert ?? true}
-          onConfirm={handleUndoConfirm}
-          onDismiss={handleUndoDismiss}
         />
       )}
       {task.undoResult && (
@@ -912,107 +886,5 @@ function QuoteSelectionButton({
     >
       Quote
     </button>
-  );
-}
-
-export function UndoConfirmDialog({
-  messagesRemoved,
-  countUnit,
-  canRevertFiles,
-  retainsPrompt,
-  supportsFileRevert,
-  onConfirm,
-  onDismiss,
-}: {
-  messagesRemoved: number;
-  countUnit: "history_entries" | "codex_turns";
-  canRevertFiles: boolean;
-  retainsPrompt: boolean;
-  supportsFileRevert: boolean;
-  onConfirm: (revertConversation: boolean, revertFiles: boolean) => void;
-  onDismiss: () => void;
-}) {
-  const [revertConversation, setRevertConversation] = useState(true);
-  const [revertFiles, setRevertFiles] = useState(canRevertFiles);
-  const neitherSelected = !revertConversation && !revertFiles;
-
-  return (
-    <div class="undo-overlay" onClick={onDismiss}>
-      <div
-        class="undo-dialog"
-        onClick={(e) => {
-          e.stopPropagation();
-        }}
-      >
-        <div class="undo-dialog-header">
-          {retainsPrompt
-            ? "Remove this response and later history?"
-            : "Remove this message and later history?"}
-        </div>
-        <div class="undo-dialog-prompt-retention">
-          {retainsPrompt ? (
-            <>
-              This response and later history will be removed. The preceding
-              prompt will remain.
-            </>
-          ) : (
-            <>
-              This message and later history will be removed. Its prompt will
-              return to the composer.
-            </>
-          )}
-        </div>
-        {messagesRemoved > 0 && (
-          <div class="undo-dialog-count">
-            {messagesRemoved}{" "}
-            {countUnit === "codex_turns" ? "whole turn" : "message"}
-            {messagesRemoved !== 1 ? "s" : ""} will be removed.
-          </div>
-        )}
-        <div class="undo-dialog-options">
-          <label>
-            <input
-              type="checkbox"
-              checked={revertConversation}
-              onChange={() => {
-                setRevertConversation(!revertConversation);
-              }}
-            />{" "}
-            Revert conversation history
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={revertFiles}
-              disabled={!canRevertFiles}
-              onChange={() => {
-                setRevertFiles(!revertFiles);
-              }}
-            />{" "}
-            Revert file changes
-            {!canRevertFiles &&
-              (supportsFileRevert
-                ? retainsPrompt
-                  ? " (this response has no file checkpoint)"
-                  : " (this point has no file checkpoint and cannot restore files)"
-                : " (not supported for this agent type)")}
-          </label>
-        </div>
-        <div class="undo-dialog-actions">
-          <button class="btn" onClick={onDismiss}>
-            Cancel
-          </button>
-          <button
-            class="btn btn-undo"
-            disabled={neitherSelected}
-            onClick={() => {
-              onConfirm(revertConversation, revertFiles);
-            }}
-          >
-            Undo
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }

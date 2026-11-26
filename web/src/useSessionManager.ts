@@ -106,13 +106,6 @@ function hasHistoryBoundary(
   );
 }
 
-export function revertFilesForUndo(
-  canRevertFiles: boolean,
-  revertFiles: boolean,
-) {
-  return canRevertFiles && revertFiles;
-}
-
 function buildContentBlocks(
   text: string,
   images?: readonly ImageAttachment[],
@@ -2246,16 +2239,31 @@ export function useTaskManager(
           break;
         }
         case "undo_preview": {
-          const { tid, messages_removed, count_unit } = msg;
+          const {
+            tid,
+            correlation_id,
+            messages_removed,
+            count_unit,
+            can_revert_files,
+            file_changes,
+          } = msg;
           const t = findByTid(tid);
-          if (!t) break;
+          if (
+            t?.undoPending?.kind !== "requesting" ||
+            t.undoPending.requestId !== correlation_id
+          )
+            break;
           const undoPending: UndoPending = {
-            anchor: t.undoPending?.anchor ?? "",
+            anchor: t.undoPending.anchor,
             kind: count_unit,
             messagesRemoved: messages_removed,
-            canRevertFiles: t.undoPending?.canRevertFiles ?? false,
-            retainsPrompt: t.undoPending?.retainsPrompt ?? false,
-            supportsFileRevert: t.undoPending?.supportsFileRevert ?? true,
+            canRevertFiles: can_revert_files,
+            retainsPrompt: t.undoPending.retainsPrompt,
+            fileChanges: file_changes && {
+              files: file_changes.files_changed,
+              insertions: file_changes.insertions,
+              deletions: file_changes.deletions,
+            },
           };
           const updated = {
             ...t,
@@ -2368,16 +2376,15 @@ export function useTaskManager(
           break;
         }
         case "error": {
-          const { message, tid, operation } = msg;
-          if (operation === "undo_preview" && tid !== undefined) {
-            const task = findByTid(tid);
-            if (task?.undoPending?.kind === "requesting") {
-              commitTask(
-                task.uuid,
-                { ...task, undoPending: null },
-                "if-present",
-              );
-            }
+          const { message, tid, operation, correlation_id } = msg;
+          if (operation === "undo_preview") {
+            const task = tid === undefined ? undefined : findByTid(tid);
+            if (
+              task?.undoPending?.kind !== "requesting" ||
+              task.undoPending.requestId !== correlation_id
+            )
+              break;
+            commitTask(task.uuid, { ...task, undoPending: null }, "if-present");
           }
           showServerError(message, tid);
           break;
@@ -3071,30 +3078,19 @@ export function useTaskManager(
 
   const undoPreview = useCallback(
     (tid: number, anchor: string) => {
-      // Optimistically set anchor so confirmation bar can reference it
+      const requestId = crypto.randomUUID();
       const t = findByTid(tid);
       if (t) {
         const boundary = [...t.replacementEvents.values()].find(
-          (event) =>
-            (event as { history_boundary?: { anchor: string } })
-              .history_boundary?.anchor === anchor,
-        ) as
-          | {
-              history_boundary?: {
-                checkpoint_uuid?: string;
-                kind: "user" | "provisional_user" | "agent_turn";
-              };
-            }
-          | undefined;
-        const canRevertFiles =
-          boundary?.history_boundary?.kind !== "provisional_user" &&
-          !!boundary?.history_boundary?.checkpoint_uuid;
+          (event): event is HistoryBoundaryEvent =>
+            hasHistoryBoundary(event) &&
+            event.history_boundary.anchor === anchor,
+        );
         const undoPending: UndoPending = {
           anchor,
           kind: "requesting",
-          canRevertFiles,
-          retainsPrompt: boundary?.history_boundary?.kind === "agent_turn",
-          supportsFileRevert: t.sessionInfo?.supports_file_revert !== false,
+          requestId,
+          retainsPrompt: boundary?.history_boundary.kind === "agent_turn",
         };
         const updated = {
           ...t,
@@ -3102,7 +3098,15 @@ export function useTaskManager(
         };
         commitTask(t.uuid, updated);
       }
-      connRef.current?.undoTask(tid, anchor, true, false, false);
+      connRef.current?.undoTask(
+        tid,
+        anchor,
+        true,
+        false,
+        false,
+        undefined,
+        requestId,
+      );
     },
     [commitTask],
   );
@@ -3110,14 +3114,14 @@ export function useTaskManager(
   const undoConfirm = useCallback(
     (tid: number, revertConversation: boolean, revertFiles: boolean) => {
       const t = findByTid(tid);
-      if (!t?.undoPending) return;
+      if (!t?.undoPending || t.undoPending.kind === "requesting") return;
       const pending = t.undoPending;
       connRef.current?.undoTask(
         tid,
         pending.anchor,
         false,
         revertConversation,
-        revertFilesForUndo(pending.canRevertFiles, revertFiles),
+        revertFiles,
         pending.kind === "codex_turns" ? pending.messagesRemoved : undefined,
       );
       // Clear undoPending

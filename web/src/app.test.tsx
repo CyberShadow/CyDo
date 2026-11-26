@@ -78,6 +78,7 @@ const liveManager = vi.hoisted(() => ({
   manager: null as TaskManager | null,
   receive: null as ((message: ControlMessage) => void) | null,
   route: vi.fn(),
+  undoTask: vi.fn(),
 }));
 
 vi.mock("./connection", () => ({
@@ -93,7 +94,7 @@ vi.mock("./connection", () => ({
     }
 
     disconnect() {}
-    undoTask() {}
+    undoTask = liveManager.undoTask;
     setTaskTitle() {}
   },
 }));
@@ -282,6 +283,7 @@ beforeEach(() => {
   liveManager.enabled = false;
   liveManager.manager = null;
   liveManager.receive = null;
+  liveManager.undoTask.mockClear();
   state.serverError = null;
   state.dismissServerError.mockReset();
   state.draftView = null;
@@ -483,7 +485,7 @@ describe("server command errors", () => {
     }
   });
 
-  it("shows a rejected title edit without clearing a pending undo preview", async () => {
+  async function renderTaskWithCommandErrors() {
     liveManager.enabled = true;
     const root = roots.create();
     await act(() => {
@@ -512,6 +514,18 @@ describe("server command errors", () => {
       description: "task snapshot received",
       ready: () => currentTask() !== undefined,
     });
+    return { root, tid, receive, currentTask };
+  }
+
+  function latestUndoRequestId(): string {
+    const requestId: unknown = liveManager.undoTask.mock.lastCall?.[6];
+    expect(requestId).toEqual(expect.any(String));
+    return requestId as string;
+  }
+
+  it("shows a rejected title edit without clearing a pending undo preview", async () => {
+    const { root, tid, receive, currentTask } =
+      await renderTaskWithCommandErrors();
     await act(() => {
       liveManager.manager!.undoPreview(tid, "before:message");
       liveManager.manager!.setTaskTitle(tid, "");
@@ -539,8 +553,10 @@ describe("server command errors", () => {
       receive({
         type: "undo_preview",
         tid,
+        correlation_id: latestUndoRequestId(),
         messages_removed: 2,
         count_unit: "history_entries",
+        can_revert_files: false,
       });
     });
     await actPoll({
@@ -548,28 +564,93 @@ describe("server command errors", () => {
       ready: () => currentTask()?.undoPending?.kind === "history_entries",
     });
     expect(currentTask()!.undoPending?.anchor).toBe("before:message");
+  });
 
+  it("clears a failed current preview and shows the command error", async () => {
+    const { root, tid, receive, currentTask } =
+      await renderTaskWithCommandErrors();
     await act(() => {
-      dialog.querySelector("button")!.click();
+      liveManager.manager!.undoPreview(tid, "before:message");
     });
-    expect(root.querySelector(".command-error-dialog")).toBeNull();
+    expect(currentTask()?.undoPending?.kind).toBe("requesting");
 
-    await act(() => {
-      liveManager.manager!.undoPreview(tid, "before:another-message");
-    });
+    const reason = "Undo preview refused";
     await actStep(() => {
       receive({
         type: "error",
-        message: "Undo preview refused",
+        message: reason,
         tid,
         operation: "undo_preview",
+        correlation_id: latestUndoRequestId(),
       });
     });
+
     await actPoll({
-      description: "the undo preview error cleared the pending request",
-      ready: () => currentTask()?.undoPending === null,
+      description: "undo preview error dialog rendered",
+      ready: () => root.querySelector(".command-error-dialog") !== null,
     });
+    expect(currentTask()?.undoPending).toBeNull();
+    expect(root.querySelector(".command-error-dialog")?.textContent).toContain(
+      reason,
+    );
   });
+
+  it.each(["replaced", "dismissed"] as const)(
+    "ignores a late failure for a %s preview",
+    async (scenario) => {
+      const { root, tid, receive, currentTask } =
+        await renderTaskWithCommandErrors();
+      await act(() => {
+        liveManager.manager!.undoPreview(tid, "before:first");
+      });
+      const firstId = latestUndoRequestId();
+
+      await act(() => {
+        if (scenario === "replaced") {
+          liveManager.manager!.undoPreview(tid, "before:second");
+        } else {
+          liveManager.manager!.undoDismiss(tid);
+        }
+      });
+      const pending = currentTask()?.undoPending;
+      if (scenario === "replaced") {
+        expect(pending).toMatchObject({
+          kind: "requesting",
+          anchor: "before:second",
+          requestId: latestUndoRequestId(),
+        });
+      } else {
+        expect(pending).toBeNull();
+      }
+
+      await actStep(() => {
+        receive({
+          type: "error",
+          message: "The first preview failed",
+          tid,
+          operation: "undo_preview",
+          correlation_id: firstId,
+        });
+        // Wait for a message behind the error in the same connection queue.
+        receive({
+          type: "agent_usage",
+          profile: "/profiles/undo-test",
+          updated_at: 1,
+          limits: { five_hour: { utilization: 42 } },
+        });
+      });
+
+      await actPoll({
+        description:
+          "the connection processed the batch containing the late error",
+        ready: () =>
+          liveManager.manager!.agentUsage["/profiles/undo-test"] !== undefined,
+      });
+
+      expect(currentTask()?.undoPending).toEqual(pending);
+      expect(root.querySelector(".command-error-dialog")).toBeNull();
+    },
+  );
 
   it("hides the dialog after its error state is cleared", () => {
     state.serverError = { message: "Undo failed" };

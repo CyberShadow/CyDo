@@ -10,7 +10,12 @@ import {
   useMemo,
   useCallback,
 } from "preact/hooks";
-import type { DisplayMessage, Block, ItemEnrichment } from "../types";
+import type {
+  DisplayMessage,
+  Block,
+  ItemEnrichment,
+  UndoPending,
+} from "../types";
 import type { SubtaskEnd } from "../subtaskResultParent";
 import type { AgnosticEvent, TurnEndReason } from "../protocol";
 import { outbox, type OutboxEntry } from "../outbox";
@@ -23,6 +28,7 @@ import { Markdown } from "./Markdown";
 import { TaskDiagnosticView } from "./TaskDiagnosticView";
 import { ReplacementEventsContext, SourceView } from "./SourceView";
 import { StatusBand } from "./StatusBand";
+import { UndoMenu, type UndoSelection } from "./UndoMenu";
 import editIcon from "../icons/edit.svg?raw";
 import viewSourceIcon from "../icons/view-source.svg?raw";
 import forkIcon from "../icons/fork.svg?raw";
@@ -44,6 +50,12 @@ interface Props {
   bandStatus: string;
   onFork?: (sid: number, anchor: string) => void;
   onUndo?: (tid: number, anchor: string) => void;
+  undoPending?: UndoPending | null;
+  onUndoConfirm?: (
+    tid: number,
+    ...selection: Parameters<UndoSelection>
+  ) => void;
+  onUndoDismiss?: (tid: number) => void;
   /** Withdraw a queued, not yet consumed message (by its send nonce). */
   onUnsend?: (tid: number, nonce: string) => void;
   /** Overrule an auto mode classifier denial (live tasks only). */
@@ -567,6 +579,9 @@ const MessageView = memo(
     onViewFile,
     onFork,
     onUndo,
+    undoMenu,
+    onUndoSelect,
+    onUndoDismiss,
     onUnsend,
     onApproveRetry,
     onEdit,
@@ -584,6 +599,9 @@ const MessageView = memo(
     onViewFile?: (filePath: string) => void;
     onFork?: (anchor: string) => void;
     onUndo?: (anchor: string) => void;
+    undoMenu?: UndoPending;
+    onUndoSelect?: UndoSelection;
+    onUndoDismiss?: () => void;
     onUnsend?: (nonce: string) => void;
     onApproveRetry?: (toolName: string, input: unknown) => void;
     onEdit?: (uuid: string, content: string) => void;
@@ -633,6 +651,7 @@ const MessageView = memo(
             .map((b) => b.text)
             .join("\n")
         : "";
+    const undoButtonRef = useRef<HTMLButtonElement>(null);
     const undoLabel = `${
       actionBoundary?.kind === "agent_turn"
         ? "Undo this response and later history, retaining its prompt"
@@ -771,7 +790,7 @@ const MessageView = memo(
     return (
       <div
         id={`msg-${msg.id}`}
-        class={`message-wrapper${showSource ? " show-source" : ""}`}
+        class={`message-wrapper${showSource ? " show-source" : ""}${undoMenu ? " undo-menu-open" : ""}`}
       >
         <div class="message-actions">
           {userCopyText && !msg.cydoMeta && <CopyButton text={userCopyText} />}
@@ -818,10 +837,14 @@ const MessageView = memo(
           )}
           {uuid && onUndo && (
             <button
+              ref={undoButtonRef}
               class="msg-action-btn undo-btn"
               onClick={() => {
-                onUndo(uuid);
+                if (undoMenu) onUndoDismiss?.();
+                else onUndo(uuid);
               }}
+              aria-haspopup="menu"
+              aria-expanded={!!undoMenu}
               aria-label={undoLabel}
               title={undoLabel}
             >
@@ -834,6 +857,14 @@ const MessageView = memo(
                 }}
               />
             </button>
+          )}
+          {undoMenu && onUndo && onUndoSelect && onUndoDismiss && (
+            <UndoMenu
+              pending={undoMenu}
+              buttonRef={undoButtonRef}
+              onSelect={onUndoSelect}
+              onDismiss={onUndoDismiss}
+            />
           )}
         </div>
         {editing ? (
@@ -904,6 +935,9 @@ const MessageView = memo(
     prev.onViewFile === next.onViewFile &&
     prev.onFork === next.onFork &&
     prev.onUndo === next.onUndo &&
+    prev.undoMenu === next.undoMenu &&
+    prev.onUndoSelect === next.onUndoSelect &&
+    prev.onUndoDismiss === next.onUndoDismiss &&
     prev.onUnsend === next.onUnsend &&
     prev.onApproveRetry === next.onApproveRetry &&
     prev.onEdit === next.onEdit &&
@@ -976,6 +1010,9 @@ export function MessageList({
   bandStatus,
   onFork,
   onUndo,
+  undoPending,
+  onUndoConfirm,
+  onUndoDismiss,
   onUnsend,
   onApproveRetry,
   onEditMessage,
@@ -1028,6 +1065,25 @@ export function MessageList({
         : undefined,
     [onUndo, taskTid],
   );
+  const handleUndoSelect = useMemo<UndoSelection | undefined>(
+    () =>
+      onUndoConfirm
+        ? (revertConversation, revertFiles) => {
+            onUndoConfirm(taskTid, revertConversation, revertFiles);
+          }
+        : undefined,
+    [onUndoConfirm, taskTid],
+  );
+  const handleUndoDismiss = useMemo(
+    () =>
+      onUndoDismiss
+        ? () => {
+            onUndoDismiss(taskTid);
+          }
+        : undefined,
+    [onUndoDismiss, taskTid],
+  );
+
   const handleUnsend = useMemo(
     () =>
       onUnsend
@@ -1214,6 +1270,13 @@ export function MessageList({
                 onViewFile={onViewFile}
                 onFork={isForkable ? handleFork : undefined}
                 onUndo={isUndoable ? handleUndo : undefined}
+                undoMenu={
+                  isUndoable && undoPending && undoPending.anchor === actionUuid
+                    ? undoPending
+                    : undefined
+                }
+                onUndoSelect={handleUndoSelect}
+                onUndoDismiss={handleUndoDismiss}
                 onUnsend={isUnsendable(msg) ? handleUnsend : undefined}
                 onApproveRetry={handleApproveRetry}
                 onEdit={msg.type === "user" ? handleEditMessage : undefined}

@@ -2,6 +2,8 @@ import {
   test,
   expect,
   enterSession,
+  openUndoMenu,
+  chooseUndo,
   sendMessage,
   killSession,
   responseTimeout,
@@ -341,16 +343,9 @@ test(
       /file checkpoint available/,
     );
     await expect(offline.locator(".fork-btn")).toHaveCount(0);
-    await offline.locator(".undo-btn").click();
-    await expect(page.locator(".undo-dialog")).toBeVisible();
-    const fileRevert = page
-      .locator(".undo-dialog-options input[type=checkbox]")
-      .nth(1);
-    await expect(fileRevert).toBeDisabled();
-    await expect(page.locator(".undo-dialog-options")).toContainText(
-      "no file checkpoint",
-    );
-    await page.locator(".btn-undo").click();
+    const menu = await openUndoMenu(offline);
+    await expect(menu.getByRole("menuitem")).toHaveCount(1);
+    await chooseUndo(page, "Undo conversation");
     await expect(assistantText(page, "steering-baseline")).toBeVisible();
     await expect(assistantText(page, "steering-resumed")).toBeVisible();
     await expect

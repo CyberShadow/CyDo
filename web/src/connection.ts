@@ -399,6 +399,7 @@ export class Connection {
     revertConversation?: boolean,
     revertFiles?: boolean,
     expectedNumTurns?: number,
+    correlationId?: string,
   ) {
     this.send(
       JSON.stringify({
@@ -406,6 +407,7 @@ export class Connection {
         tid,
         anchor,
         dry_run: dryRun,
+        correlation_id: correlationId,
         revert_conversation: revertConversation ?? true,
         revert_files: revertFiles ?? true,
         ...(expectedNumTurns !== undefined

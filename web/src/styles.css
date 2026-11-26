@@ -1057,6 +1057,79 @@ button.task-bar-title {
   opacity: 1;
 }
 
+.message-wrapper.undo-menu-open
+  > .message-actions:not(.message-actions-bottom) {
+  opacity: 1;
+  z-index: 2;
+}
+
+.undo-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: 320px;
+  max-width: min(calc(100vw - 64px), var(--undo-menu-width, 100vw));
+  overflow-y: auto;
+}
+
+.undo-menu-content {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.undo-menu:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.undo-menu.undo-menu-up {
+  top: auto;
+  bottom: 100%;
+}
+
+.undo-menu-header {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.undo-menu-count,
+.undo-menu-loading,
+.undo-menu-item-detail,
+.undo-menu-files {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.btn.undo-menu-item {
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.undo-menu-item-detail {
+  display: block;
+}
+
+.undo-menu-paths {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+.undo-menu-paths .tool-subtitle-path {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.undo-menu-paths .tool-path-wrap:hover .btn-copy,
+.undo-menu-paths .tool-path-wrap:focus-within .btn-copy {
+  opacity: 1;
+}
+
 /* The copy button participates in the actions row instead of overlaying it */
 .message-actions > .btn-copy {
   position: static;
@@ -2539,26 +2612,6 @@ button.task-bar-title {
   color: var(--text);
 }
 
-.undo-dialog-count {
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
-.undo-dialog-options {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text-dim);
-}
-
-.undo-dialog-options label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-}
-
 .command-error-message {
   font-size: 12px;
   color: var(--text-dim);
@@ -2571,24 +2624,6 @@ button.task-bar-title {
   gap: 8px;
   justify-content: flex-end;
   margin-top: 4px;
-}
-
-.btn-undo {
-  background: var(--warn);
-  color: var(--bg);
-  border: none;
-  padding: 6px 16px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.btn-undo:hover {
-  opacity: 0.9;
-}
-
-.btn-undo:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 
 .undo-result-banner {
@@ -3607,6 +3642,13 @@ button.task-bar-title {
   font-style: italic;
 }
 
+.task-panel,
+.undo-menu {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 16px var(--overlay-dark);
+}
+
 .task-panel {
   position: absolute;
   inset: 100% 0 auto;
@@ -3614,9 +3656,6 @@ button.task-bar-title {
   max-height: 70vh;
   overflow: auto;
   padding: 12px 16px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  box-shadow: 0 6px 16px var(--overlay-dark);
   white-space: normal;
   overflow-wrap: anywhere;
 }

@@ -347,13 +347,21 @@ export interface ErrorMessage {
   message: string;
   tid?: number;
   operation?: "undo_preview";
+  correlation_id?: string;
 }
 export type UndoCountUnit = "codex_turns" | "history_entries";
 export interface UndoPreviewMessage {
   type: "undo_preview";
   tid: number;
+  correlation_id: string;
   messages_removed: number;
   count_unit: UndoCountUnit;
+  can_revert_files: boolean;
+  file_changes?: {
+    files_changed?: string[];
+    insertions: number;
+    deletions: number;
+  };
 }
 export interface UndoResultMessage {
   type: "undo_result";

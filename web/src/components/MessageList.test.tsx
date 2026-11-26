@@ -1,15 +1,112 @@
 /** @vitest-environment jsdom */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { waitFor } from "../test-support/waitFor";
 import { render } from "preact";
+import { ownedRoots } from "../test-support/preactAct";
 import { act } from "preact/test-utils";
 import renderToString from "preact-render-to-string";
 import { MessageList } from "./MessageList";
 import { DevModeContext } from "../devMode";
-import { makeTaskState, type DisplayMessage, type TaskState } from "../types";
+import {
+  makeTaskState,
+  type DisplayMessage,
+  type TaskState,
+  type UndoPending,
+} from "../types";
 import { reduceMessage } from "../sessionReducer";
 import type { AgnosticEvent } from "../protocol";
+
+afterEach(() => {
+  Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+});
+const roots = ownedRoots();
+
+it("opens undo beside the matching message and closes it on a second click", async () => {
+  const root = roots.create();
+  Object.defineProperty(Element.prototype, "scrollIntoView", {
+    configurable: true,
+    value: vi.fn(),
+  });
+  const onUndo = vi.fn();
+  const onUndoDismiss = vi.fn();
+  const messages = [
+    { id: "first", type: "user", content: [], seq: 1 },
+    { id: "selected", type: "user", content: [], seq: 2 },
+  ] satisfies DisplayMessage[];
+  const replacementEvents = new Map<number, AgnosticEvent>(
+    messages.map(({ id, seq }) => [
+      seq,
+      {
+        type: "item/started",
+        item_type: "user_message",
+        item_id: id,
+        history_boundary: { anchor: `before:${id}`, kind: "user" },
+      },
+    ]),
+  );
+
+  const onUndoConfirm = vi.fn();
+  const blocks = new Map();
+  function renderHistory(undoPending: UndoPending | null) {
+    roots.render(
+      <MessageList
+        taskTid={7}
+        messages={messages}
+        replacementEvents={replacementEvents}
+        historyOperations={{
+          fork: {},
+          undo: { first_user: "jsonl", user: "jsonl" },
+        }}
+        blocks={blocks}
+        isProcessing={false}
+        bandStatus=""
+        undoPending={undoPending}
+        onUndo={onUndo}
+        onUndoConfirm={onUndoConfirm}
+        onUndoDismiss={onUndoDismiss}
+      />,
+      root,
+    );
+  }
+
+  renderHistory(null);
+  const firstButton = root.querySelector<HTMLButtonElement>(
+    "#msg-first .undo-btn",
+  )!;
+  const selectedButton = root.querySelector<HTMLButtonElement>(
+    "#msg-selected .undo-btn",
+  )!;
+  expect(selectedButton.getAttribute("aria-expanded")).toBe("false");
+
+  await act(() => {
+    selectedButton.click();
+  });
+
+  expect(onUndo).toHaveBeenCalledExactlyOnceWith(7, "before:selected");
+  renderHistory({
+    anchor: "before:selected",
+    kind: "requesting",
+    requestId: "preview-1",
+    retainsPrompt: false,
+  });
+  expect(root.querySelectorAll(".undo-menu")).toHaveLength(1);
+  expect(
+    selectedButton.parentElement!.querySelector(".undo-menu"),
+  ).not.toBeNull();
+  expect(selectedButton.getAttribute("aria-expanded")).toBe("true");
+  expect(firstButton.getAttribute("aria-expanded")).toBe("false");
+
+  await act(() => {
+    selectedButton.click();
+  });
+
+  expect(onUndoDismiss).toHaveBeenCalledExactlyOnceWith(7);
+  expect(onUndo).toHaveBeenCalledTimes(1);
+  renderHistory(null);
+  expect(root.querySelector(".undo-menu")).toBeNull();
+  expect(selectedButton.getAttribute("aria-expanded")).toBe("false");
+});
 
 describe("MessageList history editing", () => {
   it.each([{ edit_message: true }, { edit_raw_event: true }])(

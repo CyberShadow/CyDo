@@ -16,6 +16,7 @@ import {
   test,
   expect,
   enterSession,
+  chooseUndo,
   sendMessage,
   assistantText,
   killSession,
@@ -43,21 +44,19 @@ async function activeTid(page: Page): Promise<number> {
   );
 }
 
-async function expectUndoRequestRejected(
+async function expectUndoExecutionRejected(
   page: Page,
   tid: number,
   anchor: string,
-  dryRun: boolean,
-  revertFiles: boolean,
 ) {
-  await undoThroughBridge(page, tid, anchor, dryRun, revertFiles);
+  await undoThroughBridge(page, tid, anchor, false, true);
   const errorDialog = page.locator(".command-error-dialog");
   await expect(errorDialog).toContainText("UUID not found in task history");
   await errorDialog.getByRole("button", { name: "Dismiss" }).click();
   await expect(errorDialog).not.toBeVisible();
 }
 
-async function openUndoDialogForUserMessage(
+async function openUndoMenuForUserMessage(
   page: import("@playwright/test").Page,
   userText: string,
 ) {
@@ -72,9 +71,7 @@ async function openUndoDialogForUserMessage(
   await userMsg.hover();
   await expect(userMsg.locator(".undo-btn")).toBeVisible();
   await userMsg.locator(".undo-btn").click();
-  const confirmation = page.locator(
-    ".undo-dialog:not(.command-error-dialog):visible",
-  );
+  const confirmation = userMsg.locator(".undo-menu").getByRole("menuitem");
   const commandError = page.locator(".command-error-dialog:visible");
   await expect
     .poll(async () =>
@@ -95,8 +92,8 @@ async function undoUserMessage(
   page: import("@playwright/test").Page,
   userText: string,
 ) {
-  await openUndoDialogForUserMessage(page, userText);
-  await page.locator(".btn-undo:visible").click();
+  await openUndoMenuForUserMessage(page, userText);
+  await chooseUndo(page, "Undo conversation");
 }
 
 test(
@@ -144,12 +141,12 @@ test(
     await assistantUndo.hover();
     await expect(assistantUndo.locator(".undo-btn")).toHaveCount(0);
 
-    await openUndoDialogForUserMessage(page, 'Please reply with "alive-three"');
-    await expect(page.locator(".undo-dialog-count:visible")).toContainText(
+    await openUndoMenuForUserMessage(page, 'Please reply with "alive-three"');
+    await expect(page.locator(".undo-menu-count:visible")).toContainText(
       "3 whole turns will be removed.",
     );
     const rollbackFrameStart = frames.length;
-    await page.locator(".btn-undo:visible").click();
+    await chooseUndo(page, "Undo conversation");
 
     // After undo: exactly turns 1-2 remain.
     await expect(
@@ -289,14 +286,14 @@ test(
     await sendMessage(page, 'Please reply with "rolled-count-four"');
     await expect(assistantText(page, "rolled-count-four")).toBeVisible();
 
-    await openUndoDialogForUserMessage(
+    await openUndoMenuForUserMessage(
       page,
       'Please reply with "rolled-count-two"',
     );
-    await expect(page.locator(".undo-dialog-count:visible")).toContainText(
+    await expect(page.locator(".undo-menu-count:visible")).toContainText(
       "2 whole turns will be removed.",
     );
-    await page.locator(".btn-undo:visible").click();
+    await chooseUndo(page, "Undo conversation");
 
     await expect(
       page.locator(
@@ -357,8 +354,8 @@ test(
     const history = await visibleHistory(page);
     const frameStart = frames.length;
 
-    await expectUndoRequestRejected(page, tid, "line:999999", true, false);
-    await expectUndoRequestRejected(page, tid, "line:999999", false, true);
+    await undoThroughBridge(page, tid, "line:999999", true, false);
+    await expectUndoExecutionRejected(page, tid, "line:999999");
 
     await expect
       .poll(
@@ -371,10 +368,10 @@ test(
       frames
         .slice(frameStart)
         .filter((frame) => frame?.type === "error")
-        .map((frame) => ({ tid: frame.tid, message: frame.message })),
+        .map(({ tid, message, operation }) => ({ tid, message, operation })),
     ).toEqual([
-      { tid, message: "UUID not found in task history" },
-      { tid, message: "UUID not found in task history" },
+      { tid, message: "UUID not found in task history", operation: "undo_preview" },
+      { tid, message: "UUID not found in task history", operation: undefined },
     ]);
     expect(
       frames
@@ -472,7 +469,7 @@ test(
     const history = await visibleHistory(page);
     const frameStart = frames.length;
 
-    await expectUndoRequestRejected(page, tid, staleAnchor, false, true);
+    await expectUndoExecutionRejected(page, tid, staleAnchor);
     await expect
       .poll(
         () =>
@@ -539,14 +536,14 @@ test(
       await expect(assistantText(page, marker)).toBeVisible();
     }
 
-    await openUndoDialogForUserMessage(
+    await openUndoMenuForUserMessage(
       page,
       'Please reply with "interrupt-undo-three"',
     );
-    await expect(page.locator(".undo-dialog-count:visible")).toContainText(
+    await expect(page.locator(".undo-menu-count:visible")).toContainText(
       "1 whole turn will be removed.",
     );
-    await page.locator(".btn-undo:visible").click();
+    await chooseUndo(page, "Undo conversation");
 
     const activeUsers = page.locator(
       ".message.user-message:visible:not(.pending):not(.meta-message)",
@@ -575,16 +572,16 @@ test(
     await expect(page.locator(".btn-stop:visible")).toHaveCount(0);
     await expect(activeUsers).toHaveCount(4);
 
-    await openUndoDialogForUserMessage(
+    await openUndoMenuForUserMessage(
       page,
       'Please reply with "interrupt-undo-two"',
     );
     // Only interrupt-undo-two, the probe, and the interrupted prompt are
     // active user turns, so the correct rollback count is three.
-    const secondUndoCount = page.locator(".undo-dialog-count:visible");
+    const secondUndoCount = page.locator(".undo-menu-count:visible");
     await expect(secondUndoCount).toContainText("whole turns will be removed.");
     const secondUndoPreview = await secondUndoCount.innerText();
-    await page.locator(".btn-undo:visible").click();
+    await chooseUndo(page, "Undo conversation");
 
     await expect(activeUsers).toHaveCount(1);
     await expect(
@@ -667,11 +664,11 @@ test(
     expect(laterAnchor).toMatch(/^before:.+$/);
     expect(earlierAnchor).not.toBe(laterAnchor);
 
-    await openUndoDialogForUserMessage(page, 'Please reply with "dup-marker"');
-    await expect(page.locator(".undo-dialog-count:visible")).toContainText(
+    await openUndoMenuForUserMessage(page, 'Please reply with "dup-marker"');
+    await expect(page.locator(".undo-menu-count:visible")).toContainText(
       "1 whole turn will be removed.",
     );
-    await page.locator(".btn-undo:visible").click();
+    await chooseUndo(page, "Undo conversation");
 
     const remainingDupMarkers = page.locator(
       ".message.user-message:visible:not(.pending):not(.meta-message)",

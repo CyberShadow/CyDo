@@ -3,6 +3,8 @@ import {
   test,
   expect,
   enterSession,
+  openUndoMenu,
+  chooseUndo,
   sendMessage,
   assistantText,
   currentTaskTid,
@@ -45,18 +47,14 @@ test(
         has: page.locator(".user-message", { hasText: "second-reply" }),
       })
       .last();
-    await secondUserMsg.hover();
+    await openUndoMenu(secondUserMsg);
 
-    await expect(secondUserMsg.locator(".undo-btn")).toBeVisible();
-    await secondUserMsg.locator(".undo-btn").click();
-
-    await expect(page.locator(".undo-dialog")).toBeVisible();
     // The turn of the message and the one running after it.
-    await expect(page.locator(".undo-dialog-count")).toContainText(
+    await expect(page.locator(".undo-menu-count")).toContainText(
       "2 whole turns will be removed.",
     );
     const rollbackFrameStart = frames.length;
-    await page.locator(".btn-undo").click();
+    await chooseUndo(page, "Undo conversation");
 
     // The undo is async: backend stops the session first (setGoal Dead), then
     // reverts the stopped thread, which triggers a history reload.
@@ -198,9 +196,8 @@ async function confirmUndoTwice(page: Page, state: "busy" | "stopped") {
     const message = view.locator(".message-wrapper", {
       has: view.locator(".user-message", { hasText: "remove-by-undo" }),
     });
-    await message.hover();
-    await message.locator(".undo-btn").click();
-    await expect(view.locator(".undo-dialog-count")).toContainText(
+    await openUndoMenu(message);
+    await expect(view.locator(".undo-menu-count")).toContainText(
       "2 whole turns will be removed.",
     );
   }
@@ -209,7 +206,7 @@ async function confirmUndoTwice(page: Page, state: "busy" | "stopped") {
 
   // Each tab has its own confirmation for the same task. Submit both
   // without waiting for either undo to finish.
-  await Promise.all(tabs.map((view) => view.locator(".btn-undo").click()));
+  await Promise.all(tabs.map((view) => chooseUndo(view, "Undo conversation")));
   await expect
     .poll(() => replies.map(({ type }) => type))
     .toEqual(["error", "undo_result"]);

@@ -2,6 +2,8 @@ import {
   test,
   expect,
   enterSession,
+  openUndoMenu,
+  chooseUndo,
   sendMessage,
   assistantText,
   currentTaskTid,
@@ -127,13 +129,14 @@ test(
         }),
       })
       .last();
-    await lastMessage.hover();
-    await lastMessage.locator(".undo-btn").click();
-    await expect(page.locator(".undo-dialog")).toBeVisible();
-    await expect(page.locator(".undo-dialog-prompt-retention")).toHaveText(
-      "This response and later history will be removed. The preceding prompt will remain.",
+    const menu = await openUndoMenu(lastMessage);
+    await expect(menu).toContainText(
+      "Remove this response and later history?",
     );
-    await page.locator(".btn-undo").click();
+    await expect(menu).toContainText(
+      "The preceding prompt will remain.",
+    );
+    await chooseUndo(page, "Undo conversation");
 
     await expect(async () => {
       const messages = assistantMessages(childTid);

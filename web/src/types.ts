@@ -12,6 +12,7 @@ import type {
   TaskDiagnosticEvent,
   AgentNoticeEvent,
   TurnEndReason,
+  UndoCountUnit,
 } from "./protocol";
 import type { PatchHunk } from "./lib/patches";
 
@@ -287,22 +288,24 @@ export type TaskStatus =
   | "failed"
   | "importable";
 
+export interface UndoFileChanges {
+  files?: string[];
+  insertions: number;
+  deletions: number;
+}
+
 interface UndoPendingBase {
   anchor: string;
-  canRevertFiles: boolean;
   retainsPrompt: boolean;
-  supportsFileRevert?: boolean;
 }
 
 export type UndoPending =
-  | (UndoPendingBase & { kind: "requesting" })
+  | (UndoPendingBase & { kind: "requesting"; requestId: string })
   | (UndoPendingBase & {
-      kind: "history_entries";
+      kind: UndoCountUnit;
       messagesRemoved: number;
-    })
-  | (UndoPendingBase & {
-      kind: "codex_turns";
-      messagesRemoved: number;
+      canRevertFiles: boolean;
+      fileChanges?: UndoFileChanges;
     });
 
 export interface PermissionPromptState {

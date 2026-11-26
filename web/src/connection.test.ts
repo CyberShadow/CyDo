@@ -624,12 +624,20 @@ describe("Connection client behavior", () => {
       return JSON.parse(call![0] as string) as Record<string, unknown>;
     }
 
-    it("omits the expected turn count from preview requests", () => {
+    it("serializes correlation without an expected turn count for previews", () => {
       const conn = new Connection();
       conn.connect();
       const ws = MockWebSocket.instances[0]!;
 
-      conn.undoTask(7, "boundary-7", true, false, false);
+      conn.undoTask(
+        7,
+        "boundary-7",
+        true,
+        false,
+        false,
+        undefined,
+        "preview-7",
+      );
 
       const request = lastSentJson(ws);
       expect(request).toEqual({
@@ -637,6 +645,7 @@ describe("Connection client behavior", () => {
         tid: 7,
         anchor: "boundary-7",
         dry_run: true,
+        correlation_id: "preview-7",
         revert_conversation: false,
         revert_files: false,
       });

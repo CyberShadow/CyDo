@@ -6,7 +6,8 @@ import type { TaskManager } from "./useSessionManager";
 
 const testState = vi.hoisted(() => {
   vi.stubGlobal("CSS", { supports: () => false });
-  vi.stubGlobal("crypto", { randomUUID: () => "task-uuid" });
+  const randomUUID = vi.fn();
+  vi.stubGlobal("crypto", { randomUUID });
   vi.stubGlobal("document", {
     hidden: true,
     querySelector: () => null,
@@ -15,6 +16,7 @@ const testState = vi.hoisted(() => {
   });
 
   return {
+    randomUUID,
     route: {
       workspace: "source",
       project: "project",
@@ -99,6 +101,8 @@ async function renderManager(): Promise<TaskManager> {
 }
 
 beforeEach(() => {
+  let nextId = 0;
+  testState.randomUUID.mockImplementation(() => `test-uuid-${++nextId}`);
   testState.route.workspace = "source";
   testState.route.project = "project";
   testState.route.tid = "42";
@@ -197,17 +201,25 @@ describe("task promotion", () => {
     return connection;
   }
 
+  function latestUndoRequestId(
+    connection: Awaited<ReturnType<typeof seedUndoTask>>,
+  ) {
+    const requestId: unknown = connection.undoTask.mock.lastCall?.[6];
+    expect(requestId).toEqual(expect.any(String));
+    return requestId as string;
+  }
+
   it("echoes a native preview count when confirming undo", async () => {
     const connection = await seedUndoTask();
     const currentManager = await renderManager();
 
     currentManager.undoPreview(42, "boundary-42");
+    const requestId = latestUndoRequestId(connection);
     expect((await renderManager()).getByTid(42)?.undoPending).toEqual({
       anchor: "boundary-42",
       kind: "requesting",
-      canRevertFiles: false,
+      requestId,
       retainsPrompt: false,
-      supportsFileRevert: true,
     });
     expect(connection.undoTask).toHaveBeenLastCalledWith(
       42,
@@ -215,13 +227,17 @@ describe("task promotion", () => {
       true,
       false,
       false,
+      undefined,
+      requestId,
     );
     await act(() => {
       connection.onControlMessage?.({
         type: "undo_preview",
         tid: 42,
+        correlation_id: requestId,
         messages_removed: 3,
         count_unit: "codex_turns",
+        can_revert_files: false,
       } satisfies ControlMessage);
     });
 
@@ -231,7 +247,6 @@ describe("task promotion", () => {
       messagesRemoved: 3,
       canRevertFiles: false,
       retainsPrompt: false,
-      supportsFileRevert: true,
     });
 
     manager!.undoConfirm(42, true, false);
@@ -246,38 +261,133 @@ describe("task promotion", () => {
     );
   });
 
-  it("omits an expected count for history-entry undo", async () => {
+  it.each([true, false])(
+    "forwards revert_files=%s for history-entry undo",
+    async (revertFiles) => {
+      const connection = await seedUndoTask();
+      const currentManager = await renderManager();
+
+      currentManager.undoPreview(42, "boundary-42");
+      await act(() => {
+        connection.onControlMessage?.({
+          type: "undo_preview",
+          tid: 42,
+          correlation_id: latestUndoRequestId(connection),
+          messages_removed: 4,
+          count_unit: "history_entries",
+          can_revert_files: !revertFiles,
+          file_changes: {
+            files_changed: ["/project/a.txt"],
+            insertions: 5,
+            deletions: 2,
+          },
+        } satisfies ControlMessage);
+      });
+
+      expect((await renderManager()).getByTid(42)?.undoPending).toEqual({
+        anchor: "boundary-42",
+        kind: "history_entries",
+        messagesRemoved: 4,
+        canRevertFiles: !revertFiles,
+        fileChanges: { files: ["/project/a.txt"], insertions: 5, deletions: 2 },
+        retainsPrompt: false,
+      });
+
+      manager!.undoConfirm(42, true, revertFiles);
+
+      expect(connection.undoTask).toHaveBeenLastCalledWith(
+        42,
+        "boundary-42",
+        false,
+        true,
+        revertFiles,
+        undefined,
+      );
+    },
+  );
+
+  it.each(["different request ID", "dismissed request"] as const)(
+    "ignores a preview for a %s",
+    async (scenario) => {
+      const connection = await seedUndoTask();
+      const currentManager = await renderManager();
+      await act(() => {
+        currentManager.undoPreview(42, "boundary-42");
+      });
+      const requestId = latestUndoRequestId(connection);
+      if (scenario === "dismissed request") {
+        await act(() => {
+          manager!.undoDismiss(42);
+        });
+      }
+
+      const before = (await renderManager()).getByTid(42)!.undoPending;
+      expect(before).toEqual(
+        scenario === "dismissed request"
+          ? null
+          : {
+              anchor: "boundary-42",
+              kind: "requesting",
+              requestId,
+              retainsPrompt: false,
+            },
+      );
+
+      await act(() => {
+        connection.onControlMessage?.({
+          type: "undo_preview",
+          tid: 42,
+          correlation_id:
+            scenario === "different request ID" ? "older-request" : requestId,
+          messages_removed: 4,
+          count_unit: "history_entries",
+          can_revert_files: false,
+        } satisfies ControlMessage);
+      });
+
+      expect((await renderManager()).getByTid(42)!.undoPending).toEqual(before);
+    },
+  );
+
+  it("waits for the new preview after dismissing and reopening the same boundary", async () => {
     const connection = await seedUndoTask();
     const currentManager = await renderManager();
 
-    currentManager.undoPreview(42, "boundary-42");
     await act(() => {
-      connection.onControlMessage?.({
-        type: "undo_preview",
-        tid: 42,
-        messages_removed: 4,
-        count_unit: "history_entries",
-      } satisfies ControlMessage);
+      currentManager.undoPreview(42, "boundary-42");
+    });
+    const firstId = latestUndoRequestId(connection);
+    await act(() => {
+      manager!.undoDismiss(42);
+    });
+    await act(() => {
+      manager!.undoPreview(42, "boundary-42");
+    });
+    const secondId = latestUndoRequestId(connection);
+
+    const reply = (correlation_id: string, messages_removed: number) =>
+      act(() => {
+        connection.onControlMessage?.({
+          type: "undo_preview",
+          tid: 42,
+          correlation_id,
+          messages_removed,
+          count_unit: "history_entries",
+          can_revert_files: false,
+        } satisfies ControlMessage);
+      });
+
+    await reply(firstId, 4);
+    expect((await renderManager()).getByTid(42)?.undoPending).toMatchObject({
+      kind: "requesting",
+      requestId: secondId,
     });
 
-    expect((await renderManager()).getByTid(42)?.undoPending).toEqual({
+    await reply(secondId, 2);
+    expect((await renderManager()).getByTid(42)?.undoPending).toMatchObject({
       anchor: "boundary-42",
       kind: "history_entries",
-      messagesRemoved: 4,
-      canRevertFiles: false,
-      retainsPrompt: false,
-      supportsFileRevert: true,
+      messagesRemoved: 2,
     });
-
-    manager!.undoConfirm(42, true, false);
-
-    expect(connection.undoTask).toHaveBeenLastCalledWith(
-      42,
-      "boundary-42",
-      false,
-      true,
-      false,
-      undefined,
-    );
   });
 });

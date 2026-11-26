@@ -2,6 +2,8 @@ import {
   test,
   expect,
   enterSession,
+  openUndoMenu,
+  chooseUndo,
   sendMessage,
   killSession,
   assistantText,
@@ -70,13 +72,8 @@ test("undo moves user message text to input box", async ({
       has: page.locator(".user-message", { hasText: "reply-three" }),
     })
     .last();
-  await thirdUserMsg.hover();
-
-  await expect(thirdUserMsg.locator(".undo-btn")).toBeVisible();
-  await thirdUserMsg.locator(".undo-btn").click();
-
-  await expect(page.locator(".undo-dialog")).toBeVisible();
-  await page.locator(".btn-undo").click();
+  await openUndoMenu(thirdUserMsg);
+  await chooseUndo(page, "Undo conversation");
 
   // After undo: exactly 2 confirmed user messages remain
   await expect(replyUser).toHaveCount(2);
@@ -174,16 +171,13 @@ test(
         has: page.locator(".assistant-message", { hasText: selected }),
       })
       .last();
-    await assistant.hover();
-    await expect(assistant.locator(".undo-btn")).toBeVisible();
-    await assistant.locator(".undo-btn").click();
-    await expect(page.locator(".undo-dialog")).toBeVisible();
+    const liveMenu = await openUndoMenu(assistant);
     // Assistant boundaries never carry a file checkpoint, even during live
     // JSONL reconciliation.
     await expect(
-      page.locator('.undo-dialog input[type="checkbox"]').nth(1),
-    ).toBeDisabled();
-    await page.locator(".undo-dialog .btn", { hasText: "Cancel" }).click();
+      liveMenu.getByRole("menuitem", { name: "Undo files only", exact: true }),
+    ).toHaveCount(0);
+    await page.keyboard.press("Escape");
 
     await killSession(page, agentType);
     await page.reload();
@@ -193,15 +187,17 @@ test(
         has: page.locator(".assistant-message", { hasText: selected }),
       })
       .last();
-    await assistant.hover();
-    await assistant.locator(".undo-btn").click();
+    const endedMenu = await openUndoMenu(assistant);
     await expect(
-      page.locator('.undo-dialog input[type="checkbox"]').nth(1),
-    ).toBeDisabled();
-    await expect(page.locator(".undo-dialog-prompt-retention")).toHaveText(
-      "This response and later history will be removed. The preceding prompt will remain.",
+      endedMenu.getByRole("menuitem", { name: "Undo files only", exact: true }),
+    ).toHaveCount(0);
+    await expect(endedMenu).toContainText(
+      "Remove this response and later history?",
     );
-    await page.locator(".btn-undo").click();
+    await expect(endedMenu).toContainText(
+      "The preceding prompt will remain.",
+    );
+    await chooseUndo(page, "Undo conversation");
 
     await expect(assistantText(page, selected)).toHaveCount(0);
     await expect(assistantText(page, later)).toHaveCount(0);

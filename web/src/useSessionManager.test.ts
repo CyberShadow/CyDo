@@ -7,20 +7,10 @@ vi.hoisted(() => {
 });
 import {
   projectDraftTask,
-  revertFilesForUndo,
   taskObservationFromEntry,
   taskStateFromEntry,
   type TaskSnapshotEntry,
 } from "./useSessionManager";
-
-describe("undo confirmation request", () => {
-  it("forwards file revert only for the selected checkpoint boundary", () => {
-    expect(revertFilesForUndo(false, true)).toBe(false); // assistant boundary
-    expect(revertFilesForUndo(false, true)).toBe(false); // checkpoint-less user
-    expect(revertFilesForUndo(false, true)).toBe(false); // unsupported agent
-    expect(revertFilesForUndo(true, true)).toBe(true);
-  });
-});
 
 describe("taskStateFromEntry draft merge", () => {
   const entry = (draft?: string) => ({

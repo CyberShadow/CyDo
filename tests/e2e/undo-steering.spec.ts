@@ -1,4 +1,12 @@
-import { test, expect, enterSession, sendMessage, killSession } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  killSession,
+  openUndoMenu,
+  chooseUndo,
+} from "./fixtures";
 
 test("undo removes preceding queue-operation lines from steering message", { tag: "@no-codex" }, async ({ page, agentType }) => {
 
@@ -38,13 +46,10 @@ test("undo removes preceding queue-operation lines from steering message", { tag
       has: page.locator(".user-message", { hasText: "steered-reply" }),
     })
     .last();
-  await steerUserMsg.hover();
-  await expect(steerUserMsg.locator(".undo-btn")).toBeVisible();
-  await steerUserMsg.locator(".undo-btn").click();
+  await openUndoMenu(steerUserMsg);
 
   // 6. Confirm undo.
-  await expect(page.locator(".undo-dialog")).toBeVisible();
-  await page.locator(".btn-undo").click();
+  await chooseUndo(page, "Undo conversation");
 
   // 7. Wait for reload to complete — the input box should appear.
   const input = page.locator(".input-textarea:visible").first();

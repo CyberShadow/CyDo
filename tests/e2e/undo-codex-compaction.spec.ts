@@ -2,6 +2,8 @@ import {
   test,
   expect,
   enterSession,
+  openUndoMenu,
+  chooseUndo,
   sendMessage,
   assistantText,
   responseTimeout,
@@ -65,14 +67,12 @@ test(
         ),
       })
       .last();
-    await compacted.hover();
-    await expect(compacted.locator(".undo-btn")).toBeVisible();
     const frameStart = frames.length;
-    await compacted.locator(".undo-btn").click();
-    await expect(page.locator(".undo-dialog-count:visible")).toContainText(
+    await openUndoMenu(compacted);
+    await expect(page.locator(".undo-menu-count:visible")).toContainText(
       "1 whole turn will be removed.",
     );
-    await page.locator(".btn-undo:visible").click();
+    await chooseUndo(page, "Undo conversation");
 
     await expect(assistantText(page, "After compaction.")).toHaveCount(0);
     await expect(assistantText(page, "Ready for compaction.")).toBeVisible();

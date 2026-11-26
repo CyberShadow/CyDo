@@ -18,6 +18,8 @@ import {
   test,
   expect,
   enterSession,
+  openUndoMenu,
+  chooseUndo,
   sendMessage,
   killSession,
   assistantText,
@@ -158,11 +160,8 @@ async function expectHistoryStillBound(
       has: page.locator(".user-message", { hasText: marker }),
     })
     .last();
-  await userMsg.hover();
-  await expect(userMsg.locator(".undo-btn")).toBeVisible();
-  await userMsg.locator(".undo-btn").click();
-  await expect(page.locator(".undo-dialog")).toBeVisible();
-  await page.locator(".btn-undo").click();
+  await openUndoMenu(userMsg);
+  await chooseUndo(page, "Undo conversation");
 
   await expect(assistantText(page, marker)).toHaveCount(0);
   await expect

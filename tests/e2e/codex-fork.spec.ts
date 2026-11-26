@@ -16,6 +16,8 @@ import {
   test,
   expect,
   enterSession,
+  openUndoMenu,
+  chooseUndo,
   sendMessage,
   killSession,
   endSession,
@@ -145,11 +147,8 @@ async function undoUserMessage(page: Page, text: string) {
     ".message.user-message:not(.pending):not(.meta-message)",
     text,
   );
-  await message.hover();
-  await expect(message.locator(".undo-btn")).toBeVisible();
-  await message.locator(".undo-btn").click();
-  await expect(page.locator(".undo-dialog:visible")).toBeVisible();
-  await page.locator(".btn-undo:visible").click();
+  await openUndoMenu(message);
+  await chooseUndo(page, "Undo conversation");
 }
 
 test(

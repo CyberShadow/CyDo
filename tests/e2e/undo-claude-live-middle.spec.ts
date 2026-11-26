@@ -2,6 +2,8 @@ import {
   test,
   expect,
   enterSession,
+  openUndoMenu,
+  chooseUndo,
   sendMessage,
   killSession,
   responseTimeout,
@@ -22,7 +24,7 @@ const userEventText = (event: any): string =>
           .join("")
       : "";
 
-async function openUndoDialogForTurn(page: Page, turnText: string) {
+async function openUndoMenuForTurn(page: Page, turnText: string) {
   const userMsg = page
     .locator(".message-wrapper", {
       has: page.locator(
@@ -33,15 +35,12 @@ async function openUndoDialogForTurn(page: Page, turnText: string) {
       ),
     })
     .last();
-  await userMsg.hover();
-  await expect(userMsg.locator(".undo-btn")).toBeVisible();
-  await userMsg.locator(".undo-btn").click();
-  await expect(page.locator(".undo-dialog")).toBeVisible();
+  await openUndoMenu(userMsg);
 }
 
 async function readUndoRemovalCount(page: Page): Promise<number> {
   const countText =
-    (await page.locator(".undo-dialog-count").textContent()) ?? "";
+    (await page.locator(".undo-menu-count").textContent()) ?? "";
   const match = countText.match(/(\d+)/);
   expect(
     match,
@@ -128,13 +127,7 @@ test(
     await sendMessage(page, 'Please reply with "alert-two"');
     await expect(assistantText(page, "alert-two")).toBeVisible({ timeout });
 
-    await openUndoDialogForTurn(page, "alert-two");
-    const revertFilesCheckbox = page
-      .locator(".undo-dialog-options label", { hasText: "Revert file changes" })
-      .locator('input[type="checkbox"]');
-    if ((await revertFilesCheckbox.count()) > 0) {
-      await revertFilesCheckbox.first().uncheck();
-    }
+    await openUndoMenuForTurn(page, "alert-two");
 
     // The idle live session is offered the in-process rewind.
     expect(
@@ -143,7 +136,7 @@ test(
     ).toBe("claude_native");
     const tid = currentTaskTid(page);
     const framesBeforeUndo = frames.length;
-    await page.locator(".btn-undo").click();
+    await chooseUndo(page, "Undo conversation");
 
     const input = page.locator(".input-textarea:visible").first();
     await expect(input).toBeEnabled();
@@ -353,8 +346,8 @@ test(
     const input = page.locator(".input-textarea:visible").first();
     await expect(input).toBeEnabled();
 
-    await openUndoDialogForTurn(page, "reply-one");
-    await page.locator(".btn-undo").click();
+    await openUndoMenuForTurn(page, "reply-one");
+    await chooseUndo(page, "Undo conversation");
 
     await expect(input).toBeEnabled();
     await expect(async () => {
@@ -385,8 +378,8 @@ test(
 
     const input = page.locator(".input-textarea:visible").first();
     await expect(input).toBeEnabled();
-    await openUndoDialogForTurn(page, "live-three");
-    await page.locator(".btn-undo").click();
+    await openUndoMenuForTurn(page, "live-three");
+    await chooseUndo(page, "Undo conversation");
     await expect(input).toBeEnabled();
     await expect(async () => {
       const { userTexts, assistantTexts } = await readVisibleTurnTexts(page);
@@ -435,13 +428,14 @@ test(
         }),
       })
       .last();
-    await selectedAssistant.hover();
-    await selectedAssistant.locator(".undo-btn").click();
-    await expect(page.locator(".undo-dialog")).toBeVisible();
-    await expect(page.locator(".undo-dialog-prompt-retention")).toHaveText(
-      "This response and later history will be removed. The preceding prompt will remain.",
+    const menu = await openUndoMenu(selectedAssistant);
+    await expect(menu).toContainText(
+      "Remove this response and later history?",
     );
-    await page.locator(".btn-undo").click();
+    await expect(menu).toContainText(
+      "The preceding prompt will remain.",
+    );
+    await chooseUndo(page, "Undo conversation");
     await expect(async () => {
       await assertTurnPresence(page, ["assistant-undo-prefix"], true);
       await expect(
@@ -483,9 +477,9 @@ test(
 
     await expect(page.locator(".input-textarea:visible").first()).toBeEnabled();
 
-    await openUndoDialogForTurn(page, "reload-three");
-    await page.locator(".undo-dialog .btn", { hasText: "Cancel" }).click();
-    await expect(page.locator(".undo-dialog")).not.toBeVisible();
+    await openUndoMenuForTurn(page, "reload-three");
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".undo-menu")).not.toBeVisible();
 
     await killSession(page, agentType);
     await expect(
@@ -494,8 +488,8 @@ test(
       }),
     ).toBeVisible();
 
-    await openUndoDialogForTurn(page, "reload-three");
-    await page.locator(".btn-undo").click();
+    await openUndoMenuForTurn(page, "reload-three");
+    await chooseUndo(page, "Undo conversation");
     await expect(page.locator(".input-textarea:visible").first()).toBeEnabled();
     await expect(page.locator(".input-textarea:visible").first()).toHaveValue(
       /Please reply with "reload-three"/,
@@ -553,9 +547,9 @@ test(
       await expect(assistantText(page, turn)).toBeVisible({ timeout });
     }
 
-    await openUndoDialogForTurn(page, "proto-three");
+    await openUndoMenuForTurn(page, "proto-three");
     const expectedRemoved = await readUndoRemovalCount(page);
-    await page.locator(".btn-undo").click();
+    await chooseUndo(page, "Undo conversation");
     await expect(page.locator(".input-textarea:visible").first()).toBeEnabled();
 
     await expect(async () => {

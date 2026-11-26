@@ -158,6 +158,27 @@ export async function sendMessage(page: Page, text: string) {
   await sendBtn.click();
 }
 
+/** Open the message's undo menu and wait for the preview to populate its items. */
+export async function openUndoMenu(message: Locator): Promise<Locator> {
+  await message.hover();
+  await message.locator(".undo-btn").click();
+  const menu = message.locator(".undo-menu");
+  await expect(
+    menu.getByRole("menuitem", { name: "Undo conversation", exact: true }),
+  ).toBeVisible();
+  return menu;
+}
+
+export async function chooseUndo(
+  page: Page,
+  label: "Undo conversation" | "Undo conversation + files" | "Undo files only",
+) {
+  await page
+    .getByRole("menu", { name: "Undo", exact: true })
+    .getByRole("menuitem", { name: label, exact: true })
+    .click();
+}
+
 /** Locate top-level assistant text blocks by content (excludes nested tool markdown). */
 export function assistantText(
   page: Page,
