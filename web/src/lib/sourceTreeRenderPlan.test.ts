@@ -6,7 +6,6 @@ import { installedTreeSitterBytes } from "../test-support/treeSitterAssets";
 import { buildShellSourceTree } from "./shellSourceTree";
 import {
   buildSourceRenderPieces,
-  isLineBoundaryEmbed,
   type SourceRenderPiece,
 } from "./sourceTreeRenderPlan";
 
@@ -26,54 +25,41 @@ async function buildLoadedShellSourceTree(source: string) {
 }
 
 describe("source tree render plan", () => {
-  it("carries the embed's document into its rich render piece", () => {
+  it("carries the document into a rich render piece for a mid-line embed", () => {
     const text = "<svg></svg>";
-    const span = { start: 0, end: text.length };
-    const segment = {
-      kind: "embed" as const,
-      span,
-      presentation: { kind: "rich" as const },
-      document: { filePath: "x.svg" },
-      content: {
-        language: "xml",
-        text,
-        segments: [{ kind: "text" as const, span }],
-      },
+    const prefix = "const svg = `";
+    const suffix = "`;";
+    const end = prefix.length + text.length;
+    const root: SourceNode = {
+      language: "javascript",
+      text: prefix + text + suffix,
+      segments: [
+        { kind: "text", span: { start: 0, end: prefix.length } },
+        {
+          kind: "embed",
+          span: { start: prefix.length, end },
+          presentation: { kind: "rich" },
+          document: { filePath: "x.svg" },
+          content: {
+            language: "xml",
+            text,
+            segments: [{ kind: "text", span: { start: 0, end: text.length } }],
+          },
+        },
+        { kind: "text", span: { start: end, end: end + suffix.length } },
+      ],
     };
-    const root: SourceNode = { language: "bash", text, segments: [segment] };
 
     expect(buildSourceRenderPieces(root)).toMatchObject([
-      { kind: "rich", document: { filePath: "x.svg" } },
+      { kind: "inline", text: prefix },
+      {
+        kind: "rich",
+        mode: "rich-code",
+        text,
+        document: { filePath: "x.svg" },
+      },
+      { kind: "inline", text: suffix },
     ]);
-  });
-
-  it("isLineBoundaryEmbed returns false for quoted wrapper payload", async () => {
-    const command =
-      "/run/current-system/sw/bin/zsh -lc 'program --some-flag -y \"hello world\"'";
-    const parsed = await buildLoadedShellSourceTree(command);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    const wrapper = parsed.value.segments.find(
-      (segment) => segment.kind === "embed",
-    );
-    expect(wrapper?.kind).toBe("embed");
-    if (!wrapper) return;
-
-    expect(isLineBoundaryEmbed(parsed.value.text, wrapper.span)).toBe(false);
-  });
-
-  it("isLineBoundaryEmbed returns true for heredoc body spans", async () => {
-    const command = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF";
-    const parsed = await buildLoadedShellSourceTree(command);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    const heredoc = parsed.value.segments.find(
-      (segment) => segment.kind === "embed",
-    );
-    expect(heredoc?.kind).toBe("embed");
-    if (!heredoc) return;
-
-    expect(isLineBoundaryEmbed(parsed.value.text, heredoc.span)).toBe(true);
   });
 
   it("classifies heredoc body as rich markdown in safe heredoc context", async () => {
@@ -96,7 +82,7 @@ describe("source tree render plan", () => {
     );
   });
 
-  it("does not promote non-heredoc embeds to rich", async () => {
+  it("keeps a quoted shell wrapper inline", async () => {
     const command = "/run/current-system/sw/bin/zsh -lc 'cat README.md'";
     const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
@@ -335,7 +321,6 @@ describe("source tree render plan", () => {
     expect(pythonPiece.text).toBe("import json,sys");
     expect(pythonPiece.projectedInline).toBe(true);
 
-    // No rich blocks — inline command, not at line boundary
     expect(pieces.some((p) => p.kind === "rich")).toBe(false);
   });
 
@@ -367,7 +352,7 @@ describe("source tree render plan", () => {
     ]);
   });
 
-  it("renders a CRLF heredoc body at a rich line boundary", async () => {
+  it("renders a CRLF heredoc body as rich code", async () => {
     const command = "python3 - <<EOF\r\nprint(1)\r\nEOF";
     const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
@@ -393,7 +378,6 @@ describe("source tree render plan", () => {
     expect(embed.span).toEqual({ start: 17, end: 25 });
     expect(embed.content.language).toBe("python");
     expect(embed.content.text).toBe("print(1)");
-    expect(isLineBoundaryEmbed(parsed.value.text, embed.span)).toBe(true);
 
     const pieces = buildSourceRenderPieces(parsed.value);
     expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
@@ -409,10 +393,6 @@ describe("source tree render plan", () => {
       { start: 25, end: 30 },
     ]);
     expect(command.slice(25)).toBe("\r\nEOF");
-  });
-
-  it("does not treat a bare CR as a line boundary", () => {
-    expect(isLineBoundaryEmbed("\nbody\r", { start: 1, end: 5 })).toBe(false);
   });
 
   it("treats projected inline embeds generically and preserves parent-owned source text", () => {

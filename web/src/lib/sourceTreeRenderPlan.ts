@@ -44,24 +44,7 @@ function getRichRenderModeForLanguage(
   return "rich-code";
 }
 
-export function isLineBoundaryEmbed(text: string, span: SourceSpan): boolean {
-  if (span.start < 0 || span.end < span.start || span.end > text.length) {
-    return false;
-  }
-  const startsOnLineBoundary =
-    span.start === 0 || text[span.start - 1] === "\n";
-  const endsOnLineBoundary =
-    span.end === text.length ||
-    text[span.end] === "\n" ||
-    (text[span.end] === "\r" && text[span.end + 1] === "\n");
-  return startsOnLineBoundary && endsOnLineBoundary;
-}
-
-function classifyEmbedRenderMode(
-  parent: SourceNode,
-  segment: EmbedSegment,
-): SourceEmbedRenderMode {
-  if (!isLineBoundaryEmbed(parent.text, segment.span)) return "inline";
+function classifyEmbedRenderMode(segment: EmbedSegment): SourceEmbedRenderMode {
   if (segment.presentation?.kind !== "rich") return "inline";
   return getRichRenderModeForLanguage(segment.content.language) ?? "inline";
 }
@@ -113,7 +96,7 @@ function walkSourceRenderPieces(
       continue;
     }
 
-    const mode = classifyEmbedRenderMode(node, segment);
+    const mode = classifyEmbedRenderMode(segment);
     if (mode === "inline") {
       const rawSubtreeSpan = projection.mapSpan(segment.span);
       if (!rawSubtreeSpan) return false;
