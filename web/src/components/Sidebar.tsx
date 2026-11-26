@@ -1,4 +1,4 @@
-import type { AgentUsageMessage, UiConfig } from "../protocol";
+import type { AgentUsageMessage, SidebarUiConfig, UiConfig } from "../protocol";
 import { AccountUsage } from "./AccountUsage";
 import { memo } from "preact/compat";
 import {
@@ -186,7 +186,12 @@ interface TreeNode {
   knownChildCount: number;
 }
 
-export function flatTaskOrder(tasks: SidebarTask[]): string[] {
+// Walk the expanded tree so keyboard navigation can reach hidden tasks.
+// Summary rows select their parent and are omitted from this order.
+export function flatTaskOrder(
+  tasks: SidebarTask[],
+  config?: SidebarUiConfig,
+): string[] {
   const ids: string[] = [];
   function walk(nodes: TreeNode[]) {
     for (const n of nodes) {
@@ -194,7 +199,7 @@ export function flatTaskOrder(tasks: SidebarTask[]): string[] {
       walk(n.children);
     }
   }
-  walk(buildTree(tasks));
+  walk(buildTree(tasks, config));
   return ids;
 }
 
@@ -226,7 +231,10 @@ function insertArchiveNodes(nodes: TreeNode[]): TreeNode[] {
   });
 }
 
-export function buildTree(tasks: SidebarTask[]): TreeNode[] {
+export function buildTree(
+  tasks: SidebarTask[],
+  config?: SidebarUiConfig,
+): TreeNode[] {
   const tidSet = new Set(tasks.map((t) => t.tid));
   const childMap = new Map<number, SidebarTask[]>();
   const roots: SidebarTask[] = [];
@@ -303,13 +311,18 @@ export function buildTree(tasks: SidebarTask[]): TreeNode[] {
       children: importableRoots,
       knownChildCount: 0,
     };
-    // Array order (sidebar renders reversed):
-    //   [groupNodes..., importRoot, regularNonImportable...]
-    // After .reverse(): regularNonImportable (top), importRoot (middle), groupNodes (bottom)
     tree = [...groupNodes, importRoot, ...regularNonImportable];
   }
 
+  // Mirror every sibling level, keeping Archive and Import at the older
+  // end so current tasks stay closest to New Task.
+  if (config?.order === "newest_first") reverseLevels(tree);
   return tree;
+}
+
+function reverseLevels(nodes: TreeNode[]): void {
+  nodes.reverse();
+  for (const node of nodes) reverseLevels(node.children);
 }
 
 function hasDescendant(node: TreeNode, id: string): boolean {
@@ -412,6 +425,7 @@ export function flattenTree(
   activeTaskId: string | null,
   taskTypes: TypeInfo[],
   tasksLoading: boolean,
+  newestFirst = false,
 ): FlatItem[] {
   const items: FlatItem[] = [];
 
@@ -469,27 +483,35 @@ export function flattenTree(
 
     const hasLoadingChild = hasIncompleteChildren(node, tasksLoading);
 
-    // Collapse the leading run of fully-collapsible subtrees into one summary
-    // row, unless the parent itself is selected or the selection is inside
-    // that run. Children with running work always stay visible.
+    // Fold the oldest run of finished subtrees unless the selection is
+    // the parent or inside that run. Running work always stays visible.
+    const children = node.children;
     let collapsed: TreeNode[] = [];
     if (node.id !== activeTaskId) {
-      let end = 0;
+      let count = 0;
       while (
-        end < node.children.length &&
-        subtreeCollapsible(node.children[end]!, tasksLoading)
+        count < children.length &&
+        subtreeCollapsible(
+          children[newestFirst ? children.length - 1 - count : count]!,
+          tasksLoading,
+        )
       )
-        end++;
-      const prefix = node.children.slice(0, end);
-      const selectionInPrefix =
+        count++;
+      const run = newestFirst
+        ? children.slice(children.length - count)
+        : children.slice(0, count);
+      const selectionInRun =
         activeTaskId !== null &&
-        prefix.some(
+        run.some(
           (c) => c.id === activeTaskId || hasDescendant(c, activeTaskId),
         );
-      const realCount = prefix.filter((c) => !c.task.isArchiveNode).length;
-      if (realCount >= 2 && !selectionInPrefix) collapsed = prefix;
+      const realCount = run.filter((c) => !c.task.isArchiveNode).length;
+      if (realCount >= 2 && !selectionInRun) collapsed = run;
     }
-    if (collapsed.length > 0) {
+    const shown = newestFirst
+      ? children.slice(0, children.length - collapsed.length)
+      : children.slice(collapsed.length);
+    function pushSummary(isLast: boolean) {
       const hidden = collapsed.flatMap((c) => collectTasks(c, false));
       // Color the summary icon by the hidden tasks' shared status, gray when
       // mixed. Archived tasks don't vote: they stay hidden even on expand.
@@ -498,8 +520,6 @@ export function flattenTree(
           .flatMap((c) => collectTasks(c, true))
           .map((h) => computeStatusClass(h)),
       );
-      const isLast =
-        collapsed.length === node.children.length && !hasLoadingChild;
       items.push({
         kind: "ordinary",
         id: `subtasks:${t.tid}`,
@@ -516,14 +536,14 @@ export function flattenTree(
         attentionTids: hidden.map((h) => h.tid),
       });
     }
-    for (let i = collapsed.length; i < node.children.length; i++) {
-      const isLast = i === node.children.length - 1 && !hasLoadingChild;
-      walk(
-        node.children[i]!,
-        depth + 1,
-        isLast ? guides : guides | (1 << depth),
-      );
+    const summaryLast = newestFirst && collapsed.length > 0;
+    if (!newestFirst && collapsed.length > 0)
+      pushSummary(shown.length === 0 && !hasLoadingChild);
+    for (let i = 0; i < shown.length; i++) {
+      const isLast = i === shown.length - 1 && !summaryLast && !hasLoadingChild;
+      walk(shown[i]!, depth + 1, isLast ? guides : guides | (1 << depth));
     }
+    if (summaryLast) pushSummary(!hasLoadingChild);
     if (hasLoadingChild) {
       items.push({
         kind: "loading",
@@ -708,10 +728,12 @@ export const Sidebar = memo(function Sidebar({
   claudeUsage,
   ui,
 }: Props) {
-  const tree = useMemo(() => buildTree(tasks), [tasks]);
+  const config = ui?.sidebar;
+  const newestFirst = config?.order === "newest_first";
+  const tree = useMemo(() => buildTree(tasks, config), [tasks, config]);
   const flatItems = useMemo(
-    () => flattenTree(tree, activeTaskId, taskTypes, tasksLoading),
-    [tree, activeTaskId, taskTypes, tasksLoading],
+    () => flattenTree(tree, activeTaskId, taskTypes, tasksLoading, newestFirst),
+    [tree, activeTaskId, taskTypes, tasksLoading, newestFirst],
   );
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -733,30 +755,23 @@ export const Sidebar = memo(function Sidebar({
   ensureRelationIconStyles();
 
   useEffect(() => {
-    if (activeTaskId === null) return;
-    const selector = `.sidebar-item[data-tid="${activeTaskId}"]`;
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [newestFirst]);
 
-    // Try to scroll immediately (works when element already exists).
-    const el = listRef.current?.querySelector(selector);
-    if (el) {
-      el.scrollIntoView({ block: "nearest" });
-      return;
-    }
-
-    // Element doesn't exist yet (initial load). Watch for it to appear.
-    if (!listRef.current) return;
-    const observer = new MutationObserver(() => {
-      const target = listRef.current?.querySelector(selector);
-      if (target) {
-        target.scrollIntoView({ block: "nearest" });
-        observer.disconnect();
-      }
-    });
-    observer.observe(listRef.current, { childList: true, subtree: true });
-    return () => {
-      observer.disconnect();
-    };
-  }, [activeTaskId]);
+  const activeItemIndex = flatItems.findIndex(
+    (item) => item.kind === "ordinary" && item.id === activeTaskId,
+  );
+  // Measure from the scroll origin, which is the bottom in oldest-first mode.
+  const activeItemOffset =
+    activeItemIndex < 0 || newestFirst
+      ? activeItemIndex
+      : flatItems.length - 1 - activeItemIndex;
+  useEffect(() => {
+    if (activeItemOffset < 0) return;
+    listRef.current
+      ?.querySelector(`.sidebar-item[data-tid="${activeTaskId}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeTaskId, activeItemOffset, newestFirst]);
 
   // Scroll to active item when sidebar becomes visible (mobile hamburger).
   const prevVisible = useRef(visible);
@@ -844,7 +859,7 @@ export const Sidebar = memo(function Sidebar({
     return () => {
       observer.disconnect();
     };
-  }, [flatItems, attention]);
+  }, [flatItems, attention, newestFirst]);
 
   return (
     <div class="sidebar">
@@ -946,7 +961,10 @@ export const Sidebar = memo(function Sidebar({
         data-glow-above={glowAbove === "none" ? undefined : glowAbove}
         data-glow-below={glowBelow === "none" ? undefined : glowBelow}
       >
-        <div class="sidebar-list" ref={listRef}>
+        <div
+          class={`sidebar-list${newestFirst ? " newest-first" : ""}`}
+          ref={listRef}
+        >
           {onNewTask && (
             <a
               href={newTaskHref}
@@ -963,43 +981,41 @@ export const Sidebar = memo(function Sidebar({
               <span class="sidebar-label">New Task</span>
             </a>
           )}
-          {flatItems
-            .map((item) => {
-              if (item.kind === "loading") {
-                return (
-                  <div key={item.key} class="sidebar-loading-item">
-                    <TreeConnectors depth={item.depth} guides={item.guides} />
-                    <span class="sidebar-loading-label">(loading…)</span>
-                  </div>
-                );
-              }
+          {(newestFirst ? flatItems : [...flatItems].reverse()).map((item) => {
+            if (item.kind === "loading") {
               return (
-                <SidebarItem
-                  key={item.id}
-                  id={item.id}
-                  depth={item.depth}
-                  guides={item.guides}
-                  relationType={item.relationType}
-                  statusClass={item.statusClass}
-                  title={item.title}
-                  iconName={item.iconName}
-                  isArchive={item.isArchive}
-                  isActive={item.id === activeTaskId}
-                  hasAttention={
-                    item.attentionTids
-                      ? item.attentionTids.some((tid) => attention.has(tid))
-                      : attention.has(item.tid)
-                  }
-                  hasPendingQuestion={item.hasPendingQuestion}
-                  archiving={item.archiving}
-                  href={getTaskHref(item.selectId ?? item.id)}
-                  selectId={item.selectId}
-                  onSelect={handleSelect}
-                  onArchive={handleArchive}
-                />
+                <div key={item.key} class="sidebar-loading-item">
+                  <TreeConnectors depth={item.depth} guides={item.guides} />
+                  <span class="sidebar-loading-label">(loading…)</span>
+                </div>
               );
-            })
-            .reverse()}
+            }
+            return (
+              <SidebarItem
+                key={item.id}
+                id={item.id}
+                depth={item.depth}
+                guides={item.guides}
+                relationType={item.relationType}
+                statusClass={item.statusClass}
+                title={item.title}
+                iconName={item.iconName}
+                isArchive={item.isArchive}
+                isActive={item.id === activeTaskId}
+                hasAttention={
+                  item.attentionTids
+                    ? item.attentionTids.some((tid) => attention.has(tid))
+                    : attention.has(item.tid)
+                }
+                hasPendingQuestion={item.hasPendingQuestion}
+                archiving={item.archiving}
+                href={getTaskHref(item.selectId ?? item.id)}
+                selectId={item.selectId}
+                onSelect={handleSelect}
+                onArchive={handleArchive}
+              />
+            );
+          })}
         </div>
       </div>
     </div>

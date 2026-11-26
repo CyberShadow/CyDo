@@ -185,9 +185,17 @@ struct UsageUiConfig
 	@Optional bool remaining;
 }
 
+enum SidebarOrder { oldest_first, newest_first }
+
+struct SidebarUiConfig
+{
+	@Optional SidebarOrder order = SidebarOrder.oldest_first;
+}
+
 struct UiConfig
 {
 	@Optional UsageUiConfig usage;
+	@Optional SidebarUiConfig sidebar;
 }
 
 struct CydoConfig
@@ -1041,4 +1049,30 @@ unittest
 
 	assertThrown!Exception(parseYamlConfigString!CydoConfig(
 		"workspaces: {}\nui: { usage: { coloring: rainbow } }\n", "config.yaml"));
+}
+
+unittest // Sidebar order defaults to oldest first at every optional level.
+{
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	foreach (ui; ["", "ui: {}\n", "ui: { sidebar: {} }\n"])
+	{
+		auto config = parseYamlConfigString!CydoConfig(
+			"workspaces: {}\n" ~ ui, "config.yaml");
+		assert(config.ui.sidebar.order == SidebarOrder.oldest_first);
+	}
+}
+
+unittest // Sidebar order accepts both directions and rejects unknown values.
+{
+	import std.exception : assertThrown;
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	enum prefix = "workspaces: {}\nui: { sidebar: { order: ";
+	assert(parseYamlConfigString!CydoConfig(
+		prefix ~ "oldest_first } }\n", "config.yaml").ui.sidebar.order == SidebarOrder.oldest_first);
+	assert(parseYamlConfigString!CydoConfig(
+		prefix ~ "newest_first } }\n", "config.yaml").ui.sidebar.order == SidebarOrder.newest_first);
+	assertThrown!Exception(parseYamlConfigString!CydoConfig(
+		prefix ~ "recent_first } }\n", "config.yaml"));
 }

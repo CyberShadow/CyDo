@@ -8,7 +8,7 @@ import cydo.domain.task_types.definition : ContinuationDef, CreatableEntryPointD
 	byName, loadTaskTypes;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, loadConfig,
 	GitIdentityConfig, MemoryLimitsConfig, ModelSpecFields, PathMode, PermissionsConfig,
-	ProjectDiscoveryConfig, SandboxConfig, UiConfig, UsageUiConfig, WorkspaceConfig;
+	ProjectDiscoveryConfig, SandboxConfig, SidebarUiConfig, UiConfig, UsageUiConfig, WorkspaceConfig;
 import cydo.runtime.config.paths : configDir, configPath, userTaskTypesPath;
 import cydo.runtime.config.yaml : loadYamlString, parseYamlConfigString;
 import dyaml.node : Node;
@@ -349,6 +349,7 @@ version (linux) unittest
 	assertKeys!CydoConfig(root);
 	assertKeys!UiConfig(at(root, ["ui"]));
 	assertKeys!UsageUiConfig(at(root, ["ui", "usage"]));
+	assertKeys!SidebarUiConfig(at(root, ["ui", "sidebar"]));
 	assertKeys!WorkspaceConfig(at(root, ["workspaces", "example-project"]), ["name"]);
 	assertKeys!SandboxConfig(at(root, ["sandbox"]));
 	assertKeys!GitIdentityConfig(at(root, ["sandbox", "git"]));

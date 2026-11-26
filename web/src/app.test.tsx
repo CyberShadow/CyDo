@@ -32,6 +32,11 @@ const state = vi.hoisted(() => ({
   tasks: new Map<string, TaskState>(),
   entryPoints: [] as TaskManager["entryPoints"],
   agents: [] as TaskManager["agents"],
+  ui: {} as TaskManager["ui"],
+  sidebarTasks: [] as TaskManager["sidebarTasks"],
+  attention: new Set<number>(),
+  setActiveTaskId: vi.fn(),
+  navigateToProject: vi.fn(),
   connected: true,
   tasksLoaded: true,
   getByTid: vi.fn(),
@@ -113,7 +118,7 @@ vi.mock("./useSessionManager", async (importOriginal) => {
           createOrdinaryDraftStore()),
         activeTaskId: state.activeTaskId,
         getActiveTaskId: () => state.activeTaskId,
-        setActiveTaskId: vi.fn(),
+        setActiveTaskId: state.setActiveTaskId,
         connected: state.connected,
         tasksLoaded: state.tasksLoaded,
         send: vi.fn(),
@@ -139,7 +144,7 @@ vi.mock("./useSessionManager", async (importOriginal) => {
         editMessage: vi.fn(),
         editRawEvent: vi.fn(),
         draftView: state.draftView,
-        sidebarTasks: [],
+        sidebarTasks: state.sidebarTasks,
         workspaces: [],
         entryPoints: state.entryPoints,
         typeInfo: [],
@@ -153,14 +158,14 @@ vi.mock("./useSessionManager", async (importOriginal) => {
         serverError: state.serverError,
         dismissServerError: state.dismissServerError,
         devMode: false,
-        ui: {},
+        ui: state.ui,
         heicConversion: { available: false, reason: "not configured" },
         getHeicConversion: () => ({
           available: false,
           reason: "not configured",
         }),
         navigateHome: vi.fn(),
-        navigateToProject: vi.fn(),
+        navigateToProject: state.navigateToProject,
         getProjectHref: vi.fn(),
         getTaskHref: vi.fn(),
         getByTid: state.getByTid,
@@ -195,7 +200,8 @@ vi.mock("preact-iso", () => ({
   Route: () => null,
 }));
 
-vi.mock("./components/Sidebar", () => ({
+vi.mock("./components/Sidebar", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./components/Sidebar")>()),
   Sidebar: (
     props: Parameters<typeof import("./components/Sidebar").Sidebar>[0],
   ) => {
@@ -206,7 +212,6 @@ vi.mock("./components/Sidebar", () => ({
     });
     return null;
   },
-  flatTaskOrder: () => [],
 }));
 
 vi.mock("./components/SessionView", async (importOriginal) => {
@@ -263,7 +268,7 @@ vi.mock("./useToast", () => ({
 }));
 
 vi.mock("./useNotifications", () => ({
-  useNotifications: () => new Set(),
+  useNotifications: () => state.attention,
   requestNotificationPermissionFromGesture: vi.fn(),
 }));
 
@@ -290,6 +295,11 @@ beforeEach(() => {
   state.agents = [];
   state.connected = true;
   state.tasksLoaded = true;
+  state.ui = {};
+  state.sidebarTasks = [];
+  state.attention = new Set();
+  state.setActiveTaskId.mockClear();
+  state.navigateToProject.mockClear();
   state.sendPermissionPromptResponse.mockClear();
   state.getByTid.mockReset();
   state.getByTid.mockImplementation((tid: number) =>
@@ -1806,6 +1816,113 @@ it.each(["/profiles/work", undefined])(
     );
   },
 );
+
+describe("sidebar keyboard navigation", () => {
+  const roots = ownedRoots();
+
+  it.each([
+    ["oldest_first", "ArrowDown", "1"],
+    ["oldest_first", "ArrowUp", "5"],
+    ["newest_first", "ArrowDown", "5"],
+    ["newest_first", "ArrowUp", "2"],
+  ] as const)(
+    "jumps from New Task to attention in %s order with %s",
+    async (order, key, next) => {
+      state.ui = { sidebar: { order } };
+      state.activeTaskId = null;
+      state.attention = new Set(order === "oldest_first" ? [1, 5] : [5, 2]);
+      roots.render(h(App, {}), roots.create());
+
+      await act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", { key, altKey: true, shiftKey: true }),
+        );
+      });
+
+      expect(state.setActiveTaskId).toHaveBeenCalledExactlyOnceWith(next);
+      expect(state.navigateToProject).not.toHaveBeenCalled();
+    },
+  );
+
+  beforeEach(() => {
+    state.activeWorkspace = "workspace";
+    state.activeProject = "project";
+    state.sidebarTasks = [1, 2, 3, 4, 5].map((tid) => ({
+      tid,
+      parentTid: tid === 2 || tid === 3 ? 1 : undefined,
+      status: "completed",
+      alive: false,
+      canStop: false,
+      resumable: false,
+      isProcessing: false,
+      childCount: tid === 1 ? 2 : 0,
+    }));
+  });
+
+  it.each([
+    ["oldest_first", [null, "1", "2", "3", "4", "5", null]],
+    ["newest_first", [null, "5", "4", "1", "3", "2", null]],
+  ] as const)(
+    "moves through New Task and wraps with %s",
+    async (order, cycle) => {
+      state.ui = { sidebar: { order } };
+      const container = roots.create();
+      for (const key of ["ArrowDown", "ArrowUp"]) {
+        const route = key === "ArrowDown" ? cycle : [...cycle].reverse();
+        for (const [index, next] of route.slice(1).entries()) {
+          state.activeTaskId = route[index]!;
+          state.setActiveTaskId.mockClear();
+          state.navigateToProject.mockClear();
+          roots.render(h(App, {}), container);
+          await act(() => {
+            document.dispatchEvent(
+              new KeyboardEvent("keydown", { key, altKey: true }),
+            );
+          });
+
+          if (next === null) {
+            expect(state.navigateToProject).toHaveBeenCalledExactlyOnceWith(
+              "workspace",
+              "project",
+            );
+            expect(state.setActiveTaskId).not.toHaveBeenCalled();
+          } else {
+            expect(state.setActiveTaskId).toHaveBeenCalledExactlyOnceWith(next);
+            expect(state.navigateToProject).not.toHaveBeenCalled();
+          }
+        }
+      }
+    },
+  );
+
+  it.each([
+    ["oldest_first", "2", "3"],
+    ["newest_first", "3", "2"],
+  ] as const)(
+    "jumps to attention in both directions with %s",
+    async (order, down, up) => {
+      state.ui = { sidebar: { order } };
+      state.activeTaskId = "4";
+      state.attention = new Set([2, 3]);
+      const container = roots.create();
+      roots.render(h(App, {}), container);
+
+      for (const [key, next] of [
+        ["ArrowDown", down],
+        ["ArrowUp", up],
+      ]) {
+        state.setActiveTaskId.mockClear();
+        await act(() => {
+          document.dispatchEvent(
+            new KeyboardEvent("keydown", { key, altKey: true, shiftKey: true }),
+          );
+        });
+        expect(state.setActiveTaskId).toHaveBeenCalledExactlyOnceWith(next);
+      }
+      expect(state.navigateToProject).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe("completion-aware task loading", () => {
   const roots = ownedRoots();

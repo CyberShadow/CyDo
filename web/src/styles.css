@@ -418,6 +418,10 @@ body,
   flex-direction: column-reverse;
 }
 
+.sidebar-list.newest-first {
+  flex-direction: column;
+}
+
 .sidebar-item {
   display: flex;
   align-items: center;

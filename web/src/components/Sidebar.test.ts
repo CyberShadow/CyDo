@@ -73,6 +73,190 @@ function flatten(
   return flattenTree(buildTree(tasks), activeTaskId, [], tasksLoading);
 }
 
+describe("Sidebar creation order", () => {
+  const tasks = [
+    task(1, { archived: true }),
+    task(2, { status: "importable" }),
+    task(3),
+    task(4, { parentTid: 3, archived: true }),
+    task(5, { parentTid: 3 }),
+    task(6, { parentTid: 5 }),
+    task(7, { parentTid: 5 }),
+    task(8, { parentTid: 3 }),
+    task(9),
+    task(10, { status: "importable" }),
+    task(11, { archived: true }),
+  ];
+
+  it.each([
+    [
+      "oldest_first",
+      [
+        "archive",
+        "1",
+        "11",
+        "import",
+        "2",
+        "10",
+        "3",
+        "archive:3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+      ],
+    ],
+    [
+      "newest_first",
+      [
+        "9",
+        "3",
+        "8",
+        "5",
+        "7",
+        "6",
+        "archive:3",
+        "4",
+        "import",
+        "10",
+        "2",
+        "archive",
+        "11",
+        "1",
+      ],
+    ],
+  ] as const)(
+    "orders each sibling level and the groups with %s",
+    (order, expected) => {
+      expect(flatTaskOrder(tasks, { order })).toEqual(expected);
+    },
+  );
+});
+
+describe("Sidebar selected row scrolling", () => {
+  const roots = ownedRoots();
+
+  it("tracks the selected row from the bottom in oldest-first order", () => {
+    const root = roots.create();
+    const tasks = [task(2), task(3)];
+    const props = {
+      tasks,
+      tasksLoading: false,
+      activeTaskId: null,
+      attention: new Set<number>(),
+      onSelectTask: vi.fn(),
+      getTaskHref: (id: string) => `/task/${id}`,
+      taskTypes: [],
+      ui: { sidebar: { order: "oldest_first" } } as const,
+    };
+    roots.render(h(Sidebar, props), root);
+    const row = root.querySelector<HTMLElement>('[data-tid="2"]')!;
+    const scrollIntoView = vi.fn();
+    row.scrollIntoView = scrollIntoView;
+
+    const selected = { ...props, activeTaskId: "2" };
+    roots.render(h(Sidebar, selected), root);
+    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({
+      block: "nearest",
+    });
+    scrollIntoView.mockClear();
+
+    const addedAbove = [task(1), ...tasks];
+    roots.render(h(Sidebar, { ...selected, tasks: addedAbove }), root);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    const addedBelow = [...addedAbove, task(4)];
+    roots.render(h(Sidebar, { ...selected, tasks: addedBelow }), root);
+    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({
+      block: "nearest",
+    });
+  });
+});
+
+describe("Sidebar newest-first rendering", () => {
+  const roots = ownedRoots();
+
+  it("renders New Task first and follows it with tasks in reading order", () => {
+    const root = roots.create();
+    roots.render(
+      h(Sidebar, {
+        tasks: [task(1), task(2, { parentTid: 1 }), task(3)],
+        tasksLoading: false,
+        activeTaskId: null,
+        attention: new Set<number>(),
+        onSelectTask: vi.fn(),
+        onNewTask: vi.fn(),
+        getTaskHref: (id) => `/task/${id}`,
+        taskTypes: [],
+        ui: { sidebar: { order: "newest_first" } },
+      }),
+      root,
+    );
+
+    expect(
+      Array.from(
+        root.querySelectorAll(".sidebar-list .sidebar-label"),
+        (label) => label.textContent,
+      ),
+    ).toEqual(["New Task", "Task 3", "Task 1", "Task 2"]);
+  });
+});
+
+describe("Sidebar newest-first subtask collapsing", () => {
+  const tasks = [
+    task(1),
+    task(2, { parentTid: 1, status: "completed" }),
+    task(3, { parentTid: 1, status: "completed" }),
+    task(4, { parentTid: 3, status: "completed" }),
+    task(5, { parentTid: 1, alive: true }),
+    task(6, { parentTid: 5, alive: true }),
+    task(7, { parentTid: 1, status: "completed" }),
+  ];
+
+  function newestItems(activeTaskId: string | null) {
+    return flattenTree(
+      buildTree(tasks, { order: "newest_first" }),
+      activeTaskId,
+      [],
+      false,
+      true,
+    ).filter((item) => item.kind === "ordinary");
+  }
+
+  it("folds the oldest stopped run and ends its guide after the visible children", () => {
+    const rows = newestItems(null);
+    expect(rows.map(({ id, depth, guides }) => [id, depth, guides])).toEqual([
+      ["1", 0, 0],
+      ["7", 1, 1],
+      ["5", 1, 1],
+      ["6", 2, 1],
+      ["subtasks:1", 1, 0],
+    ]);
+    expect(rows.at(-1)).toMatchObject({
+      title: "(2 subtasks)",
+      selectId: "1",
+      attentionTids: [3, 4, 2],
+    });
+  });
+
+  it.each(["1", "4"])(
+    "expands the oldest run when task %s is selected",
+    (activeTaskId) => {
+      expect(newestItems(activeTaskId).map(({ id }) => id)).toEqual([
+        "1",
+        "7",
+        "5",
+        "6",
+        "3",
+        "4",
+        "2",
+      ]);
+    },
+  );
+});
+
 describe("Sidebar subtask collapsing", () => {
   const done = { status: "completed" };
   const parentWithTwoDone = [

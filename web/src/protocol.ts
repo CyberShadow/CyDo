@@ -406,7 +406,12 @@ export interface UsageUiConfig {
   remaining: boolean;
 }
 
+export interface SidebarUiConfig {
+  order?: "oldest_first" | "newest_first";
+}
+
 export interface UiConfig {
+  sidebar?: SidebarUiConfig;
   usage?: UsageUiConfig;
 }
 

@@ -355,18 +355,21 @@ function AppContent() {
         return;
       }
       if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
-      const order = flatTaskOrder(sidebarTasks);
+      const order = flatTaskOrder(sidebarTasks, ui.sidebar);
+      const visual =
+        ui.sidebar?.order === "newest_first"
+          ? [null, ...order]
+          : [...order, null];
+      const idx = visual.indexOf(activeTaskId);
+      const len = visual.length;
+      const dir = e.key === "ArrowUp" ? -1 : 1;
       if (e.shiftKey) {
-        // Jump to next/prev task with attention, wrapping around
-        if (order.length === 0) return;
-        const idx = activeTaskId !== null ? order.indexOf(activeTaskId) : -1;
-        const len = order.length;
-        const dir = e.key === "ArrowUp" ? -1 : 1;
+        // Jump to next/prev task with attention, wrapping around.
         let next: string | undefined;
         for (let i = 1; i <= len; i++) {
           const candidate =
-            order[((idx === -1 ? 0 : idx) + dir * i + len) % len];
-          if (attention.has(parseInt(candidate!, 10))) {
+            visual[((idx === -1 ? 0 : idx) + dir * i + len) % len];
+          if (candidate != null && attention.has(Number(candidate))) {
             next = candidate;
             break;
           }
@@ -377,12 +380,7 @@ function AppContent() {
           .querySelector(`.sidebar-item[data-tid="${next}"]`)
           ?.scrollIntoView({ block: "nearest" });
       } else {
-        // Visual order: tasks in flatTaskOrder, then New Task at bottom
-        const visual: (string | null)[] = [...order, null];
-        const idx = visual.indexOf(activeTaskId);
-        const dir = e.key === "ArrowUp" ? -1 : 1;
-        const nextIdx = (idx + dir + visual.length) % visual.length;
-        const next = visual[nextIdx] ?? null;
+        const next = visual[(idx + dir + len) % len] ?? null;
         if (next !== null) {
           setActiveTaskId(next);
           document
@@ -403,6 +401,7 @@ function AppContent() {
     };
   }, [
     sidebarTasks,
+    ui.sidebar,
     activeTaskId,
     setActiveTaskId,
     attention,

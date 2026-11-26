@@ -225,7 +225,7 @@ unittest
 
 	auto status = buildServerStatus(false, false, "/nonexistent", UiConfig.init,
 		HeicConversionStatus(false, "not configured"));
-	assert(status.canFind(`"ui":{"usage":{"coloring":"pace","remaining":false}}`), status);
+	assert(status.canFind(`"ui":{"usage":{"coloring":"pace","remaining":false},"sidebar":{"order":"oldest_first"}}`), status);
 	assert(status.canFind(`"heic_conversion":{"available":false,"reason":"not configured"}`), status);
 
 	status = buildServerStatus(false, false, "/nonexistent", UiConfig.init,

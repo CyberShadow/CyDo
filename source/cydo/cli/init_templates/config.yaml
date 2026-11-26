@@ -857,6 +857,15 @@ workspaces: {}
 #     coloring: pace
 #     remaining: false
 
+## ui.sidebar
+## Purpose: Controls sidebar task ordering. Changes apply to open pages
+##   when CyDo reloads the config.
+## order: oldest_first (default) puts newer tasks and New Task at the
+##   bottom. newest_first puts them at the top.
+# ui:
+#   sidebar:
+#     order: oldest_first
+
 ## disk_cleanup_threshold_bytes
 ## Purpose: Sets the threshold for a task's disk cleanup request.
 ## Type: Positive integer number of bytes.
@@ -886,5 +895,7 @@ workspaces: {}
 #   usage:
 #     coloring: pace
 #     remaining: false
+#   sidebar:
+#     order: oldest_first
 # disk_cleanup_threshold_bytes: 10485760
 ## cydo-init: complete-example end
