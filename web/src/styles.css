@@ -2056,9 +2056,15 @@ body,
 
 .btn {
   padding: 10px 20px;
-  border: none;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text);
   font-size: 14px;
   cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
 }
 
 .btn:disabled {
@@ -2100,6 +2106,7 @@ body,
 
 .input-box .btn-send,
 .input-box .btn-stop {
+  border: none;
   height: var(--composer-btn-h);
   display: inline-flex;
   align-items: center;
