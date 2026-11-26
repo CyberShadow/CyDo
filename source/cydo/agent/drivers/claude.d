@@ -3207,7 +3207,7 @@ unittest
 {
 	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	string[] order;
 	session.onNativeSessionStarted = (string sessionId) {
 		order ~= "native:" ~ sessionId;
@@ -3221,7 +3221,7 @@ unittest
 		"Claude must deliver its native ID before translated session initialization");
 
 	auto lateSession = new ClaudeCodeSession("true");
-	scope(exit) lateSession.stop();
+	scope(exit) stopAndAwaitExit(lateSession);
 	lateSession.translateLiveLine(
 		`{"type":"system","subtype":"init","session_id":"claude-late-id","claude_code_version":"fixture"}`);
 	string delivered;
@@ -3234,7 +3234,7 @@ unittest
 {
 	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.translateLiveLine(
 		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
 
@@ -3254,7 +3254,7 @@ unittest
 {
 	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.translateLiveLine(
 		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
 	size_t deliveries;
@@ -3275,7 +3275,7 @@ unittest
 {
 	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
 	auto session = new ClaudeCodeSession("true", "resumed-id");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	const(string)[] received;
 	session.onTranscriptRows = (const(string)[] rows) { received ~= rows; };
 
@@ -3306,7 +3306,7 @@ unittest
 	bool registered;
 	auto session = new ClaudeCodeSession("true", "resumed-id",
 		historyPathRegistrar: (string id, string cwd) { registered = true; });
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.onTranscriptRows = (const(string)[] rows) {
 		assert(false, "Rejected resume mirror rows must not reach the handler");
 	};
@@ -3333,7 +3333,7 @@ unittest
 	import std.exception : collectException;
 
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.onTranscriptRows = (const(string)[] rows) {
 		assert(false, "A fresh mirror frame before init cannot reach the handler");
 	};
@@ -3351,7 +3351,7 @@ unittest
 
 	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.translateLiveLine(
 		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
 	int deliveries;
@@ -3389,7 +3389,7 @@ unittest
 
 	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.translateLiveLine(
 		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
 	auto failure = collectException(session.translateLiveLine(
@@ -3404,7 +3404,7 @@ unittest
 
 	ClaudeCodeSession.rewindSupportByVersion_["fixture"] = false;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.translateLiveLine(
 		`{"type":"system","subtype":"init","session_id":"mirror-session","claude_code_version":"fixture"}`);
 
@@ -3425,7 +3425,7 @@ unittest
 unittest
 {
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	PermissionPrompt[] requests;
 	PermissionEscalation[] escalations;
 	string[] withdrawn;
@@ -3485,7 +3485,7 @@ unittest
 	}
 
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	string[] events;
 	session.onOutput = (TranslatedEvent ev) { events ~= ev.translated; };
 	Promise!string[] decisions;
@@ -3547,7 +3547,7 @@ unittest
 	static struct Output { Decision hookSpecificOutput; }
 
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	ToolPermissionRequest[] policyRequests;
 	session.onPreToolUse = (ToolPermissionRequest request) {
 		policyRequests ~= request;
@@ -3638,7 +3638,7 @@ unittest
 	}
 
 	auto supporting = start();
-	scope(exit) supporting.stop();
+	scope(exit) stopAndAwaitExit(supporting);
 	size_t changes;
 	supporting.onRewindAvailabilityChanged = () { changes++; };
 	init(supporting, "probe-supported");
@@ -3651,18 +3651,30 @@ unittest
 	assert(supporting.pendingControlRequests_.length == 0);
 
 	auto cached = start();
-	scope(exit) cached.stop();
+	scope(exit) stopAndAwaitExit(cached);
 	init(cached, "probe-supported");
 	assert(cached.pendingControlRequests_.length == 0);
 	assert(cached.rewindSupported_.get);
 
 	auto older = start();
-	scope(exit) older.stop();
+	scope(exit) stopAndAwaitExit(older);
 	init(older, "probe-unsupported");
 	answerProbe(older, `"subtype":"error",`
 		~ `"error":"Unsupported control request subtype: rewind_conversation"}`);
 	assert(!older.rewindSupported_.get);
 	assert(!ClaudeCodeSession.rewindSupportByVersion_["probe-unsupported"]);
+}
+
+/// Stop a test session's process and run the event loop until ae has
+/// reaped it, so no SIGCHLD registration outlives the unittest block.
+version (unittest)
+private void stopAndAwaitExit(ClaudeCodeSession session)
+{
+	import ae.net.asockets : socketManager;
+
+	session.stop();
+	session.closeStdin();
+	socketManager.loop();
 }
 
 version (unittest)
@@ -3766,7 +3778,7 @@ private class ClaudeLiveReplyTest
 unittest
 {
 	auto test = new ClaudeLiveReplyTest;
-	scope(exit) test.session.stop();
+	scope(exit) stopAndAwaitExit(test.session);
 
 	test.cutTextStream("msg_mock_00001");
 	test.session.translateLiveLine(`{"type":"system","subtype":"api_retry","attempt":1,`
@@ -3786,7 +3798,7 @@ unittest
 unittest
 {
 	auto test = new ClaudeLiveReplyTest;
-	scope(exit) test.session.stop();
+	scope(exit) stopAndAwaitExit(test.session);
 
 	test.assistant("msg_mock_00011",
 		`{"type":"thinking","thinking":"Completed thinking before disconnect."}`);
@@ -3807,7 +3819,7 @@ unittest
 	import cydo.protocol : ItemStartedEvent, ItemCompletedEvent, ItemResultEvent, TurnStopEvent;
 
 	auto test = new ClaudeLiveReplyTest;
-	scope(exit) test.session.stop();
+	scope(exit) stopAndAwaitExit(test.session);
 
 	enum toolId = "toolu_mock_00003";
 	enum input = `{"command":"echo fallback-tool-ran"}`;
@@ -3846,7 +3858,7 @@ unittest
 	import cydo.protocol : ItemStartedEvent;
 
 	auto test = new ClaudeLiveReplyTest;
-	scope(exit) test.session.stop();
+	scope(exit) stopAndAwaitExit(test.session);
 
 	test.assistant("first", `{"type":"text","text":"first answer"}`);
 	test.expect("item/started", "item/completed", "turn/delta");
@@ -3869,7 +3881,7 @@ unittest
 	import std.exception : assertThrown;
 
 	auto test = new ClaudeLiveReplyTest;
-	scope(exit) test.session.stop();
+	scope(exit) stopAndAwaitExit(test.session);
 
 	test.startStream("streamed");
 	assertThrown!AssertError(test.assistant("different", `{"type":"text","text":"wrong reply"}`));
@@ -3880,7 +3892,7 @@ unittest
 unittest
 {
 	auto test = new ClaudeLiveReplyTest;
-	scope(exit) test.session.stop();
+	scope(exit) stopAndAwaitExit(test.session);
 
 	test.assistant("synthetic", `{"type":"text","text":"No response requested."}`, "<synthetic>");
 	auto answer = test.expect("item/started", "item/completed", "turn/delta");
@@ -3934,7 +3946,7 @@ unittest
 	auto transcript = buildPath(root, "stdin.jsonl");
 	auto session = new ClaudeCodeSession("cat",
 		cmdPrefix: ["sh", "-c", `exec cat > "$1"`, "record-stdin", transcript]);
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	auto initializeId = pendingUsageTestRequestId(session);
 	auto usage = session.requestUsage();
 	drainNextTicks();
@@ -3980,7 +3992,7 @@ unittest
 unittest
 {
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	answerUsageTestRequest(session, `"subtype":"success","response":{}`);
 
 	ClaudeUsageReport readReport(string body)
@@ -4010,7 +4022,7 @@ unittest
 unittest
 {
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	answerUsageTestRequest(session, `"subtype":"success","response":{}`);
 
 	auto usage = session.requestUsage();
@@ -4024,7 +4036,7 @@ unittest
 	import ae.net.asockets : socketManager;
 
 	auto session = new ClaudeCodeSession("cat", cmdPrefix: ["sh", "-c", "exec cat >/dev/null"]);
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	answerUsageTestRequest(session, `"subtype":"success","response":{}`);
 
 	auto usage = session.requestUsage();
@@ -4041,7 +4053,7 @@ unittest
 {
 	@JSONPartial static struct Probe { string type; @JSONOptional bool is_steering; }
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	bool[] steering;
 	session.onOutput = (TranslatedEvent event) {
 		auto probe = jsonParse!Probe(event.translated);
@@ -4121,7 +4133,7 @@ unittest
 		@JSONOptional string uuid;
 	}
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	TranslatedEvent[] events;
 	session.onOutput = (TranslatedEvent event) {
 		events ~= event;
@@ -4144,7 +4156,7 @@ unittest
 	import cydo.domain.tasks.model : isQueueOperation;
 
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	TranslatedEvent[] events;
 	session.onOutput = (TranslatedEvent event) { events ~= event; };
 
@@ -4165,7 +4177,7 @@ unittest
 	string[] order;
 	auto session = new ClaudeCodeSession("true", null, null, null, SessionConfig.init,
 		(string sessionId, string cwd) { order ~= "register:" ~ sessionId ~ ":" ~ cwd; });
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.onNativeSessionStarted = (string sessionId) {
 		order ~= "native:" ~ sessionId;
 	};
@@ -4193,7 +4205,7 @@ unittest
 
 	TranslatedEvent[] events;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.onOutput = (TranslatedEvent event) { events ~= event; };
 
 	string streamEvent(string event) { return `{"type":"stream_event","event":` ~ event ~ `}`; }
@@ -4246,7 +4258,7 @@ unittest
 		`{"type":"assistant","is_api_error_message":true,"message":{"id":"f3a3dd28-77e8-4082-a6b0-44509f6687ad","model":"<synthetic>","content":[{"type":"text","text":"API Error: 400 forced test error"}]},"parent_tool_use_id":null}`;
 	TranslatedEvent[] liveEvents;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.onOutput = (TranslatedEvent event) { liveEvents ~= event; };
 	session.translateAssistantLive(liveRaw);
 	assert(liveEvents.length == 1);
@@ -4306,7 +4318,7 @@ unittest
 	// not wait for an app-server response that Claude does not provide.
 	{
 		auto session = new ClaudeCodeSession("true");
-		scope(exit) session.stop();
+		scope(exit) stopAndAwaitExit(session);
 
 		bool fulfilled;
 		session.sendMessage([ContentBlock("text", "local enqueue")],
@@ -4344,7 +4356,7 @@ unittest
 	// A disconnected local transport rejects through the returned promise.
 	{
 		auto session = new ClaudeCodeSession("true");
-		scope(exit) session.stop();
+		scope(exit) stopAndAwaitExit(session);
 		session.process.forceClosePipes();
 
 		Promise!AgentSubmissionReceipt submission;
@@ -4361,7 +4373,7 @@ unittest
 	// handling.
 	{
 		auto session = new ClaudeCodeSession("true");
-		scope(exit) session.stop();
+		scope(exit) stopAndAwaitExit(session);
 
 		Promise!AgentSubmissionReceipt submission;
 		try
@@ -5584,7 +5596,7 @@ unittest
 	}
 
 	auto session = new StartupTestSession;
-	scope (exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	string[] nativeSessions;
 	session.onNativeSessionStarted = (string id) { nativeSessions ~= id; };
 	session.translateLiveLine(`{"type":"system","subtype":"init","session_id":"claude-native-id",`
@@ -6928,7 +6940,7 @@ unittest
 	}
 
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	ClaudeCodeSession.rewindSupportByVersion_["event-coverage-fixture"] = false;
 	scope(exit) ClaudeCodeSession.rewindSupportByVersion_.remove("event-coverage-fixture");
 	session.onToolPermissionRequest = (PermissionPrompt req, PermissionEscalation escalation) => new Promise!string;
@@ -7043,7 +7055,7 @@ unittest
 
 	TranslatedEvent[] events;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.onOutput = (TranslatedEvent event) { events ~= event; };
 	foreach (level; ["warning", "suggestion", "notice", "info"])
 	{
@@ -7088,7 +7100,7 @@ unittest
 
 	TranslatedEvent[] events;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.onOutput = (TranslatedEvent event) { events ~= event; };
 
 	// Captured from a SessionStart shell hook that exits with status 1.
@@ -7178,7 +7190,7 @@ unittest
 		~ `"uuid":"1c07d4a2-84fc-450a-912e-fc144eba7269","session_id":"fixture"}`;
 	TranslatedEvent[] events;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.onOutput = (TranslatedEvent event) { events ~= event; };
 	session.translateLiveLine(live);
 	assert(events.length == 1);
@@ -7208,7 +7220,7 @@ unittest
 		~ `,"uuid":"c15ff70a-e5cc-49a7-8435-3ae041f95643"}`;
 	TranslatedEvent[] events;
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.onOutput = (TranslatedEvent event) { events ~= event; };
 	session.translateLiveLine(caveat);
 	assert(events.length == 0);
@@ -7222,7 +7234,7 @@ unittest
 	@JSONPartial static struct TextBlock { string text; }
 	@JSONPartial static struct UserItem { string item_type; TextBlock[] content; }
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	TranslatedEvent[] live;
 	session.onOutput = (TranslatedEvent event) { live ~= event; };
 	foreach (content; [
@@ -7466,7 +7478,7 @@ unittest
 	import std.algorithm : canFind;
 
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	string[] stops;
 	session.onOutput = (TranslatedEvent event) {
 		if (event.translated.canFind(`"type":"turn/stop"`))
@@ -7492,7 +7504,7 @@ unittest
 		"live stops must carry both a two-block count and a zero-block count");
 
 	auto orphan = new ClaudeCodeSession("true");
-	scope(exit) orphan.stop();
+	scope(exit) stopAndAwaitExit(orphan);
 	bool rejected;
 	try orphan.translateLiveLine(`{"type":"stream_event","event":{"type":"message_stop"}}`);
 	catch (AssertError) rejected = true;
@@ -7862,7 +7874,7 @@ unittest
 	}
 
 	auto test = new ClaudeLiveReplyTest;
-	scope(exit) test.session.stop();
+	scope(exit) stopAndAwaitExit(test.session);
 	enum thinking = ClaudeLiveReplyTest.interruptedThinking;
 	enum text = `{"type":"text","text":"fallback-text-answer"}`;
 	enum answer = `{"type":"text","text":"fallback-thinking-answer"}`;
@@ -7923,7 +7935,7 @@ unittest
 	import cydo.protocol : ItemAbandonedEvent, TurnStopEvent;
 
 	auto test = new ClaudeLiveReplyTest;
-	scope(exit) test.session.stop();
+	scope(exit) stopAndAwaitExit(test.session);
 
 	// The cut at index 1 preserves the framed thinking block in capture 08.
 	test.cutAfterThinking();
@@ -7954,7 +7966,7 @@ unittest
 	import std.exception : assertThrown;
 
 	auto test = new ClaudeLiveReplyTest;
-	scope(exit) test.session.stop();
+	scope(exit) stopAndAwaitExit(test.session);
 	test.startStream("framed");
 	test.stream(test.textStart);
 	test.assistant("framed", `{"type":"text","text":"persisted"}`);
@@ -7969,7 +7981,7 @@ unittest
 	import std.exception : assertThrown;
 
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.translateLiveLine(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"A"}}}`);
 	assertThrown!AssertError(session.translateLiveLine(
 		`{"type":"stream_event","event":{"type":"message_stop"},"abandoned_blocks":{"api_message_id":"B","from_block_index":0}}`));
@@ -7982,7 +7994,7 @@ unittest
 	import std.exception : assertThrown;
 
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	session.translateLiveLine(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"A"}}}`);
 	session.translateLiveLine(`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`);
 	assertThrown!AssertError(session.translateLiveLine(
@@ -7999,7 +8011,7 @@ unittest
 	}
 
 	auto session = new ClaudeCodeSession("true");
-	scope(exit) session.stop();
+	scope(exit) stopAndAwaitExit(session);
 	int[] counts;
 	session.onOutput = (TranslatedEvent event) {
 		auto parsed = jsonParse!Stop(event.translated);
