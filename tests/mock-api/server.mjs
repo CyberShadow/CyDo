@@ -1325,16 +1325,11 @@ function extractLastUserText(messages) {
   return null;
 }
 
-function hasImageContent(messages) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role !== "user") continue;
-    if (Array.isArray(msg.content)) {
-      if (msg.content.some((b) => b.type === "image")) return true;
-    }
-    break;
-  }
-  return false;
+function lastUserImages(messages) {
+  const user = messages.findLast((message) => message.role === "user");
+  return Array.isArray(user?.content)
+    ? user.content.filter((block) => block.type === "image")
+    : [];
 }
 
 function hasToolResult(messages) {
@@ -1490,8 +1485,8 @@ function handleMessages(req, res) {
     const requestedModel = parsed.model || "unknown";
     const userText = extractLastUserText(messages);
     const isToolResult = hasToolResult(messages);
-    const hasImages = hasImageContent(messages);
-    if (hasImages) {
+    const images = lastUserImages(messages);
+    if (images.length) {
       log(`image content detected`);
     }
     log(
@@ -1751,8 +1746,14 @@ function handleMessages(req, res) {
     }
 
     const intent = matchPattern(userText);
-    if (hasImages && intent.type === "text") {
-      intent.text = "image received";
+    if (images.length && intent.type === "text") {
+      const details = images.map(({ source }) => {
+        const prefix = Buffer.from(source.data, "base64")
+          .subarray(0, 3)
+          .toString("hex");
+        return `${source.media_type} ${prefix}`;
+      });
+      intent.text = `image received: ${details.join(", ")}`;
     }
 
     if (intent.type === "check_context") {
