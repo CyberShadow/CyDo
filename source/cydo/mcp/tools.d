@@ -66,6 +66,12 @@ enum string unsandboxedCommandToolDescription =
 enum string requestToolDescription =
 	"Send a request to a singleton. Results follow the same delivery rules as Ask.\n\nAvailable singletons:\n\n";
 
+enum string createWorktreeToolDescription =
+	"Create or reuse this task's Git worktree on branch `cydo/<tid>` and return its path. "
+	~ "Your current working directory stays the same. Use `cd` to work in the worktree. "
+	~ "Sub-tasks that inherit your worktree run in it, and sub-tasks with fork edges branch from it. "
+	~ "You can call this once per task.";
+
 enum string createTaskToolDescription =
 	"Create a new top-level CyDo task for the user. It is not your sub-task: "
 	~ "you do not wait for it or receive its result, and it records you as its creator.\n\n"
@@ -233,6 +239,9 @@ interface CydoTools
 		@Description("Start the task immediately instead of leaving it as a draft. Only when explicitly instructed")
 		bool start = false
 	);
+	@Description(createWorktreeToolDescription)
+	@McpName("CreateWorktree")
+	McpResult createWorktree();
 }
 
 import ae.utils.promise : Promise;
@@ -266,6 +275,7 @@ interface ToolsBackend
 		string description, string taskType, string prompt);
 	bool wouldBeWriter(string callerTid, string taskType);
 	McpResult handleSwitchMode(string callerTid, string continuation);
+	McpResult handleCreateWorktree(string callerTid);
 	McpResult handleHandoff(string callerTid, string continuation, string prompt);
 	Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions);
 	Promise!McpResult handleBash(string callerTid, string command);
@@ -391,6 +401,11 @@ class CydoToolsImpl : CydoTools
 		return app.registerBatchAndAwait(callerTid, launched).await();
 	}
 
+	McpResult createWorktree()
+	{
+		return app.handleCreateWorktree(callerTid);
+	}
+
 	McpResult switchMode(string continuation)
 	{
 		return app.handleSwitchMode(callerTid, continuation);
@@ -455,6 +470,11 @@ unittest
 		bool wouldBeWriter(string callerTid, string taskType)
 		{
 			return false;
+		}
+
+		McpResult handleCreateWorktree(string callerTid)
+		{
+			assert(0, "unexpected call");
 		}
 
 		McpResult handleSwitchMode(string callerTid, string continuation)

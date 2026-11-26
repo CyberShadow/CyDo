@@ -45,7 +45,8 @@ import cydo.workflow.questions.router : makeQuestionMessage;
 import cydo.workflow.tasks.subtask_delivery : SubtaskResultDelivery,
 	SubtaskResultDeliveryHost, renderBatchResults;
 
-import cydo.workflow.workspace.worktree_allocator : WorktreePreparationFailure;
+import cydo.workflow.workspace.worktree : worktreeBranchName;
+import cydo.workflow.workspace.worktree_allocator : WorktreePreparationFailure, createWorktreeUnavailableReason;
 
 package(cydo):
 
@@ -105,6 +106,7 @@ struct WorkflowToolsHost
 	string delegate(const TaskData* td) worktreePath;
 	bool delegate(string projectPath, string taskTypeName) taskProducesCommitOutput;
 	void delegate(int childTid, int parentTid, WorktreeMode mode) setupWorktreeForEdge;
+	void delegate(const TaskData* td) linkWorktreeFiles;
 	Promise!void delegate(int tid) ensureProcessQueueAlive;
 	bool delegate() shuttingDown;
 	/// Tell the task's agent, if it keeps its own history, that the tool call
@@ -244,6 +246,7 @@ unittest
 		worktreePath: (const TaskData* td) => buildPath("/tmp", "cydo-task-startup-failure", "tasks", td.tid.to!string, "worktree"),
 		taskProducesCommitOutput: (string projectPath, string taskTypeName) => false,
 		setupWorktreeForEdge: (int childTid, int parentTid, WorktreeMode mode) {},
+		linkWorktreeFiles: (const TaskData* td) {},
 		shuttingDown: () => false,
 		ensureProcessQueueAlive: (int tid) {
 			if (tasks[tid].status == TaskStatus.pending)
@@ -575,6 +578,42 @@ public:
 		auto treeReadOnly = host_.treeReadOnlyForProject(parentTd.projectPath);
 		auto childRO = resolvedType in treeReadOnly;
 		return childRO is null || !(*childRO);
+	}
+
+	McpResult handleCreateWorktree(string callerTid)
+	{
+		import std.conv : to;
+
+		int tid;
+		try
+			tid = to!int(callerTid);
+		catch (Exception)
+			return McpResult("Invalid calling task ID", true);
+
+		auto td = host_.getTask(tid);
+		if (td is null)
+			return McpResult("Calling task not found", true);
+
+		auto reason = createWorktreeUnavailableReason(td, host_.taskTypesForProject(td.projectPath));
+		if (reason !is null)
+		{
+			if (td.parentTid <= 0 && td.worktreeTid != 0)
+				reason ~= " at " ~ host_.worktreePath(td)
+					~ " (branch " ~ worktreeBranchName(td.worktreeTid) ~ ")";
+			return McpResult("CreateWorktree: " ~ reason, true);
+		}
+
+		try
+		{
+			host_.setupWorktreeForEdge(tid, 0, WorktreeMode.require);
+			host_.linkWorktreeFiles(td);
+		}
+		catch (Exception e)
+			return McpResult("CreateWorktree: " ~ e.msg, true);
+
+		return McpResult("Worktree ready at " ~ host_.worktreePath(td)
+			~ " on branch " ~ worktreeBranchName(td.worktreeTid)
+			~ ". Your current working directory stays the same. Use `cd` to work in the worktree.");
 	}
 
 	McpResult handleSwitchMode(string callerTid, string continuation)
@@ -2587,6 +2626,7 @@ unittest
 				expectedTaskStartHead = execute(["git", "-C", worktree, "rev-parse", "HEAD"]).output.strip;
 			}
 		},
+		linkWorktreeFiles: (const TaskData* td) {},
 		shuttingDown: () => false,
 		ensureProcessQueueAlive: (int tid) {
 			if (tid == 1)
@@ -2914,6 +2954,7 @@ version (unittest)
 				taskProducesCommitOutput: (string projectPath, string taskType) => false,
 				setupWorktreeForEdge: (int childTid, int parentTid,
 					WorktreeMode mode) {},
+				linkWorktreeFiles: (const TaskData* td) {},
 				shuttingDown: () => shuttingDown,
 				effectiveCwd: (const TaskData* task) => task.projectPath,
 				singletonForTask: (int tid, string name) {
@@ -5207,6 +5248,137 @@ unittest
 	assert(decisions[2].canFind(`"behavior":"deny"`));
 	assert(decisions[2].canFind("denied: Dangerous rm operation"));
 	assert(promptVars["denial"] == "Permission denied by policy");
+}
+
+version (unittest) private class CreateWorktreeTestFixture
+{
+	import cydo.workflow.workspace.worktree_allocator : WorktreeAllocator, WorktreeAllocatorHost;
+	import std.file : mkdirRecurse, tempDir, write;
+	import std.path : buildPath;
+
+	string root;
+	string worktree;
+	TaskData task;
+	TaskTypeDef[] types;
+	WorkflowToolsBackend backend;
+	int allocationCalls;
+	int linkCalls;
+	int[int] persisted;
+
+	this(string name)
+	{
+		root = buildPath(tempDir(), "cydo-create-worktree-" ~ name);
+		auto repo = buildPath(root, "repo");
+		mkdirRecurse(repo);
+		assert(execute(["git", "-C", repo, "init", "-q"]).status == 0);
+		assert(execute(["git", "-C", repo, "-c", "user.name=Test", "-c",
+			"user.email=test@example.org", "commit", "--allow-empty", "-qm", "init"]).status == 0);
+		write(buildPath(repo, "local.md"), "local instructions");
+		auto taskDir = buildPath(root, "task-1");
+		worktree = buildPath(taskDir, "worktree");
+
+		task = TaskData(1, "local", repo);
+		task.taskType = "parent";
+		types = [
+			TaskTypeDef(name: "parent", creatable_tasks: [
+				CreatableTaskDef("child", "child", WorktreeMode.require),
+			]),
+			TaskTypeDef(name: "child"),
+		];
+		auto allocator = new WorktreeAllocator(WorktreeAllocatorHost(
+			getTask: &getTask,
+			persistWorktreeTid: (int tid, int owner) { persisted[tid] = owner; },
+			findRootTid: (int tid) => tid,
+			taskDir: (const TaskData* td) => taskDir,
+			worktreePath: (const TaskData* td) => worktree,
+		));
+		backend = new WorkflowToolsBackend(WorkflowToolsHost(
+			getTask: &getTask,
+			taskTypesForProject: (string projectPath) => types,
+			worktreePath: (const TaskData* td) => worktree,
+			setupWorktreeForEdge: (int tid, int parentTid, WorktreeMode mode) {
+				++allocationCalls;
+				assert(tid == 1 && parentTid == 0 && mode == WorktreeMode.require);
+				allocator.setupForEdge(tid, parentTid, mode);
+			},
+			linkWorktreeFiles: (const TaskData* td) {
+				import cydo.workflow.workspace.worktree : linkCheckoutFiles;
+
+				++linkCalls;
+				assert(td.worktreeTid == td.tid);
+				linkCheckoutFiles(td.repoPath, worktree, ["local.md"]);
+			},
+		));
+	}
+
+	private TaskData* getTask(int tid)
+	{
+		assert(tid == 1);
+		return &task;
+	}
+}
+
+unittest
+{
+	import std.file : readLink, rmdirRecurse;
+	import std.path : buildPath;
+	import std.string : strip;
+
+	auto f = new CreateWorktreeTestFixture("success");
+	scope(exit) rmdirRecurse(f.root);
+
+	auto result = f.backend.handleCreateWorktree("1");
+	assert(!result.isError, result.text);
+	assert(result.text.canFind(f.worktree));
+	assert(result.text.canFind("cydo/1"));
+	assert(f.task.worktreeTid == 1 && f.persisted[1] == 1);
+	assert(f.allocationCalls == 1 && f.linkCalls == 1);
+	auto branch = execute(["git", "-C", f.worktree, "rev-parse", "--abbrev-ref", "HEAD"]);
+	assert(branch.status == 0, branch.output);
+	assert(branch.output.strip == "cydo/1");
+	assert(readLink(buildPath(f.worktree, "local.md")) == buildPath(f.task.repoPath, "local.md"));
+
+	auto repeated = f.backend.handleCreateWorktree("1");
+	assert(repeated.isError);
+	assert(repeated.text.canFind(f.worktree));
+	assert(repeated.text.canFind("cydo/1"));
+	assert(f.allocationCalls == 1 && f.linkCalls == 1);
+}
+
+unittest
+{
+	import std.file : exists, rmdirRecurse;
+
+	auto f = new CreateWorktreeTestFixture("ineligible");
+	scope(exit) rmdirRecurse(f.root);
+
+	f.task.parentTid = 5;
+	auto child = f.backend.handleCreateWorktree("1");
+	assert(child.isError && child.text.canFind("top-level tasks"));
+	assert(f.allocationCalls == 0 && f.linkCalls == 0);
+
+	f.task.parentTid = 0;
+	f.types[0].creatable_tasks[0].worktree = WorktreeMode.fork;
+	auto forkOnly = f.backend.handleCreateWorktree("1");
+	assert(forkOnly.isError && forkOnly.text.canFind("has no workflow that uses a worktree"));
+	assert(f.allocationCalls == 0 && f.linkCalls == 0);
+	assert(!exists(f.worktree));
+}
+
+unittest
+{
+	import std.file : exists, rmdirRecurse;
+
+	auto f = new CreateWorktreeTestFixture("allocator-failure");
+	scope(exit) rmdirRecurse(f.root);
+	f.backend.host_.setupWorktreeForEdge = (int tid, int parentTid, WorktreeMode mode) {
+		throw new Exception("worktree allocation failed");
+	};
+
+	auto result = f.backend.handleCreateWorktree("1");
+	assert(result.isError && result.text.canFind("worktree allocation failed"));
+	assert(f.task.worktreeTid == 0 && f.persisted.length == 0);
+	assert(f.linkCalls == 0 && !exists(f.worktree));
 }
 
 unittest

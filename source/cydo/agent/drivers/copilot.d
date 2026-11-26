@@ -45,7 +45,7 @@ import cydo.runtime.launch.sandbox : cydoBinaryDir, cydoBinaryPath, effectiveEnv
 import cydo.mcp : McpResult, ToolCallCancellation;
 import cydo.mcp.tools : answerToolDescription, askToolDescription, createTaskToolDescription,
 	handoffToolDescription,
-	requestToolDescription, taskToolDescription, unsandboxedCommandToolDescription;
+	createWorktreeToolDescription, requestToolDescription, taskToolDescription, unsandboxedCommandToolDescription;
 import cydo.foundation.text.title : truncateTitle;
 
 // Callback type for dispatching custom tool calls.
@@ -3531,6 +3531,9 @@ string buildToolDefinitions(SessionConfig config)
 			unsandboxedCommandToolDescription,
 			JSONFragment(`{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"},"timeout":{"type":"integer"}},"required":["command","cwd","timeout"]}`),
 			true);
+	if (config.includeTools.canFind("CreateWorktree"))
+		tools ~= ToolDefinition("cydo-CreateWorktree", createWorktreeToolDescription,
+			JSONFragment(`{"type":"object","properties":{}}`), true);
 	if (config.includeTools.canFind("CreateTask"))
 		tools ~= ToolDefinition("cydo-CreateTask",
 			createTaskToolDescription ~ "\n\nAvailable entry points:\n\n"
@@ -3601,6 +3604,25 @@ unittest
 	assert(create.parameters.json == `{"type":"object","properties":{"prompt":{"type":"string"},"title":{"type":"string"},"entry_point":{"type":"string"},"project":{"type":"string"},"start":{"type":"boolean"}},"required":["prompt"]}`);
 	assert(create.description == createTaskToolDescription
 		~ "\n\nAvailable entry points:\n\n- agentic: Orchestrated session");
+}
+
+unittest
+{
+	import std.algorithm : canFind, filter;
+	import std.array : array;
+
+	SessionConfig config;
+	config.mcpSocketPath = "/tmp/cydo-mcp.sock";
+	auto defaults = jsonParse!(ToolDefinition[])(buildToolDefinitions(config));
+	assert(!defaults.canFind!(tool => tool.name == "cydo-CreateWorktree"));
+
+	config.includeTools = ["CreateWorktree"];
+	auto tools = jsonParse!(ToolDefinition[])(buildToolDefinitions(config));
+	auto offered = tools.filter!(tool => tool.name == "cydo-CreateWorktree").array;
+	assert(offered.length == 1);
+	assert(offered[0].parameters.json == `{"type":"object","properties":{}}`);
+	assert(offered[0].description == createWorktreeToolDescription);
+	assert(offered[0].skipPermission);
 }
 
 /// Build JSON params string for session.create.

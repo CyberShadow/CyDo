@@ -22,6 +22,7 @@ struct RenderedCydoToolsOptions
 	bool includeAsk = true;
 	bool includeAnswer = true;
 	bool includeUnsandboxedCommand;
+	bool includeCreateWorktree;
 }
 
 struct ToolDescriptionViolation
@@ -72,6 +73,8 @@ CydoSessionTools buildCydoSessionTools(
 		includeTools ~= "Request";
 	if (creatableEntryPoints.length > 0)
 		includeTools ~= "CreateTask";
+	if (options.includeCreateWorktree)
+		includeTools ~= "CreateWorktree";
 
 	return CydoSessionTools([
 		"creatable_task_types": creatableTaskTypes,
@@ -138,7 +141,7 @@ ToolDescriptionViolation[] checkConfiguredToolDescriptions(
 			config.singletons, typeDef.name);
 		violations ~= checkRenderedCydoToolDescriptionViolations(config.types,
 			config.entryPoints, typeDef.name, formatCompactSingletonToolSummary(singletons),
-			maxChars, RenderedCydoToolsOptions(includeUnsandboxedCommand: true));
+			maxChars, RenderedCydoToolsOptions(includeUnsandboxedCommand: true, includeCreateWorktree: true));
 	}
 	return violations;
 }
@@ -201,6 +204,26 @@ unittest
 	assert(tool.inputSchema.required == ["prompt"]);
 	assert(tool.inputSchema.properties["start"].type == "boolean");
 	assert(checkRenderedCydoToolDescriptionViolations(types, entries, "caller", "").length == 0);
+}
+
+unittest
+{
+	import cydo.mcp.tools : createWorktreeToolDescription;
+	import std.algorithm : canFind, filter;
+	import std.array : array;
+
+	auto types = [TaskTypeDef(name: "caller")];
+	auto defaults = buildRenderedCydoToolsList(types, [], "caller", "");
+	assert(!defaults.tools.canFind!(tool => tool.name == "CreateWorktree"));
+
+	auto enabled = buildRenderedCydoToolsList(types, [], "caller", "",
+		RenderedCydoToolsOptions(includeCreateWorktree: true));
+	auto offered = enabled.tools.filter!(tool => tool.name == "CreateWorktree").array;
+	assert(offered.length == 1);
+	assert(offered[0].inputSchema.type == "object");
+	assert(offered[0].inputSchema.required.length == 0);
+	assert(offered[0].inputSchema.properties.length == 0);
+	assert(offered[0].description == createWorktreeToolDescription);
 }
 
 private size_t countCodePoints(string text)

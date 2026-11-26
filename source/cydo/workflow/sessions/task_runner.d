@@ -49,6 +49,7 @@ import cydo.workflow.sessions.disk_usage : DiskEvaluation;
 import cydo.domain.tasks.yield_gate : YieldGate;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.workspace.worktree : linkCheckoutFiles;
+import cydo.workflow.workspace.worktree_allocator : createWorktreeUnavailableReason;
 import cydo.domain.task_types.definition : TaskTypeDef, formatCompactSingletonToolSummary, singletonsOfferedTo,
 	isInteractive, loadTaskTypeSystemPrompt, byName;
 import cydo.workflow.history.jsonl_store : repairInterruptedToolCallFile;
@@ -980,7 +981,7 @@ public:
 			// Launching again must preserve that write access.
 			auto wtPath = host_.worktreePath(td);
 			enforce(wtPath.length > 0, "Worktree path must not be empty for worktree task");
-			linkCheckoutFiles(td.repoPath, wtPath, worktreeLinks(td));
+			linkWorktreeFiles(td);
 			bool worktreeReadOnly = readOnly && !td.ownsWorktree;
 			auto wtAccess = worktreeReadOnly ? PathAccess.ro : PathAccess.rw;
 			sandbox.paths.require(wtPath, wtAccess,
@@ -1040,6 +1041,7 @@ public:
 		RenderedCydoToolsOptions renderedToolOptions;
 		renderedToolOptions.includeBash = taskAgent.needsBash();
 		renderedToolOptions.includeUnsandboxedCommand = verdict != UnsandboxedCommandExecution.no;
+		renderedToolOptions.includeCreateWorktree = createWorktreeUnavailableReason(td, taskTypes) is null;
 		auto sessionTools = buildCydoSessionTools(taskTypes, entryPoints,
 			td.taskType, singletonsSummary, renderedToolOptions);
 		sessionConfig.toolPlaceholders = sessionTools.placeholders;
@@ -1713,6 +1715,11 @@ public:
 		observeRecoveryAttempt(tid, resumeTask(tid).then(() {
 			return host_.sendSystemRestartNudge(tid, retryToolCall);
 		}));
+	}
+
+	void linkWorktreeFiles(const TaskData* td)
+	{
+		linkCheckoutFiles(td.repoPath, host_.worktreePath(td), worktreeLinks(td));
 	}
 
 private:
@@ -3546,6 +3553,106 @@ unittest
 {
 	assertReadOnlyManagedWorktreeAccess("cydo-task-runner-readonly-shared-worktree",
 		2, 1, PathMode.ro);
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	withGitMetadataLaunchFixture("cydo-task-runner-create-worktree-tool",
+		(GitMetadataLaunchFixture fixture) {
+			auto catalog = gitMetadataTaskCatalog(fixture,
+				"task_types:\n"
+				~ "  parent:\n"
+				~ "    model_class: large\n"
+				~ "    creatable_tasks:\n"
+				~ "      child:\n"
+				~ "        worktree: require\n"
+				~ "        prompt_template: prompts/blank.md\n"
+				~ "  fork_only:\n"
+				~ "    model_class: large\n"
+				~ "    creatable_tasks:\n"
+				~ "      child:\n"
+				~ "        worktree: fork\n"
+				~ "        prompt_template: prompts/blank.md\n"
+				~ "  child:\n"
+				~ "    model_class: large\n");
+			auto types = catalog.getTaskTypesForProject(fixture.primaryRepo);
+
+			TaskData[int] tasks;
+			tasks[1] = TaskData(1, "local", fixture.primaryRepo);
+			auto task = &tasks[1];
+			task.taskType = "parent";
+			task.agentName = "claude";
+			auto runner = gitMetadataTestRunner(&tasks, catalog, fixture,
+				unrestrictedLaunchTestSandbox(), fixture.linkedCheckout, fixture.primaryRepo);
+
+			bool offersCreateWorktree()
+			{
+				auto typeDef = types.byName(task.taskType);
+				assert(typeDef !is null);
+				auto launch = runner.prepareTaskSessionLaunch(1,
+					new LinkedWorktreeSandboxTestAgent(), typeDef);
+				return launch.sessionConfig.includeTools.canFind("CreateWorktree");
+			}
+
+			assert(offersCreateWorktree());
+			task.worktreeTid = 1;
+			assert(!offersCreateWorktree());
+			task.worktreeTid = 0;
+			task.parentTid = 5;
+			assert(!offersCreateWorktree());
+			task.parentTid = 0;
+			task.taskType = "fork_only";
+			assert(!offersCreateWorktree());
+		});
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	withGitMetadataLaunchFixture("cydo-task-runner-create-worktree-cycle",
+		(GitMetadataLaunchFixture fixture) {
+			auto catalog = gitMetadataTaskCatalog(fixture,
+				"task_types:\n"
+				~ "  b:\n"
+				~ "    model_class: large\n"
+				~ "    read_only: true\n"
+				~ "    creatable_tasks:\n"
+				~ "      a:\n"
+				~ "        prompt_template: prompts/blank.md\n"
+				~ "      child:\n"
+				~ "        worktree: require\n"
+				~ "        prompt_template: prompts/blank.md\n"
+				~ "  a:\n"
+				~ "    model_class: large\n"
+				~ "    read_only: true\n"
+				~ "    creatable_tasks:\n"
+				~ "      b:\n"
+				~ "        prompt_template: prompts/blank.md\n"
+				~ "  child:\n"
+				~ "    model_class: large\n");
+			auto types = catalog.getTaskTypesForProject(fixture.linkedCheckout);
+			auto typeDef = types.byName("a");
+			assert(typeDef !is null);
+
+			TaskData[int] tasks;
+			tasks[1] = TaskData(1, "local", fixture.linkedCheckout);
+			tasks[1].taskType = "a";
+			tasks[1].agentName = "claude";
+
+			auto runner = gitMetadataTestRunner(&tasks, catalog, fixture,
+				unrestrictedLaunchTestSandbox(), "", fixture.linkedCheckout);
+			auto launch = runner.prepareTaskSessionLaunch(1,
+				new LinkedWorktreeSandboxTestAgent(), typeDef);
+
+			assert(launch.sessionConfig.includeTools.canFind("CreateWorktree"));
+			auto paths = launch.processLaunch.sandbox.paths;
+			assert(paths.exact(fixture.linkedGitDir).get.effectiveMode == PathMode.always_rw,
+				"CreateWorktree requires writable checkout Git metadata");
+			assert(paths.exact(fixture.commonGitDir).get.effectiveMode == PathMode.always_rw);
+		});
 }
 
 unittest

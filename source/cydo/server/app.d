@@ -548,6 +548,7 @@ class App
 				return typeDef !is null && typeDef.output_type.canFind(OutputType.commit);
 			},
 			setupWorktreeForEdge: &worktreeAllocator.setupForEdge,
+			linkWorktreeFiles: (const TaskData* td) => taskSessionRunner.linkWorktreeFiles(td),
 			shuttingDown: () => shuttingDown,
 			correctAbortedToolCall: (int tid, string correction) {
 				import cydo.agent.session : AbortedToolCallCorrection;

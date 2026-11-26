@@ -10,7 +10,7 @@ import std.string : lineSplitter, strip;
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, TaskTypeConfig, TaskTypeDef,
 	UserEntryPointDef, SingletonDef, WorktreeMode, byName, computeReachesWorktree,
 	formatCompactSingletonToolSummary, singletonsOfferedTo, isInteractive,
-	computeTreeReadOnly, promptTemplateSource, renderPrompt, validateTaskTypes;
+	computeReachesRequiredWorktree, computeTreeReadOnly, promptTemplateSource, renderPrompt, validateTaskTypes;
 import cydo.domain.policy.unsandboxed_command : evaluateUnsandboxedCommandExecution;
 import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions, buildRenderedCydoToolsList;
 import cydo.runtime.config : UnsandboxedCommandExecution;
@@ -27,7 +27,8 @@ private string renderDumpContextToolsSection(
 		"task type '" ~ typeName ~ "'", typeName,
 		isInteractive(config.types, config.entryPoints, typeName));
 	auto options = RenderedCydoToolsOptions(
-		includeUnsandboxedCommand: verdict != UnsandboxedCommandExecution.no);
+		includeUnsandboxedCommand: verdict != UnsandboxedCommandExecution.no,
+		includeCreateWorktree: computeReachesRequiredWorktree(config.types).get(typeName, false));
 	auto toolsList = buildRenderedCydoToolsList(config.types, config.entryPoints, typeName,
 		formatCompactSingletonToolSummary(singletons), options);
 	foreach (ref tool; toolsList.tools)

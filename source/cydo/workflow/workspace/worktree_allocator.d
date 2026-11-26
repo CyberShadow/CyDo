@@ -4,12 +4,25 @@ import std.file : exists, mkdirRecurse;
 import std.format : format;
 import std.logger : infof;
 
-import cydo.domain.task_types.definition : WorktreeMode;
+import cydo.domain.task_types.definition : TaskTypeDef, WorktreeMode, computeReachesRequiredWorktree;
 import cydo.domain.tasks.model : TaskData, worktreePathForTaskDir;
 import cydo.workflow.workspace.worktree : addWorktree;
 import cydo.workflow.workspace.worktree_dedup : dedupWorktreeInBackground;
 
 package(cydo):
+
+string createWorktreeUnavailableReason(const TaskData* td, TaskTypeDef[] types)
+{
+	if (td.parentTid > 0)
+		return "CreateWorktree is only available to top-level tasks";
+	if (td.worktreeTid != 0)
+		return "This task already has a worktree";
+	if (!td.isGitCheckout)
+		return "This task's project is not a Git checkout";
+	if (!computeReachesRequiredWorktree(types).get(td.taskType, false))
+		return "Task type '" ~ td.taskType ~ "' has no workflow that uses a worktree";
+	return null;
+}
 
 struct WorktreeAllocatorHost
 {
@@ -173,22 +186,25 @@ version(unittest)
 	}
 }
 
-unittest
+version (unittest) private void testRequiredRootWorktree(bool adopt)
 {
 	import std.file : exists, rmdirRecurse;
+	import std.process : execute;
+	import std.string : strip;
 	import std.path : buildPath;
 
 	TaskData[int] tasks;
 	int[int] persisted;
 
-	auto repoDir = setupWorktreeAllocatorTestRepo("cydo-worktree-allocator-require-root");
+	auto name = adopt ? "cydo-worktree-allocator-adopt-root" : "cydo-worktree-allocator-create-root";
+	auto repoDir = setupWorktreeAllocatorTestRepo(name);
 	scope(exit)
 	{
 		if (exists(repoDir))
 			rmdirRecurse(repoDir);
 	}
 
-	auto scratchDir = buildPath("/tmp", "cydo-worktree-allocator-require-root-tasks");
+	auto scratchDir = buildPath("/tmp", name ~ "-tasks");
 	scope(exit)
 	{
 		if (exists(scratchDir))
@@ -211,11 +227,67 @@ unittest
 		worktreePath: (const TaskData* td) => buildPath(scratchDir, format!"task-%d"(td.tid), "worktree"),
 	));
 
-	allocator.setupForEdge(2, 1, WorktreeMode.require);
+	auto worktree = buildPath(scratchDir, "task-1", "worktree");
+	if (adopt)
+	{
+		allocator.setupForEdge(2, 1, WorktreeMode.require);
+		assert(tasks[1].worktreeTid == 0);
+		assert(tasks[2].worktreeTid == 1);
+		assert(1 !in persisted);
+		assert(persisted[2] == 1);
+		assert(exists(worktree));
+	}
 
-	assert(tasks[1].worktreeTid == 0);
-	assert(tasks[2].worktreeTid == 1);
-	assert(1 !in persisted);
-	assert(persisted[2] == 1);
-	assert(exists(buildPath(scratchDir, "task-1", "worktree")));
+	allocator.setupForEdge(1, 0, WorktreeMode.require);
+	assert(tasks[1].worktreeTid == 1);
+	assert(persisted[1] == 1);
+	assert(exists(worktree));
+	auto branch = execute(["git", "-C", worktree, "rev-parse", "--abbrev-ref", "HEAD"]);
+	assert(branch.status == 0, branch.output);
+	assert(branch.output.strip == "cydo/1");
+}
+
+unittest
+{
+	testRequiredRootWorktree(true);
+}
+
+unittest
+{
+	testRequiredRootWorktree(false);
+}
+
+unittest
+{
+	import cydo.domain.task_types.definition : CreatableTaskDef;
+	import std.file : mkdir, rmdirRecurse;
+
+	auto repo = setupWorktreeAllocatorTestRepo("cydo-worktree-allocator-eligibility");
+	scope(exit) rmdirRecurse(repo);
+	auto nonGit = repo ~ "-non-git";
+	mkdir(nonGit);
+	scope(exit) rmdirRecurse(nonGit);
+
+	auto types = [
+		TaskTypeDef(name: "root", creatable_tasks: [
+			CreatableTaskDef("child", "child", WorktreeMode.require),
+		]),
+		TaskTypeDef(name: "child"),
+	];
+	auto task = TaskData(1, "local", repo);
+	task.taskType = "root";
+	assert(createWorktreeUnavailableReason(&task, types) is null);
+	task.parentTid = 2;
+	assert(createWorktreeUnavailableReason(&task, types)
+		== "CreateWorktree is only available to top-level tasks");
+	task.parentTid = 0;
+	task.worktreeTid = 1;
+	assert(createWorktreeUnavailableReason(&task, types) == "This task already has a worktree");
+	task.worktreeTid = 0;
+	task.projectPath = nonGit;
+	assert(createWorktreeUnavailableReason(&task, types) == "This task's project is not a Git checkout");
+	task.projectPath = repo;
+	task.taskType = "child";
+	assert(createWorktreeUnavailableReason(&task, types)
+		== "Task type 'child' has no workflow that uses a worktree");
 }
