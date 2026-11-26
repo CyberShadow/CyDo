@@ -696,7 +696,10 @@ class HistoryEventPipeline
 			@JSONOptional bool is_sidechain;
 			@JSONOptional string parent_tool_use_id;
 		}
-		auto probe = jsonParse!Probe(extractEventFromEnvelope(envelope));
+		auto event = extractEventFromEnvelope(envelope);
+		if (event.length == 0)
+			return TurnEvent.other;
+		auto probe = jsonParse!Probe(event);
 		if (probe.is_sidechain || probe.parent_tool_use_id.length > 0)
 			return TurnEvent.other;
 		return probe.type == "turn/stop" ? TurnEvent.stop
@@ -2232,7 +2235,8 @@ unittest
 		[ContentBlock("text", "provisional")], null, null, "nonce");
 	assert(fixture.reads.length == 1 && fixture.sent.length == 0);
 	assert(fixture.task.pendingSteeringTexts == ["provisional"]);
-	fixture.task.history.appendLive(Data("later agent event".representation), "agent raw");
+	fixture.pipeline.appendAndBroadcastTaskEvent(fixture.tid,
+		TranslatedEvent(`{"type":"turn/stop"}`, "agent raw"));
 	fixture.reads[0].fulfill(DriverHistory(
 		[TranslatedEvent(`{"type":"turn/stop"}`, "driver raw")], 1));
 	drainNextTicks();
@@ -2599,4 +2603,41 @@ unittest
 	assert(message.content[0].extras.json == extras);
 	auto live = jsonParse!TaskEventEnvelope(cast(string) f.task.history[1].toGC());
 	assert(live.tid == f.tid && live.event.json == delta);
+}
+
+// Nested event metadata in pending user records does not affect turn boundaries.
+unittest
+{
+	foreach (loaded; [false, true])
+	{
+		auto f = new DriverHistoryPipelineFixture;
+		if (loaded)
+		{
+			f.pipeline.whenHistoryLoaded(f.tid, () {});
+			finishEnrichmentHistoryRead(f, []);
+		}
+		f.pipeline.appendAndBroadcastTaskEvent(f.tid, TranslatedEvent(`{"type":"turn/stop"}`, null));
+		auto block = ContentBlock("text", "queued");
+		block.extras = JSONFragment(`{"label":"provisional","event":{"type":"item/delta","item_id":"x","content":"nested"}}`);
+		foreach (nonce; ["u1", "u2"])
+			f.pipeline.appendUnconfirmedUserMessage(f.tid, [block], null, null, nonce);
+
+		auto result = TranslatedEvent(`{"type":"turn/result","subtype":"success"}`, null);
+		result.turnBoundary = HistoryBoundary("through:turn", HistoryBoundaryKind.agent_turn);
+		f.pipeline.appendAndBroadcastTaskEvent(f.tid, result);
+
+		if (!loaded)
+		{
+			f.pipeline.whenHistoryLoaded(f.tid, () {});
+			finishEnrichmentHistoryRead(f, []);
+		}
+		assert(f.task.history.length == 4);
+		auto stop = jsonParse!HistoryBoundaryEvent(historyEvent(f.task.history[0]));
+		assert(stop.history_boundary == result.turnBoundary);
+		foreach (i, nonce; ["u1", "u2"])
+		{
+			auto queued = jsonParse!UnconfirmedUserEventEnvelope(cast(string) f.task.history[i + 1].toGC());
+			assert(queued.correlation_id == nonce);
+		}
+	}
 }

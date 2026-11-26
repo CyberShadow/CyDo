@@ -844,6 +844,8 @@ private:
 			HistoryBoundaryEvent probe;
 			entry.enter((scope const(ubyte)[] bytes) {
 				auto event = extractEventFromEnvelope(bytes.as!(char[]));
+				if (event.length == 0)
+					return;
 				probe = jsonParse!HistoryBoundaryEvent(event);
 				if (!found && probe.history_boundary.anchor == anchor)
 					matchedEvent = event.idup;
@@ -1807,6 +1809,39 @@ unittest
 		assert(error.correlation_id == (i == 0 ? "refused-preview" : null));
 	}
 	assert(sideEffects == 0 && readText(historyPath) == history);
+}
+
+unittest
+{
+	import ae.utils.json : JSONFragment;
+	import cydo.agent.drivers.codex.history : CodexHistoryMode;
+	import cydo.domain.storage.persistence : LoadedHistory;
+	import cydo.protocol : TaskEventEnvelope, UnconfirmedUserEventEnvelope;
+
+	enum tid = 72;
+	auto pending = UnconfirmedUserEventEnvelope(tid, JSONFragment(
+		`{"type":"item/started","item_type":"user_message","item_id":"cc-user-msg","text":"pending prompt","content":[{"type":"text","text":"pending prompt","event":{"type":"item/delta","item_id":"nested"}}],"pending":true}`),
+		"pending-nonce");
+	auto canonical = TaskEventEnvelope(tid, 0, JSONFragment(
+		`{"type":"item/started","item_type":"user_message","history_boundary":{"anchor":"before:t1","kind":"user"}}`));
+	LoadedHistory loaded;
+	loaded.history ~= Data(toJson(pending).representation);
+	loaded.history ~= Data(toJson(canonical).representation);
+	loaded.rawSource = [null, null];
+	loaded.sourceLine = [0, 0];
+
+	HistoryStore history;
+	history.reset(Watermark.driverServed());
+	history.completeDriverLoad(history.beginDriverLoad(), move(loaded), CodexHistoryMode.paginated);
+
+	HistoryBoundary boundary;
+	bool opensConversation;
+	int userBoundariesFrom;
+	string matchedEvent;
+	assert(TaskMutationService.resolveLoadedBoundary(history, "before:t1", boundary,
+		opensConversation, userBoundariesFrom, matchedEvent));
+	assert(boundary.anchor == "before:t1" && boundary.kind == HistoryBoundaryKind.user);
+	assert(opensConversation);
 }
 
 // Codex fork and undo address the boundaries of the task's loaded history.

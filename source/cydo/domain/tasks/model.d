@@ -1547,30 +1547,57 @@ long extractTsFromEnvelope(const(char)[] envelope)
 	catch (Exception) { return 0; }
 }
 
-/// Extract the "event" field from a task envelope JSON string.
-/// Envelopes have the form: {"tid":N,"ts":N,"event":{...}}
-/// Constness-polymorphic via `inout` so callers can keep the mutable
-/// view they obtained from `Data.enter` — no immutability hard-cast.
+/// Borrow the raw value of the top-level "event" field, if present.
 inout(char)[] extractEventFromEnvelope(inout(char)[] envelope)
 {
-	import std.string : indexOf;
+	import ae.utils.serialization.json : JsonParser, jsonCustomDeserializer;
+	import ae.utils.serialization.serialization : isProtocolField, isProtocolMap;
 
-	// Find ,"event": — comma prevents matching inside other keys
-	// like "unconfirmedUserEvent".
-	auto key = `,"event":`;
-	auto idx = envelope.indexOf(key);
-	if (idx < 0)
-		return envelope[0 .. 0];
+	static struct EventValue
+	{
+		const(char)[]* result;
 
-	auto start = idx + key.length;
-	if (start >= envelope.length)
-		return envelope[0 .. 0];
+		void putRawJson(const(char)[] raw)
+		{
+			*result = raw;
+		}
 
-	// The event value is a JSON object/string that extends to the second-to-last char
-	// (the envelope's closing }). This works because "event" is the last field.
-	if (envelope[$ - 1] == '}')
-		return envelope[start .. $ - 1];
-	return envelope[start .. $];
+		// JsonParser instantiates its ordinary sink path even for raw sinks.
+		void handle(V)(V value)
+		{
+			assert(0, "Expected a raw history event");
+		}
+	}
+
+	static struct EnvelopeProbe
+	{
+		const(char)[]* event;
+
+		void handle(V)(V value)
+		{
+			static if (isProtocolMap!V)
+				value.reader(this);
+			else static if (isProtocolField!V)
+			{
+				string name;
+				value.nameReader(jsonCustomDeserializer(&name));
+				if (name == "event")
+					value.valueReader(EventValue(event));
+			}
+			else
+				throw new Exception("Expected a history envelope object");
+		}
+	}
+
+	const(char)[] event;
+	auto parser = JsonParser!(const char)(envelope, 0);
+	parser.read(EnvelopeProbe(&event));
+	parser.skipWhitespace();
+	enforce(parser.eof, "Unexpected trailing data after a history envelope");
+	if (event is null)
+		return null;
+	auto start = event.ptr - envelope.ptr;
+	return envelope[start .. start + event.length];
 }
 
 unittest
