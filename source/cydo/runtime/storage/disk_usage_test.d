@@ -165,6 +165,150 @@ unittest
     assert(result.totalBytes == 1_048_584);
 }
 
+// Only new top-level shared entries count, including their nested contents.
+unittest
+{
+    import core.thread : Thread;
+    import core.time : ClockType;
+    import cydo.runtime.launch.sandbox_materialization : taskTmpHostPath, tmpRuntimeDirName;
+    import std.datetime : Clock;
+    import std.file : symlink;
+
+    DiskFixture fixture = DiskFixture("shared-tmp");
+    auto task = buildPath(fixture.root, "task");
+    auto sharedTmp = buildPath(fixture.root, "shared");
+    auto temporary = taskTmpHostPath(sharedTmp, 1);
+    auto siblingTmp = taskTmpHostPath(sharedTmp, 2);
+    auto runtime = buildPath(sharedTmp, tmpRuntimeDirName());
+    auto oldDir = buildPath(sharedTmp, "old-dir");
+    mkdirRecurse(task);
+    mkdirRecurse(oldDir);
+    write(buildPath(sharedTmp, "old-file"), "old");
+
+    // The old entries must precede the cutoff even if they share a clock tick.
+    auto afterOldEntries = Clock.currTime!(ClockType.coarse);
+    auto since = afterOldEntries;
+    while (since == afterOldEntries)
+    {
+        Thread.yield();
+        since = Clock.currTime!(ClockType.coarse);
+    }
+
+    auto nested = buildPath(sharedTmp, "new-dir", "nested");
+    mkdirRecurse(nested);
+    write(buildPath(nested, "new-file"), "123456789");
+    symlink("missing", buildPath(sharedTmp, "new-link"));
+    write(buildPath(oldDir, "new-file"), "ignored");
+    write(buildPath(sharedTmp, "old-file"), "still ignored after rewriting");
+
+    foreach (dir; [temporary, siblingTmp, runtime])
+    {
+        mkdirRecurse(dir);
+        write(buildPath(dir, "scratch"), "12345");
+    }
+    // Similar names outside the reserved directories still count.
+    auto runtimeLookalike = tmpRuntimeDirName() ~ "-notes";
+    foreach (name; [runtimeLookalike, "cydo-task-notes", "cydo-task-01",
+        "cydo-task--1", "cydo-task-2147483648"])
+    {
+        auto dir = buildPath(sharedTmp, name);
+        mkdirRecurse(dir);
+        write(buildPath(dir, "file"), "123");
+    }
+
+    auto result = measureDiskUsage(DiskScanInput(task, temporary,
+        sharedTmpDir: sharedTmp, sharedSince: since));
+    assert(result.temporaryBytes == 5);
+    assert(result.sharedTemporaryBytes == 31);
+    assert(result.totalBytes == 36);
+    assert(result.topPaths == [
+        DiskTopPath(DiskCategory.sharedTemporary, "new-dir", 9),
+        DiskTopPath(DiskCategory.sharedTemporary, "new-link", 7),
+        DiskTopPath(DiskCategory.temporary, "scratch", 5),
+        DiskTopPath(DiskCategory.sharedTemporary, runtimeLookalike, 3),
+        DiskTopPath(DiskCategory.sharedTemporary, "cydo-task--1", 3),
+        DiskTopPath(DiskCategory.sharedTemporary, "cydo-task-01", 3),
+        DiskTopPath(DiskCategory.sharedTemporary, "cydo-task-2147483648", 3),
+        DiskTopPath(DiskCategory.sharedTemporary, "cydo-task-notes", 3),
+    ]);
+    assert(result.symlinks == [
+        DiskSymlink(buildPath(sharedTmp, "new-link"), "missing", "new-link"),
+    ]);
+}
+
+unittest
+{
+    import std.exception : collectException;
+
+    auto error = collectException(measureDiskUsage(DiskScanInput("/task", "/task/tmp",
+        sharedTmpDir: "/shared")));
+    assert(error !is null);
+    assert(error.msg.canFind("requires a birth-time cutoff: /shared"));
+}
+
+// An entry created immediately after sampling the launch clock counts.
+unittest
+{
+    import core.time : ClockType;
+    import std.datetime : Clock;
+    import std.file : remove;
+
+    DiskFixture fixture = DiskFixture("shared-tmp-clock-boundary");
+    auto task = buildPath(fixture.root, "task");
+    auto temporary = buildPath(fixture.root, "tmp");
+    auto sharedTmp = buildPath(fixture.root, "shared");
+    auto file = buildPath(sharedTmp, "immediate");
+    mkdirRecurse(task);
+    mkdirRecurse(temporary);
+    mkdirRecurse(sharedTmp);
+
+    foreach (i; 0 .. 50)
+    {
+        auto since = Clock.currTime!(ClockType.coarse);
+        write(file, "123");
+        auto result = measureDiskUsage(DiskScanInput(task, temporary,
+            sharedTmpDir: sharedTmp, sharedSince: since));
+        assert(result.sharedTemporaryBytes == 3, "Immediate entry lost on iteration " ~ i.to!string);
+        remove(file);
+    }
+}
+
+unittest
+{
+    import core.stdc.errno : EACCES;
+    import core.sys.posix.sys.stat : chmod;
+    import core.sys.posix.unistd : geteuid;
+    import std.datetime : SysTime;
+    import std.file : FileException;
+    import std.string : toStringz;
+
+    DiskFixture fixture = DiskFixture("shared-tmp-blocked");
+    auto task = buildPath(fixture.root, "task");
+    auto temporary = buildPath(fixture.root, "tmp");
+    auto sharedTmp = buildPath(fixture.root, "shared");
+    auto blocked = buildPath(sharedTmp, "blocked");
+    mkdirRecurse(task);
+    mkdirRecurse(temporary);
+    mkdirRecurse(blocked);
+    write(buildPath(blocked, "hidden"), "unmeasured");
+    write(buildPath(sharedTmp, "readable"), "123");
+
+    auto input = DiskScanInput(task, temporary,
+        sharedTmpDir: sharedTmp, sharedSince: SysTime.fromUnixTime(0));
+    assert(chmod(blocked.toStringz, 0) == 0);
+    scope (exit) assert(chmod(blocked.toStringz, 448) == 0);
+    auto result = geteuid() == 0
+        ? measureDiskUsage(input, (string dir) {
+            if (dir == blocked) throw new FileException(dir, EACCES);
+            return listDirectory(dir);
+        })
+        : measureDiskUsage(input);
+    assert(result.sharedTemporaryBytes == 3);
+    assert(result.unmeasured.length == 1);
+    assert(result.unmeasured[0].category == DiskCategory.sharedTemporary);
+    assert(result.unmeasured[0].relativePath == "blocked");
+}
+
 // Root overlap counts each path once, and ranking keeps ten disjoint paths.
 unittest
 {
@@ -399,6 +543,38 @@ unittest
         threw = true;
     }
     assert(threw);
+}
+
+// A shared entry can disappear before statx or after its metadata was read.
+unittest
+{
+    import std.datetime : SysTime;
+    import std.file : remove;
+
+    DiskFixture fixture = DiskFixture("vanishing-shared-entries");
+    auto task = buildPath(fixture.root, "task");
+    auto temporary = buildPath(fixture.root, "tmp");
+    auto sharedTmp = buildPath(fixture.root, "shared");
+    auto missing = buildPath(sharedTmp, "file");
+    auto vanishing = buildPath(sharedTmp, "dir");
+    mkdirRecurse(task);
+    mkdirRecurse(temporary);
+    mkdirRecurse(vanishing);
+    write(buildPath(vanishing, "hidden"), "discarded");
+    write(missing, "discarded");
+    write(buildPath(sharedTmp, "retained"), "123");
+
+    auto result = measureDiskUsage(DiskScanInput(task, temporary,
+        sharedTmpDir: sharedTmp, sharedSince: SysTime.fromUnixTime(0)), (string dir) {
+        if (dir == vanishing)
+            rmdirRecurse(vanishing);
+        auto children = listDirectory(dir);
+        if (dir == sharedTmp)
+            remove(missing);
+        return children;
+    });
+    assert(result.sharedTemporaryBytes == 3);
+    assert(result.unmeasured.length == 0);
 }
 
 // Tracked hardlinks charge the first inode once but subtract both blobs.

@@ -1,8 +1,9 @@
 module cydo.workflow.sessions.task_runner;
 
-import core.time : Duration, seconds;
+import core.time : ClockType, Duration, seconds;
 
 import std.conv : to;
+import std.datetime : Clock, SysTime;
 import std.file : exists, isFile, mkdirRecurse;
 import std.exception : enforce;
 import std.path : buildPath, dirName, isAbsolute;
@@ -368,6 +369,7 @@ class TaskSessionRunner
 
 	private TaskSessionRunnerHost host_;
 	private AgentSession[int] sessions_;
+	private SysTime[int] runStarts_;
 	private string[ConfiguredNativeHistoryContext] usageProfiles_;
 	private LiveHistoryBinding[int] liveHistoryBindings_;
 	private CodexForkSourceOperation[int] forkSourceOperations_;
@@ -1060,6 +1062,11 @@ public:
 		return TaskSessionLaunch(processLaunch, sessionConfig);
 	}
 
+	SysTime runStart(int tid)
+	{
+		return runStarts_[tid];
+	}
+
 	void spawnTaskSession(int tid)
 	{
 		discardPendingExit(tid);
@@ -1078,6 +1085,8 @@ public:
 		auto launch = prepareTaskSessionLaunch(tid, taskAgent, typeDef);
 		td = requireTask(tid, "Task disappeared before session creation");
 		auto resumeSessionId = td.agentSessionId;
+		// Match the realtime clock used for filesystem birth times.
+		auto started = Clock.currTime!(ClockType.coarse);
 		auto session = taskAgent.createSession(tid, resumeSessionId,
 			launch.processLaunch, launch.sessionConfig);
 		if (auto binding = tid in liveHistoryBindings_)
@@ -1087,6 +1096,7 @@ public:
 				liveHistoryBindings_.remove(tid);
 		}
 		sessions_[tid] = session;
+		runStarts_[tid] = started;
 		host_.openToolCalls(tid);
 		session.onNativeSessionStarted = (string sessionId) {
 			enforce(sessionId.length > 0,
@@ -1305,6 +1315,9 @@ public:
 			auto stored = tid in sessions_;
 			if (stored is null || *stored !is session)
 				return;
+			scope (exit)
+				if (tid !in sessions_)
+					runStarts_.remove(tid);
 			if (auto binding = tid in liveHistoryBindings_)
 				enforce((*binding).owner is session,
 					"Exiting session does not own its live history binding");
@@ -1525,7 +1538,10 @@ public:
 						current.history.generation, current.status, exitCode, reloadEmitted);
 					auto threshold = host_.currentConfig().disk_cleanup_threshold_bytes;
 					auto taskDir = host_.taskDir(current);
-					auto temporaryDir = taskTmpHostPath(host_.resolveSharedTmpPath(tid), tid);
+					auto sharedTmpPath = host_.resolveSharedTmpPath(tid);
+					auto temporaryDir = taskTmpHostPath(sharedTmpPath, tid);
+					auto sharedTmpDir = launch.processLaunch.sandbox.isolate_filesystem
+						? "/tmp" : sharedTmpPath;
 					Promise!DiskEvaluation evaluationPromise;
 					try
 						evaluationPromise = host_.evaluateDiskUsage(tid);
@@ -1548,7 +1564,7 @@ public:
 						}
 						auto task = host_.getTask(tid);
 						auto finding = checkDiskCleanupGate(evaluation, threshold,
-							taskDir, temporaryDir);
+							taskDir, temporaryDir, sharedTmpDir);
 						if (shouldRetryYieldGate(task.naggedYieldGates, finding))
 						{
 							host_.markYieldGateNagged(tid, finding.gate);
@@ -3868,10 +3884,12 @@ version (unittest) private final class SynchronousCloseTestAgent : ClaudeCodeAge
 version (unittest) private final class YieldGateTestAgent : ClaudeCodeAgent
 {
 	YieldGateTestSession session;
+	SysTime sessionCreatedAt;
 
 	override AgentSession createSession(int tid, string resumeSessionId,
 		ProcessLaunch launch, SessionConfig config = SessionConfig.init)
 	{
+		sessionCreatedAt = Clock.currTime!(ClockType.coarse);
 		session = new YieldGateTestSession;
 		return session;
 	}
@@ -4149,7 +4167,10 @@ version (unittest) private void assertYieldGateRunnerCase(
 				return;
 			}
 
+			auto beforeLaunch = Clock.currTime!(ClockType.coarse);
 			runner.spawnTaskSession(1);
+			assert(runner.runStart(1) >= beforeLaunch);
+			assert(runner.runStart(1) <= agent.sessionCreatedAt);
 			if (heldEventAtIdle)
 			{
 				enum answer = "I verified the report format.";

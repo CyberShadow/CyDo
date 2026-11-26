@@ -1,17 +1,23 @@
 module cydo.runtime.storage.disk_usage;
 
+import cydo.runtime.launch.sandbox_materialization : isTaskTmpDirName, tmpRuntimeDirName;
 import core.stdc.errno : EACCES, ENOENT, EPERM, errno;
+import core.sys.posix.dirent : closedir, opendir, readdir;
+import core.sys.posix.fcntl : AT_FDCWD, AT_SYMLINK_NOFOLLOW;
 import core.sys.posix.unistd : X_OK, access;
 import core.sys.posix.sys.stat : S_ISDIR, S_ISLNK, S_ISREG, lstat, stat_t;
+import core.sys.posix.sys.types : mode_t;
 import std.algorithm : sort, startsWith;
 import std.conv : to;
+import std.datetime.systime : SysTime, unixTimeToStdTime;
 import std.exception : enforce;
-import std.file : FileException, SpanMode, dirEntries, readLink;
-import std.path : buildNormalizedPath, buildPath, isAbsolute;
+import std.file : FileException, readLink;
+import std.path : baseName, buildNormalizedPath, buildPath, isAbsolute;
 import std.process : execute;
-import std.string : indexOf, lastIndexOf, split, toStringz;
+import std.string : indexOf, fromStringz, lastIndexOf, split, toStringz;
+import std.traits : EnumMembers;
 
-enum DiskCategory { task, temporary }
+enum DiskCategory { task, temporary, sharedTemporary }
 
 struct DiskScanInput
 {
@@ -20,6 +26,8 @@ struct DiskScanInput
 	string forkWorktree;
 	string forkBaseSha;
 	string forkRepository;
+	string sharedTmpDir;
+	SysTime sharedSince;
 }
 
 struct DiskEntry
@@ -45,6 +53,7 @@ struct DiskSymlink
 {
 	string linkPath;
 	string rawTarget;
+	string sharedRelativePath;
 }
 
 struct DiskUnmeasured
@@ -58,6 +67,7 @@ struct DiskUsageResult
 {
 	long taskBytes;
 	long temporaryBytes;
+	long sharedTemporaryBytes;
 	long totalBytes;
 	DiskTopPath[] topPaths;
 	DiskSymlink[] symlinks;
@@ -103,7 +113,7 @@ DiskUsageResult aggregateDiskUsage(DiskScanInput input, DiskEntry[] entries,
 		? a.category < b.category : a.relativePath < b.relativePath);
 	DiskUsageResult result;
 	result.unmeasured = unmeasured;
-	long[string] deltas;
+	long[string][EnumMembers!DiskCategory.length] deltas;
 	bool[string] visitedPaths;
 	bool[string] visitedInodes;
 	bool[string] baselinePaths;
@@ -114,7 +124,6 @@ DiskUsageResult aggregateDiskUsage(DiskScanInput input, DiskEntry[] entries,
 		if (entry.absolutePath in visitedPaths)
 			continue;
 		visitedPaths[entry.absolutePath] = true;
-		auto key = entry.category.to!string ~ ":" ~ entry.relativePath;
 		long bytes;
 		auto inodeKey = entry.device.to!string ~ ":" ~ entry.inode.to!string;
 		if (inodeKey !in visitedInodes)
@@ -131,9 +140,11 @@ DiskUsageResult aggregateDiskUsage(DiskScanInput input, DiskEntry[] entries,
 				baselinePaths[forkRelative] = true;
 			}
 		}
-		deltas[key] = checkedAdd(key in deltas ? deltas[key] : 0, bytes);
+		deltas[entry.category][entry.relativePath] = checkedAdd(
+			deltas[entry.category].get(entry.relativePath, 0), bytes);
 		if (entry.symlink)
-			result.symlinks ~= DiskSymlink(entry.absolutePath, entry.symlinkTarget);
+			result.symlinks ~= DiskSymlink(entry.absolutePath, entry.symlinkTarget,
+				entry.category == DiskCategory.sharedTemporary ? entry.relativePath : null);
 	}
 	bool[string] unmeasuredTaskPaths;
 	foreach (path; unmeasured)
@@ -155,37 +166,39 @@ DiskUsageResult aggregateDiskUsage(DiskScanInput input, DiskEntry[] entries,
 			if (slash < 0) break;
 			ancestor = ancestor[0 .. slash];
 		}
-		auto key = DiskCategory.task.to!string ~ ":" ~ relative;
-		deltas[key] = checkedAdd(key in deltas ? deltas[key] : 0, -bytes);
+		deltas[DiskCategory.task][relative] = checkedAdd(
+			deltas[DiskCategory.task].get(relative, 0), -bytes);
 	}
-	long[string] subtrees;
-	foreach (key, delta; deltas)
-	{
-		auto separator = key.indexOf(':');
-		auto category = key[0 .. separator];
-		if (category == DiskCategory.task.to!string)
-			result.taskBytes = checkedAdd(result.taskBytes, delta);
-		else
-			result.temporaryBytes = checkedAdd(result.temporaryBytes, delta);
-		auto relative = key[separator + 1 .. $];
-		for (auto end = relative.length; end > 0;)
-		{
-			auto parentKey = category ~ ":" ~ relative[0 .. end];
-			subtrees[parentKey] = checkedAdd(parentKey in subtrees ? subtrees[parentKey] : 0, delta);
-			auto slash = relative[0 .. end].lastIndexOf('/');
-			if (slash < 0) break;
-			end = slash;
-		}
-	}
-	result.totalBytes = checkedAdd(result.taskBytes, result.temporaryBytes);
 	DiskTopPath[] candidates;
-	foreach (key, bytes; subtrees)
-		if (bytes > 0)
+	foreach (index, paths; deltas)
+	{
+		auto category = cast(DiskCategory) index;
+		long categoryBytes;
+		long[string] subtrees;
+		foreach (relative, delta; paths)
 		{
-			auto separator = key.indexOf(':');
-			candidates ~= DiskTopPath(key[0 .. separator] == DiskCategory.task.to!string
-				? DiskCategory.task : DiskCategory.temporary, key[separator + 1 .. $], bytes);
+			categoryBytes = checkedAdd(categoryBytes, delta);
+			for (auto end = relative.length; end > 0;)
+			{
+				auto parent = relative[0 .. end];
+				subtrees[parent] = checkedAdd(subtrees.get(parent, 0), delta);
+				auto slash = parent.lastIndexOf('/');
+				if (slash < 0) break;
+				end = slash;
+			}
 		}
+		final switch (category)
+		{
+		case DiskCategory.task: result.taskBytes = categoryBytes; break;
+		case DiskCategory.temporary: result.temporaryBytes = categoryBytes; break;
+		case DiskCategory.sharedTemporary: result.sharedTemporaryBytes = categoryBytes; break;
+		}
+		foreach (path, bytes; subtrees)
+			if (bytes > 0)
+				candidates ~= DiskTopPath(category, path, bytes);
+	}
+	result.totalBytes = checkedAdd(checkedAdd(result.taskBytes, result.temporaryBytes),
+		result.sharedTemporaryBytes);
 	candidates.sort!((a, b) => a.bytes != b.bytes ? a.bytes > b.bytes
 		: a.category != b.category ? a.category < b.category
 		: a.relativePath < b.relativePath);
@@ -207,10 +220,26 @@ DiskUsageResult aggregateDiskUsage(DiskScanInput input, DiskEntry[] entries,
 
 string[] listDirectory(string path)
 {
+	auto dir = opendir(path.toStringz);
+	if (dir is null)
+		throw new FileException(path, errno);
+	scope (exit) closedir(dir);
+
 	string[] children;
-	foreach (child; dirEntries(path, SpanMode.shallow))
-		children ~= child.name;
-	return children;
+	while (true)
+	{
+		errno = 0;
+		auto child = readdir(dir);
+		if (child is null)
+		{
+			if (errno != 0)
+				throw new FileException(path, errno);
+			return children;
+		}
+		auto name = (&child.d_name[0]).fromStringz;
+		if (name != "." && name != "..")
+			children ~= buildPath(path, name.idup);
+	}
 }
 
 private bool permissionDenied(int error)
@@ -218,35 +247,113 @@ private bool permissionDenied(int error)
 	return error == EACCES || error == EPERM;
 }
 
+// Linux statx ABI.
+private struct StatxTimestamp
+{
+	long seconds;
+	uint nanoseconds;
+	int reserved;
+}
+
+private struct Statx
+{
+	uint mask;
+	uint blockSize;
+	ulong attributes;
+	uint links;
+	uint uid;
+	uint gid;
+	ushort mode;
+	ushort reserved;
+	ulong inode;
+	ulong size;
+	ulong blocks;
+	ulong attributesMask;
+	StatxTimestamp accessTime;
+	StatxTimestamp birthTime;
+	StatxTimestamp changeTime;
+	StatxTimestamp modificationTime;
+	uint rdevMajor;
+	uint rdevMinor;
+	uint devMajor;
+	uint devMinor;
+	ulong[14] remaining;
+}
+
+static assert(Statx.birthTime.offsetof == 80 && Statx.devMajor.offsetof == 136
+	&& Statx.sizeof == 256);
+private enum STATX_BTIME = 0x0800;
+private enum STATX_TYPE = 0x0001;
+private enum STATX_INO = 0x0100;
+private enum STATX_SIZE = 0x0200;
+private extern(C) ulong gnu_dev_makedev(uint major, uint minor) nothrow @nogc;
+private extern(C) int statx(int dirfd, const(char)* path, int flags, uint mask,
+	Statx* info) nothrow @nogc;
+
 private void walkRoot(string root, DiskCategory category, ref DiskEntry[] entries,
-	ref DiskUnmeasured[] unmeasured, string[] delegate(string dir) list)
+	ref DiskUnmeasured[] unmeasured, string[] delegate(string dir) list,
+	SysTime sharedSince = SysTime.init)
 {
 	void recordUnmeasured(string path, string error)
 	{
 		unmeasured ~= DiskUnmeasured(category, path[root.length + 1 .. $], error);
 	}
 
-	void walk(string path, bool isRoot)
+	auto runtimeName = category == DiskCategory.sharedTemporary ? tmpRuntimeDirName() : null;
+
+	void walk(string path, bool isRoot, bool sharedTopLevel = false)
 	{
-		stat_t info;
-		if (lstat(path.toStringz, &info) != 0)
+		mode_t mode;
+		long bytes;
+		ulong device, inode;
+		if (sharedTopLevel)
 		{
-			auto error = errno;
-			if (error == ENOENT)
+			Statx info;
+			enum basicMask = STATX_TYPE | STATX_INO | STATX_SIZE;
+			if (statx(AT_FDCWD, path.toStringz, AT_SYMLINK_NOFOLLOW, basicMask | STATX_BTIME, &info) != 0)
 			{
-				if (isRoot) throw new Exception("Disk usage root does not exist: " ~ root);
-				return;
+				auto error = errno;
+				if (error == ENOENT) return;
+				throw new FileException(path, error);
 			}
-			throw new Exception("Cannot inspect disk usage path: " ~ path);
+			enforce((info.mask & basicMask) == basicMask, "Disk usage metadata unavailable for " ~ path);
+			auto name = path.baseName;
+			if (S_ISDIR(info.mode) && (isTaskTmpDirName(name) || name == runtimeName))
+				return;
+			enforce((info.mask & STATX_BTIME) != 0, "Disk usage birth time unavailable for " ~ path);
+			if (unixTimeToStdTime(info.birthTime.seconds) + info.birthTime.nanoseconds / 100
+				< sharedSince.stdTime)
+				return;
+			mode = info.mode;
+			bytes = cast(long) info.size;
+			device = gnu_dev_makedev(info.devMajor, info.devMinor);
+			inode = info.inode;
 		}
-		if (isRoot && !S_ISDIR(info.st_mode))
+		else
+		{
+			stat_t info;
+			if (lstat(path.toStringz, &info) != 0)
+			{
+				auto error = errno;
+				if (error == ENOENT && !isRoot) return;
+				if (error == ENOENT) throw new Exception("Disk usage root does not exist: " ~ root);
+				throw new Exception("Cannot inspect disk usage path: " ~ path);
+			}
+			mode = info.st_mode;
+			bytes = info.st_size;
+			device = info.st_dev;
+			inode = info.st_ino;
+		}
+		auto isDirectory = S_ISDIR(mode) != 0;
+		if (isRoot && !isDirectory)
 			throw new Exception("Disk usage root is not a directory: " ~ root);
-		if (S_ISDIR(info.st_mode))
+		if (isDirectory)
 		{
 			// Listing needs read permission, but measuring children also needs search permission.
 			if (access(path.toStringz, X_OK) != 0)
 			{
 				auto error = errno;
+				if (error == ENOENT && !isRoot) return;
 				auto failure = new FileException(path, error);
 				if (!isRoot && permissionDenied(error))
 				{
@@ -269,18 +376,18 @@ private void walkRoot(string root, DiskCategory category, ref DiskEntry[] entrie
 				throw new Exception("Cannot read disk usage directory " ~ path ~ ": " ~ e.msg);
 			}
 			children.sort();
-			foreach (child; children) walk(child, false);
+			foreach (child; children) walk(child, false, isRoot && category == DiskCategory.sharedTemporary);
 			return;
 		}
-		if (!S_ISREG(info.st_mode) && !S_ISLNK(info.st_mode)) return;
+		if (!S_ISREG(mode) && !S_ISLNK(mode)) return;
 		DiskEntry entry;
 		entry.category = category;
 		entry.absolutePath = path;
 		entry.relativePath = path[root.length + 1 .. $];
-		entry.apparentBytes = info.st_size;
-		entry.device = info.st_dev;
-		entry.inode = info.st_ino;
-		entry.symlink = S_ISLNK(info.st_mode);
+		entry.apparentBytes = bytes;
+		entry.device = device;
+		entry.inode = inode;
+		entry.symlink = S_ISLNK(mode);
 		if (entry.symlink)
 		{
 			try entry.symlinkTarget = readLink(path);
@@ -303,10 +410,13 @@ DiskUsageResult measureDiskUsage(DiskScanInput input)
 DiskUsageResult measureDiskUsage(DiskScanInput input,
 	string[] delegate(string dir) list)
 {
-	foreach (root; [input.taskDir, input.temporaryDir, input.forkWorktree])
+	foreach (root; [input.taskDir, input.temporaryDir, input.forkWorktree, input.sharedTmpDir])
 		if (root.length > 0)
 			enforce(root.isAbsolute && root == buildNormalizedPath(root),
 				"Disk usage root must be a normalized absolute path: " ~ root);
+	if (input.sharedTmpDir.length > 0)
+		enforce(input.sharedSince.stdTime != SysTime.init.stdTime,
+			"Disk usage shared temporary directory requires a birth-time cutoff: " ~ input.sharedTmpDir);
 	long[string] baseline;
 	if (input.forkWorktree.length > 0)
 	{
@@ -324,5 +434,8 @@ DiskUsageResult measureDiskUsage(DiskScanInput input,
 	DiskUnmeasured[] unmeasured;
 	walkRoot(input.taskDir, DiskCategory.task, entries, unmeasured, list);
 	walkRoot(input.temporaryDir, DiskCategory.temporary, entries, unmeasured, list);
+	if (input.sharedTmpDir.length > 0)
+		walkRoot(input.sharedTmpDir, DiskCategory.sharedTemporary, entries, unmeasured, list,
+			input.sharedSince);
 	return aggregateDiskUsage(input, entries, baseline, unmeasured);
 }

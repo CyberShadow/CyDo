@@ -29,14 +29,13 @@ void cleanup(ref ResolvedSandbox sandbox)
 /// Uses $XDG_RUNTIME_DIR if set, otherwise /tmp/cydo-<uid>/.
 string runtimeDir()
 {
-	import std.conv : to;
 
 	auto xdg = environment.get("XDG_RUNTIME_DIR", "");
 	string base;
 	if (xdg.length > 0)
 		base = buildPath(xdg, "cydo");
 	else
-		base = buildPath("/tmp", "cydo-" ~ getuid().to!string);
+		base = buildPath("/tmp", tmpRuntimeDirName());
 
 	if (!exists(base))
 		mkdirRecurse(base);
@@ -90,12 +89,41 @@ string sharedTmpBaseDir()
 	return base;
 }
 
-/// Return the task-owned child of a tree's shared temporary directory.
-string taskTmpHostPath(string sharedTmpPath, int tid)
+string tmpRuntimeDirName()
+{
+	import std.conv : to;
+	return "cydo-" ~ getuid().to!string;
+}
+
+private enum taskTmpDirPrefix = "cydo-task-";
+
+private string taskTmpDirName(int tid)
 {
 	import std.conv : to;
 
-	return buildPath(sharedTmpPath, "cydo-task-" ~ tid.to!string);
+	return taskTmpDirPrefix ~ tid.to!string;
+}
+
+bool isTaskTmpDirName(string name)
+{
+	import std.algorithm : startsWith;
+	import std.conv : ConvException, to;
+
+	if (!name.startsWith(taskTmpDirPrefix))
+		return false;
+
+	int tid;
+	try
+		tid = name[taskTmpDirPrefix.length .. $].to!int;
+	catch (ConvException)
+		return false;
+	return tid >= 0 && name == taskTmpDirName(tid);
+}
+
+/// Return the task-owned child of a tree's shared temporary directory.
+string taskTmpHostPath(string sharedTmpPath, int tid)
+{
+	return buildPath(sharedTmpPath, taskTmpDirName(tid));
 }
 
 /// Return the path used by the launched process for its task-owned directory.
@@ -341,7 +369,7 @@ unittest
 	}
 	environment.remove("XDG_RUNTIME_DIR");
 
-	auto runtimeBase = buildPath("/tmp", "cydo-" ~ getuid().to!string);
+	auto runtimeBase = buildPath("/tmp", tmpRuntimeDirName());
 	auto sharedBase = buildPath(tempDir(), "cydo-shared-tmp-" ~ getuid().to!string);
 	assert(buildPath(tempDir(), "cydo-" ~ getuid().to!string) == runtimeBase);
 	assert(sharedBase != runtimeBase);

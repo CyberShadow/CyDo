@@ -2,6 +2,7 @@ Please review this task’s disk usage. The cleanup threshold is {{threshold_byt
 
 Task directory {{task_dir}}: {{task_bytes}} bytes
 Temporary directory {{temporary_dir}}: {{temporary_bytes}} bytes
+Shared temporary directory {{shared_tmp_dir}}: {{shared_tmp_bytes}} bytes
 Signed total: {{total_bytes}} bytes
 
 Top positive subtree deltas:
@@ -10,8 +11,12 @@ Top positive subtree deltas:
 Paths whose size could not be measured (for example, due to a permission error):
 {{unmeasured_paths}}
 
-For any leftover scratch paths listed above, restore permissions (for example,
-with `chmod -R u+rwx`) and remove them.
+The shared temporary total counts entries created since this task started.
+Other tasks in this tree may have created some of them, so remove only files
+you created in the shared directory.
+
+For leftover scratch paths you can remove, restore permissions if needed
+(for example, with `chmod -R u+rwx`) and remove them.
 
 {{nix_closures}}
 

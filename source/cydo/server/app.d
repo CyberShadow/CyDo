@@ -3668,6 +3668,7 @@ class App
 		return buildDiskScanInput(tid, DiskUsageHost(
 			taskDir: (int taskTid) => taskPathResolver.taskDir(tasks[taskTid]),
 			sharedTmpPath: &resolveSharedTmpPath,
+			runStart: &taskSessionRunner.runStart,
 			ownsWorktree: (int taskTid) => tasks[taskTid].ownsWorktree,
 			worktreePath: (int taskTid) => taskPathResolver.worktreePath(&tasks[taskTid]),
 			forkBaseSha: (int taskTid) => getWorktreeForkBaseHead(tasks[taskTid]),
@@ -7838,7 +7839,7 @@ unittest
 	import std.path : dirName;
 	import cydo.workflow.sessions.disk_usage : DiskEvaluation;
 	import cydo.workflow.sessions.yield_gates : checkDiskCleanupGate;
-	import cydo.runtime.storage.disk_usage : DiskCategory, DiskTopPath, DiskUnmeasured;
+	import cydo.runtime.storage.disk_usage : DiskCategory, DiskSymlink, DiskTopPath, DiskUnmeasured;
 	import cydo.runtime.storage.nix_roots : NixClosureEntry, nixClosureLabel;
 	import std.array : replace;
 
@@ -7863,26 +7864,38 @@ unittest
 	auto project = buildPath(root, "project");
 	mkdirRecurse(project);
 	DiskEvaluation evaluation;
-	evaluation.usage.taskBytes = -3;
+	evaluation.usage.taskBytes = -10;
 	evaluation.usage.temporaryBytes = 15;
+	evaluation.usage.sharedTemporaryBytes = 7;
 	evaluation.usage.totalBytes = 12;
 	evaluation.usage.topPaths = [DiskTopPath(DiskCategory.temporary, "build{{x}}", 15)];
 	evaluation.usage.unmeasured = [
 		DiskUnmeasured(DiskCategory.task, "blocked", "Permission denied"),
 	];
-	evaluation.nix.entries = [NixClosureEntry(["/task/result"], "/nix/store/example", 100)];
-	auto vars = checkDiskCleanupGate(evaluation, 10, "/task", "/tmp/task").vars;
+	evaluation.usage.symlinks = [
+		DiskSymlink("/host-tmp/nested/result", "../target", "nested/result"),
+	];
+	evaluation.nix.entries = [
+		NixClosureEntry(["/task/result", "/host-tmp/nested/result"], "/nix/store/example", 100),
+	];
+	auto vars = checkDiskCleanupGate(evaluation, 10, "/task", "/tmp/task", "/tmp").vars;
 	vars["x"] = "must-not-expand";
 	auto bundledBody = app.readPromptFile("gates/disk_cleanup.md", project, vars);
-	assert(bundledBody.canFind("Task directory /task: -3 bytes"));
+	assert(bundledBody.canFind("Task directory /task: -10 bytes"));
 	assert(bundledBody.canFind("Temporary directory /tmp/task: 15 bytes"));
+	assert(bundledBody.canFind("Shared temporary directory /tmp: 7 bytes"));
 	assert(bundledBody.canFind("Signed total: 12 bytes"));
 	assert(bundledBody.canFind("15 temporary build{{x}}"));
 	assert(!bundledBody.canFind("must-not-expand"));
 	assert(!bundledBody.replace("build{{x}}", "").canFind("{{"));
 	assert(bundledBody.canFind("task blocked"));
 	assert(bundledBody.canFind(nixClosureLabel));
-	assert(bundledBody.canFind("100 /nix/store/example /task/result"));
+	assert(bundledBody.canFind("100 /nix/store/example /task/result, /tmp/nested/result"));
+	assert(!bundledBody.canFind("/host-tmp/nested/result"));
+	auto nonIsolatedVars = checkDiskCleanupGate(evaluation, 10,
+		"/task", "/host-tmp/task", "/host-tmp").vars;
+	auto nonIsolatedBody = app.readPromptFile("gates/disk_cleanup.md", project, nonIsolatedVars);
+	assert(nonIsolatedBody.canFind("100 /nix/store/example /task/result, /host-tmp/nested/result"));
 	assert(bundledBody.canFind("Retain required outputs, shared inputs, and needed build"));
 	assert(bundledBody.canFind("sent once per task and will not be repeated"));
 	assert(bundledBody.canFind("Other independent requirements"));

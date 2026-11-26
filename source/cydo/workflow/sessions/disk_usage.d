@@ -1,5 +1,7 @@
 module cydo.workflow.sessions.disk_usage;
 
+import std.datetime : Clock, SysTime;
+
 import ae.utils.promise : Promise;
 import ae.utils.promise.concurrency : threadAsync;
 import cydo.runtime.launch.sandbox_materialization : taskTmpAgentPath, taskTmpHostPath;
@@ -17,6 +19,7 @@ struct DiskUsageHost
 {
 	string delegate(int tid) taskDir;
 	string delegate(int tid) sharedTmpPath;
+	SysTime delegate(int tid) runStart;
 	bool delegate(int tid) ownsWorktree;
 	string delegate(int tid) worktreePath;
 	string delegate(int tid) forkBaseSha;
@@ -27,7 +30,9 @@ DiskScanInput buildDiskScanInput(int tid, DiskUsageHost host)
 {
 	DiskScanInput input;
 	input.taskDir = host.taskDir(tid);
-	input.temporaryDir = taskTmpHostPath(host.sharedTmpPath(tid), tid);
+	input.sharedTmpDir = host.sharedTmpPath(tid);
+	input.sharedSince = host.runStart(tid);
+	input.temporaryDir = taskTmpHostPath(input.sharedTmpDir, tid);
 	if (host.ownsWorktree(tid))
 	{
 		input.forkWorktree = host.worktreePath(tid);
@@ -78,6 +83,7 @@ unittest
 	auto host = DiskUsageHost(
 		taskDir: (int tid) => task,
 		sharedTmpPath: (int tid) => sharedRoot,
+		runStart: (int tid) => Clock.currTime,
 		ownsWorktree: (int tid) => false,
 		worktreePath: (int tid) => "",
 		forkBaseSha: (int tid) => "",
@@ -93,6 +99,7 @@ unittest
 	auto inheritedHost = DiskUsageHost(
 		taskDir: (int tid) => task,
 		sharedTmpPath: (int tid) => sharedRoot,
+		runStart: (int tid) => Clock.currTime,
 		ownsWorktree: (int tid) => false,
 		worktreePath: (int tid) => "/elsewhere/parent-fork",
 		forkBaseSha: (int tid) { baseCalled = true; return "base"; },
@@ -156,6 +163,7 @@ unittest
 	auto ownedHost = DiskUsageHost(
 		taskDir: (int tid) => task,
 		sharedTmpPath: (int tid) => sharedRoot,
+		runStart: (int tid) => Clock.currTime,
 		ownsWorktree: (int tid) => true,
 		worktreePath: (int tid) => fork,
 		forkBaseSha: (int tid) => "",
