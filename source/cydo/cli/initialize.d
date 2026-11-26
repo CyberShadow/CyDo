@@ -353,6 +353,7 @@ version (linux) unittest
 	assertKeys!SandboxConfig(at(root, ["sandbox"]));
 	assertKeys!GitIdentityConfig(at(root, ["sandbox", "git"]));
 	assertKeys!MemoryLimitsConfig(at(root, ["sandbox", "memory"]));
+	assertKeys!MemoryLimitsConfig(at(root, ["total_agent_memory"]));
 	foreach (path; [["agents", "custom-codex", "sandbox"],
 		["workspaces", "example-project", "sandbox"]])
 	{

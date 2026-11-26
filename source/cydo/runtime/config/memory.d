@@ -121,7 +121,7 @@ struct MemoryLimitsConfig
 
 bool memoryLimitingInUse(const ref CydoConfig config)
 {
-	if (config.sandbox.memory.anySet())
+	if (config.total_agent_memory.anySet() || config.sandbox.memory.anySet())
 		return true;
 	foreach (ref agent; config.agents)
 		if (agent.sandbox.memory.anySet())
@@ -130,6 +130,33 @@ bool memoryLimitingInUse(const ref CydoConfig config)
 		if (workspace.sandbox.memory.anySet())
 			return true;
 	return false;
+}
+
+unittest // Each configuration layer can enable memory limiting on its own.
+{
+	import cydo.runtime.config : AgentConfig, WorkspaceConfig;
+
+	CydoConfig empty;
+	assert(!memoryLimitingInUse(empty));
+	auto limit = SetInfo!MemorySize(MemorySize.fromString("infinity"), true);
+
+	CydoConfig total;
+	total.total_agent_memory.max = limit;
+	assert(memoryLimitingInUse(total));
+
+	CydoConfig globalSandbox;
+	globalSandbox.sandbox.memory.max = limit;
+	assert(memoryLimitingInUse(globalSandbox));
+
+	CydoConfig agent;
+	agent.agents["claude"] = AgentConfig.init;
+	agent.agents["claude"].sandbox.memory.high = limit;
+	assert(memoryLimitingInUse(agent));
+
+	CydoConfig workspace;
+	workspace.workspaces = [WorkspaceConfig.init];
+	workspace.workspaces[0].sandbox.memory.swap_max = limit;
+	assert(memoryLimitingInUse(workspace));
 }
 
 unittest // Memory sizes render in systemd's canonical form.

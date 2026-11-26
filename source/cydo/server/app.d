@@ -4022,11 +4022,13 @@ class App
 			newDefault = effectiveDefaultAgentName(candidate);
 			version (linux)
 			{
-				import cydo.runtime.launch.memory_scope : establishAgentScopeHost;
+				import cydo.runtime.launch.memory_scope : establishAgentScopeHost, resetAgentSlice;
 				try
 				{
 					if (memoryLimitingInUse(candidate))
 						candidateHost = establishAgentScopeHost(candidate);
+					else if (!agentScopeHost_.isNull)
+						resetAgentSlice(agentScopeHost_.get.slice);
 				}
 				catch (Exception e)
 					throw new ConfigFileException(ConfigErrorKind.invalid, configPath(), e.msg);

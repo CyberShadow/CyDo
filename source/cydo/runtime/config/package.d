@@ -192,6 +192,7 @@ struct UiConfig
 
 struct CydoConfig
 {
+	@Optional MemoryLimitsConfig total_agent_memory;
 	@Key("name") WorkspaceConfig[] workspaces;
 	@Optional SandboxConfig sandbox;
 	@Optional PermissionsConfig permissions;
@@ -223,8 +224,9 @@ struct CydoConfig
 		version (linux) {}
 		else
 			if (memoryLimitingInUse(this))
-				throw new Exception("memory limits (sandbox.memory) "
+				throw new Exception("memory limits (sandbox.memory, total_agent_memory) "
 					~ "are only supported on Linux with systemd");
+		total_agent_memory.validate("total_agent_memory");
 		validateSandbox(sandbox, "sandbox");
 		foreach (ref ws; workspaces)
 			validateSandbox(ws.sandbox, format("workspaces['%s'].sandbox", ws.name));
@@ -537,6 +539,32 @@ version (unittest)
 						assert(error.kind == ConfigErrorKind.invalid && error.path == path, error.msg);
 						assert(error.msg.canFind(location ~ field), error.msg);
 					}
+		});
+	}
+
+	version (linux) unittest // Aggregate limits enforce the same property bounds as scoped limits.
+	{
+		import std.exception : collectException;
+
+		withConfigFileFixture((string path)
+		{
+			foreach (field, values; ["max": ["0", "0%", "8388608T"],
+				"high": ["0", "0%", "'18446744073709551615'"],
+				"swap_max": ["8388608T", "'18446744073709551615'"]])
+				foreach (scalar; values)
+				{
+					write(path, "workspaces: {}\ntotal_agent_memory: {" ~ field ~ ": " ~ scalar ~ "}\n");
+					auto error = collectException!ConfigFileException(loadConfig());
+					assert(error !is null, scalar);
+					assert(error.kind == ConfigErrorKind.invalid && error.path == path, error.msg);
+					assert(error.msg.canFind(field), error.msg);
+				}
+
+			foreach (zero; ["0", "0%"])
+			{
+				write(path, "workspaces: {}\ntotal_agent_memory: {swap_max: " ~ zero ~ "}\n");
+				assert(loadConfig().total_agent_memory.swap_max.value.toSystemd() == zero);
+			}
 		});
 	}
 

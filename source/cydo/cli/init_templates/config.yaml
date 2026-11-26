@@ -461,6 +461,17 @@ workspaces: {}
 ## Codex tasks in the same workspace can share an app-server and its limits.
 ## Server-run Bash commands get their own scope with the same per-scope limits.
 
+## total_agent_memory
+## Aggregate memory limits shared by agents in this CyDo instance's slice.
+## Uses the same fields, units, and numeric bounds as sandbox.memory.
+## Changes apply live to the slice and to agents launched afterwards.
+## Title generation, suggestions, and server-run Bash use the session's
+## launch settings until the task is relaunched. If memory limiting was off
+## at launch, the agent and these subprocesses stay in the service cgroup.
+## If the session started with per-task limits, its subprocesses keep those
+## limits across reloads. CyDo logs the slice name when applying limits.
+# total_agent_memory: {max: 24G, high: 20G, swap_max: 0}
+
 ## ---------------------------------------------------------------------------
 ## Complete example
 ## ---------------------------------------------------------------------------
@@ -486,6 +497,7 @@ workspaces: {}
 #   git:
 #     name: Example User
 #     email: example@example.invalid
+# total_agent_memory: {max: 24G, high: 20G, swap_max: 0}
 ## cydo-init: complete-example end
 
 ## ===========================================================================
@@ -775,7 +787,9 @@ workspaces: {}
 ## level. Workspace and global defaults update for new tasks. Suggestions,
 ## development mode and the system message keyword also update live.
 ## Sandbox and permission edits affect subsequent launches or lookups.
-## An already-running agent retains its launch settings. Restart CyDo to
+## The total_agent_memory limits update live for agents in the instance slice.
+## Running agents retain their per-task memory limits and other launch
+## settings. Restart CyDo to
 ## apply a changed task_dir template or if init created ~/.config/cydo
 ## while the server was running.
 

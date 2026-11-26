@@ -3,7 +3,7 @@ module cydo.runtime.launch.memory_scope;
 version (linux):
 
 import core.sys.posix.unistd : getuid;
-import cydo.runtime.config : CydoConfig, MemorySize, SandboxConfig;
+import cydo.runtime.config : CydoConfig, MemoryLimitsConfig, SandboxConfig;
 import cydo.runtime.config.paths : configDir;
 import cydo.runtime.launch.sandbox_renderer : resolveExecutablePath;
 import cydo.runtime.launch.types : AgentMemoryScope, AgentScopeHost, MemoryLimits, ResolvedSandbox;
@@ -13,6 +13,7 @@ import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 import std.exception : enforce;
 import std.file : readText;
+import std.logger : infof;
 import std.path : absolutePath;
 import std.process : execute, thisProcessID;
 import std.string : replace, split, strip, toLower;
@@ -41,7 +42,8 @@ Nullable!AgentMemoryScope resolveAgentMemoryScope(const ref CydoConfig config,
 			limits.swapMax = layer.swap_max.value;
 	}
 
-	if (limits.max.isNull && limits.high.isNull && limits.swapMax.isNull)
+	if (limits.max.isNull && limits.high.isNull && limits.swapMax.isNull
+		&& !config.total_agent_memory.anySet())
 		return Nullable!AgentMemoryScope.init;
 	return Nullable!AgentMemoryScope(AgentMemoryScope(limits, host.get));
 }
@@ -124,17 +126,40 @@ void requireMemoryControllerDelegated()
 	enforce(controllers.canFind("memory"), "The systemd user manager lacks memory controller delegation");
 }
 
+private string[] sliceSetPropertyArgs(string slice, const ref MemoryLimitsConfig limits)
+{
+	return ["systemctl", "--user", "set-property", "--runtime", "--", slice,
+		"MemoryMax=" ~ (limits.max.set ? limits.max.value.toSystemd() : "infinity"),
+		"MemoryHigh=" ~ (limits.high.set ? limits.high.value.toSystemd() : "infinity"),
+		"MemorySwapMax=" ~ (limits.swap_max.set ? limits.swap_max.value.toSystemd() : "infinity")];
+}
+
+string[] agentSliceSetPropertyArgs(const ref CydoConfig config, string slice = agentSliceName())
+{
+	return sliceSetPropertyArgs(slice, config.total_agent_memory);
+}
+
+void resetAgentSlice(string slice)
+{
+	const limits = MemoryLimitsConfig.init;
+	runSystemctl(sliceSetPropertyArgs(slice, limits));
+}
+
 AgentScopeHost establishAgentScopeHost(const ref CydoConfig config)
 {
 	auto unit = serviceUnitFromCgroup(readText("/proc/self/cgroup"), getuid());
 	requireMainProcess(unit);
 	requireMemoryControllerDelegated();
-	return AgentScopeHost(agentSliceName(), unit);
+	auto slice = agentSliceName();
+	runSystemctl(agentSliceSetPropertyArgs(config, slice));
+	infof("Agent memory limits use %s (bound to %s)", slice, unit);
+	return AgentScopeHost(slice, unit);
 }
 
 unittest // Scope limits merge field by field, including explicit infinity.
 {
 	import configy.attributes : SetInfo;
+	import cydo.runtime.config : MemorySize;
 
 	CydoConfig config;
 	SandboxConfig agent, workspace;
@@ -185,9 +210,9 @@ unittest // Other cgroup placements are rejected with an actionable diagnostic.
 
 unittest // The user manager must identify this process as MainPID.
 {
+	import std.conv : octal;
 	import std.exception : collectException;
 	import std.file : mkdir, rmdirRecurse, setAttributes, tempDir, write;
-	import std.conv : octal;
 	import std.path : buildPath;
 	import std.process : environment;
 	import std.string : splitLines;
@@ -223,4 +248,86 @@ unittest // The user manager must identify this process as MainPID.
 	auto error = collectException(requireMainProcess("cydo.service"));
 	assert(error !is null);
 	assert(error.msg.canFind("CyDo PID " ~ pid ~ " is not MainPID " ~ otherPid), error.msg);
+}
+
+unittest // Setting only the aggregate maximum clears the other slice limits.
+{
+	import configy.attributes : SetInfo;
+	import cydo.runtime.config : MemorySize;
+
+	CydoConfig config;
+	config.total_agent_memory.max = SetInfo!MemorySize(MemorySize.fromString("24G"), true);
+	assert(agentSliceSetPropertyArgs(config) == [
+		"systemctl", "--user", "set-property", "--runtime", "--", agentSliceName(),
+		"MemoryMax=25769803776", "MemoryHigh=infinity", "MemorySwapMax=infinity",
+	]);
+}
+
+unittest // Aggregate limits still place the agent in a scope tied to the service.
+{
+	import configy.attributes : SetInfo;
+	import cydo.runtime.config : MemorySize;
+	import std.conv : octal;
+	import std.file : mkdir, rmdirRecurse, setAttributes, tempDir, write;
+	import std.path : buildPath;
+	import std.process : environment;
+	import std.uuid : randomUUID;
+
+	auto bin = buildPath(tempDir(), "cydo-scope-prefix-" ~ randomUUID().toString());
+	mkdir(bin);
+	scope (exit) rmdirRecurse(bin);
+	auto oldPath = environment["PATH"];
+	environment["PATH"] = bin;
+	scope (exit) environment["PATH"] = oldPath;
+	auto systemdRun = buildPath(bin, "systemd-run");
+	write(systemdRun, "#!/bin/sh\nexit 0\n");
+	setAttributes(systemdRun, octal!700);
+
+	CydoConfig config;
+	config.total_agent_memory.max = SetInfo!MemorySize(MemorySize.fromString("24G"), true);
+	auto host = Nullable!AgentScopeHost(AgentScopeHost("cydo-test.slice", "cydo.service"));
+	SandboxConfig agent, workspace;
+	ResolvedSandbox sandbox;
+	sandbox.memoryScope = resolveAgentMemoryScope(config, agent, workspace, host);
+	auto args = memoryScopePrefix(sandbox);
+	assert(args.canFind("--slice=cydo-test.slice"));
+	assert(args.canFind("--property=BindsTo=cydo.service"));
+	assert(args.canFind("--property=StopPropagatedFrom=cydo.service"));
+	assert(args.canFind("--property=Before=cydo.service"));
+	foreach (arg; args)
+		assert(!arg.startsWith("--property=Memory"), arg);
+}
+
+unittest // Resetting the slice clears every memory limit and reports systemctl failures.
+{
+	import std.conv : octal;
+	import std.exception : collectException;
+	import std.file : mkdir, rmdirRecurse, setAttributes, tempDir, write;
+	import std.path : buildPath;
+	import std.process : environment;
+	import std.string : splitLines;
+	import std.uuid : randomUUID;
+
+	auto bin = buildPath(tempDir(), "cydo-reset-slice-" ~ randomUUID().toString());
+	mkdir(bin);
+	scope (exit) rmdirRecurse(bin);
+	auto oldPath = environment["PATH"];
+	environment["PATH"] = bin;
+	scope (exit) environment["PATH"] = oldPath;
+	auto systemctl = buildPath(bin, "systemctl");
+	auto argsFile = buildPath(bin, "args");
+	enum slice = "cydo-test.slice";
+
+	write(systemctl, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" ~ argsFile ~ "\"\n");
+	setAttributes(systemctl, octal!700);
+	resetAgentSlice(slice);
+	assert(readText(argsFile).splitLines() == [
+		"--user", "set-property", "--runtime", "--", slice,
+		"MemoryMax=infinity", "MemoryHigh=infinity", "MemorySwapMax=infinity",
+	]);
+
+	write(systemctl, "#!/bin/sh\nprintf '%s\\n' 'Failed to connect to bus' >&2\nexit 1\n");
+	auto error = collectException(resetAgentSlice(slice));
+	assert(error !is null);
+	assert(error.msg.canFind("Failed to connect to bus"), error.msg);
 }
