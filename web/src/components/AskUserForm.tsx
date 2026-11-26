@@ -1,4 +1,5 @@
-import { useState } from "preact/hooks";
+import { createRef, type RefObject } from "preact";
+import { useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { AskUserQuestionItem } from "../protocol";
 import { LocalFileContext } from "./LocalFileContext";
 import { Markdown } from "./Markdown";
@@ -7,9 +8,15 @@ interface Props {
   questions: AskUserQuestionItem[];
   onSubmit: (answers: Record<string, string>) => void;
   onAbort: () => void;
+  insertTextRef?: RefObject<((text: string) => void) | null>;
 }
 
-export function AskUserForm({ questions, onSubmit, onAbort }: Props) {
+export function AskUserForm({
+  questions,
+  onSubmit,
+  onAbort,
+  insertTextRef,
+}: Props) {
   // For each question index: selected option labels (or empty if using custom)
   const [selections, setSelections] = useState<Map<number, Set<string>>>(
     () => new Map(questions.map((_, i) => [i, new Set<string>()])),
@@ -20,6 +27,43 @@ export function AskUserForm({ questions, onSubmit, onAbort }: Props) {
   const [useCustom, setUseCustom] = useState<Map<number, boolean>>(
     () => new Map(questions.map((_, i) => [i, false])),
   );
+
+  const textareaRefs = useMemo(
+    () =>
+      Array.from({ length: questions.length }, () =>
+        createRef<HTMLTextAreaElement>(),
+      ),
+    [questions.length],
+  );
+  const focusOrder = useRef<number[]>([]);
+
+  const setCustomText = (qi: number, value: string) => {
+    setCustomTexts((prev) => new Map(prev).set(qi, value));
+  };
+
+  useLayoutEffect(() => {
+    focusOrder.current = focusOrder.current.filter((qi) => useCustom.get(qi));
+    const newlyOpened = textareaRefs.findIndex(
+      (ref, qi) => ref.current && !focusOrder.current.includes(qi),
+    );
+    if (newlyOpened !== -1) textareaRefs[newlyOpened]!.current!.focus();
+
+    if (!insertTextRef || !focusOrder.current.length) return;
+    insertTextRef.current = (quoted) => {
+      const qi = focusOrder.current[0]!;
+      const textarea = textareaRefs[qi]!.current!;
+      const previous = textarea.value;
+      const value = previous ? `${previous.trimEnd()}\n\n${quoted}` : quoted;
+      textarea.value = value;
+      setCustomText(qi, value);
+      textarea.focus();
+      textarea.setSelectionRange(value.length, value.length);
+      textarea.scrollTop = textarea.scrollHeight;
+    };
+    return () => {
+      insertTextRef.current = null;
+    };
+  }, [insertTextRef, textareaRefs, useCustom]);
 
   const toggleOption = (qi: number, label: string, multiSelect: boolean) => {
     setSelections((prev) => {
@@ -122,15 +166,16 @@ export function AskUserForm({ questions, onSubmit, onAbort }: Props) {
                 class="ask-custom-input"
                 placeholder="Type your answer..."
                 value={customTexts.get(qi) ?? ""}
-                onInput={(e) => {
-                  const val = (e.target as HTMLTextAreaElement).value;
-                  setCustomTexts((prev) => {
-                    const next = new Map(prev);
-                    next.set(qi, val);
-                    return next;
-                  });
+                ref={textareaRefs[qi]}
+                onFocus={() => {
+                  focusOrder.current = [
+                    qi,
+                    ...focusOrder.current.filter((index) => index !== qi),
+                  ];
                 }}
-                autoFocus
+                onInput={(e) => {
+                  setCustomText(qi, e.currentTarget.value);
+                }}
               />
             )}
           </div>

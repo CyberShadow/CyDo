@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { cloneElement } from "preact";
 import { act } from "preact/test-utils";
 import { ownedRoots } from "../test-support/preactAct";
 import { describe, expect, it, vi } from "vitest";
@@ -518,3 +519,76 @@ describe("tracked files", () => {
     expect(root.querySelector(".file-viewer")).toBeNull();
   });
 });
+
+it.each([
+  {
+    prompt: {
+      pendingAskUser: {
+        toolUseId: "ask",
+        questions: [{ question: "Choose", header: "Choice", options: [] }],
+      },
+    },
+    toast: 'Open an "Other" answer to quote into it',
+  },
+  {
+    prompt: {
+      pendingPermission: {
+        toolUseId: "permission",
+        toolName: "Bash",
+        input: { command: "ls" },
+      },
+    },
+    toast: "Click Deny to add a reason, then quote into it",
+  },
+])(
+  "preserves the selection and shows '$toast' on quote shortcut",
+  async ({ prompt, toast }) => {
+    const root = roots.create();
+    const addToast = vi.fn();
+    const selectedText = "Text to quote";
+    roots.render(
+      cloneElement(
+        session(null, {
+          ...prompt,
+          historyLoaded: true,
+          messages: [
+            {
+              id: "prompt",
+              type: "user",
+              content: [{ type: "text", text: selectedText }],
+            },
+          ],
+        }),
+        { addToast },
+      ),
+      root,
+    );
+
+    const range = document.createRange();
+    range.selectNodeContents(
+      root.querySelector(".message-list .user-message")!,
+    );
+    const selection = window.getSelection()!;
+    try {
+      await act(() => {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      });
+      expect(selection.toString()).toContain(selectedText);
+      const before = selection.toString();
+      const shortcut = new KeyboardEvent("keydown", {
+        key: "r",
+        bubbles: true,
+        cancelable: true,
+      });
+      await act(() => {
+        document.dispatchEvent(shortcut);
+      });
+      expect(addToast).toHaveBeenCalledExactlyOnceWith("info", toast);
+      expect(selection.toString()).toBe(before);
+      expect(shortcut.defaultPrevented).toBe(true);
+    } finally {
+      selection.removeAllRanges();
+    }
+  },
+);

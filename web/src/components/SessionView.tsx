@@ -14,6 +14,7 @@ import { MarkdownQuote } from "../vendor/quote-selection";
 import type { TaskState } from "../types";
 import { permissionAwaitingAgent } from "../permissionHandoff";
 import type { SubtaskEnd } from "../subtaskResultParent";
+import type { ToastEntry } from "../useToast";
 import type { Theme } from "../useTheme";
 import type {
   ImageAttachment,
@@ -67,6 +68,7 @@ interface Props {
   onClearInputDraft: (tid: number) => void;
   ordinaryDraftStore: OrdinaryDraftStore;
   onSaveDraft?: (tid: number, draft: string) => void;
+  addToast?: (level: ToastEntry["level"], message: string) => void;
   onAskUserResponse: (tid: number, content: string) => void;
   onPermissionPromptResponse: (
     tid: number,
@@ -109,6 +111,7 @@ function SessionViewInner({
   onClearInputDraft,
   ordinaryDraftStore,
   onSaveDraft,
+  addToast,
   onAskUserResponse,
   onPermissionPromptResponse,
   theme,
@@ -326,23 +329,34 @@ function SessionViewInner({
     );
   };
 
-  const quoteSelection = useCallback(() => {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return false;
-    const anchor =
-      sel.anchorNode instanceof Element
-        ? sel.anchorNode
-        : sel.anchorNode?.parentElement;
-    if (!anchor?.closest(".message-list, .file-viewer")) return false;
-    const quote = new MarkdownQuote();
-    const text = quote.quotedText;
-    if (text) {
-      insertTextRef.current?.(text);
+  const quoteSelection = useCallback(
+    (event?: KeyboardEvent) => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return false;
+      const anchor =
+        sel.anchorNode instanceof Element
+          ? sel.anchorNode
+          : sel.anchorNode?.parentElement;
+      if (!anchor?.closest(".message-list, .file-viewer")) return false;
+      const insertText = insertTextRef.current;
+      if (!insertText) {
+        if (permission) {
+          addToast?.("info", "Click Deny to add a reason, then quote into it");
+        } else if (task.pendingAskUser) {
+          addToast?.("info", 'Open an "Other" answer to quote into it');
+        } else {
+          return false;
+        }
+        event?.preventDefault();
+        return false;
+      }
+      insertText(new MarkdownQuote().quotedText);
       sel.removeAllRanges();
+      event?.preventDefault();
       return true;
-    }
-    return false;
-  }, []);
+    },
+    [addToast, permission, task.pendingAskUser],
+  );
 
   useLayoutEffect(() => {
     if (!isActive) return;
@@ -357,10 +371,8 @@ function SessionViewInner({
 
       // Quote-reply: press r with text selected inside the message list
       if (e.key === "r") {
-        if (quoteSelection()) {
-          e.preventDefault();
-          return;
-        }
+        quoteSelection(e);
+        if (e.defaultPrevented) return;
       }
 
       if (e.key.length !== 1) return;
@@ -370,7 +382,7 @@ function SessionViewInner({
     return () => {
       document.removeEventListener("keydown", handler);
     };
-  }, [isActive]);
+  }, [isActive, quoteSelection]);
 
   useLayoutEffect(() => {
     if (!isActive) return;
@@ -563,6 +575,7 @@ function SessionViewInner({
       ) : permission ? (
         <PermissionPromptForm
           key={permission.toolUseId}
+          insertTextRef={insertTextRef}
           toolName={permission.toolName}
           input={permission.input}
           reason={permission.reason}
@@ -578,6 +591,7 @@ function SessionViewInner({
       ) : task.pendingAskUser ? (
         <AskUserForm
           questions={task.pendingAskUser.questions}
+          insertTextRef={insertTextRef}
           onSubmit={handleAskUserSubmit}
           onAbort={handleAskUserAbort}
         />
@@ -884,8 +898,7 @@ function QuoteSelectionButton({
         e.preventDefault();
       }}
       onClick={() => {
-        onQuote();
-        setPos(null);
+        if (onQuote()) setPos(null);
       }}
     >
       Quote

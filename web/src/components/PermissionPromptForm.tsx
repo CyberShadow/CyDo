@@ -1,4 +1,5 @@
-import { useEffect, useState } from "preact/hooks";
+import type { RefObject } from "preact";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 
 interface Props {
   toolName: string;
@@ -9,6 +10,7 @@ interface Props {
   expiresAt?: number;
   /** Answered: awaiting the agent taking the answer. */
   sending?: boolean;
+  insertTextRef?: RefObject<((text: string) => void) | null>;
   onAllow: () => void;
   onDeny: (message?: string) => void;
 }
@@ -43,11 +45,31 @@ export function PermissionPromptForm({
   reason,
   expiresAt,
   sending,
+  insertTextRef,
   onAllow,
   onDeny,
 }: Props) {
   const [showDenyReason, setShowDenyReason] = useState(false);
   const [denyReason, setDenyReason] = useState("");
+
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useLayoutEffect(() => {
+    if (!insertTextRef || !showDenyReason || sending) return;
+    insertTextRef.current = (quoted) => {
+      const textarea = textareaRef.current!;
+      const previous = textarea.value;
+      const value = previous ? `${previous.trimEnd()}\n\n${quoted}` : quoted;
+      textarea.value = value;
+      setDenyReason(value);
+      textarea.focus();
+      textarea.setSelectionRange(value.length, value.length);
+      textarea.scrollTop = textarea.scrollHeight;
+    };
+    return () => {
+      insertTextRef.current = null;
+    };
+  }, [insertTextRef, showDenyReason, sending]);
 
   return (
     <div class={`permission-prompt-form${sending ? " sending" : ""}`}>
@@ -73,6 +95,7 @@ export function PermissionPromptForm({
         {showDenyReason ? (
           <>
             <textarea
+              ref={textareaRef}
               class="permission-deny-reason"
               placeholder="Reason (optional)"
               value={denyReason}

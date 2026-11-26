@@ -583,6 +583,7 @@ function AppContent() {
                       style={{ display: isActive ? "contents" : "none" }}
                     >
                       <SessionView
+                        addToast={addToast}
                         heicConversion={heicConversion}
                         getHeicConversion={getHeicConversion}
                         task={task}
