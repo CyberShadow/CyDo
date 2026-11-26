@@ -777,6 +777,18 @@ unittest
 	assert(maskedDiscovery.paths.exact(agentOnlyPath).isNull);
 }
 
+unittest // Project discovery stays outside the agent memory scope.
+{
+	import configy.attributes : SetInfo;
+	import cydo.runtime.config : MemorySize;
+
+	SandboxConfig global, workspace;
+	global.memory.max = SetInfo!MemorySize(MemorySize.fromString("8G"), true);
+	workspace.memory.high = SetInfo!MemorySize(MemorySize.fromString("6G"), true);
+	assert(resolveSandboxForDiscovery(global, workspace, "/tmp", "discovery-workspace")
+		.memoryScope.isNull);
+}
+
 unittest
 {
 	import std.exception : assertThrown;

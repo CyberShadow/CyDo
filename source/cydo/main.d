@@ -440,13 +440,17 @@ static:
 		import cydo.agent.contract : Agent;
 		import cydo.domain.task_types.definition : substituteVars;
 		import cydo.runtime.launch.sandbox : prepareProcessLaunch;
-		import cydo.runtime.launch.types : ProcessLaunch;
+		import cydo.runtime.launch.types : AgentScopeHost, ProcessLaunch;
+		import cydo.runtime.config : memoryLimitingInUse;
 		import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 			resolveNativeHistoryContext;
 
 		initLogger();
 		auto config = loadRuntimeConfig();
 		applyConfiguredLogLevel(config.log_level);
+
+		if (memoryLimitingInUse(config))
+			infof("Memory limits are not applied to agents launched by `cydo %s`", "replay-suggestions");
 
 		// Verify required files exist
 		auto metaPath = buildPath(dumpDir, "meta.json");
@@ -500,7 +504,7 @@ static:
 		{
 			agent = createConfiguredAgent(config, selectedAgentName);
 			auto context = ConfiguredNativeHistoryContext(selectedAgentName, "", "", false);
-			auto resolved = resolveNativeHistoryContext(config, agent, context);
+			auto resolved = resolveNativeHistoryContext(config, agent, context, Nullable!AgentScopeHost.init);
 			launch = prepareProcessLaunch(resolved.sandbox, resolved.rule,
 				resolved.profile, "", agent.executableName(resolved.sandbox.env));
 		}

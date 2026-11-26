@@ -1,13 +1,16 @@
 module cydo.workflow.exporter.html;
 
 import std.conv : to;
+import std.logger : infof;
+import std.typecons : Nullable;
 
 import ae.utils.json : JSONFragment, toJson;
 
 import cydo.agent.contract : Agent, DriverHistory, DriverHistoryLaunch,
 	DriverServedHistoryAgent, SessionConfig;
 import cydo.agent.resolver : tryCreateConfiguredAgent;
-import cydo.runtime.config : AgentDriver, CydoConfig;
+import cydo.runtime.config : AgentDriver, CydoConfig, memoryLimitingInUse;
+import cydo.runtime.launch.types : AgentScopeHost;
 import cydo.protocol : TaskEventSeqEnvelope, TranslatedEvent;
 import cydo.domain.storage.persistence : Persistence;
 import cydo.domain.tasks.model : TaskData, TypeInfoEntry, stdTimeToUnixMillis;
@@ -107,6 +110,9 @@ string exportTaskData(Persistence.TaskRow[] taskRows, ref CydoConfig config,
 
 	import cydo.domain.tasks.model : extractEventFromEnvelope, extractTsFromEnvelope;
 
+	if (memoryLimitingInUse(config))
+		infof("Memory limits are not applied to agents launched by `cydo %s`", "export-html");
+
 	// Serialize task metadata
 	static struct TaskExport
 	{
@@ -143,8 +149,6 @@ string exportTaskData(Persistence.TaskRow[] taskRows, ref CydoConfig config,
 	TaskExport[] taskExports;
 	foreach (ref t; taskRows)
 	{
-		import std.conv : to;
-
 		auto agent = getAgent(t.agentName);
 		taskExports ~= TaskExport(t.tid, t.title, t.status, t.parentTid,
 			t.relationType, t.workspace, t.projectPath, t.taskType,
@@ -169,7 +173,7 @@ string exportTaskData(Persistence.TaskRow[] taskRows, ref CydoConfig config,
 				~ ": task context is unavailable");
 		auto context = ConfiguredNativeHistoryContext(t.agentName, t.workspace,
 			(*td).repoPath, false);
-		auto resolved = resolveNativeHistoryContext(config, agent, context);
+		auto resolved = resolveNativeHistoryContext(config, agent, context, Nullable!AgentScopeHost.init);
 		if (auto driver = HistoryAccess.driverServingHistory(agent))
 		{
 			eventsMap[format!"%d"(t.tid)] = driverServedEvents(driver, t, resolved);

@@ -8,6 +8,7 @@ import dyaml.node : NodeID;
 import core.time : Duration;
 import std.typecons : Nullable;
 
+public import cydo.runtime.config.memory : MemoryLimitsConfig, MemorySize, memoryLimitingInUse;
 public import cydo.runtime.config.paths : configPath;
 
 enum PathMode { ro, rw, always_rw, tmpfs, empty_dir, empty_file }
@@ -51,6 +52,7 @@ UnsandboxedCommandExecution parseUnsandboxedCommandExecution(string value, strin
 
 struct SandboxConfig
 {
+	@Optional MemoryLimitsConfig memory;
 	@Optional SetInfo!bool isolate_filesystem;
 	@Optional SetInfo!bool isolate_processes;
 	@Optional SetInfo!bool isolate_environment;
@@ -218,6 +220,11 @@ struct CydoConfig
 			throw new Exception("system_keyword must be nonempty");
 		if (disk_cleanup_threshold_bytes <= 0)
 			throw new Exception("disk_cleanup_threshold_bytes must be positive");
+		version (linux) {}
+		else
+			if (memoryLimitingInUse(this))
+				throw new Exception("memory limits (sandbox.memory) "
+					~ "are only supported on Linux with systemd");
 		validateSandbox(sandbox, "sandbox");
 		foreach (ref ws; workspaces)
 			validateSandbox(ws.sandbox, format("workspaces['%s'].sandbox", ws.name));
@@ -262,6 +269,7 @@ private void validateSandbox(const ref SandboxConfig sandbox, string source)
 	import djinja.djinja : loadData;
 	import std.algorithm : canFind;
 
+	sandbox.memory.validate(source ~ ".memory");
 	if (!sandbox.unsandboxed_command_execution.set)
 		return;
 
@@ -459,6 +467,76 @@ version (unittest)
 				assert(error.kind == ConfigErrorKind.invalid && error.path == path, error.msg);
 				assert(error.msg.canFind(diagnostic), error.msg);
 			}
+		});
+	}
+
+	version (linux) unittest // YAML integers use the core schema before size parsing.
+	{
+		withConfigFileFixture((string path)
+		{
+			foreach (scalar, expected; ["1024": "1024", "8G": "8589934592", "50%": "50%",
+				"+1": "1", "0x10": "16"])
+			{
+				write(path, "workspaces: {}\nsandbox: {memory: {max: " ~ scalar ~ "}}\n");
+				assert(loadConfig().sandbox.memory.max.value.toSystemd() == expected, scalar);
+			}
+			foreach (zero; ["0", "0%"])
+			{
+				write(path, "workspaces: {}\nsandbox: {memory: {swap_max: " ~ zero ~ "}}\n");
+				assert(loadConfig().sandbox.memory.swap_max.value.toSystemd() == zero);
+			}
+		});
+	}
+
+	unittest // Invalid limits identify the offending field and file.
+	{
+		import std.exception : collectException;
+
+		withConfigFileFixture((string path)
+		{
+			foreach (field; ["max", "high", "swap_max"])
+				foreach (scalar; ["8GB", "'+1'", "'0x10'", "'1e3'", "-1",
+					"123456.4", "1e3", "1e5", "1e6", "{=: 1G, other: garbage}",
+					"[1G]", "null", "true", "'18446744073709551615'", "16777216T"])
+				{
+					write(path, "workspaces: {}\nsandbox: {memory: {" ~ field ~ ": " ~ scalar ~ "}}\n");
+					auto error = collectException!ConfigFileException(loadConfig());
+					assert(error !is null, scalar);
+					assert(error.kind == ConfigErrorKind.invalid && error.path == path, error.msg);
+					assert(error.msg.canFind(field), error.msg);
+				}
+
+			write(path, "workspaces: {}\nsandbox: {memory: {max: 18446744073709551615}}\n");
+			auto oversized = collectException!ConfigFileException(loadConfig());
+			assert(oversized !is null && oversized.kind == ConfigErrorKind.syntax);
+			assert(oversized.path == path, oversized.msg);
+		});
+	}
+
+	version (linux) unittest // All sandbox layers reject a zero max or high.
+	{
+		import std.exception : collectException;
+		import std.format : format;
+
+		withConfigFileFixture((string path)
+		{
+			foreach (layout, location; [
+				"workspaces: {}\nsandbox: {memory: {%s: %s}}":
+					"sandbox.memory.",
+				"workspaces: {}\nagents: {claude: {sandbox: {memory: {%s: %s}}}}":
+					"agents['claude'].sandbox.memory.",
+				"workspaces: {local: {root: /tmp, sandbox: {memory: {%s: %s}}}}":
+					"workspaces['local'].sandbox.memory.",
+			])
+				foreach (field; ["max", "high"])
+					foreach (zero; ["0", "0%"])
+					{
+						write(path, format(layout, field, zero) ~ "\n");
+						auto error = collectException!ConfigFileException(loadConfig());
+						assert(error !is null);
+						assert(error.kind == ConfigErrorKind.invalid && error.path == path, error.msg);
+						assert(error.msg.canFind(location ~ field), error.msg);
+					}
 		});
 	}
 

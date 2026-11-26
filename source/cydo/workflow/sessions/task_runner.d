@@ -28,7 +28,7 @@ import cydo.runtime.config : AgentDriver, CydoConfig, PathMode, SandboxConfig, U
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
 import cydo.runtime.launch.sandbox_materialization : taskTmpHostPath;
-import cydo.runtime.launch.types : AgentSandboxConfig, NativeHistoryProfile,
+import cydo.runtime.launch.types : AgentSandboxConfig, AgentScopeHost, NativeHistoryProfile,
 	NativeHistoryRule, ProcessLaunch;
 import launchSandbox = cydo.runtime.launch.sandbox;
 import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
@@ -201,6 +201,7 @@ struct TaskSessionRunnerHost
 	string delegate(const TaskData* td) effectiveCwd;
 	string delegate(const TaskData* td) worktreePath;
 	CydoConfig* delegate() currentConfig;
+	Nullable!AgentScopeHost delegate() currentAgentScopeHost;
 	PermissionSettings delegate(string agentName, string workspaceName) permissionSettings;
 	void delegate(string projectPath, string taskType,
 		ToolDescriptionViolation[] violations) reportMcpToolDescriptionLimit;
@@ -502,7 +503,7 @@ class TaskSessionRunner
 
 		string profile;
 		try
-			profile = resolveNativeHistoryContext(*host_.currentConfig(), agent, context).profile.root;
+			profile = resolveNativeHistoryContext(*host_.currentConfig(), agent, context, host_.currentAgentScopeHost()).profile.root;
 		catch (Exception)
 		{
 			// A historical task can outlive the configuration needed to resolve its profile.
@@ -618,7 +619,7 @@ class TaskSessionRunner
 			auto typeDef = currentTaskTypeDef(td);
 			auto context = ConfiguredNativeHistoryContext(td.agentName, td.workspace,
 				td.repoPath, typeDef !is null && typeDef.read_only);
-			resolved = resolveNativeHistoryContext(*host_.currentConfig(), agent, context);
+			resolved = resolveNativeHistoryContext(*host_.currentConfig(), agent, context, host_.currentAgentScopeHost());
 		}
 		catch (Exception e)
 		{
@@ -832,7 +833,7 @@ public:
 
 		AgentProcess child;
 		try
-			child = new AgentProcess(launch.cmdPrefix ~ command, null, null,
+			child = new AgentProcess(launch.sandboxPrefix ~ command, null, null,
 				noStdin: true, mode: FramingMode.raw);
 		catch (Exception e)
 		{
@@ -918,7 +919,7 @@ public:
 		auto workspace = previewWorkspace.isNull ? td.workspace : previewWorkspace.get;
 		auto context = ConfiguredNativeHistoryContext(td.agentName, workspace, workDir, readOnly);
 		auto nativeHistoryContext = resolveNativeHistoryContext(*host_.currentConfig(),
-			taskAgent, context);
+			taskAgent, context, host_.currentAgentScopeHost());
 		enforce(nativeHistoryContext.agent.driver == taskAgent.driver,
 			"Configured native history Agent does not match the task Agent driver");
 		auto sandbox = nativeHistoryContext.sandbox;
@@ -2280,6 +2281,7 @@ version (unittest) private TaskSessionRunner gitMetadataTestRunner(
 		effectiveCwd: (const TaskData* td) => taskCwd,
 		worktreePath: (const TaskData* td) => worktreePath,
 		currentConfig: () => config,
+		currentAgentScopeHost: () => Nullable!AgentScopeHost.init,
 		permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 		reportMcpToolDescriptionLimit: (string projectPath, string taskType,
 			ToolDescriptionViolation[] violations) {},
@@ -2443,7 +2445,8 @@ unittest
 	withSandboxedCommandTestRunner("live",
 		(TaskSessionRunner runner, TaskData* td, GitMetadataLaunchFixture fixture) {
 			td.launch.nativeHistoryProfile.root = buildPath(fixture.root, "live-profile");
-			td.launch.cmdPrefix = ["env", "MARK=live"];
+			td.launch.cmdPrefix = ["false", "--"];
+			td.launch.sandboxPrefix = ["env", "MARK=live"];
 			auto result = waitForSandboxedCommand(runner.runInTaskSandbox(1,
 				["/bin/sh", "-c", "printf %s \"$MARK\""]));
 			assert(result.status == 0);
@@ -2638,6 +2641,7 @@ unittest
 		},
 		effectiveCwd: (const TaskData* td) => td.effectiveCwd(""),
 		currentConfig: () => config,
+		currentAgentScopeHost: () => Nullable!AgentScopeHost.init,
 		tryAgentForTask: (int tid) => agent,
 		taskTypeCatalog: catalog,
 	));
@@ -2707,6 +2711,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				effectiveCwd: (const TaskData* td) => fixture.linkedCheckout,
 				worktreePath: (const TaskData* td) => "",
 				currentConfig: () => config,
+				currentAgentScopeHost: () => Nullable!AgentScopeHost.init,
 				permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 				reportMcpToolDescriptionLimit: (string projectPath, string taskType,
 					ToolDescriptionViolation[] violations) {},
@@ -3955,6 +3960,7 @@ version (unittest) private void assertYieldGateRunnerCase(
 				effectiveCwd: (const TaskData* td) => fixture.linkedCheckout,
 				worktreePath: (const TaskData* td) => "",
 				currentConfig: () => config,
+				currentAgentScopeHost: () => Nullable!AgentScopeHost.init,
 				permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 				reportMcpToolDescriptionLimit: (string path, string type,
 					ToolDescriptionViolation[] violations) {},

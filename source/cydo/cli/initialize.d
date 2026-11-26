@@ -7,7 +7,7 @@ import cydo.domain.task_types.definition : ContinuationDef, CreatableEntryPointD
 	UserEntryPointDef, WorktreeMode,
 	byName, loadTaskTypes;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, loadConfig,
-	GitIdentityConfig, ModelSpecFields, PathMode, PermissionsConfig,
+	GitIdentityConfig, MemoryLimitsConfig, ModelSpecFields, PathMode, PermissionsConfig,
 	ProjectDiscoveryConfig, SandboxConfig, UiConfig, UsageUiConfig, WorkspaceConfig;
 import cydo.runtime.config.paths : configDir, configPath, userTaskTypesPath;
 import cydo.runtime.config.yaml : loadYamlString, parseYamlConfigString;
@@ -340,7 +340,7 @@ unittest
 	assert(examples.snippets == ["suggestions: false\n"]);
 }
 
-unittest
+version (linux) unittest
 {
 	auto yaml = specimen(configTemplate, "workspaces: {}").complete;
 	assertConfigMarkers();
@@ -352,11 +352,13 @@ unittest
 	assertKeys!WorkspaceConfig(at(root, ["workspaces", "example-project"]), ["name"]);
 	assertKeys!SandboxConfig(at(root, ["sandbox"]));
 	assertKeys!GitIdentityConfig(at(root, ["sandbox", "git"]));
+	assertKeys!MemoryLimitsConfig(at(root, ["sandbox", "memory"]));
 	foreach (path; [["agents", "custom-codex", "sandbox"],
 		["workspaces", "example-project", "sandbox"]])
 	{
 		assertKeys!SandboxConfig(at(root, path));
 		assertKeys!GitIdentityConfig(at(root, path ~ "git"));
+		assertKeys!MemoryLimitsConfig(at(root, path ~ "memory"));
 	}
 	assertKeys!ProjectDiscoveryConfig(at(root, ["workspaces", "example-project", "project_discovery"]));
 	assertKeys!PermissionsConfig(at(root, ["permissions"]));

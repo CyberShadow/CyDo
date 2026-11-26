@@ -2,7 +2,8 @@ module cydo.runtime.launch.types;
 
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
-import cydo.runtime.config : AgentDriver;
+import cydo.runtime.config : AgentDriver, MemorySize;
+import std.typecons : Nullable;
 
 struct AgentSandboxConfig
 {
@@ -11,6 +12,25 @@ struct AgentSandboxConfig
 	string gitEmail;
 	string agentName;
 	string workspaceName;
+}
+
+struct MemoryLimits
+{
+	Nullable!MemorySize max;
+	Nullable!MemorySize high;
+	Nullable!MemorySize swapMax;
+}
+
+struct AgentScopeHost
+{
+	string slice;
+	string boundUnit;
+}
+
+struct AgentMemoryScope
+{
+	MemoryLimits limits;
+	AgentScopeHost host;
 }
 
 struct ResolvedSandbox
@@ -24,6 +44,7 @@ struct ResolvedSandbox
 	string gitEmail;
 	string[] tempFiles;
 	string sharedTmpPath;
+	Nullable!AgentMemoryScope memoryScope;
 
 	@property bool useBwrap() const { return isolate_filesystem || isolate_processes; }
 }
@@ -58,6 +79,7 @@ struct ProcessLaunch
 	string workDir;
 	string requestedExecutable;
 	string[] cmdPrefix;
+	string[] sandboxPrefix;
 	string executablePath;
 }
 

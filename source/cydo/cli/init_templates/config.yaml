@@ -236,6 +236,7 @@ workspaces: {}
 #       recurse_when: "{{ not is_project and depth < 4 }}"
 #     worktree_links: [AGENTS.md]
 #     sandbox:
+#       memory: {max: 8G, high: infinity, swap_max: 0}
 #       isolate_filesystem: true
 #       unsandboxed_command_execution: no
 #       isolate_processes: true
@@ -417,6 +418,49 @@ workspaces: {}
 #       paths:
 #         ~/work/shared: ro
 
+## memory
+## Sets per-agent memory limits on Linux. Fields merge independently from
+## global to agent to workspace. Running agents keep their launch limits.
+## Use bytes, uppercase K/M/G/T (base 1024), an integer percentage of
+## system RAM, or infinity to lift an inherited limit. Use 1–100% for max
+## and high. Only swap_max accepts zero bytes or 0%. Numeric byte limits
+## must stay below the kernel's unlimited value.
+## YAML integers are byte counts (for example, +1 is 1 and 0x10 is 16).
+## String byte counts require decimal digits and may use an uppercase suffix.
+## Floating-point and exponent forms such as 1.0 and 1e3 are rejected.
+## max is the hard limit. swap_max bounds swap use. high is optional and
+## throttles memory allocations. Leave a wide gap below max when setting
+## high, since throttling can stall runaway processes for minutes.
+## An OOM kill can pick the agent itself. These limits protect against
+## accidental exhaustion and can be changed by a malicious agent.
+
+# sandbox:
+#   memory: {max: 8G, high: 4G, swap_max: 0}
+
+## Running CyDo as a systemd user service
+## Memory limits require systemd 254 or later, cgroup v2, and delegation of
+## the memory controller. CyDo must be the main process of a user service so
+## systemd stops its agents when CyDo stops, restarts, or crashes.
+##
+## Example ~/.config/systemd/user/cydo.service:
+##   [Service]
+##   ExecStart=/path/to/cydo
+##   Restart=on-failure
+##   Environment=EDITOR=vim
+##
+##   [Install]
+##   WantedBy=default.target
+##
+## Run systemctl --user daemon-reload and systemctl --user start cydo.
+## Set Environment= for values read by sandbox.env templates. Transient
+## services do not inherit the shell environment. Pass it with --setenv:
+##   systemd-run --user --unit=cydo --setenv=EDITOR cydo
+## For development:
+##   systemd-run --user --pty --same-dir --wait --collect --unit=cydo-dev --setenv=EDITOR ./build/cydo
+## Run loginctl enable-linger to keep your user service running after logout.
+## Codex tasks in the same workspace can share an app-server and its limits.
+## Server-run Bash commands get their own scope with the same per-scope limits.
+
 ## ---------------------------------------------------------------------------
 ## Complete example
 ## ---------------------------------------------------------------------------
@@ -425,6 +469,7 @@ workspaces: {}
 
 ## cydo-init: complete-example begin
 # sandbox:
+#   memory: {max: 8G, high: 4G, swap_max: 0}
 #   isolate_filesystem: true
 #   unsandboxed_command_execution: no
 #   isolate_processes: true
@@ -697,6 +742,7 @@ workspaces: {}
 #     driver: codex
 #     display_name: Custom Codex
 #     sandbox:
+#       memory: {max: 8G, high: infinity, swap_max: 0}
 #       isolate_filesystem: true
 #       unsandboxed_command_execution: no
 #       isolate_processes: true

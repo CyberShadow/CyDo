@@ -15,7 +15,7 @@ import cydo.runtime.config : CydoConfig, SandboxConfig;
 import cydo.runtime.launch.environment : resolveNativeHistoryProfile;
 import cydo.runtime.launch.sandbox_paths : SandboxPaths;
 import cydo.runtime.launch.sandbox_resolver : resolveSandbox;
-import cydo.runtime.launch.types : AgentSandboxConfig, NativeHistoryProfile,
+import cydo.runtime.launch.types : AgentSandboxConfig, AgentScopeHost, NativeHistoryProfile,
 	NativeHistoryRule, ResolvedSandbox;
 
 struct ConfiguredNativeHistoryContext
@@ -365,7 +365,7 @@ private void validateHistoryAccess(ref HistoryAccess value)
 ResolvedNativeHistoryContext resolveNativeHistoryContext(
 	ref CydoConfig config,
 	Agent agent,
-	const ref ConfiguredNativeHistoryContext context)
+	const ref ConfiguredNativeHistoryContext context, Nullable!AgentScopeHost scopeHost)
 {
 	enforce(agent !is null,
 		"Configured native history resolution requires a supplied Agent");
@@ -404,6 +404,12 @@ ResolvedNativeHistoryContext resolveNativeHistoryContext(
 	auto sandbox = resolveSandbox(config.sandbox, configured.config.sandbox,
 		workspaceSandbox, agentSandbox, context.projectDir, workspaceRoot,
 		context.readOnly);
+	version (linux)
+	{
+		import cydo.runtime.launch.memory_scope : resolveAgentMemoryScope;
+		sandbox.memoryScope = resolveAgentMemoryScope(config, configured.config.sandbox,
+			workspaceSandbox, scopeHost);
+	}
 	auto rule = agent.nativeHistoryRule;
 	enforce(rule.driver == configured.driver && rule.driver == agent.driver,
 		"Configured native history rule driver does not match the configured Agent: "
@@ -497,7 +503,7 @@ unittest
 	auto workspaceRequest = ConfiguredNativeHistoryContext("configured-codex",
 		"selected-workspace", projectDir, false);
 	auto workspaceContext = resolveNativeHistoryContext(config, codex,
-		workspaceRequest);
+		workspaceRequest, Nullable!AgentScopeHost.init);
 	assert(workspaceContext.profile.driver == AgentDriver.codex);
 	assert(workspaceContext.profile.root == workspaceProfile);
 	assert(workspaceContext.sandbox.env["CODEX_HOME"] == workspaceProfile);
@@ -509,11 +515,11 @@ unittest
 	assert(!exists(workspaceProfile));
 	auto readOnlyRequest = ConfiguredNativeHistoryContext("configured-codex",
 		"selected-workspace", projectDir, true);
-	auto readOnlyContext = resolveNativeHistoryContext(config, codex, readOnlyRequest);
+	auto readOnlyContext = resolveNativeHistoryContext(config, codex, readOnlyRequest, Nullable!AgentScopeHost.init);
 	assert(readOnlyContext.sandbox.paths.exact(projectDir).get.effectiveMode == PathMode.ro);
 
 	auto noWorkspaceRequest = ConfiguredNativeHistoryContext("configured-codex", "", "", false);
-	auto noWorkspaceContext = resolveNativeHistoryContext(config, codex, noWorkspaceRequest);
+	auto noWorkspaceContext = resolveNativeHistoryContext(config, codex, noWorkspaceRequest, Nullable!AgentScopeHost.init);
 	assert(noWorkspaceContext.profile.root == agentProfile);
 	assert(noWorkspaceContext.sandbox.env["CODEX_HOME"] == agentProfile);
 	assert(noWorkspaceContext.sandbox.paths.exact(agentProfile).isNull);
@@ -530,7 +536,7 @@ unittest
 	globalOnlyConfig.agents["configured-codex"] = globalOnlyCodex;
 	auto globalOnlyRequest = ConfiguredNativeHistoryContext("configured-codex", "", "", false);
 	auto globalOnlyContext = resolveNativeHistoryContext(globalOnlyConfig, codex,
-		globalOnlyRequest);
+		globalOnlyRequest, Nullable!AgentScopeHost.init);
 	assert(globalOnlyContext.profile.root == globalProfile);
 	assert(globalOnlyContext.sandbox.env["CODEX_HOME"] == globalProfile);
 	assert(globalOnlyContext.sandbox.paths.exact(globalProfile).isNull);
@@ -538,11 +544,11 @@ unittest
 
 	auto missingWorkspaceRequest = ConfiguredNativeHistoryContext("configured-codex",
 		"missing-workspace", "", false);
-	assertThrown!Exception(resolveNativeHistoryContext(config, codex, missingWorkspaceRequest));
+	assertThrown!Exception(resolveNativeHistoryContext(config, codex, missingWorkspaceRequest, Nullable!AgentScopeHost.init));
 	auto missingAgentRequest = ConfiguredNativeHistoryContext("missing-agent", "", "", false);
-	assertThrown!Exception(resolveNativeHistoryContext(config, codex, missingAgentRequest));
+	assertThrown!Exception(resolveNativeHistoryContext(config, codex, missingAgentRequest, Nullable!AgentScopeHost.init));
 	auto mismatchRequest = ConfiguredNativeHistoryContext("configured-codex", "", "", false);
-	assertThrown!Exception(resolveNativeHistoryContext(config, new ClaudeCodeAgent(), mismatchRequest));
+	assertThrown!Exception(resolveNativeHistoryContext(config, new ClaudeCodeAgent(), mismatchRequest, Nullable!AgentScopeHost.init));
 }
 
 unittest
@@ -585,7 +591,7 @@ unittest
 	config.agents["configured-codex"] = configuredCodex;
 
 	auto request = ConfiguredNativeHistoryContext("configured-codex", "", "", false);
-	auto context = resolveNativeHistoryContext(config, new CodexAgent(), request);
+	auto context = resolveNativeHistoryContext(config, new CodexAgent(), request, Nullable!AgentScopeHost.init);
 	// The rendered agent value wins over global config and is not rendered again.
 	assert(context.profile.root == root ~ "/{{ env." ~ secondKey ~ " }}");
 }
@@ -634,7 +640,7 @@ unittest
 
 		auto agent = createConfiguredAgent(config, "standalone-codex");
 		auto context = ConfiguredNativeHistoryContext("standalone-codex", "", "", false);
-		auto resolved = resolveNativeHistoryContext(config, agent, context);
+		auto resolved = resolveNativeHistoryContext(config, agent, context, Nullable!AgentScopeHost.init);
 		assert(resolved.profile.root == profileRoot);
 		assert(!exists(profileRoot));
 
@@ -836,7 +842,7 @@ unittest
 		configured.driver = SetInfo!AgentDriver(golden.agent.driver, true);
 		config.agents[golden.agentName] = configured;
 		auto context = ConfiguredNativeHistoryContext(golden.agentName, "", "", false);
-		auto resolved = resolveNativeHistoryContext(config, golden.agent, context);
+		auto resolved = resolveNativeHistoryContext(config, golden.agent, context, Nullable!AgentScopeHost.init);
 		auto profileRoot = buildPath(childHome, golden.homeRelativeDefault);
 		auto launch = prepareProcessLaunch(resolved.sandbox, resolved.rule,
 			resolved.profile, workDir, golden.agent.executableName(resolved.sandbox.env));
@@ -902,7 +908,7 @@ unittest
 		isolatedConfigured.driver = SetInfo!AgentDriver(golden.agent.driver, true);
 		isolatedConfig.agents[golden.agentName] = isolatedConfigured;
 		auto isolatedResolved = resolveNativeHistoryContext(isolatedConfig, golden.agent,
-			context);
+			context, Nullable!AgentScopeHost.init);
 		auto isolatedProfileRoot = buildPath(isolatedHome, golden.homeRelativeDefault);
 		auto isolatedLaunch = prepareProcessLaunch(isolatedResolved.sandbox,
 			isolatedResolved.rule, isolatedResolved.profile, isolatedWorkDir,
@@ -944,4 +950,54 @@ version (unittest)
 			assert(0, "Unexpected driver history read");
 		}
 	}
+}
+
+version (linux) unittest // Only the selected workspace's limits wrap its agent launch.
+{
+	import configy.attributes : SetInfo;
+	import cydo.agent.resolver : createConfiguredAgent;
+	import cydo.runtime.config : AgentConfig, AgentDriver, MemorySize, WorkspaceConfig;
+	import cydo.runtime.launch.sandbox : cleanup, prepareProcessLaunch;
+	import std.conv : octal;
+	import std.file : mkdir, rmdirRecurse, setAttributes, tempDir, write;
+	import std.path : buildPath;
+	import std.process : environment;
+	import std.uuid : randomUUID;
+
+	auto root = buildPath(tempDir(), "cydo-workspace-scope-" ~ randomUUID().toString());
+	mkdir(root);
+	scope (exit) rmdirRecurse(root);
+	auto systemdRun = buildPath(root, "systemd-run");
+	write(systemdRun, "");
+	setAttributes(systemdRun, octal!700);
+	auto oldPath = environment["PATH"];
+	environment["PATH"] = root;
+	scope (exit) environment["PATH"] = oldPath;
+
+	CydoConfig config;
+	config.sandbox.isolate_filesystem = SetInfo!bool(false, true);
+	config.sandbox.isolate_processes = SetInfo!bool(false, true);
+	config.sandbox.env["HOME"] = root;
+	AgentConfig configured;
+	configured.driver = SetInfo!AgentDriver(AgentDriver.codex, true);
+	configured.sandbox.env["CODEX_HOME"] = buildPath(root, "profile");
+	config.agents["codex"] = configured;
+	auto limited = WorkspaceConfig("limited", root);
+	limited.sandbox.memory.max = SetInfo!MemorySize(MemorySize.fromString("1G"), true);
+	config.workspaces = [limited, WorkspaceConfig("unlimited", root)];
+
+	auto agent = createConfiguredAgent(config, "codex");
+	auto host = Nullable!AgentScopeHost(AgentScopeHost("cydo-test.slice", "cydo.service"));
+	void verifyLaunch(string workspace, Nullable!AgentScopeHost scopeHost, string firstArg)
+	{
+		auto context = ConfiguredNativeHistoryContext("codex", workspace, root, false);
+		auto resolved = resolveNativeHistoryContext(config, agent, context, scopeHost);
+		auto launch = prepareProcessLaunch(resolved.sandbox, resolved.rule, resolved.profile, root);
+		scope (exit) cleanup(launch.sandbox);
+		assert(launch.cmdPrefix.length && launch.cmdPrefix[0] == firstArg, workspace);
+	}
+
+	verifyLaunch("limited", host, systemdRun);
+	verifyLaunch("unlimited", host, "env");
+	verifyLaunch("limited", Nullable!AgentScopeHost.init, "env");
 }

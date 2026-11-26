@@ -86,21 +86,39 @@ string[] executableMountPaths(string executablePath)
 	return mounts;
 }
 
-/// Build the command prefix for running a process with sandbox settings.
-/// Returns bwrap args when filesystem or process isolation is needed,
-/// env args when only environment/workdir management is needed,
-/// or null when no prefix is required.
+/// Build the command prefix for an agent, including its memory scope and sandbox.
 /// Append the inner command after the returned prefix.
 string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir)
 {
-	return buildCommandPrefix(sandbox, workDir, resolveNixCurrentSystem());
+	auto scopePrefix = buildScopePrefix(sandbox);
+	return scopePrefix ~ buildSandboxPrefix(sandbox, workDir, resolveNixCurrentSystem());
 }
 
-private string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir,
+private string[] buildScopePrefix(const ref ResolvedSandbox sandbox)
+{
+	version (linux)
+	{
+		import cydo.runtime.launch.memory_scope : memoryScopePrefix;
+		return memoryScopePrefix(sandbox);
+	}
+	else
+		return null;
+}
+
+private string[] buildSandboxPrefix(ref ResolvedSandbox sandbox, string workDir,
 	string currentSystem)
 {
 	if (!sandbox.useBwrap)
 		return buildEnvPrefix(sandbox, workDir);
+
+	auto originalTemps = sandbox.tempFiles;
+	scope (failure)
+	{
+		ResolvedSandbox prefixTemps;
+		prefixTemps.tempFiles = sandbox.tempFiles[originalTemps.length .. $];
+		cleanup(prefixTemps);
+		sandbox.tempFiles = originalTemps;
+	}
 
 	string[] args;
 
@@ -222,25 +240,25 @@ private string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir,
 		auto passwdTmp = createPasswdTempFile();
 		if (passwdTmp.length > 0)
 		{
-			args ~= ["--ro-bind", passwdTmp, "/etc/passwd"];
 			sandbox.tempFiles ~= passwdTmp;
+			args ~= ["--ro-bind", passwdTmp, "/etc/passwd"];
 		}
 
 		// /etc/group injection
 		auto groupTmp = createGroupTempFile();
 		if (groupTmp.length > 0)
 		{
-			args ~= ["--ro-bind", groupTmp, "/etc/group"];
 			sandbox.tempFiles ~= groupTmp;
+			args ~= ["--ro-bind", groupTmp, "/etc/group"];
 		}
 
 		// Git config injection
 		auto gitTmp = createGitConfigTempFile(sandbox.gitName, sandbox.gitEmail);
 		if (gitTmp.length > 0)
 		{
+			sandbox.tempFiles ~= gitTmp;
 			auto home = environment.get("HOME", "");
 			args ~= ["--ro-bind", gitTmp, buildPath(home, ".config/git/config")];
-			sandbox.tempFiles ~= gitTmp;
 		}
 	}
 	else
@@ -327,17 +345,9 @@ ProcessLaunch materializeProcessLaunch(ResolvedSandbox sandbox,
 
 	materializeNativeHistoryProfile(launch.sandbox, rule, profile);
 	launch.executablePath = resolveExecutablePath(executable, launch.sandbox.env);
-	auto prefixTempFileCount = launch.sandbox.tempFiles.length;
-	try
-		launch.cmdPrefix = buildCommandPrefix(launch.sandbox, workDir);
-	catch (Exception e)
-	{
-		ResolvedSandbox prefixTemps;
-		prefixTemps.tempFiles = launch.sandbox.tempFiles[prefixTempFileCount .. $].dup;
-		cleanup(prefixTemps);
-		launch.sandbox.tempFiles = launch.sandbox.tempFiles[0 .. prefixTempFileCount].dup;
-		throw e;
-	}
+	auto scopePrefix = buildScopePrefix(launch.sandbox);
+	launch.sandboxPrefix = buildSandboxPrefix(launch.sandbox, workDir, resolveNixCurrentSystem());
+	launch.cmdPrefix = scopePrefix ~ launch.sandboxPrefix;
 	return launch;
 }
 
@@ -1396,24 +1406,24 @@ unittest
 	required.isolate_filesystem = true;
 	required.paths.requireReadVisible("/nix/store", requirementOrigin);
 	assert(!required.paths.exact("/nix").isNull);
-	auto requiredArgs = buildCommandPrefix(required, "", "");
+	auto requiredArgs = buildSandboxPrefix(required, "", "");
 	assert(rendererSequenceCount(requiredArgs, nixMount) == 1);
 
 	ResolvedSandbox withoutNix;
 	withoutNix.isolate_filesystem = true;
-	auto withoutNixArgs = buildCommandPrefix(withoutNix, "", "");
+	auto withoutNixArgs = buildSandboxPrefix(withoutNix, "", "");
 	assert(rendererSequenceCount(withoutNixArgs, nixMount) == 0);
 
 	ResolvedSandbox nixOs;
 	nixOs.isolate_filesystem = true;
-	auto nixOsArgs = buildCommandPrefix(nixOs, "", "/run/current-system");
+	auto nixOsArgs = buildSandboxPrefix(nixOs, "", "/run/current-system");
 	assert(rendererSequenceCount(nixOsArgs, nixMount) == 1);
 
 	ResolvedSandbox configured;
 	configured.isolate_filesystem = true;
 	configured.paths.set("/nix", PathMode.ro, configOrigin);
 	configured.paths.requireReadVisible("/nix/store", requirementOrigin);
-	auto configuredArgs = buildCommandPrefix(configured, "", "");
+	auto configuredArgs = buildSandboxPrefix(configured, "", "");
 	assert(rendererSequenceCount(configuredArgs, nixMount) == 1);
 
 	assert(withoutNixArgs[$ - 1] == "--");
@@ -1423,7 +1433,7 @@ unittest
 	agent.configureSandbox = (ref SandboxPaths paths, ref string[string] env) {};
 	auto isolated = resolveSandbox(SandboxConfig.init, SandboxConfig.init,
 		SandboxConfig.init, agent, "");
-	auto isolatedArgs = buildCommandPrefix(isolated, "", "");
+	auto isolatedArgs = buildSandboxPrefix(isolated, "", "");
 	assert(isolatedArgs.canFind(["--unshare-pid", "--as-pid-1"]));
 	assert(isolatedArgs[$ - 4 .. $] == ["--", cydoBinaryPath, "sandbox-init", "--"]);
 	assert(isolatedArgs.canFind(["--ro-bind", cydoBinaryDir(), cydoBinaryDir()]));
@@ -1475,7 +1485,7 @@ unittest
 	foreach (path; executableMountPaths(resolvedExecutable))
 		sandbox.paths.requireReadVisible(path, origin);
 
-	auto args = buildCommandPrefix(sandbox, "", "");
+	auto args = buildSandboxPrefix(sandbox, "", "");
 	assert(rendererSequenceCount(args, ["--ro-bind", "/nix", "/nix"]) == 1);
 
 	foreach (tempFile; sandbox.tempFiles)
@@ -1555,4 +1565,80 @@ unittest
 		assert(alphaIndex < bravoIndex);
 		assert(bravoIndex < ciderIndex);
 	}
+}
+
+version (linux) unittest // Scope wrapping preserves the sandbox command and survives launch cloning.
+{
+	import cydo.runtime.config : MemorySize;
+	import cydo.runtime.launch.types : AgentMemoryScope, AgentScopeHost, MemoryLimits;
+	import std.conv : octal;
+	import std.exception : collectException;
+	import std.file : mkdir, remove, rmdirRecurse, setAttributes, tempDir, write;
+	import std.uuid : randomUUID;
+
+	auto bin = buildPath(tempDir(), "cydo-scope-prefix-" ~ randomUUID().toString());
+	mkdir(bin);
+	scope (exit) rmdirRecurse(bin);
+	auto oldPath = environment["PATH"];
+	environment["PATH"] = bin;
+	scope (exit) environment["PATH"] = oldPath;
+	auto systemdRun = buildPath(bin, "systemd-run");
+	write(systemdRun, "");
+	setAttributes(systemdRun, octal!700);
+	write(buildPath(bin, "bwrap"), "");
+
+	enum slice = "cydo-test.slice";
+	auto scopePart = [systemdRun, "--user", "--scope", "--quiet", "--collect",
+		"--expand-environment=no", "--slice=" ~ slice, "--property=OOMPolicy=continue",
+		"--property=BindsTo=cydo.service", "--property=StopPropagatedFrom=cydo.service",
+		"--property=Before=cydo.service", "--property=MemoryMax=8589934592", "--"];
+	MemoryLimits limits;
+	limits.max = MemorySize.fromString("8G");
+	auto memoryScope = AgentMemoryScope(limits, AgentScopeHost(slice, "cydo.service"));
+
+	ResolvedSandbox bwrapSandbox;
+	bwrapSandbox.isolate_processes = true;
+	auto bwrapPrefix = buildCommandPrefix(bwrapSandbox, bin);
+	assert(bwrapPrefix[0] == findBwrap());
+	bwrapSandbox.memoryScope = memoryScope;
+	assert(buildCommandPrefix(bwrapSandbox, bin) == scopePart ~ bwrapPrefix);
+
+	ResolvedSandbox envSandbox;
+	envSandbox.isolate_environment = true;
+	auto rule = rendererTestNativeHistoryRule();
+	auto profile = rendererTestNativeHistoryProfile(envSandbox, rule, buildPath(bin, "profile"));
+	auto envPrefix = buildCommandPrefix(envSandbox, bin);
+	assert(envPrefix[0 .. 4] == ["env", "-i", "-C", bin]);
+	envSandbox.memoryScope = memoryScope;
+	assert(buildCommandPrefix(envSandbox, bin) == scopePart ~ envPrefix);
+
+	auto launch = prepareProcessLaunch(envSandbox, rule, profile, bin);
+	scope (exit) cleanup(launch.sandbox);
+	assert(launch.sandboxPrefix == envPrefix);
+	assert(launch.cmdPrefix == scopePart ~ launch.sandboxPrefix);
+	auto clone = withProcessLaunchEnv(launch, "MARK", "clone");
+	scope (exit) cleanup(clone.sandbox);
+	assert(clone.sandboxPrefix.canFind("MARK=clone"));
+	assert(!clone.sandboxPrefix.canFind(systemdRun));
+	assert(clone.cmdPrefix == scopePart ~ clone.sandboxPrefix);
+
+	foreach (unit, propertyValue; ["_cydo.service": "_cydo.service", "-cydo.service": "-cydo.service",
+		`cydo@a\x2db.service`: `cydo@a\\x2db.service`])
+	{
+		envSandbox.memoryScope = AgentMemoryScope(limits, AgentScopeHost(slice, unit));
+		auto args = buildCommandPrefix(envSandbox, bin);
+		assert(args.canFind("--property=BindsTo=" ~ propertyValue));
+		assert(args.canFind("--property=StopPropagatedFrom=" ~ propertyValue));
+		assert(args.canFind("--property=Before=" ~ propertyValue));
+	}
+
+	remove(systemdRun);
+	bwrapSandbox.isolate_filesystem = true;
+	bwrapSandbox.gitName = "Scope test";
+	bwrapSandbox.gitEmail = "scope@example.invalid";
+	scope (exit) cleanup(bwrapSandbox);
+	auto error = collectException(buildCommandPrefix(bwrapSandbox, bin));
+	assert(bwrapSandbox.tempFiles.length == 0);
+	assert(error !is null);
+	assert(error.msg.canFind("systemd-run") && error.msg.canFind("memory limits"), error.msg);
 }

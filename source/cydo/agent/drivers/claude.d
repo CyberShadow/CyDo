@@ -997,11 +997,13 @@ class ClaudeCodeAgent : Agent
 		string[] args;
 		string[string] procEnv;
 		ResolvedSandbox freshSandbox;
+		scope (exit) cleanup(freshSandbox);
 		if (launch.cmdPrefix !is null)
 		{
 			// Regenerate a fresh command prefix with new temp files,
 			// since the original ones were cleaned up after session exit.
 			freshSandbox = launch.sandbox;
+			freshSandbox.tempFiles = null;
 			args = buildCommandPrefix(freshSandbox, launch.workDir) ~ shArgs;
 		}
 		else
@@ -1013,10 +1015,6 @@ class ClaudeCodeAgent : Agent
 
 		auto result = execute(args, procEnv, Config.none, size_t.max,
 			launch.workDir.length > 0 ? launch.workDir : null);
-
-		// Clean up temp files created by buildCommandPrefix above.
-		if (freshSandbox.tempFiles.length > 0)
-			cleanup(freshSandbox);
 
 		if (result.status != 0)
 		{

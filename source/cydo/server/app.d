@@ -92,7 +92,8 @@ import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork
 	MessageSource, SubmissionHistoryCancelled;
 import cydo.agent.drivers.claude : ClaudeCodeSession;
 import cydo.agent.drivers.codex : CodexSession;
-import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
+import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, memoryLimitingInUse;
+import cydo.runtime.config.paths : configPath;
 import cydo.domain.storage.persistence : LoadedHistory, Persistence, openDatabase;
 import cydo.server.config_resolution : loadRuntimeConfig;
 import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
@@ -102,7 +103,7 @@ version (unittest) import cydo.runtime.image.converter : UnavailableHeicConverte
 import cydo.server.attachment_intake : AttachmentRejection, SubmissionIntake, needsNormalization;
 import cydo.server.environment : consumeServerEnvironment;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir, sharedTmpBaseDir;
-import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule;
+import cydo.runtime.launch.types : AgentScopeHost, NativeHistoryProfile, NativeHistoryRule;
 import cydo.domain.task_types.definition : DjinjaTemplate, TaskTypeDef, UserEntryPointDef, OutputType, WorktreeMode, byName, loadTaskTypes,
 	loadTaskTypeSystemPrompt, formatCompactSingletonToolSummary, singletonsOfferedTo, promptTemplateSource, renderPrompt, substituteVars,
 	loadProjectMemory, resolveAgent;
@@ -230,6 +231,7 @@ class App
 	private Persistence persistence;
 	private TaskLifecycle taskLifecycle;
 	private CydoConfig config;
+	private Nullable!AgentScopeHost agentScopeHost_;
 	private string taskDirTemplate;
 	private DiscoveryService discoveryService;
 	private ImportableScanRecord[int] importableScanRecords_;
@@ -334,6 +336,12 @@ class App
 
 		config = loadRuntimeConfig();
 		configureHeicConverter();
+		version (linux)
+			if (memoryLimitingInUse(config))
+			{
+				import cydo.runtime.launch.memory_scope : establishAgentScopeHost;
+				agentScopeHost_ = establishAgentScopeHost(config);
+			}
 		claudeUsageService.configChanged(config);
 		{
 			import ae.utils.path : findProgramDirectory;
@@ -433,7 +441,7 @@ class App
 			tryConfiguredAgent: &tryCreateConfiguredAppAgent,
 			resolveCurrentNativeHistoryContext: (Agent configured,
 				const ref ConfiguredNativeHistoryContext context) {
-				return resolveNativeHistoryContext(config, configured, context);
+				return resolveNativeHistoryContext(config, configured, context, agentScopeHost_);
 			},
 			loadSessionMetaCache: () => persistence.loadSessionMetaCache(),
 			withMutationTransaction: &withDiscoveryMutationTransaction,
@@ -734,6 +742,7 @@ class App
 			effectiveCwd: &taskPathResolver.effectiveCwd,
 			worktreePath: &taskPathResolver.worktreePath,
 			currentConfig: () => &config,
+			currentAgentScopeHost: () => agentScopeHost_,
 			permissionSettings: &findPermissionSettings,
 			reportMcpToolDescriptionLimit: &reportMcpToolDescriptionLimit,
 			resolveSharedTmpPath: &resolveSharedTmpPath,
@@ -3066,7 +3075,7 @@ class App
 		enforce(workspace.length == 0 || workspaceHasProjectPath(workspace, task.projectPath),
 			"The selected workspace does not contain the import preview checkout");
 		auto context = ConfiguredNativeHistoryContext(task.agentName, workspace, task.repoPath, false);
-		auto resolved = resolveNativeHistoryContext(config, access.agent, context);
+		auto resolved = resolveNativeHistoryContext(config, access.agent, context, agentScopeHost_);
 		enforce(resolved.profile == access.profile && task.agentSessionId == access.sessionId,
 			"Import preview for session " ~ access.sessionId ~ " belongs to " ~ access.profile.root
 				~ " but the selected checkout resolves to " ~ resolved.profile.root);
@@ -3085,7 +3094,7 @@ class App
 				continue;
 			ResolvedNativeHistoryContext resolved;
 			try
-				resolved = resolveNativeHistoryContext(config, agent, context);
+				resolved = resolveNativeHistoryContext(config, agent, context, agentScopeHost_);
 			catch (Exception e)
 			{
 				failure = e.msg;
@@ -3178,7 +3187,7 @@ class App
 			.byName(td.taskType);
 		auto context = ConfiguredNativeHistoryContext(td.agentName, td.workspace,
 			td.repoPath, typeDef !is null && typeDef.read_only);
-		auto resolved = resolveNativeHistoryContext(config, agent, context);
+		auto resolved = resolveNativeHistoryContext(config, agent, context, agentScopeHost_);
 		enforce(resolved.profile.root == sourceAccess.profile.root,
 			"Generic history forks cannot move between native history profiles");
 		auto sessionId = randomUUID().toString();
@@ -3898,7 +3907,7 @@ class App
 		{
 			auto context = ConfiguredNativeHistoryContext((*record).agentName,
 				json.workspace, td.repoPath, false);
-			selectedContext = resolveNativeHistoryContext(config, selectedAgent, context);
+			selectedContext = resolveNativeHistoryContext(config, selectedAgent, context, agentScopeHost_);
 		}
 		catch (Exception e)
 		{
@@ -3922,7 +3931,7 @@ class App
 				continue;
 			try
 			{
-				auto resolved = resolveNativeHistoryContext(config, configured, context);
+				auto resolved = resolveNativeHistoryContext(config, configured, context, agentScopeHost_);
 				if (resolved.profile.driver == (*record).key.driver
 					&& resolved.profile.root == (*record).key.profileRoot)
 				{
@@ -3989,6 +3998,7 @@ class App
 	private bool tryApplyRuntimeConfig()
 	{
 		CydoConfig candidate;
+		Nullable!AgentScopeHost candidateHost;
 		Agent[string] planned;
 		string[] reused;
 		string newDefault;
@@ -4010,6 +4020,17 @@ class App
 					planned[name] = createConfiguredAppAgent(candidate, name);
 			}
 			newDefault = effectiveDefaultAgentName(candidate);
+			version (linux)
+			{
+				import cydo.runtime.launch.memory_scope : establishAgentScopeHost;
+				try
+				{
+					if (memoryLimitingInUse(candidate))
+						candidateHost = establishAgentScopeHost(candidate);
+				}
+				catch (Exception e)
+					throw new ConfigFileException(ConfigErrorKind.invalid, configPath(), e.msg);
+			}
 		}
 		catch (ConfigFileException e)
 		{
@@ -4022,6 +4043,7 @@ class App
 		config = candidate;
 		if (jailChanged)
 			configureHeicConverter();
+		agentScopeHost_ = candidateHost;
 		claudeUsageService.configChanged(config);
 		applyConfiguredLogLevel(config.log_level);
 		auto reloadedTaskDirTemplate = config.task_dir.length > 0
@@ -7942,6 +7964,18 @@ unittest // Config reload publishes agent changes only after validation.
 		assert(notice.action.canFind(configFile));
 	}
 
+	version (linux)
+	{
+		write(configFile, original ~ "sandbox: {memory: {max: 1G}}\n");
+		assert(!app.tryApplyRuntimeConfig());
+		assert(app.config == acceptedConfig);
+		assert(app.agentScopeHost_.isNull);
+		auto notice = "config" in app.activeNotices;
+		assert(notice !is null);
+		assert(notice.description == "config.yaml was not reloaded");
+		assert(notice.action.canFind("systemd user service"), notice.action);
+	}
+
 	// Exercise the same config and agent publication as the watcher callback.
 	auto oldLogLevel = (cast()sharedLog).logLevel;
 	scope (exit) (cast()sharedLog).logLevel = oldLogLevel;
@@ -7949,7 +7983,26 @@ unittest // Config reload publishes agent changes only after validation.
 	write(configFile, original.replace("before-reload", "after-reload")
 		.replace("other:\n    driver: claude", "other:\n    driver: codex")
 		.replace("default_agent: work-claude", "default_agent: other"));
-	assert(app.tryApplyRuntimeConfig());
+	version (linux)
+	{
+		import std.conv : octal;
+		import std.file : setAttributes;
+
+		auto bin = buildPath(root, "bin");
+		mkdirRecurse(bin);
+		auto marker = buildPath(root, "systemctl-invoked");
+		auto systemctl = buildPath(bin, "systemctl");
+		write(systemctl, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \""
+			~ marker ~ "\"\n");
+		setAttributes(systemctl, octal!700);
+		auto oldPath = environment["PATH"];
+		environment["PATH"] = bin ~ ":" ~ oldPath;
+		scope (exit) environment["PATH"] = oldPath;
+		assert(app.tryApplyRuntimeConfig());
+		assert(!exists(marker));
+	}
+	else
+		assert(app.tryApplyRuntimeConfig());
 	assert("config" !in app.activeNotices, "An accepted config reload should clear the notice");
 	assert(app.agentsByName["work-claude"] is acceptedDefault);
 	assert(acceptedDefault.resolveModelSpec("large").model == "after-reload");
@@ -8269,6 +8322,7 @@ unittest // Preparing an ask policy cannot authorize tools if session creation f
 		effectiveCwd: (const TaskData* td) => projectPath,
 		worktreePath: (const TaskData* td) => "",
 		currentConfig: () => &app.config,
+		currentAgentScopeHost: () => Nullable!AgentScopeHost.init,
 		permissionSettings: &permissionSettings,
 		reportMcpToolDescriptionLimit: (string project, string taskType,
 			ToolDescriptionViolation[] violations) {},
@@ -8402,6 +8456,7 @@ unittest
 		effectiveCwd: (const TaskData* td) => app.taskPathResolver.effectiveCwd(td),
 		worktreePath: (const TaskData* td) => app.taskPathResolver.worktreePath(td),
 		currentConfig: () => &app.config,
+		currentAgentScopeHost: () => Nullable!AgentScopeHost.init,
 		permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 		reportMcpToolDescriptionLimit: (string projectPath, string taskType,
 			ToolDescriptionViolation[] violations) {},
@@ -8609,6 +8664,7 @@ unittest
 		effectiveCwd: (const TaskData* td) => taskPathResolver.effectiveCwd(td),
 		worktreePath: (const TaskData* td) => taskPathResolver.worktreePath(td),
 		currentConfig: () => config,
+		currentAgentScopeHost: () => Nullable!AgentScopeHost.init,
 		permissionSettings: (string agentName, string workspaceName) => PermissionSettings("allow all"),
 		reportMcpToolDescriptionLimit: (string projectPathValue,
 			string taskTypeValue, ToolDescriptionViolation[] violations) {
@@ -9357,6 +9413,7 @@ version (unittest) private final class CodexOfferFixture
 		app.taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost(
 			getTask: (int taskId) => taskId in app.tasks,
 			currentConfig: () => &app.config,
+			currentAgentScopeHost: () => Nullable!AgentScopeHost.init,
 			tryAgentForTask: &app.tryAgentForTask,
 			taskTypeCatalog: app.taskTypeCatalog,
 		));
@@ -9594,7 +9651,7 @@ unittest // Live-file lookup reads through the task's existing launch.
 	auto task = &app.tasks[tid];
 	task.launch.nativeHistoryProfile.root = buildPath(tmp, "live-profile");
 	// The runner supplies the test executable as $2. Forward the CLI arguments.
-	task.launch.cmdPrefix = ["/bin/sh", "-c", `exec "$1" "$3" "$4" "$5"`, "cydo", cli];
+	task.launch.sandboxPrefix = ["/bin/sh", "-c", `exec "$1" "$3" "$4" "$5"`, "cydo", cli];
 	app.archiveManager = new ArchiveManager(ArchiveManagerHost(
 		tryGetTask: (int id, out ArchiveTaskSnapshot snapshot) {
 			assert(id == tid);
