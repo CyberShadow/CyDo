@@ -33,11 +33,14 @@ test("CreateTask leaves a draft linked to its creator", async ({
   const creator = topLevelTasks.filter({ hasNot: draftLabel });
   await expect(creator).toHaveClass(/\bactive\b/);
   const creatorHref = (await creator.getAttribute("href"))!;
+  const creatorTid = (await creator.getAttribute("data-tid"))!;
 
   await openTask.click();
   await expect(draft).toHaveClass(/\bactive\b/);
   await expect(page.locator(".input-textarea:visible")).toHaveValue(
-    "reply with widget-fixed",
+    "reply with widget-fixed\n\n---\n" +
+      "This task description was written by another task " +
+      `(\`tid\` ${creatorTid}) using mcp__cydo__CreateTask, not by the user.\n`,
   );
   const provenance = page.locator(".task-origin:visible a");
   await expect(provenance).toHaveAttribute("href", creatorHref);

@@ -1233,12 +1233,16 @@ public:
 				~ "': tasks can be started only in your own workspace ('" ~ caller.workspace
 				~ "'). Create it as a draft instead (omit `start`).", true));
 
+		auto attributedPrompt = host_.readPromptFile("prompts/created_by_task.md", projectPath, [
+			"prompt": prompt,
+			"creator_tid": callerTid.to!string,
+		]);
 		auto tid = host_.createUserTask(UserTaskSpec(workspace, projectPath, name, title,
-			start ? "" : prompt, callerTid));
+			start ? "" : attributedPrompt, callerTid));
 		if (!start)
 			return resolve(McpResult.structured(toJson(CreatedTaskResult(tid, workspace,
 				projectPath, name, "draft"))));
-		return host_.startUserTask(tid, prompt).then(
+		return host_.startUserTask(tid, attributedPrompt).then(
 			() => McpResult.structured(toJson(CreatedTaskResult(tid, workspace, projectPath, name, "started"))),
 			(Exception failure) => McpResult(format!"Task %d was created but could not start: %s"(
 				tid, failure.msg), true));
@@ -2943,8 +2947,13 @@ version (unittest)
 				taskWorkspaceLabel: (int tid) => "local",
 				systemKeyword: () => "SYSTEM",
 				readPromptFile: (string relativePath, string projectPath,
-					string[string] vars) => vars[relativePath == "prompts/sub_task_waiting_for_answer.md"
-						? "question" : "message"],
+					string[string] vars) {
+					if (relativePath == "prompts/created_by_task.md")
+						return vars["prompt"] ~ "\n\n---\nThis task description was written by another task "
+							~ "(`tid` " ~ vars["creator_tid"] ~ ") using mcp__cydo__CreateTask, not by the user.\n";
+					return vars[relativePath == "prompts/sub_task_waiting_for_answer.md"
+						? "question" : "message"];
+				},
 				buildKnownSystemMessageMeta: (KnownSystemMessageKind kind,
 					string subject, string[string] vars,
 					string bodyVar) => "{}",
@@ -3144,6 +3153,10 @@ version (unittest) private void assertCreatedTaskResult(McpResult result, int ti
 	assert(payload["status"].str == status);
 }
 
+version (unittest) private enum createTaskAttribution =
+	"\n\n---\nThis task description was written by another task (`tid` 1) "
+	~ "using mcp__cydo__CreateTask, not by the user.\n";
+
 unittest
 {
 	import std.file : tempDir;
@@ -3157,8 +3170,14 @@ unittest
 	enum prompt = "\uFEFF  Review this  \u00A0";
 	enum title = "Review";
 	auto project = canonicalProjectPath(tempDir());
+	auto readPromptFile = backend.host_.readPromptFile;
+	backend.host_.readPromptFile = (string path, string projectPath, string[string] vars) {
+		if (path == "prompts/created_by_task.md" && projectPath == project)
+			return vars["prompt"] ~ "\n\nProject attribution for task " ~ vars["creator_tid"] ~ ".\n";
+		return readPromptFile(path, projectPath, vars);
+	};
 
-	void assertDraft(string target, string workspace, string expectedProject)
+	void assertDraft(string target, string workspace, string expectedProject, string expectedPrompt)
 	{
 		auto tid = f.nextTid;
 		auto countBefore = f.createdUserTasks.length;
@@ -3166,17 +3185,18 @@ unittest
 			backend.handleCreateUserTask("1", prompt, title, "", target, false));
 		assert(f.createdUserTasks.length == countBefore + 1);
 		assert(f.createdUserTasks[$ - 1] == UserTaskSpec(
-			workspace, expectedProject, "review", title, prompt, 1));
+			workspace, expectedProject, "review", title, expectedPrompt, 1));
 		assert(f.startedUserTids.length == 0);
 		assertCreatedTaskResult(result, tid, workspace, expectedProject, "draft");
 	}
 
-	assertDraft("", "local", f.tasks[1].projectPath);
+	assertDraft("", "local", f.tasks[1].projectPath, prompt ~ createTaskAttribution);
 	f.entryPointsByProject[project] = [UserEntryPointDef("review", "child", "Review")];
 	f.projectWorkspaces[project] = ["remote", "local"];
-	assertDraft(buildPath(tempDir(), "."), "local", project);
+	enum projectPrompt = prompt ~ "\n\nProject attribution for task 1.\n";
+	assertDraft(buildPath(tempDir(), "."), "local", project, projectPrompt);
 	f.projectWorkspaces[project] = ["remote"];
-	assertDraft(project, "remote", project);
+	assertDraft(project, "remote", project, projectPrompt);
 }
 
 unittest
@@ -3197,7 +3217,8 @@ unittest
 		assert(results.length == 0);
 		assert(f.createdUserTasks == [UserTaskSpec("local", f.tasks[1].projectPath,
 			"review", "", "", 1)]);
-		assert(f.startedUserTids == [tid] && f.startedUserPrompts == [prompt]);
+		assert(f.startedUserTids == [tid]);
+		assert(f.startedUserPrompts == [prompt ~ createTaskAttribution]);
 
 		if (fail)
 			f.userTaskStartGate.reject(new Exception("boom"));

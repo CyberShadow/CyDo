@@ -6321,6 +6321,8 @@ unittest
 	mkdirRecurse(buildPath(defs, "prompts"));
 	write(buildPath(defs, "prompts", "blank.md"), "Blank prompt\n");
 	write(buildPath(defs, "prompts", "start.md"), "Review request: {{task_description}}\n");
+	write(buildPath(defs, "prompts", "created_by_task.md"),
+		"{{prompt}}\n\nCreated by task {{creator_tid}}.\n");
 	write(buildPath(defs, "task-types.yaml"),
 		"user_entry_points:\n"
 		~ "  isolated:\n"
@@ -7093,6 +7095,7 @@ unittest
 		getTask: (int tid) => tid in fixture.app.tasks,
 		taskTypesForProject: &fixture.app.taskTypeCatalog.getTaskTypesForProject,
 		entryPointsForProject: &fixture.app.taskTypeCatalog.getEntryPointsForProject,
+		readPromptFile: &fixture.app.readPromptFile,
 		createUserTask: &fixture.app.createUserTask,
 		startUserTask: &fixture.app.startUserTask,
 	));
