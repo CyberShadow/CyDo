@@ -30,6 +30,10 @@ user_entry_points:
     task_type: test_sysprompt_mode_a
     description: "Session with system prompt mode A"
     prompt_template: prompts/blank.md
+  test_create_worktree:
+    task_type: test_create_worktree
+    description: "Session that can create its worktree"
+    prompt_template: prompts/blank.md
 
 singletons:
   integrator:
@@ -302,3 +306,12 @@ task_types:
   test_commit_child:
     model_class: small
     output_type: [commit]
+
+  test_create_worktree:
+    model_class: small
+    output_type: []
+    creatable_tasks:
+      test_require_child:
+        task_type: blank
+        worktree: require
+        prompt_template: prompts/blank.md

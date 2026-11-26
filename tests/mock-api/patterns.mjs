@@ -323,6 +323,9 @@ export function matchPattern(userText) {
     };
   }
 
+  if (/call create worktree/i.test(userText))
+    return { type: "tool_call", name: "mcp__cydo__CreateWorktree", input: {} };
+
   match = userText.match(/call create task ([^|]+)\|(.*)/is);
   if (match)
     return {
