@@ -1082,7 +1082,8 @@ public:
 			q.askerTid, qid, null, null, null))));
 	}
 
-	Promise!McpResult handleRequest(string callerTidStr, ToolCallEnricher call, string target, string message)
+	Promise!McpResult handleRequest(string callerTidStr, ToolCallEnricher call, string target, string message,
+		ToolCallCancellation cancellation)
 	{
 		import std.algorithm : map;
 		import std.array : join;
@@ -1114,7 +1115,11 @@ public:
 			"directory": host_.effectiveCwd(callerTd),
 		]);
 		return host_.singletonForTask(callerTid, target).then(
-			(int targetTid) => ask(callerTidStr, call, request, targetTid, true),
+			(int targetTid) {
+				if (cancellation.cancelled)
+					return resolve(McpResult("Cancelled by the agent", true));
+				return ask(callerTidStr, call, request, targetTid, true);
+			},
 			(Exception e) => resolve(McpResult(e.msg, true)));
 	}
 
@@ -3694,7 +3699,7 @@ unittest
 		auto b = f.makeBackend();
 		McpResult requested, presented, delivered;
 		auto requestCall = new RecordingEnricher;
-		b.handleRequest("1", requestCall, "integrator", "land this").then((McpResult r) {
+		b.handleRequest("1", requestCall, "integrator", "land this", new ToolCallCancellation).then((McpResult r) {
 			requested = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -3737,7 +3742,7 @@ unittest
 		auto b = f.makeBackend();
 		McpResult result;
 		auto call = new RecordingEnricher;
-		b.handleRequest("1", call, target, "review this").then((McpResult r) {
+		b.handleRequest("1", call, target, "review this", new ToolCallCancellation).then((McpResult r) {
 			result = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
@@ -3758,7 +3763,7 @@ unittest
 		auto singleton = new Promise!int;
 		b.host_.singletonForTask = (int tid, string name) => singleton;
 		auto call = new RecordingEnricher;
-		b.handleRequest("1", call, "integrator", "land this").ignoreResult();
+		b.handleRequest("1", call, "integrator", "land this", new ToolCallCancellation).ignoreResult();
 		drainPromiseNextTicks();
 		assert(call.events.length == 0);
 		singleton.fulfill(2);
@@ -3766,7 +3771,7 @@ unittest
 		assert(call.events == [CydoItemEnrichedEvent(target_tid: 2)]);
 	}
 
-	// Singleton startup can finish after the requesting session has exited.
+	// A cancelled Request must have no question side effects when startup finishes.
 	{
 		import cydo.mcp : ToolCallCancellation;
 		import cydo.protocol : TranslatedEvent;
@@ -3787,16 +3792,27 @@ unittest
 		calls.toolStarted(1, "r", 1);
 		auto cancellation = new ToolCallCancellation;
 		auto call = calls.register(1, "r", cancellation);
-		b.handleRequest("1", call, "integrator", "land this").ignoreResult();
+		b.handleRequest("1", call, "integrator", "land this", cancellation).ignoreResult();
 		drainPromiseNextTicks();
+		assert(!cancellation.cancelled);
+		assert(f.persistence.loadQuestions().length == 0);
+		assert(f.tasks[1].status == TaskStatus.active);
 		assert(appendedTids.length == 0);
 		calls.closeTask(1);
 		assert(cancellation.cancelled);
 		calls.openTask(1);
 		calls.toolStarted(1, "r", 1);
+		string deliveredQuestion;
+		b.awaitEvent(2).then((McpResult r) { deliveredQuestion = r.text; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(deliveredQuestion.length == 0);
 		singleton.fulfill(2);
 		drainPromiseNextTicks();
-		assert(f.persistence.loadQuestions().length == 1);
+		const persisted = f.persistence.loadQuestions().length;
+		const callerStatus = f.tasks[1].status;
+		assert(persisted == 0 && deliveredQuestion.length == 0 && callerStatus == TaskStatus.active,
+			format!"Cancelled Request after singleton startup: persisted=%s, delivered=%s, caller status=%s"
+				(persisted, deliveredQuestion, callerStatus));
 		assert(appendedTids.length == 0);
 		calls.settle(call);
 	}

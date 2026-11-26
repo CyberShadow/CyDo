@@ -274,7 +274,8 @@ interface ToolsBackend
 	Promise!McpResult registerBatchAndAwait(string callerTid, LaunchedTask[] launchedTasks);
 	Promise!McpResult handleAsk(string callerTid, ToolCallEnricher call, string message, int targetTid);
 	Promise!McpResult handleAnswer(string callerTid, ToolCallEnricher call, int qid, string message);
-	Promise!McpResult handleRequest(string callerTid, ToolCallEnricher call, string target, string message);
+	Promise!McpResult handleRequest(string callerTid, ToolCallEnricher call, string target, string message,
+		ToolCallCancellation cancellation);
 	Promise!McpResult handleCreateUserTask(string callerTid, string prompt, string title,
 		string entryPoint, string project, bool start);
 }
@@ -421,7 +422,7 @@ class CydoToolsImpl : CydoTools
 	McpResult request(string to, string message)
 	{
 		import ae.utils.promise.await : await;
-		return app.handleRequest(callerTid, call, to, message).await();
+		return app.handleRequest(callerTid, call, to, message, cancellation).await();
 	}
 
 	McpResult createUserTask(string prompt, string title, string entry_point,
@@ -497,7 +498,8 @@ unittest
 			assert(0, "unexpected call");
 		}
 
-		Promise!McpResult handleRequest(string callerTid, ToolCallEnricher call, string target, string message)
+		Promise!McpResult handleRequest(string callerTid, ToolCallEnricher call, string target, string message,
+			ToolCallCancellation cancellation)
 		{
 			assert(0, "unexpected call");
 		}
