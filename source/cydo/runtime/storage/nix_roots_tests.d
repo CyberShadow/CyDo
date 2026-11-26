@@ -282,8 +282,17 @@ version (unittest)
     auto fixture = Fixture("touch \"$0.invoked\"");
     auto missing = buildPath(fixture.root, "stale");
     symlink("missing-target", missing);
-    assert(timed(reportNixClosures([DiskSymlink(missing, "missing-target")],
-        fixture.executable)).entries.length == 0);
+    auto loop = buildPath(fixture.root, "a");
+    symlink("a", loop);
+    write(buildPath(fixture.root, "file"), "");
+    auto throughFile = buildPath(fixture.root, "through-file");
+    symlink("file/x", throughFile);
+
+    assert(timed(reportNixClosures([
+        DiskSymlink(missing, "missing-target"),
+        DiskSymlink(loop, "a"),
+        DiskSymlink(throughFile, "file/x"),
+    ], fixture.executable)).entries.length == 0);
     assert(timed(reportNixClosures([], fixture.executable)).entries.length == 0);
     assert(!exists(fixture.executable ~ ".invoked"));
 }

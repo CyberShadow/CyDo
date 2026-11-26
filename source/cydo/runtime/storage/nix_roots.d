@@ -1,18 +1,19 @@
 module cydo.runtime.storage.nix_roots;
 
-import ae.sys.file : realPath;
 import core.sys.posix.poll : POLLIN, poll, pollfd;
 import core.sys.posix.signal : SIGKILL;
+import core.sys.posix.stdlib : realpath;
 import core.sys.posix.unistd : read;
-import core.stdc.errno : errno, EINTR;
+import core.stdc.errno : errno, EACCES, EINTR, ELOOP, ENOENT, ENOTDIR;
+import core.stdc.stdlib : free;
 import core.time : MonoTime, msecs;
 import std.algorithm : startsWith;
-import std.file : exists;
 import std.exception : errnoEnforce;
 import std.json : JSONType, parseJSON;
 import std.path : buildPath, dirName, isAbsolute;
 import std.process : pipe, spawnProcess, tryWait, wait, kill;
 import std.stdio : File;
+import std.string : fromStringz, toStringz;
 import std.typecons : Nullable;
 
 import cydo.runtime.launch.sandbox_renderer : resolveExecutablePath;
@@ -144,8 +145,15 @@ NixClosureReport reportNixClosures(DiskSymlink[] links, string executable = null
 	{
 		auto path = isAbsolute(link.rawTarget) ? link.rawTarget
 			: buildPath(dirName(link.linkPath), link.rawTarget);
-		if (!exists(path)) continue;
-		auto target = realPath(path);
+		auto resolved = realpath(path.toStringz, null);
+		if (resolved is null)
+		{
+			if (errno == ENOENT || errno == ELOOP || errno == ENOTDIR || errno == EACCES)
+				continue;
+			errnoEnforce(false, "realpath");
+		}
+		scope (exit) free(resolved);
+		auto target = resolved.fromStringz.idup;
 		if (!target.startsWith("/nix/store/")) continue;
 		if (target !in targets) orderedTargets ~= target;
 		targets[target] ~= link.linkPath;
