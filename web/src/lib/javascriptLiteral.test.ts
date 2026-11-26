@@ -3,12 +3,25 @@ import type { Node } from "web-tree-sitter";
 import { installedTreeSitterBytes } from "../test-support/treeSitterAssets";
 import { decodeJavaScriptLiteral } from "./javascriptLiteral";
 import { withJavaScriptTree } from "./javascriptParser";
-import { projectOffset } from "./sourceTree";
+import { prepareEmbedProjection } from "./sourceTree";
 import { configureTreeSitterAssets } from "./treeSitterRuntime";
 
 beforeAll(() => {
   configureTreeSitterAssets(installedTreeSitterBytes);
 });
+
+function literalCursor(
+  value: NonNullable<ReturnType<typeof decodeJavaScriptLiteral>>,
+  rawLength: number,
+) {
+  return prepareEmbedProjection({
+    kind: "embed",
+    span: { start: 0, end: rawLength },
+    content: { language: "javascript", text: value.text, segments: [] },
+    projection: value.projection,
+    origin: { language: "javascript", construct: "literal", attributes: {} },
+  })!();
+}
 
 const forms = [
   { name: "single quotes", prefix: "'", suffix: "'", mode: "cooked" },
@@ -228,9 +241,10 @@ it.each(projectionCases)(
     await withLiteral(form, content, (node) => {
       const value = decodeJavaScriptLiteral(node, form.mode)!;
       expect(value.text).toBe(evaluate(literalSource(form, content)));
+      const project = literalCursor(value, content.length);
       expect(
         Array.from({ length: value.text.length + 1 }, (_, offset) =>
-          projectOffset(value.projection, offset),
+          project(offset),
         ),
       ).toEqual(offsets);
       expect(value.projection.points.at(-1)?.parent).toBe(content.length);
@@ -285,14 +299,15 @@ it.each([
         const decoded = decodeJavaScriptLiteral(node, form.mode)!;
         expect(decoded.text).toBe(evaluate(literal));
         if (form.mode === "raw") return;
+        const project = literalCursor(decoded, content.length);
         if (first === "?") {
-          expect(projectOffset(decoded.projection, 2)).toBe(3);
-          expect(projectOffset(decoded.projection, 3)).toBe(4);
+          expect(project(2)).toBe(3);
+          expect(project(3)).toBe(4);
         } else if (second !== "\n") {
-          expect(projectOffset(decoded.projection, 2)).toBe(4);
+          expect(project(2)).toBe(4);
         } else {
           expect(decoded.text).toBe("ab");
-          expect(projectOffset(decoded.projection, 2)).toBe(5);
+          expect(project(2)).toBe(5);
         }
       });
     }

@@ -1,12 +1,11 @@
 import { beforeAll, describe, it, expect } from "vitest";
-import { projectDescendantSpan, type SourceNode } from "./sourceTree";
+import type { SourceNode } from "./sourceTree";
 import { loadParsedShellDocument } from "./shellParser";
 import { configureTreeSitterAssets } from "./treeSitterRuntime";
 import { installedTreeSitterBytes } from "../test-support/treeSitterAssets";
 import { buildShellSourceTree } from "./shellSourceTree";
 import {
   buildSourceRenderPieces,
-  classifyEmbedRenderMode,
   isLineBoundaryEmbed,
   type SourceRenderPiece,
 } from "./sourceTreeRenderPlan";
@@ -61,7 +60,6 @@ describe("source tree render plan", () => {
     if (!wrapper) return;
 
     expect(isLineBoundaryEmbed(parsed.value.text, wrapper.span)).toBe(false);
-    expect(classifyEmbedRenderMode(parsed.value, wrapper)).toBe("inline");
   });
 
   it("isLineBoundaryEmbed returns true for heredoc body spans", async () => {
@@ -89,8 +87,12 @@ describe("source tree render plan", () => {
     expect(heredoc?.kind).toBe("embed");
     if (!heredoc) return;
 
-    expect(classifyEmbedRenderMode(parsed.value, heredoc)).toBe(
-      "rich-markdown",
+    expect(buildSourceRenderPieces(parsed.value)).toContainEqual(
+      expect.objectContaining({
+        kind: "rich",
+        mode: "rich-markdown",
+        text: "# Title",
+      }),
     );
   });
 
@@ -105,7 +107,13 @@ describe("source tree render plan", () => {
     expect(wrapper?.kind).toBe("embed");
     if (!wrapper) return;
 
-    expect(classifyEmbedRenderMode(parsed.value, wrapper)).toBe("inline");
+    expect(buildSourceRenderPieces(parsed.value)).toContainEqual(
+      expect.objectContaining({
+        kind: "inline",
+        language: "bash",
+        text: wrapper.content.text,
+      }),
+    );
   });
 
   it("renders deeply nested wrappers as recursive inline pieces", async () => {
@@ -136,7 +144,12 @@ describe("source tree render plan", () => {
     );
     expect(escaped).toBeTruthy();
     if (!escaped) return;
-    expect(escaped.highlightText).toContain('"CYDO_SKIP_LOAD_TASKS"');
+    expect(
+      escaped.highlightSource.text.slice(
+        escaped.highlightSpan.start,
+        escaped.highlightSpan.end,
+      ),
+    ).toContain('"CYDO_SKIP_LOAD_TASKS"');
     expect(escaped.projection).toBeTruthy();
   });
 
@@ -151,7 +164,12 @@ describe("source tree render plan", () => {
     const escaped = inline.find((piece) => piece.text.includes("'\\''"));
     expect(escaped).toBeTruthy();
     if (!escaped) return;
-    expect(escaped.highlightText).toContain("'");
+    expect(
+      escaped.highlightSource.text.slice(
+        escaped.highlightSpan.start,
+        escaped.highlightSpan.end,
+      ),
+    ).toContain("'");
     expect(escaped.projection).toBeTruthy();
   });
 
@@ -278,19 +296,6 @@ describe("source tree render plan", () => {
     expect(heredoc?.kind).toBe("embed");
     if (!heredoc || heredoc.kind !== "embed") return;
 
-    const projected = projectDescendantSpan(
-      parsed.value,
-      [wrapperIndex, heredocIndex],
-      { start: 0, end: heredoc.content.text.length },
-    );
-    expect(projected).toEqual({
-      start: command.indexOf("<svg"),
-      end: command.indexOf("\nEOF'"),
-    });
-    expect(command.slice(projected!.start, projected!.end)).toBe(
-      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><text y="20">"\'$literal</text></svg>',
-    );
-
     const pieces = buildSourceRenderPieces(parsed.value);
     const rich = pieces.find(
       (piece) =>
@@ -300,6 +305,10 @@ describe("source tree render plan", () => {
     );
     expect(rich?.kind).toBe("rich");
     if (!rich || rich.kind !== "rich") return;
+    expect(rich.sourceSpan).toEqual({
+      start: command.indexOf("<svg"),
+      end: command.indexOf("\nEOF'"),
+    });
     expect(rich.text).toBe(
       "<svg xmlns=http://www.w3.org/2000/svg width=32 height=32><text y=20>$literal</text></svg>",
     );
@@ -348,6 +357,7 @@ describe("source tree render plan", () => {
     );
     expect(rich?.kind).toBe("rich");
     if (!rich || rich.kind !== "rich") return;
+    expect(rich.mode).toBe("rich-code");
     expect(rich.text).toBe("print(1)");
 
     expect(pieces.map((piece) => piece.sourceSpan)).toEqual([
@@ -383,7 +393,6 @@ describe("source tree render plan", () => {
     expect(embed.span).toEqual({ start: 17, end: 25 });
     expect(embed.content.language).toBe("python");
     expect(embed.content.text).toBe("print(1)");
-    expect(classifyEmbedRenderMode(parsed.value, embed)).toBe("rich-code");
     expect(isLineBoundaryEmbed(parsed.value.text, embed.span)).toBe(true);
 
     const pieces = buildSourceRenderPieces(parsed.value);
@@ -391,6 +400,7 @@ describe("source tree render plan", () => {
     const rich = pieces.find((piece) => piece.kind === "rich");
     expect(rich?.kind).toBe("rich");
     if (!rich) return;
+    expect(rich.mode).toBe("rich-code");
     expect(rich.text).toBe("print(1)");
     expect(rich.sourceText).toBe("print(1)");
     expect(pieces.map((piece) => piece.sourceSpan)).toEqual([
@@ -441,8 +451,57 @@ describe("source tree render plan", () => {
     expect(piece?.kind).toBe("inline");
     if (!piece || piece.kind !== "inline") return;
     expect(piece.text).toBe("a\\u0022b");
-    expect(piece.highlightText).toBe('a"b');
+    expect(
+      piece.highlightSource.text.slice(
+        piece.highlightSpan.start,
+        piece.highlightSpan.end,
+      ),
+    ).toBe('a"b');
     expect(piece.projection).toBeTruthy();
     expect(pieces.map(sourceTextOfPiece).join("")).toBe(root.text);
   });
+});
+
+it("reads a dense projection linearly across ordered render boundaries", () => {
+  const length = 16_000;
+  let reads = 0;
+  const points = new Proxy(
+    Array.from({ length: length + 1 }, (_, offset) => ({
+      child: offset,
+      parent: offset * 4,
+    })),
+    {
+      get(target, property, receiver): unknown {
+        reads++;
+        return Reflect.get(target, property, receiver);
+      },
+    },
+  );
+  const text = "a".repeat(length);
+  const raw = "\\x61".repeat(length);
+  const root: SourceNode = {
+    language: "javascript",
+    text: raw,
+    segments: [
+      {
+        kind: "embed",
+        span: { start: 0, end: raw.length },
+        projection: { points },
+        content: {
+          language: "bash",
+          text,
+          segments: [{ kind: "text", span: { start: 0, end: text.length } }],
+        },
+      },
+    ],
+  };
+  const [piece] = buildSourceRenderPieces(root);
+  expect(piece?.kind).toBe("inline");
+  if (piece?.kind !== "inline") throw new Error("Expected an inline piece");
+  expect(piece.text).toBe(raw);
+  const project = piece.projection!();
+  for (let offset = 0; offset <= length; offset++) {
+    if (project(offset) !== offset * 4) throw new Error("Wrong mapped offset");
+  }
+  expect(reads).toBeLessThan(30 * length);
 });

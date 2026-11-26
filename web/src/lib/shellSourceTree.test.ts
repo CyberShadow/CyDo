@@ -1,10 +1,6 @@
+import { buildSourceRenderPieces } from "./sourceTreeRenderPlan";
 import { beforeAll, describe, expect, it } from "vitest";
-import {
-  projectDescendantSpan,
-  projectEmbedSpan,
-  projectSpan,
-  type SourceSegment,
-} from "./sourceTree";
+import { prepareEmbedProjection, type SourceSegment } from "./sourceTree";
 import { loadParsedShellDocument } from "./shellParser";
 import { configureTreeSitterAssets } from "./treeSitterRuntime";
 import { installedTreeSitterBytes } from "../test-support/treeSitterAssets";
@@ -178,15 +174,12 @@ describe("sourceTree projection parser", () => {
     expect(quote).toBeGreaterThanOrEqual(0);
     if (quote < 0) return;
 
-    const local = projectSpan(wrapper.projection, {
-      start: quote,
-      end: quote + 1,
-    });
-    expect(local).not.toBeNull();
-    if (!local) return;
-
-    const parentStart = wrapper.span.start + local.start;
-    const parentEnd = wrapper.span.start + local.end;
+    const project = prepareEmbedProjection(wrapper)!();
+    const parentStart = project(quote);
+    const parentEnd = project(quote + 1);
+    expect(parentStart).not.toBeNull();
+    expect(parentEnd).not.toBeNull();
+    if (parentStart === null || parentEnd === null) return;
     expect(parsed.value.text.slice(parentStart, parentEnd)).toBe('\\"');
   });
 
@@ -208,14 +201,10 @@ describe("sourceTree projection parser", () => {
     expect(apostrophe).toBeGreaterThanOrEqual(0);
     if (apostrophe < 0) return;
 
-    const mapped = projectEmbedSpan(wrapper, {
-      start: apostrophe,
-      end: apostrophe + 1,
-    });
-    expect(mapped).not.toBeNull();
-    if (!mapped) return;
-
-    expect(parsed.value.text.slice(mapped.start, mapped.end)).toBe("'\\''");
+    const project = prepareEmbedProjection(wrapper)!();
+    expect(
+      parsed.value.text.slice(project(apostrophe)!, project(apostrophe + 1)!),
+    ).toBe("'\\''");
   });
 
   it("parses mixed quoted wrapper payload words and preserves raw source with decoded heredoc body", async () => {
@@ -256,16 +245,11 @@ describe("sourceTree projection parser", () => {
     });
     expect(heredoc.projection).not.toHaveProperty("span");
 
-    const projected = projectDescendantSpan(
-      parsed.value,
-      [wrapperIdx, heredocIdx],
-      { start: 0, end: heredoc.content.text.length },
+    const piece = buildSourceRenderPieces(parsed.value).find(
+      (piece) =>
+        piece.kind === "inline" && piece.highlightSource === heredoc.content,
     );
-    expect(projected).not.toBeNull();
-    if (!projected) return;
-    expect(parsed.value.text.slice(projected.start, projected.end)).toContain(
-      '\\"quotes\\" and "\'$literal',
-    );
+    expect(piece?.text).toContain('\\"quotes\\" and "\'$literal');
   });
 
   it("accepts adjacent quoted wrapper fragments as one payload word", async () => {
@@ -369,18 +353,8 @@ describe("sourceTree projection parser", () => {
     expect(wrapper).not.toBeNull();
     if (!wrapper) return;
 
-    expect(
-      projectEmbedSpan(wrapper, {
-        start: 0,
-        end: wrapper.content.text.length + 1,
-      }),
-    ).toBeNull();
-    expect(
-      projectDescendantSpan(parsed.value, [999], { start: 0, end: 1 }),
-    ).toBeNull();
-    expect(
-      projectDescendantSpan(parsed.value, [0], { start: 3, end: 2 }),
-    ).toBeNull();
+    const project = prepareEmbedProjection(wrapper)!();
+    expect(project(wrapper.content.text.length + 1)).toBeNull();
 
     const malformedProjectionWrapper: Extract<
       SourceSegment,
@@ -394,9 +368,7 @@ describe("sourceTree projection parser", () => {
         ],
       },
     };
-    expect(
-      projectEmbedSpan(malformedProjectionWrapper, { start: 0, end: 1 }),
-    ).toBeNull();
+    expect(prepareEmbedProjection(malformedProjectionWrapper)).toBeNull();
   });
 
   it("supports zero-length wrapper payload projections", async () => {
@@ -409,11 +381,7 @@ describe("sourceTree projection parser", () => {
     if (!wrapper) return;
     expect(wrapper.content.text).toBe("");
 
-    const mapped = projectEmbedSpan(wrapper, { start: 0, end: 0 });
-    expect(mapped).not.toBeNull();
-    if (!mapped) return;
-    expect(mapped.start).toBe(wrapper.span.start);
-    expect(mapped.end).toBe(wrapper.span.start);
+    expect(prepareEmbedProjection(wrapper)!()(0)).toBe(wrapper.span.start);
   });
 
   it("recognizes python -c double-quoted payload as python embed", async () => {
@@ -852,13 +820,11 @@ describe("sourceTree projection parser", () => {
     expect(embed.content.text).toBe('print(中, "😀")');
     expect(parsed.value.text).toBe(command);
     const emoji = embed.content.text.indexOf("😀");
-    const projected = projectEmbedSpan(embed, {
-      start: emoji,
-      end: emoji + "😀".length,
-    });
-    expect(projected).not.toBeNull();
-    if (!projected) return;
-    expect(parsed.value.text.slice(projected.start, projected.end)).toBe("😀");
+    const project = prepareEmbedProjection(embed)!();
+    expect([project(emoji), project(emoji + "😀".length)]).toEqual([
+      command.indexOf("😀"),
+      command.indexOf("😀") + "😀".length,
+    ]);
   });
 
   it("preserves CRLF offsets through wrapper projections", async () => {
@@ -873,15 +839,11 @@ describe("sourceTree projection parser", () => {
     expect(embed.content.text).toBe("print(1)\r\n");
     expect(parsed.value.text).toBe(command);
 
-    const projected = projectEmbedSpan(embed, {
-      start: 0,
-      end: embed.content.text.length,
-    });
-    expect(projected).not.toBeNull();
-    if (!projected) return;
-    expect(parsed.value.text.slice(projected.start, projected.end)).toBe(
-      "print(1)\r\n",
-    );
+    const project = prepareEmbedProjection(embed)!();
+    expect([project(0), project(embed.content.text.length)]).toEqual([
+      command.indexOf("print"),
+      command.lastIndexOf('"'),
+    ]);
   });
 
   it("marks only whole-command Bash wrappers for semantic unwrapping", async () => {

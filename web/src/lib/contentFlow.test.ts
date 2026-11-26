@@ -5,7 +5,7 @@ import {
   type FlowSink,
   type FlowSource,
 } from "./contentFlow";
-import { projectDescendantSpan } from "./sourceTree";
+import { buildSourceRenderPieces } from "./sourceTreeRenderPlan";
 
 function file(
   path: string,
@@ -186,10 +186,12 @@ describe("buildFlowSourceTree", () => {
         ],
       },
     });
-    expect(projectDescendantSpan(tree, [1, 1], { start: 0, end: 1 })).toEqual({
-      start: 5,
-      end: 8,
-    });
+    expect(buildSourceRenderPieces(tree)).toContainEqual(
+      expect.objectContaining({
+        language: "python",
+        sourceSpan: { start: 5, end: 8 },
+      }),
+    );
   });
 
   it.each([

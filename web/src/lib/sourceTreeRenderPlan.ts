@@ -1,12 +1,12 @@
 import {
-  projectDescendantSpan,
+  prepareEmbedProjection,
+  type ProjectOffset,
   type SourceNode,
-  type SourceProjection,
   type SourceSpan,
   type SourceSegment,
 } from "./sourceTree";
 
-export type SourceEmbedRenderMode = "inline" | "rich-markdown" | "rich-code";
+type SourceEmbedRenderMode = "inline" | "rich-markdown" | "rich-code";
 
 type EmbedSegment = Extract<SourceSegment, { kind: "embed" }>;
 
@@ -15,12 +15,12 @@ export type SourceRenderPiece =
       kind: "inline";
       id: string;
       text: string;
-      highlightText?: string;
+      highlightSource: SourceNode;
       language: string;
       projectedInline: boolean;
       sourceSpan: SourceSpan;
       highlightSpan: SourceSpan;
-      projection?: SourceProjection;
+      projection?: () => ProjectOffset;
     }
   | {
       kind: "rich";
@@ -57,7 +57,7 @@ export function isLineBoundaryEmbed(text: string, span: SourceSpan): boolean {
   return startsOnLineBoundary && endsOnLineBoundary;
 }
 
-export function classifyEmbedRenderMode(
+function classifyEmbedRenderMode(
   parent: SourceNode,
   segment: EmbedSegment,
 ): SourceEmbedRenderMode {
@@ -66,11 +66,31 @@ export function classifyEmbedRenderMode(
   return getRichRenderModeForLanguage(segment.content.language) ?? "inline";
 }
 
+type ProjectionPath = {
+  mapSpan(span: SourceSpan): SourceSpan | null;
+  cursor(): ProjectOffset;
+};
+
+function projectionPath(cursor: () => ProjectOffset): ProjectionPath {
+  const start = cursor();
+  const end = cursor();
+  return {
+    cursor,
+    mapSpan(span) {
+      const from = start(span.start);
+      const to = end(span.end);
+      return from === null || to === null || to < from
+        ? null
+        : { start: from, end: to };
+    },
+  };
+}
+
 function walkSourceRenderPieces(
   root: SourceNode,
   node: SourceNode,
   path: string,
-  embedPath: number[],
+  projection: ProjectionPath,
   projectedInline: boolean,
   pieces: SourceRenderPiece[],
 ): boolean {
@@ -82,7 +102,7 @@ function walkSourceRenderPieces(
         !pushInlineTextPiece(
           root,
           node,
-          embedPath,
+          projection,
           segPath,
           projectedInline,
           segment,
@@ -95,11 +115,7 @@ function walkSourceRenderPieces(
 
     const mode = classifyEmbedRenderMode(node, segment);
     if (mode === "inline") {
-      const rawSubtreeSpan = projectDescendantSpan(
-        root,
-        embedPath,
-        segment.span,
-      );
+      const rawSubtreeSpan = projection.mapSpan(segment.span);
       if (!rawSubtreeSpan) return false;
       const childProjectedInline =
         projectedInline || segment.projection != null;
@@ -108,8 +124,7 @@ function walkSourceRenderPieces(
           root,
           segment,
           segPath,
-          embedPath,
-          i,
+          projection,
           childProjectedInline,
           pieces,
         )
@@ -126,13 +141,14 @@ function walkSourceRenderPieces(
           language: node.language,
           projectedInline: childProjectedInline,
           sourceSpan: rawSubtreeSpan,
+          highlightSource: node,
           highlightSpan: segment.span,
         });
       }
       continue;
     }
 
-    const sourceSpan = projectDescendantSpan(root, embedPath, segment.span);
+    const sourceSpan = projection.mapSpan(segment.span);
     if (!sourceSpan) return false;
     const rawText = root.text.slice(sourceSpan.start, sourceSpan.end);
     if (!rawText) continue;
@@ -154,13 +170,21 @@ function walkInlineSubtree(
   root: SourceNode,
   segment: EmbedSegment,
   segPath: string,
-  embedPath: number[],
-  segmentIndex: number,
+  projection: ProjectionPath,
   projectedInline: boolean,
   pieces: SourceRenderPiece[],
 ): boolean {
   const nestedPieces: SourceRenderPiece[] = [];
-  const nestedPath = [...embedPath, segmentIndex];
+  const edge = prepareEmbedProjection(segment);
+  if (!edge) return false;
+  const nestedPath = projectionPath(() => {
+    const local = edge();
+    const outer = projection.cursor();
+    return (offset) => {
+      const mapped = local(offset);
+      return mapped === null ? null : outer(mapped);
+    };
+  });
   const ok = walkSourceRenderPieces(
     root,
     segment.content,
@@ -170,14 +194,14 @@ function walkInlineSubtree(
     nestedPieces,
   );
   if (!ok) return false;
-  pieces.push(...nestedPieces);
+  for (const piece of nestedPieces) pieces.push(piece);
   return true;
 }
 
 function pushInlineTextPiece(
   root: SourceNode,
   node: SourceNode,
-  embedPath: number[],
+  projection: ProjectionPath,
   id: string,
   projectedInline: boolean,
   segment: Extract<SourceSegment, { kind: "text" }>,
@@ -185,7 +209,7 @@ function pushInlineTextPiece(
 ): boolean {
   const highlightText = node.text.slice(segment.span.start, segment.span.end);
   if (!highlightText) return true;
-  const sourceSpan = projectDescendantSpan(root, embedPath, segment.span);
+  const sourceSpan = projection.mapSpan(segment.span);
   if (!sourceSpan) return false;
   const text = root.text.slice(sourceSpan.start, sourceSpan.end);
   if (!text) return true;
@@ -198,63 +222,47 @@ function pushInlineTextPiece(
       language: node.language,
       projectedInline,
       sourceSpan,
+      highlightSource: node,
       highlightSpan: segment.span,
     });
     return true;
   }
 
-  const projection = buildInlineProjection(
-    root,
-    embedPath,
-    segment.span,
-    sourceSpan,
-    highlightText.length,
-  );
-  if (!projection) return false;
-
   pieces.push({
     kind: "inline",
     id,
     text,
-    highlightText,
     language: node.language,
     projectedInline,
     sourceSpan,
+    highlightSource: node,
     highlightSpan: segment.span,
-    projection,
+    projection: () => {
+      const project = projection.cursor();
+      return (offset) => {
+        const raw = project(segment.span.start + offset);
+        return raw === null ? null : raw - sourceSpan.start;
+      };
+    },
   });
   return true;
 }
 
-function buildInlineProjection(
-  root: SourceNode,
-  embedPath: number[],
-  highlightSpan: SourceSpan,
-  sourceSpan: SourceSpan,
-  highlightLength: number,
-): SourceProjection | null {
-  const points: SourceProjection["points"] = [{ child: 0, parent: 0 }];
-  let lastParent = 0;
-  for (let i = 1; i <= highlightLength; i++) {
-    const mapped = projectDescendantSpan(root, embedPath, {
-      start: highlightSpan.start + i,
-      end: highlightSpan.start + i,
-    });
-    if (!mapped || mapped.start !== mapped.end) return null;
-    const parent = mapped.start - sourceSpan.start;
-    if (parent <= lastParent) return null;
-    points.push({ child: i, parent });
-    lastParent = parent;
-  }
-  if (points[points.length - 1]?.parent !== sourceSpan.end - sourceSpan.start) {
-    return null;
-  }
-  return { points };
-}
-
 export function buildSourceRenderPieces(root: SourceNode): SourceRenderPiece[] {
   const pieces: SourceRenderPiece[] = [];
-  const ok = walkSourceRenderPieces(root, root, "root", [], false, pieces);
+  const ok = walkSourceRenderPieces(
+    root,
+    root,
+    "root",
+    projectionPath(
+      () => (offset) =>
+        Number.isInteger(offset) && offset >= 0 && offset <= root.text.length
+          ? offset
+          : null,
+    ),
+    false,
+    pieces,
+  );
   if (!ok) {
     return [
       {
@@ -264,6 +272,7 @@ export function buildSourceRenderPieces(root: SourceNode): SourceRenderPiece[] {
         language: root.language,
         projectedInline: false,
         sourceSpan: { start: 0, end: root.text.length },
+        highlightSource: root,
         highlightSpan: { start: 0, end: root.text.length },
       },
     ];
@@ -277,6 +286,7 @@ export function buildSourceRenderPieces(root: SourceNode): SourceRenderPiece[] {
     language: root.language,
     projectedInline: false,
     sourceSpan: { start: 0, end: root.text.length },
+    highlightSource: root,
     highlightSpan: { start: 0, end: root.text.length },
   });
   return pieces;
