@@ -6,6 +6,7 @@ import std.exception : enforce;
 import std.file : exists, readText;
 import std.logger : warningf;
 import std.string : representation;
+import std.typecons : Nullable;
 
 import ae.net.http.websocket : WebSocketAdapter;
 import ae.sys.data : Data;
@@ -13,7 +14,7 @@ import ae.utils.json : JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
 import ae.utils.statequeue : StateQueue;
 
-import cydo.agent.contract : Agent, PersistedHistoryBoundary, PersistedHistoryBoundaryKind,
+import cydo.agent.contract : Agent, FileRevertPreview, PersistedHistoryBoundary, PersistedHistoryBoundaryKind,
 	SessionConfig;
 import cydo.agent.drivers.claude : ClaudeCodeSession;
 import cydo.agent.drivers.codex : CodexAgent, CodexSession, ThreadForkOutcome;
@@ -43,18 +44,30 @@ import cydo.runtime.config : AgentDriver;
 
 package(cydo):
 
+private bool offersFileRevert(Agent agent, HistoryBoundary boundary)
+{
+	return agent.supportsFileRevert && allowsFileRevert(boundary);
+}
+
 alias MutationReply = void delegate(Data);
 
 private struct MutationReplySocket
 {
 	MutationReply reply;
 	string operation;
+	string correlationId;
+
+	static MutationReplySocket forUndo(MutationReply reply, WsMessage request)
+	{
+		return MutationReplySocket(reply, request.dry_run ? "undo_preview" : null,
+			request.dry_run ? request.correlation_id : null);
+	}
 
 	void send(Data data) { reply(data); }
 
 	void sendError(int tid, string message)
 	{
-		send(Data(toJson(ErrorMessage("error", message, tid, operation)).representation));
+		send(Data(toJson(ErrorMessage("error", message, tid, operation, correlationId)).representation));
 	}
 }
 
@@ -268,6 +281,12 @@ public:
 		host_.broadcastFocusHint(tid, result.tid);
 	}
 
+	static void rejectUndoTask(WebSocketAdapter ws, WsMessage request, string message)
+	{
+		MutationReplySocket.forUndo((Data data) => ws.send(data), request)
+			.sendError(request.tid, message);
+	}
+
 	void handleUndoTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		handleUndoTaskMsg((Data data) => ws.send(data), json);
@@ -275,11 +294,15 @@ public:
 
 	void handleUndoTaskMsg(MutationReply reply, WsMessage json)
 	{
-		auto ws = MutationReplySocket(reply, json.dry_run ? "undo_preview" : null);
+		auto ws = MutationReplySocket.forUndo(reply, json);
 		auto tid = json.tid;
 		auto td = host_.getTask(tid);
 		if (tid < 0 || td is null)
+		{
+			if (json.dry_run)
+				ws.sendError(tid, "Task not found");
 			return;
+		}
 		if (td.agentSessionId.length == 0)
 		{
 			ws.sendError(tid, "Task has no agent session ID");
@@ -320,7 +343,8 @@ public:
 		}
 		auto mechanism = operationMechanism(boundary, opensConversation, operations,
 			HistoryOperation.undo);
-		if (json.revert_files && !allowsFileRevert(boundary))
+		auto canRevertFiles = offersFileRevert(ta, boundary);
+		if (json.revert_files && !canRevertFiles)
 		{
 			ws.sendError(tid, "File revert is unavailable for this history boundary");
 			return;
@@ -338,8 +362,23 @@ public:
 				ws.sendError(tid, "UUID not found in task history");
 				return;
 			}
-			ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid,
-				count + 1, "history_entries")).representation));
+			auto message = UndoPreviewMessage("undo_preview", tid, ws.correlationId,
+				count + 1, "history_entries", canRevertFiles);
+			auto claudeSession = cast(ClaudeCodeSession) host_.sessionForTask(tid);
+			if (canRevertFiles && claudeSession !is null && claudeSession.alive)
+			{
+				claudeSession.previewFileRewind(boundary.checkpoint_uuid)
+					.then((Nullable!FileRevertPreview preview) {
+						message.can_revert_files = !preview.isNull && preview.get.changesFiles();
+						if (message.can_revert_files)
+							message.file_changes = preview;
+						ws.send(Data(toJson(message).representation));
+					}, (Exception e) {
+						ws.sendError(tid, "File revert preview failed: " ~ e.msg);
+					}).ignoreResult();
+				return;
+			}
+			ws.send(Data(toJson(message).representation));
 			return;
 		}
 
@@ -514,19 +553,14 @@ private:
 		out HistoryAccess access)
 	{
 		auto resolution = host_.resolveTaskHistory(tid);
-		final switch (resolution.kind)
+		if (resolution.kind == TaskHistoryResolutionKind.access)
 		{
-		case TaskHistoryResolutionKind.access:
 			access = resolution.requireAccess();
 			return true;
-		case TaskHistoryResolutionKind.unavailable:
-			host_.reportUnavailableHistory(tid, resolution);
-			break;
-		case TaskHistoryResolutionKind.noSession:
-		case TaskHistoryResolutionKind.orphanAgent:
-			break;
 		}
 		ws.sendError(tid, failure);
+		if (resolution.kind == TaskHistoryResolutionKind.unavailable)
+			host_.reportUnavailableHistory(tid, resolution);
 		return false;
 	}
 
@@ -894,7 +928,11 @@ private:
 		host_.whenHistoryLoaded(tid, () {
 			auto td = host_.getTask(tid);
 			if (td is null)
+			{
+				if (json.dry_run)
+					return fail("Task not found");
 				return;
+			}
 			HistoryBoundary boundary;
 			bool opensConversation;
 			int userBoundariesFrom;
@@ -910,8 +948,8 @@ private:
 				return fail("File revert is unavailable for this history boundary");
 			if (json.dry_run)
 			{
-				ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid,
-					userBoundariesFrom, "codex_turns")).representation));
+				ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid, ws.correlationId,
+					userBoundariesFrom, "codex_turns", false)).representation));
 				return;
 			}
 			if (!json.revert_conversation)
@@ -1615,19 +1653,29 @@ unittest
 {
 	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import cydo.runtime.launch.types : NativeHistoryProfile;
-	import std.file : remove, write;
+	import cydo.workflow.history.native_history : UnavailableHistory, UnavailableHistoryKind;
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+	import std.uuid : randomUUID;
 
 	enum tid = 71;
 	auto task = TaskData(tid, "local", "/tmp");
 	task.agentName = "claude";
 	task.agentSessionId = "session";
 	Agent agent = new ClaudeCodeAgent();
-	auto historyPath = "/tmp/cydo-mutations-undo-resolution.jsonl";
-	write(historyPath, "");
+	auto historyPath = buildPath(tempDir(), "cydo-mutations-undo-resolution-"
+		~ randomUUID().toString() ~ ".jsonl");
+	enum history =
+		`{"type":"user","uuid":"first","message":{"content":"hello"}}` ~ "\n"
+		~ `{"type":"assistant","uuid":"first-reply-record","message":{"id":"first-reply"}}` ~ "\n"
+		~ `{"type":"user","uuid":"prompt","message":{"content":"follow-up"}}` ~ "\n"
+		~ `{"type":"assistant","uuid":"assistant-record","message":{"id":"assistant"}}` ~ "\n";
+	write(historyPath, history);
 	scope(exit) remove(historyPath);
-	int replies;
+	string[] replies;
 	int sideEffects;
-	enum Resolution { forged, stale, noCheckpoint }
+	int unavailableReports;
+	enum Resolution { forged, stale, checkpoint, noCheckpoint, unavailable }
 	Resolution resolution;
 
 	TaskMutationServiceHost host;
@@ -1637,9 +1685,24 @@ unittest
 	host.taskAlive = (int) => false;
 	host.nativeSessionState = (int) => NativeSessionState.dead;
 	host.stopTask = (int) { sideEffects++; assert(false); };
-	host.resolveTaskHistory = (int) => TaskHistoryResolution.access(HistoryAccess(
-		agent, NativeHistoryProfile(agent.driver, "/tmp"), task.agentSessionId,
-		historyPath));
+	host.resolveTaskHistory = (int) {
+		if (resolution == Resolution.unavailable)
+			return TaskHistoryResolution.unavailable(UnavailableHistory(
+				UnavailableHistoryKind.context, "claude", task.agentSessionId,
+				"History file is missing"));
+		return TaskHistoryResolution.access(HistoryAccess(
+			agent, NativeHistoryProfile(agent.driver, "/tmp"), task.agentSessionId,
+			historyPath));
+	};
+	host.reportUnavailableHistory = (int value, const ref TaskHistoryResolution result) {
+		assert(value == tid && result.kind == TaskHistoryResolutionKind.unavailable);
+		assert(replies.length == 1, "Reply must precede the unavailable history report");
+		auto error = jsonParse!ErrorMessage(replies[0]);
+		assert(error.type == "error" && error.tid == tid
+			&& error.message == "UUID not found in task history"
+			&& error.operation == "undo_preview" && error.correlation_id == "unavailable-history");
+		unavailableReports++;
+	};
 	host.clearUndoJsonl = (int) { sideEffects++; assert(false); };
 	host.invalidateJsonlLineage = (int) { sideEffects++; assert(false); };
 	host.startJsonlWatch = (int) { sideEffects++; assert(false); };
@@ -1651,15 +1714,40 @@ unittest
 	};
 	host.generateSuggestions = (int) { sideEffects++; assert(false); };
 	host.resolveFreshPersistedBoundary = (int, const ref HistoryAccess access,
-		string, out HistoryBoundary boundary, out bool opensConversation) {
-		if (resolution != Resolution.noCheckpoint)
-			return false;
-		boundary = HistoryBoundary("assistant", HistoryBoundaryKind.agent_turn, "");
-		return true;
+		string anchor, out HistoryBoundary boundary, out bool opensConversation) {
+		switch (resolution)
+		{
+			case Resolution.checkpoint:
+				assert(anchor == "prompt");
+				boundary = HistoryBoundary(anchor, HistoryBoundaryKind.user, "prompt");
+				return true;
+			case Resolution.noCheckpoint:
+				assert(anchor == "assistant");
+				boundary = HistoryBoundary(anchor, HistoryBoundaryKind.agent_turn, "");
+				return true;
+			default:
+				return false;
+		}
 	};
 
 	auto service = new TaskMutationService(host);
-	void delegate(Data) reply = (Data) { replies++; };
+	void delegate(Data) reply = (Data data) { replies ~= cast(string) data.toGC(); };
+
+	service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid + 1,
+		anchor: "prompt", dry_run: true, revert_conversation: true, correlation_id: "missing-task"));
+	assert(replies.length == 1);
+	auto missing = jsonParse!ErrorMessage(replies[0]);
+	assert(missing.type == "error" && missing.tid == tid + 1 && missing.message == "Task not found"
+		&& missing.operation == "undo_preview" && missing.correlation_id == "missing-task");
+	assert(sideEffects == 0);
+	replies = null;
+
+	resolution = Resolution.unavailable;
+	service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
+		anchor: "prompt", dry_run: true, revert_conversation: true,
+		correlation_id: "unavailable-history"));
+	assert(unavailableReports == 1 && replies.length == 1);
+	replies = null;
 
 	foreach (dryRun; [true, false])
 	{
@@ -1668,7 +1756,7 @@ unittest
 			anchor: "line:999999", dry_run: dryRun,
 			revert_conversation: true));
 	}
-	assert(replies == 2);
+	assert(replies.length == 2);
 	assert(sideEffects == 0);
 
 	// A syntactically plausible line anchor which was invalidated by rollback is
@@ -1679,20 +1767,46 @@ unittest
 		service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
 			anchor: "line:4", dry_run: dryRun, revert_conversation: true));
 	}
-	assert(replies == 4);
+	assert(replies.length == 4);
 	assert(sideEffects == 0);
+
+	replies = null;
+	resolution = Resolution.checkpoint;
+	service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
+		anchor: "prompt", dry_run: true, revert_conversation: true, correlation_id: "preview-prompt"));
+	assert(replies == [
+		`{"type":"undo_preview","tid":71,"correlation_id":"preview-prompt","messages_removed":2,"count_unit":"history_entries","can_revert_files":true}`
+	]);
+	assert(sideEffects == 0 && readText(historyPath) == history);
+
+	replies = null;
+	resolution = Resolution.noCheckpoint;
+	service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
+		anchor: "assistant", dry_run: true, revert_conversation: true, correlation_id: "preview-assistant"));
+	assert(replies == [
+		`{"type":"undo_preview","tid":71,"correlation_id":"preview-assistant","messages_removed":1,"count_unit":"history_entries","can_revert_files":false}`
+	]);
+	assert(sideEffects == 0 && readText(historyPath) == history);
 
 	// A resolved assistant boundary is valid for conversation undo but never for
 	// file rewind; both preview and confirmation reject the forged file request.
+	replies = null;
 	foreach (dryRun; [true, false])
 	{
-		resolution = Resolution.noCheckpoint;
 		service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
 			anchor: "assistant", dry_run: dryRun, revert_conversation: true,
-			revert_files: true));
+			revert_files: true, correlation_id: "refused-preview"));
 	}
-	assert(replies == 6);
-	assert(sideEffects == 0);
+	assert(replies.length == 2);
+	foreach (i, refusal; replies)
+	{
+		auto error = jsonParse!ErrorMessage(refusal);
+		assert(error.type == "error" && error.tid == tid);
+		assert(error.message == "File revert is unavailable for this history boundary");
+		assert(error.operation == (i == 0 ? "undo_preview" : null));
+		assert(error.correlation_id == (i == 0 ? "refused-preview" : null));
+	}
+	assert(sideEffects == 0 && readText(historyPath) == history);
 }
 
 // Codex fork and undo address the boundaries of the task's loaded history.
@@ -1853,7 +1967,8 @@ unittest
 	auto service = new TaskMutationService(host);
 	void delegate(Data) reply = (Data data) { replies ~= cast(string) data.toGC(); };
 	WsMessage undo(string anchor, bool dryRun = false) => WsMessage(type: "undo_task",
-		tid: tid, anchor: anchor, dry_run: dryRun, revert_conversation: true);
+		tid: tid, anchor: anchor, dry_run: dryRun, revert_conversation: true,
+		correlation_id: dryRun ? "preview-codex" : null);
 	void drain()
 	{
 		import ae.net.asockets : socketManager;
@@ -1885,14 +2000,15 @@ unittest
 		auto error = jsonParse!ErrorMessage(refusal);
 		assert(error.message == "UUID not found in task history");
 		assert(error.operation == (i % 2 == 1 ? "undo_preview" : null));
+		assert(error.correlation_id == (i % 2 == 1 ? "preview-codex" : null));
 	}
 	assert(effects.length == 0 && session.reverts.length == 0 && task.history.isLoaded);
 	// The preview counts the turns the undo removes.
 	replies = null;
 	service.handleUndoTaskMsg(reply, undo("before:t1", true));
-	assert(replies.length == 1 && replies[0].canFind(`"undo_preview"`)
-		&& replies[0].canFind(`"messages_removed":2`) && replies[0].canFind("codex_turns"),
-		replies[0]);
+	assert(replies == [
+		`{"type":"undo_preview","tid":72,"correlation_id":"preview-codex","messages_removed":2,"count_unit":"codex_turns","can_revert_files":false}`
+	]);
 	assert(effects.length == 0 && session.reverts.length == 0);
 
 	alias Kind = TaskMutationService.CodexRevertKind;

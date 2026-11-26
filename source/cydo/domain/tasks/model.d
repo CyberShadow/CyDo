@@ -16,6 +16,7 @@ import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial;
 import ae.utils.promise : Promise, PromiseQueue;
 import ae.utils.statequeue : StateQueue;
 
+import cydo.agent.contract : FileRevertPreview;
 import cydo.agent.session : AgentSubmissionReceipt;
 import cydo.domain.policy.permissions : PermissionPrompt;
 import cydo.protocol : ContentBlock, ItemStartedEvent;
@@ -994,10 +995,13 @@ unittest
 	assertThrown!AssertError(task.completeVerifiedNativeUndoCleanup());
 	assertThrown!AssertError(task.markNativeUndoUnverified());
 
-	assert(toJson(UndoPreviewMessage("undo_preview", 7, 3, "codex_turns"))
-		== `{"type":"undo_preview","tid":7,"messages_removed":3,"count_unit":"codex_turns"}`);
-	assert(toJson(UndoPreviewMessage("undo_preview", 7, 3, "history_entries"))
-		== `{"type":"undo_preview","tid":7,"messages_removed":3,"count_unit":"history_entries"}`);
+	auto undoPreview = UndoPreviewMessage("undo_preview", 7, "preview-7", 3, "history_entries", true);
+	assert(toJson(undoPreview)
+		== `{"type":"undo_preview","tid":7,"correlation_id":"preview-7","messages_removed":3,"count_unit":"history_entries","can_revert_files":true}`);
+	undoPreview.file_changes = FileRevertPreview(Nullable!(string[])(["/work/file.txt"]), 1, 2);
+	assert(toJson(undoPreview)
+		== `{"type":"undo_preview","tid":7,"correlation_id":"preview-7","messages_removed":3,"count_unit":"history_entries","can_revert_files":true,`
+		~ `"file_changes":{"files_changed":["/work/file.txt"],"insertions":1,"deletions":2}}`);
 
 	auto nativeConfirmation = jsonParse!WsMessage(
 		`{"type":"undo_task","tid":7,"expected_num_turns":3}`);
@@ -1393,14 +1397,18 @@ struct ErrorMessage
 	string message;
 	int tid = -1;
 	@JSONOptional string operation;
+	@JSONOptional string correlation_id;
 }
 
 struct UndoPreviewMessage
 {
 	string type = "undo_preview";
 	int tid;
+	string correlation_id;
 	int messages_removed;
 	string count_unit;
+	bool can_revert_files;
+	@JSONOptional Nullable!FileRevertPreview file_changes;
 }
 
 struct UndoResultMessage

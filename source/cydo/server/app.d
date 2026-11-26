@@ -1458,15 +1458,47 @@ class App
 
 	private void handleWsMessage(WebSocketAdapter ws, string text)
 	{
-		import ae.utils.json : jsonParse;
-		auto json = jsonParse!WsMessage(text);
+		WsMessage json;
+		try
+			json = jsonParse!WsMessage(text);
+		catch (Exception e)
+		{
+			import std.json : JSONType, JSONValue, parseJSON;
+
+			JSONValue wire;
+			try
+				wire = parseJSON(text);
+			catch (Exception)
+				throw e;
+			if (wire.type != JSONType.object)
+				throw e;
+			auto fields = wire.object;
+			auto type = "type" in fields;
+			auto dryRun = "dry_run" in fields;
+			auto id = "correlation_id" in fields;
+			if (type is null || type.type != JSONType.string || type.str != "undo_task"
+				|| dryRun is null || dryRun.type != JSONType.true_
+				|| id is null || id.type != JSONType.string || id.str.length == 0)
+				throw e;
+			auto tid = "tid" in fields;
+			if (tid !is null && tid.type == JSONType.integer
+				&& tid.integer >= int.min && tid.integer <= int.max)
+				json.tid = cast(int) tid.integer;
+			json.dry_run = true;
+			json.correlation_id = id.str;
+			TaskMutationService.rejectUndoTask(ws, json, "Invalid undo preview request");
+			return;
+		}
 
 		auto task = json.tid in tasks;
 		if (task !is null && task.status == TaskStatus.importable
 			&& json.type != "request_history" && json.type != "promote_task")
 		{
-			ws.send(Data(toJson(ErrorMessage("error",
-				"Import this session before using task commands", json.tid)).representation));
+			enum reason = "Import this session before using task commands";
+			if (json.type == "undo_task")
+				TaskMutationService.rejectUndoTask(ws, json, reason);
+			else
+				ws.send(Data(toJson(ErrorMessage("error", reason, json.tid)).representation));
 			return;
 		}
 
@@ -9479,6 +9511,7 @@ version (unittest) private final class CodexOfferFixture
 unittest
 {
 	import std.conv : to;
+	import std.json : parseJSON;
 
 	auto root = buildPath(tempDir(), "cydo-app-codex-offer-commands");
 	scope(exit) if (exists(root)) rmdirRecurse(root);
@@ -9498,14 +9531,34 @@ unittest
 		foreach (dryRun; command == "undo_task" ? [false, true] : [false])
 		{
 			message.dry_run = dryRun;
+			message.correlation_id = command == "undo_task" ? "offer-undo" : null;
 			auto before = socket.sent.length;
 			app.handleWsMessage(socket, toJson(message));
 			assert(socket.sent.length == before + 1, command);
 			auto error = jsonParse!ErrorMessage(socket.sent[$ - 1]);
 			assert(error.type == "error" && error.tid == fixture.tid
 				&& error.message == "Import this session before using task commands", command);
+			if (dryRun)
+				assert(error.operation == "undo_preview" && error.correlation_id == "offer-undo");
+			else
+			{
+				auto fields = parseJSON(socket.sent[$ - 1]).object;
+				assert("operation" !in fields && "correlation_id" !in fields, command);
+			}
 		}
 	}
+	{
+		auto before = socket.sent.length;
+		app.handleWsMessage(socket, `{"type":"undo_task","tid":`
+			~ to!string(fixture.tid)
+			~ `,"unexpected_field":true,"dry_run":true,"correlation_id":"malformed-preview"}`);
+		assert(socket.sent.length == before + 1);
+		auto error = jsonParse!ErrorMessage(socket.sent[$ - 1]);
+		assert(error.type == "error" && error.tid == fixture.tid
+			&& error.message == "Invalid undo preview request"
+			&& error.operation == "undo_preview" && error.correlation_id == "malformed-preview", socket.sent[$ - 1]);
+	}
+
 	assert(task.status == TaskStatus.importable && fixture.driverReads == 0);
 
 	app.handleWsMessage(socket, `{"type":"request_history","tid":`
@@ -9521,6 +9574,7 @@ unittest
 	assert(readRaw && fixture.driverReads == 1);
 
 	message.type = "promote_task";
+	message.correlation_id = null;
 	app.handleWsMessage(socket, toJson(message));
 	assert(task.status == TaskStatus.completed && task.workspace == "local");
 
