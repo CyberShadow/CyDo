@@ -471,7 +471,7 @@ export function WelcomePage({
         <div class="welcome-filter-wrapper">
           <input
             ref={filterRef}
-            class="welcome-filter-input"
+            class="text-input welcome-filter-input"
             type="text"
             placeholder="Filter projects..."
             value={filter}

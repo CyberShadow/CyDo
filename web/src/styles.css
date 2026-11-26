@@ -1974,6 +1974,27 @@ body,
   color: var(--accent);
 }
 
+/* Text inputs: the shared look of the composer and form fields. Rules
+   for specific fields follow and only adjust layout and typography. */
+.text-input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.text-input:focus {
+  border-color: var(--accent);
+}
+
+.text-input:disabled {
+  opacity: 0.5;
+}
+
 /* Input box */
 .input-box {
   --composer-btn-h: 36px;
@@ -2020,13 +2041,7 @@ body,
   flex: 1;
   padding: 9px 14px;
   line-height: 16px;
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  font-family: inherit;
-  font-size: 14px;
   resize: none;
-  outline: none;
   overflow-y: auto;
   min-height: var(--composer-btn-h);
   max-height: min(200px, 25dvh);
@@ -2043,14 +2058,6 @@ body,
 
 .input-textarea:placeholder-shown {
   text-overflow: ellipsis;
-}
-
-.input-textarea:focus {
-  border-color: var(--accent);
-}
-
-.input-textarea:disabled {
-  opacity: 0.5;
 }
 
 .btn {
@@ -2589,17 +2596,8 @@ body,
 }
 
 .edit-textarea {
-  width: 100%;
   min-height: 60px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg-secondary);
-  color: var(--text);
-  font-family: inherit;
-  font-size: inherit;
   resize: vertical;
-  box-sizing: border-box;
 }
 
 .edit-actions {
@@ -3550,17 +3548,9 @@ body,
   margin: 0;
 }
 .ask-custom-input {
-  width: 100%;
   min-height: 60px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  font-family: inherit;
-  font-size: inherit;
   resize: vertical;
   margin-top: 4px;
-  box-sizing: border-box;
 }
 .ask-submit-row {
   display: flex;
@@ -3935,18 +3925,7 @@ pre.extra-field-value {
 }
 
 .welcome-filter-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px 36px 8px 12px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  color: var(--text);
-  font-size: 14px;
-  outline: none;
-}
-
-.welcome-filter-input:focus {
-  border-color: var(--accent);
+  padding-right: 36px;
 }
 
 .welcome-filter-clear {
@@ -5097,14 +5076,7 @@ pre.extra-field-value {
 .permission-deny-reason {
   flex: 1;
   min-height: 40px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  font-family: inherit;
-  font-size: inherit;
   resize: vertical;
-  box-sizing: border-box;
 }
 .permission-deny-btn {
   padding: 10px 20px;

@@ -95,7 +95,7 @@ function EditableRawJson({
       {editing && (
         <>
           <textarea
-            class="edit-textarea raw-edit-textarea"
+            class="text-input edit-textarea raw-edit-textarea"
             style={preHeight != null ? { height: `${preHeight}px` } : undefined}
             value={editText}
             onInput={(e) => {

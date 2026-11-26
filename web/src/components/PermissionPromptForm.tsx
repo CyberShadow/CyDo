@@ -96,7 +96,7 @@ export function PermissionPromptForm({
           <>
             <textarea
               ref={textareaRef}
-              class="permission-deny-reason"
+              class="text-input permission-deny-reason"
               placeholder="Reason (optional)"
               value={denyReason}
               onInput={(e) => {

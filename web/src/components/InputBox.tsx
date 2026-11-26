@@ -739,7 +739,7 @@ function OrdinaryInputBox({
       <textarea
         key="textarea"
         ref={textareaRef}
-        class="input-textarea"
+        class="text-input input-textarea"
         value={text}
         onInput={(event) => {
           handleChange((event.target as HTMLTextAreaElement).value);
@@ -921,7 +921,7 @@ function ControlledInputBox({
       <textarea
         key="textarea"
         ref={textareaRef}
-        class="input-textarea"
+        class="text-input input-textarea"
         value={value}
         onInput={(event) => {
           change((event.target as HTMLTextAreaElement).value);

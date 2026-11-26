@@ -839,7 +839,7 @@ const MessageView = memo(
         {editing ? (
           <div class="message user-message editing">
             <textarea
-              class="edit-textarea"
+              class="text-input edit-textarea"
               value={editText}
               onInput={(e) => {
                 setEditText((e.target as HTMLTextAreaElement).value);

@@ -163,7 +163,7 @@ export function AskUserForm({
             </button>
             {useCustom.get(qi) && (
               <textarea
-                class="ask-custom-input"
+                class="text-input ask-custom-input"
                 placeholder="Type your answer..."
                 value={customTexts.get(qi) ?? ""}
                 ref={textareaRefs[qi]}
