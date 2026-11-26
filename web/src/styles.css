@@ -2585,7 +2585,7 @@ button.task-bar-title {
 }
 
 /* Undo confirmation dialog */
-.undo-overlay {
+.modal-overlay {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
@@ -2595,7 +2595,7 @@ button.task-bar-title {
   z-index: 100;
 }
 
-.undo-dialog {
+.modal-dialog {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   padding: 20px 24px;
@@ -2606,7 +2606,7 @@ button.task-bar-title {
   gap: 12px;
 }
 
-.undo-dialog-header {
+.modal-dialog-header {
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
@@ -2619,7 +2619,7 @@ button.task-bar-title {
   word-break: break-word;
 }
 
-.undo-dialog-actions {
+.modal-dialog-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;

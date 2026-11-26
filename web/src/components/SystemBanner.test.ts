@@ -302,7 +302,7 @@ describe("task bar", () => {
     const input = await openTitleEditor(root);
     await typeTitle(input, "");
     const overlay = document.body.appendChild(document.createElement("div"));
-    overlay.className = "undo-overlay";
+    overlay.className = "modal-overlay";
     try {
       await click(overlay.appendChild(document.createElement("button")));
     } finally {

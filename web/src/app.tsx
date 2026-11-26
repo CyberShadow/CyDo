@@ -673,16 +673,16 @@ function CommandErrorDialog({
   onDismiss: () => void;
 }) {
   return (
-    <div class="undo-overlay" onClick={onDismiss}>
+    <div class="modal-overlay" onClick={onDismiss}>
       <div
-        class="undo-dialog command-error-dialog"
+        class="modal-dialog command-error-dialog"
         onClick={(e) => {
           e.stopPropagation();
         }}
       >
-        <div class="undo-dialog-header">Command failed</div>
+        <div class="modal-dialog-header">Command failed</div>
         <div class="command-error-message">{message}</div>
-        <div class="undo-dialog-actions">
+        <div class="modal-dialog-actions">
           <button class="btn" onClick={onDismiss}>
             Dismiss
           </button>

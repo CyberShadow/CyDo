@@ -118,7 +118,7 @@ export function SystemBanner({
         !titleButtonRef.current?.contains(target) &&
         // Dismissing a modal dialog, such as a rejected title edit, must
         // leave the panel as it was.
-        !target.closest(".undo-overlay")
+        !target.closest(".modal-overlay")
       ) {
         closePanel();
       }
