@@ -1,4 +1,11 @@
-import { test, expect, enterSession, sendMessage } from "./fixtures";
+import {
+  test,
+  expect,
+  defaultBackendDbPath,
+  enterSession,
+  queryLiveBackendDb,
+  sendMessage,
+} from "./fixtures";
 import { execFileSync } from "node:child_process";
 
 function taskResultItems(payload: unknown): Record<string, unknown>[] | null {
@@ -180,20 +187,13 @@ test(
         .last(),
     ).toBeVisible();
 
-    const rows = execFileSync(
-      "sqlite3",
-      [
-        "/tmp/cydo-backend/data/cydo/cydo.db",
-        `SELECT tid || '|' || worktree_tid || '|' || project_path FROM tasks WHERE tid IN (${childTids.join(",")}) ORDER BY tid;`,
-      ],
-      { encoding: "utf8" },
-    )
-      .trim()
-      .split("\n")
-      .map((row) => row.split("|"));
+    const rows = queryLiveBackendDb<{ tid: number; worktree_tid: number }>(
+      defaultBackendDbPath,
+      `SELECT tid, worktree_tid FROM tasks WHERE tid IN (${childTids.join(",")}) ORDER BY tid;`,
+    );
     expect(rows).toHaveLength(2);
-    expect(rows[0][1]).toBe(rows[1][1]);
-    expect(Number(rows[0][1])).toBeGreaterThan(0);
+    expect(rows[0].worktree_tid).toBe(rows[1].worktree_tid);
+    expect(rows[0].worktree_tid).toBeGreaterThan(0);
     await expect
       .poll(() => taskResults.length)
       .toBeGreaterThan(1);

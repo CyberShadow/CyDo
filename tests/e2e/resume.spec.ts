@@ -17,7 +17,13 @@ import {
   readFileSync,
   writeFileSync,
 } from "fs";
-import { assistantText, enterSession, killBackend, sendMessage } from "./fixtures";
+import {
+  assistantText,
+  enterSession,
+  killBackend,
+  queryLiveBackendDb,
+  sendMessage,
+} from "./fixtures";
 
 // ---------------------------------------------------------------------------
 // Custom fixture
@@ -256,13 +262,13 @@ async function openRunningChildTask(
 async function expectPersistedCompletion(dbPath: string, tid: number) {
   await expect
     .poll(
-      () =>
-        execFileSync("sqlite3", [
+      () => {
+        const [row] = queryLiveBackendDb<{ status: string }>(
           dbPath,
-          `SELECT status FROM tasks WHERE tid = ${tid}`,
-        ])
-          .toString()
-          .trim(),
+          `SELECT status FROM tasks WHERE tid = ${tid};`,
+        );
+        return row?.status;
+      },
       { timeout: 540_000 },
     )
     .toBe("completed");

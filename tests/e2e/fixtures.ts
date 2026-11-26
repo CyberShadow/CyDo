@@ -15,6 +15,32 @@ import { writeTestConfig } from "./test-config";
 
 type AgentType = "claude" | "codex" | "copilot";
 
+export const defaultBackendDbPath = "/tmp/cydo-backend/data/cydo/cydo.db";
+
+// Allow for commits stretched by host load. The bound detects a stuck lock.
+const liveBackendDbBusyTimeoutMs = 60_000;
+
+/**
+ * Read a DB that a running backend may be writing. Rollback-journal commits
+ * take PENDING and EXCLUSIVE locks, and the CLI defaults to no busy wait.
+ * The timeout bounds the lock wait while execFileSync blocks the worker.
+ */
+export function queryLiveBackendDb<Row>(dbPath: string, sql: string): Row[] {
+  const output = execFileSync(
+    "sqlite3",
+    [
+      "-readonly",
+      "-cmd",
+      `.timeout ${liveBackendDbBusyTimeoutMs}`,
+      "-json",
+      dbPath,
+      sql,
+    ],
+    { encoding: "utf8" },
+  );
+  return output === "" ? [] : JSON.parse(output);
+}
+
 export function currentTaskTid(page: Page): number {
   const match = page.url().match(/\/task\/(\d+)(?:$|[/?#])/);
   if (!match) throw new Error(`Could not extract tid from URL: ${page.url()}`);
@@ -26,27 +52,20 @@ export function lookupTaskSession(tid: number): {
   projectPath: string;
   agentType: AgentType;
 } {
-  const output = execFileSync(
-    "sqlite3",
-    [
-      "-json",
-      "/tmp/cydo-backend/data/cydo/cydo.db",
-      `SELECT agent_session_id, project_path, agent_type FROM tasks WHERE tid = ${tid};`,
-    ],
-    { encoding: "utf8" },
-  );
-  if (output.trim().length === 0)
-    throw new Error(`No task row found for tid ${tid}`);
-  const [row] = JSON.parse(output) as Array<{
+  const [row] = queryLiveBackendDb<{
     agent_session_id: string | null;
     project_path: string;
     agent_type: string;
-  }>;
+  }>(
+    defaultBackendDbPath,
+    `SELECT agent_session_id, project_path, agent_type FROM tasks WHERE tid = ${tid};`,
+  );
+  if (!row) throw new Error(`No task row found for tid ${tid}`);
   const {
     agent_session_id: sessionId,
     project_path: projectPath,
     agent_type: agentType,
-  } = row!;
+  } = row;
   if (
     agentType !== "claude" &&
     agentType !== "codex" &&
@@ -56,7 +75,7 @@ export function lookupTaskSession(tid: number): {
   if (sessionId === null)
     throw new Error(`Task ${tid} (${agentType}) has no agent session ID yet`);
   if (!sessionId || !projectPath)
-    throw new Error(`Incomplete task row for tid ${tid}: ${output.trim()}`);
+    throw new Error(`Incomplete task row for tid ${tid}: ${JSON.stringify(row)}`);
   return { sessionId, projectPath, agentType };
 }
 
