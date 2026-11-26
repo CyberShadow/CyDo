@@ -82,6 +82,8 @@ function AppContent() {
     dismissServerError,
     devMode,
     ui,
+    heicConversion,
+    getHeicConversion,
     navigateHome,
     navigateToProject,
     getProjectHref,
@@ -487,6 +489,8 @@ function AppContent() {
           {draftView && (
             <div key={draftView.viewKey} style={{ display: "contents" }}>
               <DraftSessionView
+                heicConversion={heicConversion}
+                getHeicConversion={getHeicConversion}
                 draftView={draftView}
                 createdBy={createdByLink(
                   draftView.kind === "resolved" && draftView.remoteTid !== null
@@ -555,6 +559,8 @@ function AppContent() {
                   style={{ display: isActive ? "contents" : "none" }}
                 >
                   <SessionView
+                    heicConversion={heicConversion}
+                    getHeicConversion={getHeicConversion}
                     task={task}
                     createdBy={createdByLink(task, getByTid, getTaskHref)}
                     connected={connected}

@@ -132,6 +132,8 @@ describe("controlled InputBox", () => {
     void act(() => {
       render(
         <InputBox
+          heicConversion={{ available: false }}
+          getHeicConversion={() => ({ available: false })}
           mode="controlled"
           value={value}
           onChange={(next) => {
@@ -236,9 +238,11 @@ describe("controlled InputBox", () => {
           id: "a",
           dataURL: "data:image/png;base64,YQ==",
           base64: "YQ==",
+          name: "image.png",
           mediaType: "image/png",
         },
       ],
+      refusals: ["x"],
       listeners: new Set([receiveA]),
     };
     const entryB = {
@@ -249,9 +253,11 @@ describe("controlled InputBox", () => {
           id: "b",
           dataURL: "data:image/png;base64,Yg==",
           base64: "Yg==",
+          name: "image.png",
           mediaType: "image/png",
         },
       ],
+      refusals: ["x"],
       listeners: new Set([receiveB]),
     };
     store.entries.set("project-a", entryA);
@@ -261,11 +267,13 @@ describe("controlled InputBox", () => {
 
     expect(store.entries.size).toBe(0);
     expect(entryA.images).toEqual([]);
+    expect(entryA.refusals).toEqual([]);
     expect(entryB.images).toEqual([]);
+    expect(entryB.refusals).toEqual([]);
     expect(entryA.generation).toBe(5);
     expect(entryB.generation).toBe(9);
-    expect(receiveA).toHaveBeenCalledWith([], 5);
-    expect(receiveB).toHaveBeenCalledWith([], 9);
+    expect(receiveA).toHaveBeenCalledWith([], [], 5);
+    expect(receiveB).toHaveBeenCalledWith([], [], 9);
     expect(entryA.listeners.size).toBe(0);
     expect(entryB.listeners.size).toBe(0);
 
@@ -309,6 +317,7 @@ describe("controlled InputBox", () => {
               id: "image-id",
               dataURL: "data:image/png;base64,aW1hZ2U=",
               base64: "aW1hZ2U=",
+              name: "image.png",
               mediaType: "image/png",
             },
           ],
@@ -388,6 +397,8 @@ describe("controlled InputBox", () => {
 
       await flush(() => {
         dropImage(container.querySelector<HTMLElement>(".input-box")!);
+      });
+      await flush(() => {
         imageReader.complete();
       });
 
@@ -463,6 +474,8 @@ describe("controlled InputBox", () => {
       void act(() => {
         render(
           <InputBox
+            heicConversion={{ available: false }}
+            getHeicConversion={() => ({ available: false })}
             onSend={(text, images) => {
               sent.push({ text, images });
             }}
@@ -477,6 +490,8 @@ describe("controlled InputBox", () => {
       });
       await flush(() => {
         pasteImage(textarea());
+      });
+      await flush(() => {
         imageReader.completeNext();
       });
 
@@ -498,6 +513,8 @@ describe("controlled InputBox", () => {
       mount("replacement B", 7);
       await flush(() => {
         pasteImage(textarea());
+      });
+      await flush(() => {
         imageReader.completeNext();
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);

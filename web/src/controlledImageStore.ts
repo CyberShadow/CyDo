@@ -4,7 +4,14 @@ export interface ControlledImageEntry {
   resetToken: number;
   generation: number;
   images: ImageAttachment[];
-  listeners: Set<(images: ImageAttachment[], generation: number) => void>;
+  refusals: readonly string[];
+  listeners: Set<
+    (
+      images: ImageAttachment[],
+      refusals: readonly string[],
+      generation: number,
+    ) => void
+  >;
 }
 
 export interface ControlledImageStore {
@@ -15,17 +22,27 @@ export function createControlledImageStore(): ControlledImageStore {
   return { entries: new Map() };
 }
 
+export function publishControlledImageEntry(
+  entry: ControlledImageEntry,
+  images: ImageAttachment[],
+  refusals: readonly string[],
+  notify = true,
+) {
+  entry.images = images;
+  entry.refusals = refusals;
+  if (notify) {
+    for (const listener of entry.listeners) {
+      listener(images, refusals, entry.generation);
+    }
+  }
+}
+
 export function invalidateControlledImageEntry(
   entry: ControlledImageEntry,
   notify = true,
 ) {
   entry.generation++;
-  entry.images = [];
-  if (notify) {
-    for (const listener of entry.listeners) {
-      listener([], entry.generation);
-    }
-  }
+  publishControlledImageEntry(entry, [], [], notify);
   entry.listeners.clear();
 }
 

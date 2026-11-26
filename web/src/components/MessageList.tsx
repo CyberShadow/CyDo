@@ -13,7 +13,7 @@ import type { AgnosticEvent, TurnEndReason } from "../protocol";
 import { outbox, type OutboxEntry } from "../outbox";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { AssistantMessage } from "./AssistantMessage";
-import { UserMessage } from "./UserMessage";
+import { UserImage, UserMessage } from "./UserMessage";
 import { CopyButton, CodePre } from "./CopyButton";
 import { useDevMode } from "../devMode";
 import { Markdown } from "./Markdown";
@@ -279,12 +279,7 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
   const images = imageBlocks.length > 0 && (
     <div class="user-images">
       {imageBlocks.map((img, i) => (
-        <img
-          key={i}
-          src={`data:${img.media_type};base64,${img.data}`}
-          alt="User attached image"
-          class="user-image"
-        />
+        <UserImage key={i} {...img} />
       ))}
     </div>
   );

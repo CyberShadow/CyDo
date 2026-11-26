@@ -138,3 +138,12 @@ describe("UserMessage multipart text rendering", () => {
     expect(html).not.toContain(">meta<");
   });
 });
+
+it("renders a HEIC attachment as a chip", () => {
+  const html = render(
+    userMessage([{ type: "image", data: "YWJj", media_type: "image/heic" }]),
+  );
+
+  expect(html).toMatch(/class="user-image-label"[^>]*>[^<]*HEIC/);
+  expect(html).not.toContain("<img");
+});

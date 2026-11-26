@@ -383,6 +383,7 @@ describe("identity-keyed draft editors", () => {
       id: "image-one",
       dataURL: "data:image/png;base64,aW1hZ2U=",
       base64: "aW1hZ2U=",
+      name: "image.png",
       mediaType: "image/png",
     };
     trace.dispatch(metadata);

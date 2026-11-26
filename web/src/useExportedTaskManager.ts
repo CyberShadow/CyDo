@@ -267,6 +267,7 @@ export function useExportedTaskManager(): TaskManager {
     devMode: false,
     ui: {},
     heicConversion: { available: false, reason: "exported view" },
+    getHeicConversion: () => ({ available: false, reason: "exported view" }),
     exportLoadError,
     navigateHome: noop,
     navigateToProject: noop,

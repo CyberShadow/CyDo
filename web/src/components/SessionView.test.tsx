@@ -37,6 +37,8 @@ function session(
 ) {
   return (
     <SessionView
+      heicConversion={{ available: false }}
+      getHeicConversion={() => ({ available: false })}
       task={{ ...makeTaskState(7), undoPending, ...state }}
       agentUsage={agentUsage}
       connected={true}

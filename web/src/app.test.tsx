@@ -11,7 +11,7 @@ import {
 import renderToString from "preact-render-to-string";
 import { act } from "preact/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ownedRoots } from "./test-support/preactAct";
+import { actStep, ownedRoots } from "./test-support/preactAct";
 import type { ControlledImageStore } from "./controlledImageStore";
 import type { DraftViewSnapshot, TaskManager } from "./useSessionManager";
 import { makeTaskState, type TaskState } from "./types";
@@ -115,6 +115,7 @@ vi.mock("./useSessionManager", () => ({
       devMode: false,
       ui: {},
       heicConversion: { available: false, reason: "not configured" },
+      getHeicConversion: () => ({ available: false, reason: "not configured" }),
       navigateHome: vi.fn(),
       navigateToProject: vi.fn(),
       getProjectHref: vi.fn(),
@@ -711,8 +712,10 @@ describe("server command errors", () => {
         container.querySelector<HTMLElement>(".input-box")!;
       const beforeTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await act(() => {
+      await actStep(() => {
         pasteImage(beforeTextarea);
+      });
+      await actStep(() => {
         completeNextReader();
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
@@ -754,7 +757,7 @@ describe("server command errors", () => {
       expect(container.textContent).not.toContain("Loading task…");
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
 
-      await act(() => {
+      await actStep(() => {
         completeNextReader();
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
@@ -855,8 +858,10 @@ describe("server command errors", () => {
         container.querySelector<HTMLElement>(".input-box")!;
       const beforeTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await act(() => {
+      await actStep(() => {
         pasteImage(beforeTextarea);
+      });
+      await actStep(() => {
         completeNextReader();
         pasteImage(beforeTextarea);
       });
@@ -890,7 +895,7 @@ describe("server command errors", () => {
       expect(
         container.querySelector<HTMLSelectElement>(".agent-picker")?.value,
       ).toBe("agent");
-      await act(() => {
+      await actStep(() => {
         completeNextReader();
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
@@ -1013,8 +1018,10 @@ describe("server command errors", () => {
 
       const rootTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await act(() => {
+      await actStep(() => {
         pasteImage(rootTextarea);
+      });
+      await actStep(() => {
         completeNextReader();
         pasteImage(rootTextarea);
       });
@@ -1023,7 +1030,7 @@ describe("server command errors", () => {
       state.activeTaskId = "72";
       state.tasks = new Map([[realTaskB.uuid, realTaskB]]);
       state.draftView = null;
-      await act(() => {
+      await actStep(() => {
         render(h(App, {}), container);
         completeNextReader();
       });
@@ -1181,8 +1188,10 @@ describe("server command errors", () => {
 
       const aTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await act(() => {
+      await actStep(() => {
         pasteImage(aTextarea);
+      });
+      await actStep(() => {
         complete(readers[0]!);
         pasteImage(aTextarea);
       });
@@ -1198,20 +1207,19 @@ describe("server command errors", () => {
 
       state.activeProject = "project-a";
       state.draftView = draftA;
-      await act(() => {
+      await actStep(() => {
         render(h(App, {}), container);
         complete(heldAcrossHome);
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
       expect(aEntry.images).toHaveLength(2);
 
-      let heldAcrossReset: FileReader;
-      await act(() => {
+      await actStep(() => {
         const current =
           container.querySelector<HTMLTextAreaElement>("textarea")!;
         pasteImage(current);
-        heldAcrossReset = readers[2]!;
       });
+      const heldAcrossReset = readers[2]!;
 
       state.activeProject = "project-b";
       state.draftView = draftB;
@@ -1222,8 +1230,10 @@ describe("server command errors", () => {
 
       const bTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await act(() => {
+      await actStep(() => {
         pasteImage(bTextarea);
+      });
+      await actStep(() => {
         complete(readers[3]!);
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
@@ -1250,7 +1260,7 @@ describe("server command errors", () => {
       expect(aEntry.generation).toBe(aResetGeneration);
       expect(bEntry.generation).toBe(bResetGeneration);
 
-      await act(() => {
+      await actStep(() => {
         complete(heldAcrossReset);
       });
       expect(imageStore.entries.size).toBe(0);
@@ -1279,10 +1289,12 @@ describe("server command errors", () => {
       });
       expect(freshSubmit).toHaveBeenCalledWith("fresh A", []);
 
-      await act(() => {
+      await actStep(() => {
         const current =
           container.querySelector<HTMLTextAreaElement>("textarea")!;
         pasteImage(current);
+      });
+      await actStep(() => {
         complete(readers[4]!);
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
@@ -1441,8 +1453,10 @@ describe("server command errors", () => {
         container.querySelector<HTMLElement>(".input-box")!;
       const beforeTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await act(() => {
+      await actStep(() => {
         pasteImage(beforeTextarea);
+      });
+      await actStep(() => {
         completeNextReader();
       });
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);

@@ -18,6 +18,8 @@ export function ExportApp() {
     getByTid,
     exportLoadError,
     ordinaryDraftStore,
+    heicConversion,
+    getHeicConversion,
   } = useExportedTaskManager();
 
   const { theme, toggleTheme } = useTheme();
@@ -61,6 +63,8 @@ export function ExportApp() {
         />
         {active ? (
           <SessionView
+            heicConversion={heicConversion}
+            getHeicConversion={getHeicConversion}
             task={active}
             connected={false}
             tasksLoading={false}

@@ -7,9 +7,12 @@ import {
   useMemo,
   useCallback,
 } from "preact/hooks";
-import type { ImageAttachment } from "../useSessionManager";
+import type { ImageAttachment } from "../draftReconciler";
+import { isHeicType, sniffImageType } from "../imageSniff";
+import type { HeicConversionStatus } from "../protocol";
 import {
   invalidateControlledImageEntry,
+  publishControlledImageEntry,
   type ControlledImageEntry,
   type ControlledImageStore,
 } from "../controlledImageStore";
@@ -19,6 +22,8 @@ import { applyRecoveredInputDraft } from "./inputDraft";
 const supportsFieldSizing = CSS.supports("field-sizing", "content");
 
 interface CommonProps {
+  heicConversion: HeicConversionStatus;
+  getHeicConversion: () => HeicConversionStatus;
   onInterrupt: () => void;
   isProcessing: boolean;
   stdinClosed?: boolean;
@@ -103,18 +108,12 @@ function controlledImageEntry(
     resetToken,
     generation: existing ? existing.generation + 1 : 0,
     images: [],
+    refusals: [],
     listeners: new Set(),
   };
   store.entries.set(key, entry);
   if (existing) invalidateControlledImageEntry(existing, false);
   return entry;
-}
-
-function publishImages(entry: ControlledImageEntry, images: ImageAttachment[]) {
-  entry.images = images;
-  for (const listener of entry.listeners) {
-    listener(images, entry.generation);
-  }
 }
 
 const SUPPORTED_IMAGE_TYPES = new Set([
@@ -126,6 +125,7 @@ const SUPPORTED_IMAGE_TYPES = new Set([
 
 function useImageAttachments(
   enabled: boolean,
+  getHeicConversion: () => HeicConversionStatus,
   resetToken?: number,
   imageStore?: ControlledImageStore,
   imageKey?: string,
@@ -136,55 +136,46 @@ function useImageAttachments(
         ? controlledImageEntry(imageStore, imageKey, resetToken)
         : null
       : null;
-  const [images, setImagesState] = useState<ImageAttachment[]>(
-    () => imageEntry?.images ?? [],
-  );
-  const [imagesGeneration, setImagesGeneration] = useState(
-    () => imageEntry?.generation ?? 0,
-  );
+  const [localImages, setLocalImages] = useState<ImageAttachment[]>([]);
+  const [localImagesGeneration, setLocalImagesGeneration] = useState(0);
+  const [localRefusals, setLocalRefusals] = useState<readonly string[]>([]);
+  const [, setEntryVersion] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
-  const [attachError, setAttachError] = useState("");
-  const clearAttachError = () => {
-    setAttachError("");
-  };
-
-  // Refusals describe a local intake batch, so they expire when the editor changes.
-  useLayoutEffect(() => {
-    setAttachError("");
-  }, [enabled, imageStore, imageKey, imageEntry, resetToken]);
   const enabledRef = useRef(enabled);
-  const resetTokenRef = useRef(resetToken);
-  const generationRef = useRef(imageEntry?.generation ?? 0);
-  const imagesRef = useRef(images);
+  const ownerIdentity = useRef({ resetToken, imageKey });
+  const localGeneration = useRef(0);
+  const localImagesRef = useRef(localImages);
   const invalidatedRef = useRef(false);
 
-  const reset = resetTokenRef.current !== resetToken;
+  const reset =
+    !imageEntry &&
+    (ownerIdentity.current.resetToken !== resetToken ||
+      (!imageStore && ownerIdentity.current.imageKey !== imageKey));
   if (reset || enabledRef.current !== enabled) {
-    generationRef.current =
-      (imageEntry?.generation ?? generationRef.current) + 1;
     if (imageEntry) {
-      imageEntry.generation = generationRef.current;
-      if (reset) imageEntry.images = [];
+      imageEntry.generation++;
+    } else {
+      localGeneration.current++;
+      if (reset) localImagesRef.current = [];
     }
-    if (reset) imagesRef.current = [];
     invalidatedRef.current = true;
   }
   enabledRef.current = enabled;
-  resetTokenRef.current = resetToken;
+  ownerIdentity.current = { resetToken, imageKey };
 
+  const entryImages = imageEntry?.images;
+  const entryRefusals = imageEntry?.refusals;
   useLayoutEffect(() => {
     if (!imageEntry) return;
-    const receive = (next: ImageAttachment[], generation: number) => {
-      imagesRef.current = next;
-      setImagesState(next);
-      setImagesGeneration(generation);
+    const receive = () => {
+      setEntryVersion((version) => version + 1);
     };
     imageEntry.listeners.add(receive);
     if (
-      imagesRef.current !== imageEntry.images ||
-      imagesGeneration !== imageEntry.generation
+      entryImages !== imageEntry.images ||
+      entryRefusals !== imageEntry.refusals
     )
-      receive(imageEntry.images, imageEntry.generation);
+      receive();
     return () => {
       imageEntry.listeners.delete(receive);
     };
@@ -193,73 +184,146 @@ function useImageAttachments(
   useLayoutEffect(() => {
     if (!invalidatedRef.current) return;
     invalidatedRef.current = false;
-    const next = imagesRef.current;
-    if (imageEntry) publishImages(imageEntry, next);
-    else setImagesState(next);
-    setImagesGeneration(generationRef.current);
+    if (imageEntry) {
+      publishControlledImageEntry(imageEntry, imageEntry.images, []);
+    } else {
+      setLocalImages(localImagesRef.current);
+      setLocalRefusals([]);
+      setLocalImagesGeneration(localGeneration.current);
+    }
     setIsDragging(false);
-  }, [enabled, imageEntry, resetToken]);
+  }, [enabled, imageEntry, resetToken, imageKey]);
+
+  const clearRefusals = () => {
+    if (imageEntry) {
+      if (imageStore!.entries.get(imageKey!) !== imageEntry) return;
+      publishControlledImageEntry(imageEntry, imageEntry.images, []);
+      return;
+    }
+    setLocalRefusals([]);
+  };
 
   const setImages = (
     next:
       | ImageAttachment[]
       | ((previous: ImageAttachment[]) => ImageAttachment[]),
   ) => {
-    const resolved =
-      typeof next === "function" ? next(imagesRef.current) : next;
-    imagesRef.current = resolved;
     if (imageEntry) {
-      if (imageStore?.entries.get(imageKey!) !== imageEntry) return;
-      publishImages(imageEntry, resolved);
+      if (imageStore!.entries.get(imageKey!) !== imageEntry) return;
+      const resolved =
+        typeof next === "function" ? next(imageEntry.images) : next;
+      publishControlledImageEntry(imageEntry, resolved, imageEntry.refusals);
       return;
     }
-    setImagesState(resolved);
+    const resolved =
+      typeof next === "function" ? next(localImagesRef.current) : next;
+    localImagesRef.current = resolved;
+    setLocalImages(resolved);
   };
 
-  const processFile = (file: File) => {
-    const generation = generationRef.current;
-    const entry = imageEntry;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataURL = event.target!.result as string;
-      const base64 = dataURL.split(",")[1] ?? "";
-      const image = {
-        id: crypto.randomUUID(),
-        dataURL,
-        base64,
-        mediaType: file.type,
+  const readFile = (file: File) =>
+    new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        resolve(event.target!.result as string);
       };
-      if (entry) {
-        if (
-          imageStore?.entries.get(imageKey!) !== entry ||
-          entry.generation !== generation
-        )
-          return;
-        publishImages(entry, [...entry.images, image]);
-        return;
+      reader.onerror = reader.onabort = () => {
+        resolve(null);
+      };
+      reader.readAsDataURL(file);
+    });
+
+  const attachFiles = async (files: FileList | File[]) => {
+    if (!enabledRef.current || files.length === 0) return;
+    const entry = imageEntry;
+    const generation = entry?.generation ?? localGeneration.current;
+    const isCurrent = () =>
+      entry
+        ? imageStore!.entries.get(imageKey!) === entry &&
+          entry.generation === generation
+        : generation === localGeneration.current;
+
+    clearRefusals();
+    const batch = await Promise.all(
+      Array.from(files, async (file) => ({
+        file,
+        type:
+          !file.type ||
+          file.type === "application/octet-stream" ||
+          isHeicType(file.type)
+            ? await sniffImageType(file)
+            : file.type,
+      })),
+    );
+    if (!isCurrent()) return;
+
+    const results = await Promise.all(
+      batch.map(async ({ file, type }) => {
+        const validType =
+          type === "image/heic" ||
+          (type && !isHeicType(file.type) && SUPPORTED_IMAGE_TYPES.has(type));
+        return {
+          file,
+          type,
+          dataURL: validType ? await readFile(file) : undefined,
+        };
+      }),
+    );
+    if (!isCurrent()) return;
+
+    const conversion = getHeicConversion();
+    const unsupported: string[] = [];
+    const refused: string[] = [];
+    const attachments: ImageAttachment[] = [];
+    for (const { file, type, dataURL } of results) {
+      if (type === undefined || dataURL === null) {
+        refused.push(`Could not read ${file.name}.`);
+      } else if (isHeicType(file.type) && type !== "image/heic") {
+        refused.push(
+          `${file.name} cannot be attached: not a HEIC/HEIF still image.`,
+        );
+      } else if (type === "image/heic" && !conversion.available) {
+        refused.push(
+          `${file.name} (HEIC) cannot be attached: HEIC conversion is unavailable on this server: ${conversion.reason}`,
+        );
+      } else if (type !== null && dataURL !== undefined) {
+        const base64 = dataURL.split(",")[1]!;
+        attachments.push({
+          id: crypto.randomUUID(),
+          name: file.name,
+          dataURL: `data:${type};base64,${base64}`,
+          base64,
+          mediaType: type,
+        });
+      } else {
+        unsupported.push(file.type ? `${file.name} (${file.type})` : file.name);
       }
-      if (generation !== generationRef.current) return;
-      setImages((previous) => [...previous, image]);
-      setImagesGeneration(generation);
-    };
-    reader.readAsDataURL(file);
+    }
+    if (unsupported.length) {
+      const formats = conversion.available
+        ? "JPEG, PNG, GIF, WebP, or HEIC"
+        : "JPEG, PNG, GIF, or WebP";
+      refused.push(`Cannot attach ${unsupported.join(", ")}. Use ${formats}.`);
+    }
+    if (entry) {
+      publishControlledImageEntry(
+        entry,
+        [...entry.images, ...attachments],
+        [...entry.refusals, ...refused],
+      );
+      return;
+    }
+    setImages((previous) => [...previous, ...attachments]);
+    setLocalImagesGeneration(generation);
+    setLocalRefusals((previous) => [...previous, ...refused]);
   };
 
   const addFiles = (files: FileList | File[]) => {
-    if (!enabledRef.current || files.length === 0) return;
-    const refused: string[] = [];
-    for (const file of files) {
-      if (SUPPORTED_IMAGE_TYPES.has(file.type)) {
-        processFile(file);
-      } else {
-        refused.push(file.type ? `${file.name} (${file.type})` : file.name);
-      }
-    }
-    setAttachError(
-      refused.length
-        ? `Cannot attach ${refused.join(", ")}. Use JPEG, PNG, GIF, or WebP.`
-        : "",
-    );
+    void attachFiles(files).catch((error: unknown) => {
+      queueMicrotask(() => {
+        throw new Error("Attachment intake failed", { cause: error });
+      });
+    });
   };
 
   const onPaste = (event: ClipboardEvent) => {
@@ -297,12 +361,15 @@ function useImageAttachments(
 
   return {
     images:
-      imagesGeneration === generationRef.current ? images : imagesRef.current,
+      entryImages ??
+      (localImagesGeneration === localGeneration.current
+        ? localImages
+        : localImagesRef.current),
     setImages,
     isDragging: enabled && isDragging,
     addFiles,
-    attachError,
-    clearAttachError,
+    refusals: entryRefusals ?? localRefusals,
+    clearRefusals,
     onPaste,
     onDragOver,
     onDragLeave,
@@ -312,9 +379,11 @@ function useImageAttachments(
 
 function AttachButton({
   disabled,
+  heicAvailable,
   onFiles,
 }: {
   disabled: boolean;
+  heicAvailable: boolean;
   onFiles: (files: FileList) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -324,7 +393,7 @@ function AttachButton({
         ref={inputRef}
         class="input-file"
         type="file"
-        accept="image/*"
+        accept={heicAvailable ? "image/*,.heic,.heif" : "image/*"}
         multiple
         disabled={disabled}
         tabIndex={-1}
@@ -375,7 +444,11 @@ function ImagePreviews({
     <div key="image-previews" class="image-previews">
       {images.map((image) => (
         <div key={image.id} class="image-preview">
-          <img src={image.dataURL} alt="Attached" />
+          {isHeicType(image.mediaType) ? (
+            <span class="image-preview-label">HEIC {image.name}</span>
+          ) : (
+            <img src={image.dataURL} alt="Attached" />
+          )}
           <button
             class="image-preview-remove"
             onClick={() => {
@@ -421,6 +494,8 @@ function OrdinaryInputBox({
   isProcessing,
   stdinClosed,
   disabled,
+  heicConversion,
+  getHeicConversion,
   sessionId,
   inputDraft,
   onInputDraftConsumed,
@@ -458,14 +533,15 @@ function OrdinaryInputBox({
     setImages,
     isDragging,
     addFiles,
-    attachError,
-    clearAttachError,
+    refusals,
+    clearRefusals,
     onPaste,
     onDragOver,
     onDragLeave,
     onDrop,
   } = useImageAttachments(
     !disabled && !stdinClosed,
+    getHeicConversion,
     undefined,
     undefined,
     sessionId,
@@ -586,7 +662,7 @@ function OrdinaryInputBox({
   }, [inputDraft, onInputDraftConsumed, sessionId]);
 
   const sendMessage: OrdinaryProps["onSend"] = (...args) => {
-    clearAttachError();
+    clearRefusals();
     onSend(...args);
   };
 
@@ -655,9 +731,9 @@ function OrdinaryInputBox({
           setImages((previous) => previous.filter((image) => image.id !== id));
         }}
       />
-      {attachError && (
+      {refusals.length > 0 && (
         <div key="attach-error" class="attach-error" role="status">
-          {attachError}
+          {refusals.join(" ")}
         </div>
       )}
       <textarea
@@ -680,6 +756,7 @@ function OrdinaryInputBox({
       <AttachButton
         key="attach"
         disabled={disabled || !!stdinClosed}
+        heicAvailable={heicConversion.available}
         onFiles={addFiles}
       />
       {isProcessing && (
@@ -706,6 +783,8 @@ function ControlledInputBox({
   isProcessing,
   stdinClosed,
   disabled,
+  heicConversion,
+  getHeicConversion,
   value,
   onChange,
   onSubmit,
@@ -724,14 +803,15 @@ function ControlledInputBox({
     setImages,
     isDragging,
     addFiles,
-    attachError,
-    clearAttachError,
+    refusals,
+    clearRefusals,
     onPaste,
     onDragOver,
     onDragLeave,
     onDrop,
   } = useImageAttachments(
     !disabled && !stdinClosed,
+    getHeicConversion,
     composerResetToken,
     imageStore,
     imageKey,
@@ -804,7 +884,7 @@ function ControlledInputBox({
     if (disabled || submitDisabled) return;
     const text = valueRef.current.trim();
     if (!text && images.length === 0) return;
-    clearAttachError();
+    clearRefusals();
     onSubmit(text, [...images]);
     textareaRef.current?.focus();
   };
@@ -833,9 +913,9 @@ function ControlledInputBox({
           setImages((previous) => previous.filter((image) => image.id !== id));
         }}
       />
-      {attachError && (
+      {refusals.length > 0 && (
         <div key="attach-error" class="attach-error" role="status">
-          {attachError}
+          {refusals.join(" ")}
         </div>
       )}
       <textarea
@@ -855,6 +935,7 @@ function ControlledInputBox({
       <AttachButton
         key="attach"
         disabled={disabled || !!stdinClosed}
+        heicAvailable={heicConversion.available}
         onFiles={addFiles}
       />
       {isProcessing && (

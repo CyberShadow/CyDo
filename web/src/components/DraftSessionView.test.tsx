@@ -113,6 +113,8 @@ describe("DraftSessionView draft availability", () => {
   ) => {
     roots.render(
       <DraftSessionView
+        heicConversion={{ available: false }}
+        getHeicConversion={() => ({ available: false })}
         key={draftView.viewKey}
         draftView={draftView}
         imageStore={imageStore}
@@ -188,6 +190,8 @@ describe("DraftSessionView draft availability", () => {
       );
       await actStep(() => {
         pasteImage(controls().textarea);
+      });
+      await actStep(() => {
         reader.complete();
         pasteImage(controls().textarea);
       });
@@ -245,6 +249,8 @@ describe("DraftSessionView draft availability", () => {
       expectFullyDisabledControls();
       await actStep(() => {
         pasteImage(controls().textarea);
+      });
+      await actStep(() => {
         imageReader.complete();
       });
 
@@ -397,6 +403,8 @@ describe("DraftSessionView draft availability", () => {
 
       await actStep(() => {
         dropImage(container.querySelector<HTMLElement>(".input-box")!);
+      });
+      await actStep(() => {
         imageReader.complete();
       });
 

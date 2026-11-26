@@ -74,6 +74,7 @@ import {
   type DraftState,
   type CompositionId,
   type EditorId,
+  type ImageAttachment,
   type EntryPointInfo,
   type ProjectedDraftForm,
   type TaskObservation,
@@ -86,12 +87,7 @@ import {
   parseRoute,
 } from "./routing";
 
-export interface ImageAttachment {
-  id: string;
-  dataURL: string;
-  base64: string;
-  mediaType: string;
-}
+export type { ImageAttachment } from "./draftReconciler";
 
 type HistoryBoundaryEvent =
   | (Extract<AgnosticEvent, { type: "item/started" }> & {
@@ -277,6 +273,7 @@ export interface TaskManager {
   devMode: boolean;
   ui: UiConfig;
   heicConversion: HeicConversionStatus;
+  getHeicConversion: () => HeicConversionStatus;
   exportLoadError?: string | null;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
@@ -798,6 +795,8 @@ export function useTaskManager(
     available: false,
     reason: "waiting for server status",
   });
+  const heicConversionRef = useRef(heicConversion);
+  const getHeicConversion = useCallback(() => heicConversionRef.current, []);
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
   const prevNoticeIdsRef = useRef<Set<string>>(new Set());
@@ -1190,8 +1189,19 @@ export function useTaskManager(
   }, []);
 
   const sendMessageAttempt = useCallback(
-    (tid: number, content: ContentBlock[], nonce: string) => {
-      outbox.add({ tid, nonce, content, createdAt: Date.now() });
+    (
+      tid: number,
+      content: ContentBlock[],
+      nonce: string,
+      attachmentNames?: string[],
+    ) => {
+      outbox.add({
+        tid,
+        nonce,
+        content,
+        createdAt: Date.now(),
+        attachmentNames,
+      });
       if (outboxReplayedEpochRef.current !== openConnectionEpochRef.current) {
         outboxAttemptedNoncesRef.current.add(nonce);
       }
@@ -1210,7 +1220,12 @@ export function useTaskManager(
       const displayContent =
         content as import("./protocol").AssistantContentBlock[];
       const nonce = crypto.randomUUID();
-      sendMessageAttempt(task.tid, content, nonce);
+      sendMessageAttempt(
+        task.tid,
+        content,
+        nonce,
+        images?.map(({ name }) => name),
+      );
       const msgIdCounter = task.msgIdCounter + 1;
       const updated: TaskState = {
         ...task,
@@ -1746,7 +1761,7 @@ export function useTaskManager(
           tid,
         }).effects,
       );
-      return true;
+      return desired;
     },
     [applyDraftEvent, executeDraftEffects],
   );
@@ -2003,17 +2018,29 @@ export function useTaskManager(
         case "cydo/submission_rejected": {
           // Only the live submission receipt recovers a draft. History
           // diagnostics are display events and never settle the outbox.
-          const { correlation_id, tid, kind, reason } = msg;
+          const { correlation_id, tid, kind, reason, attachment } = msg;
+          const attachmentError = (name?: string) =>
+            `Could not send ${name ?? `image ${(attachment ?? 0) + 1}`}: ${reason}`;
           const editorId =
             submissionCorrelationToEditorRef.current.get(correlation_id) ??
             correlationToEditorRef.current.get(correlation_id);
           if (editorId) {
+            const recovered = recoverSubmission(editorId, tid);
             if (
-              recoverSubmission(editorId, tid) &&
+              recovered &&
               kind !== "validation" &&
               kind !== "native_undo_refused"
             ) {
-              showServerError(reason, tid);
+              showServerError(
+                kind === "attachment_rejected"
+                  ? attachmentError(
+                      attachment === undefined
+                        ? undefined
+                        : recovered.images[attachment]?.name,
+                    )
+                  : reason,
+                tid,
+              );
             }
             break;
           }
@@ -2054,7 +2081,14 @@ export function useTaskManager(
           if (!recovered) outbox.remove(correlation_id);
           if (!task) break;
           if (kind === "attachment_rejected") {
-            showServerError(reason, tid);
+            showServerError(
+              attachmentError(
+                attachment === undefined
+                  ? undefined
+                  : entry.attachmentNames?.[attachment],
+              ),
+              tid,
+            );
             break;
           }
           const hasDiagnostic =
@@ -2308,6 +2342,7 @@ export function useTaskManager(
         case "server_status": {
           setDevMode(msg.dev_mode ?? false);
           setUi(msg.ui);
+          heicConversionRef.current = msg.heic_conversion;
           setHeicConversion(msg.heic_conversion);
           const serverBuildId = msg.build_id ?? "";
           if (
@@ -3463,6 +3498,7 @@ export function useTaskManager(
     devMode,
     ui,
     heicConversion,
+    getHeicConversion,
     exportLoadError: null,
     navigateHome,
     navigateToProject,

@@ -1,9 +1,28 @@
 import type { DisplayMessage } from "../types";
+import { isHeicType } from "../imageSniff";
 import { Markdown } from "./Markdown";
 import { useDevMode } from "../devMode";
 
 interface Props {
   message: DisplayMessage;
+}
+
+export function UserImage({
+  data,
+  media_type,
+}: {
+  data: string;
+  media_type: string;
+}) {
+  return isHeicType(media_type) ? (
+    <span class="user-image-label">HEIC</span>
+  ) : (
+    <img
+      src={`data:${media_type};base64,${data}`}
+      alt="User attached image"
+      class="user-image"
+    />
+  );
 }
 
 export function UserMessage({ message }: Props) {
@@ -87,12 +106,7 @@ export function UserMessage({ message }: Props) {
       {imageBlocks.length > 0 && (
         <div class="user-images">
           {imageBlocks.map((img, i) => (
-            <img
-              key={i}
-              src={`data:${img.media_type};base64,${img.data}`}
-              alt="User attached image"
-              class="user-image"
-            />
+            <UserImage key={i} {...img} />
           ))}
         </div>
       )}

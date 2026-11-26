@@ -39,6 +39,7 @@ export interface ResolvedDraftForm extends DraftForm {
 
 export interface ImageAttachment {
   id: string;
+  name: string;
   dataURL: string;
   base64: string;
   mediaType: string;

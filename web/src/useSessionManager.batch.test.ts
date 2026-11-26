@@ -497,6 +497,8 @@ describe("task event batches", () => {
     const noop = () => {};
     return renderToString(
       h(SessionView, {
+        heicConversion: { available: false },
+        getHeicConversion: () => ({ available: false }),
         task: currentTask(),
         connected: true,
         tasksLoading: false,

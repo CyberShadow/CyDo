@@ -65,6 +65,8 @@ function ordinaryInput(
 ) {
   return (
     <InputBox
+      heicConversion={{ available: false }}
+      getHeicConversion={() => ({ available: false })}
       onSend={(text) => {
         sent.push(text);
       }}

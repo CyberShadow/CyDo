@@ -4596,6 +4596,16 @@ pre.extra-field-value {
   object-fit: cover;
 }
 
+.image-preview-label,
+.user-image-label {
+  display: inline-block;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  overflow-wrap: anywhere;
+}
+
 .image-preview-remove {
   position: absolute;
   top: -6px;

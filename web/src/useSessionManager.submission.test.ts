@@ -1,3 +1,6 @@
+/** @vitest-environment jsdom */
+import { DraftSessionView } from "./components/SessionView";
+import { actPoll } from "./test-support/preactAct";
 import { DRAFT_SAVE_DELAY_MS } from "./draftReconciler";
 import { h, render } from "preact";
 import { act } from "preact/test-utils";
@@ -89,7 +92,11 @@ const testState = vi.hoisted(() => {
       return navigatedPath ?? renderedPath();
     },
   });
-  vi.stubGlobal("CSS", { supports: () => false });
+  vi.stubGlobal("CSS", {
+    supports: () => false,
+    escape: (value: string) => value,
+  });
+  vi.stubGlobal("matchMedia", () => ({ matches: false }));
   vi.stubGlobal("crypto", {
     randomUUID: () => {
       if (state.issuedUuids.has(state.uuid))
@@ -98,13 +105,9 @@ const testState = vi.hoisted(() => {
       return state.uuid;
     },
   });
-  vi.stubGlobal("document", {
-    get hidden() {
-      return state.hidden;
-    },
-    querySelector: () => null,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
+  Object.defineProperty(document, "hidden", {
+    configurable: true,
+    get: () => state.hidden,
   });
   vi.stubGlobal(
     "requestAnimationFrame",
@@ -224,7 +227,8 @@ import {
 } from "./useSessionManager";
 
 let manager: TaskManager | null = null;
-let root: Element;
+let root: HTMLDivElement;
+let showDraftComposer: boolean;
 let imageStore: ControlledImageStore;
 
 function seedEditorImage(editorId: string) {
@@ -236,9 +240,11 @@ function seedEditorImage(editorId: string) {
         id: "image",
         dataURL: "data:image/png;base64,aQ==",
         base64: "aQ==",
+        name: "image.png",
         mediaType: "image/png",
       },
     ],
+    refusals: [],
     listeners: new Set<() => void>(),
   };
   imageStore.entries.set(editorId, entry);
@@ -250,18 +256,24 @@ let observedTasks: Set<TaskManager["tasks"]> | undefined;
 function ManagerProbe() {
   manager = useTaskManager(testState.addToast, imageStore);
   observedTasks?.add(manager.tasks);
-  return null;
-}
-
-function createRoot(): Element {
-  return {
-    nodeType: 1,
-    namespaceURI: "http://www.w3.org/1999/xhtml",
-    firstChild: null,
-    childNodes: [],
-    insertBefore: vi.fn(),
-    removeChild: vi.fn(),
-  } as unknown as Element;
+  const { draftView } = manager;
+  if (!showDraftComposer || !draftView) return null;
+  return h(DraftSessionView, {
+    key: draftView.viewKey,
+    draftView,
+    imageStore,
+    heicConversion: manager.heicConversion,
+    getHeicConversion: manager.getHeicConversion,
+    connected: manager.connected,
+    tasksLoading: !manager.tasksLoaded,
+    entryPoints: manager.entryPoints,
+    agents: manager.agents,
+    defaultAgent: manager.defaultAgent,
+    theme: "dark",
+    onToggleTheme: () => {},
+    onToggleSidebar: () => {},
+    hasGlobalAttention: false,
+  });
 }
 
 async function renderManager(): Promise<TaskManager> {
@@ -643,7 +655,8 @@ describe("submission acknowledgement routing", () => {
     testState.outboxEntries = [];
     for (const method of Object.values(testState.outbox)) method.mockClear();
     manager = null;
-    root = createRoot();
+    showDraftComposer = false;
+    root = document.createElement("div");
     imageStore = createControlledImageStore();
   });
 
@@ -1552,6 +1565,7 @@ describe("submission acknowledgement routing", () => {
           id: "unavailable-image",
           dataURL: "data:image/png;base64,dW5hdmFpbGFibGU=",
           base64: "dW5hdmFpbGFibGU=",
+          name: "image.png",
           mediaType: "image/png",
         },
       ]);
@@ -3429,6 +3443,98 @@ describe("submission acknowledgement routing", () => {
     },
   );
 
+  it("names the rejected image and restores both controlled attachments", async () => {
+    const view = await prepareEditableDraft();
+    const connection = testState.connection!;
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "server_status",
+        ui: {},
+        heic_conversion: { available: true },
+        auth_enabled: false,
+      });
+    });
+    showDraftComposer = true;
+    await renderManager();
+
+    const readAsDataURL = vi
+      .spyOn(FileReader.prototype, "readAsDataURL")
+      .mockImplementation(function (this: FileReader, file) {
+        const data = (file as File).name === "a.png" ? "cG5n" : "aGVpYw==";
+        queueMicrotask(() => {
+          this.onload?.({
+            target: { result: `data:application/octet-stream;base64,${data}` },
+          } as ProgressEvent<FileReader>);
+        });
+      });
+    try {
+      const picker =
+        root.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(picker, "files", {
+        value: [
+          new File(["png"], "a.png", { type: "image/png" }),
+          new File(["\0\0\0\x10ftypheic\0\0\0\0"], "IMG.HEIC"),
+        ],
+      });
+      const pngPreviews = () => root.querySelectorAll(".image-preview img");
+      const heicLabels = () => root.querySelectorAll(".image-preview-label");
+      const sendButton = () =>
+        root.querySelector<HTMLButtonElement>(".btn-send")!;
+
+      await act(() => {
+        picker.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await actPoll({
+        description: "the PNG preview and HEIC label",
+        ready: () => pngPreviews().length === 1 && heicLabels().length === 1,
+      });
+
+      await act(() => {
+        sendButton().click();
+      });
+      expect(testState.outboxEntries).toHaveLength(1);
+      const nonce = testState.outboxEntries[0]!.nonce;
+      await act(() => {
+        connection.onControlMessage?.({
+          type: "cydo/submission_rejected",
+          correlation_id: nonce,
+          tid: 71,
+          kind: "attachment_rejected",
+          attachment: 1,
+          reason: "Conversion failed",
+        });
+      });
+
+      expect(manager!.draftView).toMatchObject({
+        editorId: view.editorId,
+        lifecycle: "present",
+        text: view.text,
+      });
+      expect(pngPreviews()).toHaveLength(1);
+      expect(heicLabels()).toHaveLength(1);
+      expect(heicLabels()[0]!.textContent).toContain("IMG.HEIC");
+      expect(manager!.serverError?.message).toBe(
+        "Could not send IMG.HEIC: Conversion failed",
+      );
+
+      await act(() => {
+        sendButton().click();
+      });
+      expect(connection.sendMessage).toHaveBeenCalledTimes(2);
+      expect(connection.sendMessage).toHaveBeenLastCalledWith(
+        71,
+        [
+          { type: "text", text: view.text },
+          { type: "image", data: "cG5n", media_type: "image/png" },
+          { type: "image", data: "aGVpYw==", media_type: "image/heic" },
+        ],
+        expect.any(String),
+      );
+    } finally {
+      readAsDataURL.mockRestore();
+    }
+  });
+
   it("recovers only the rejected normal-message attempt and permits a new nonce", async () => {
     const view = await prepareEditableDraft();
     const connection = testState.connection!;
@@ -4089,6 +4195,54 @@ describe("submission acknowledgement routing", () => {
       });
       expect(testState.outboxEntries).toEqual([pending]);
     }
+  });
+
+  it("names the rejected ordinary attachment from the outbox and restores the text", async () => {
+    await renderManager();
+    const connection = testState.connection!;
+    const prompt = "retry this photo";
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "task_updated",
+        task: activeSnapshot(901),
+      });
+      const task = manager!.getByTid(901)!;
+      manager!.send(task.uuid, prompt, [
+        {
+          id: "png",
+          name: "first.png",
+          dataURL: "data:image/png;base64,cA==",
+          base64: "cA==",
+          mediaType: "image/png",
+        },
+        {
+          id: "heic",
+          name: "IMG.HEIC",
+          dataURL: "data:image/heic;base64,aQ==",
+          base64: "aQ==",
+          mediaType: "image/heic",
+        },
+      ]);
+    });
+
+    const [submitted] = testState.outboxEntries;
+    expect(submitted?.attachmentNames).toEqual(["first.png", "IMG.HEIC"]);
+    await act(() => {
+      connection.onControlMessage?.({
+        type: "cydo/submission_rejected",
+        correlation_id: submitted!.nonce,
+        tid: 901,
+        kind: "attachment_rejected",
+        attachment: 1,
+        reason: "Conversion failed",
+      });
+    });
+
+    const task = manager!.getByTid(901)!;
+    expect(manager!.ordinaryDraftStore.read(task.uuid)).toBe(prompt);
+    expect(manager!.serverError?.message).toBe(
+      "Could not send IMG.HEIC: Conversion failed",
+    );
   });
 
   it("merges with the current ordinary draft and keeps an existing rejection diagnostic", async () => {

@@ -21,7 +21,12 @@ import type {
   AgentInfo,
   DraftView,
 } from "../useSessionManager";
-import type { AgentUsageMessage, Notice, UiConfig } from "../protocol";
+import type {
+  AgentUsageMessage,
+  HeicConversionStatus,
+  Notice,
+  UiConfig,
+} from "../protocol";
 import type { OrdinaryDraftStore } from "../ordinaryDraftStore";
 import { NoticeBar } from "./NoticeBar";
 import { SystemBanner, normalizeSessionStatus } from "./SystemBanner";
@@ -85,6 +90,8 @@ interface Props {
   createdBy?: CreatedByLink;
   agentUsage?: Record<string, AgentUsageMessage>;
   ui?: UiConfig;
+  heicConversion: HeicConversionStatus;
+  getHeicConversion: () => HeicConversionStatus;
 }
 
 function SessionViewInner({
@@ -123,6 +130,8 @@ function SessionViewInner({
   createdBy,
   agentUsage,
   ui,
+  heicConversion,
+  getHeicConversion,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -572,6 +581,8 @@ function SessionViewInner({
             </div>
           )}
           <InputBox
+            heicConversion={heicConversion}
+            getHeicConversion={getHeicConversion}
             key="input-box"
             onSend={handleSend}
             onInterrupt={() => {
@@ -607,6 +618,8 @@ function SessionViewInner({
 export const SessionView = memo(SessionViewInner);
 
 interface DraftSessionViewProps {
+  heicConversion: HeicConversionStatus;
+  getHeicConversion: () => HeicConversionStatus;
   draftView: DraftView;
   connected: boolean;
   tasksLoading: boolean;
@@ -623,6 +636,8 @@ interface DraftSessionViewProps {
 }
 
 export function DraftSessionView({
+  heicConversion,
+  getHeicConversion,
   draftView,
   connected,
   tasksLoading,
@@ -773,6 +788,8 @@ export function DraftSessionView({
             disabled={configurationDisabled}
           />
           <InputBox
+            heicConversion={heicConversion}
+            getHeicConversion={getHeicConversion}
             mode="controlled"
             value={draftView.text}
             onChange={changeText}

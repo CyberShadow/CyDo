@@ -10,6 +10,7 @@ export interface OutboxEntry {
   content: unknown;
   createdAt: number;
   recoveredDraft?: string;
+  attachmentNames?: string[];
 }
 
 type Listener = () => void;
