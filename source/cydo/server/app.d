@@ -3668,7 +3668,7 @@ class App
 		return buildDiskScanInput(tid, DiskUsageHost(
 			taskDir: (int taskTid) => taskPathResolver.taskDir(tasks[taskTid]),
 			sharedTmpPath: &resolveSharedTmpPath,
-			runStart: &taskSessionRunner.runStart,
+			sharedTmpBaseline: &taskSessionRunner.sharedTmpBaseline,
 			ownsWorktree: (int taskTid) => tasks[taskTid].ownsWorktree,
 			worktreePath: (int taskTid) => taskPathResolver.worktreePath(&tasks[taskTid]),
 			forkBaseSha: (int taskTid) => getWorktreeForkBaseHead(tasks[taskTid]),
@@ -4887,15 +4887,23 @@ version (unittest) private final class GatedSubmissionCodexAgent : CodexAgent
 /// session callback wiring and exit handling.
 version (unittest) private final class PreparedSubmissionExitRunner : TaskSessionRunner
 {
-	this(TaskSessionRunnerHost host)
+	private string sharedTmpPath_;
+
+	this(string fixtureRoot, TaskSessionRunnerHost host)
 	{
+		import std.file : mkdirRecurse;
+
 		super(host);
+		sharedTmpPath_ = buildPath(fixtureRoot, "shared-tmp");
+		mkdirRecurse(sharedTmpPath_);
 	}
 
 	override TaskSessionLaunch prepareTaskSessionLaunch(int tid, Agent taskAgent,
 		TaskTypeDef* typeDef)
 	{
-		return TaskSessionLaunch.init;
+		TaskSessionLaunch launch;
+		launch.processLaunch.sandbox.sharedTmpPath = sharedTmpPath_;
+		return launch;
 	}
 }
 
@@ -7192,7 +7200,7 @@ unittest
 	auto agent = new GatedSubmissionCodexAgent;
 	fixture.app.agentsByName["codex"] = agent;
 	bool historyReset;
-	auto runner = new PreparedSubmissionExitRunner(TaskSessionRunnerHost(
+	auto runner = new PreparedSubmissionExitRunner(root, TaskSessionRunnerHost(
 		getTask: (int tid) {
 			auto task = tid in fixture.app.tasks;
 			return task is null ? null : task;

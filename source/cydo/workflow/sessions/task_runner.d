@@ -1,15 +1,14 @@
 module cydo.workflow.sessions.task_runner;
 
-import core.time : ClockType, Duration, seconds;
+import core.time : Duration, seconds;
 
 import std.conv : to;
-import std.datetime : Clock, SysTime;
 import std.file : exists, isFile, mkdirRecurse;
 import std.exception : enforce;
 import std.path : buildPath, dirName, isAbsolute;
 import std.stdio : File;
 import std.logger : infof, tracef, warningf;
-import std.typecons : Nullable;
+import std.typecons : Nullable, Rebindable, rebindable;
 
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise, reject, resolve;
@@ -46,6 +45,7 @@ import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 import cydo.domain.policy.unsandboxed_command : evaluateUnsandboxedCommandExecution;
 import cydo.workflow.sessions.yield_gates : YieldGateFinding, checkYieldGates,
 	checkDiskCleanupGate, shouldEvaluateDiskCleanup, shouldRetryYieldGate;
+import cydo.runtime.storage.disk_usage : SharedTmpBaseline, snapshotSharedTmp;
 import cydo.workflow.sessions.disk_usage : DiskEvaluation;
 import cydo.domain.tasks.yield_gate : YieldGate;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
@@ -369,7 +369,7 @@ class TaskSessionRunner
 
 	private TaskSessionRunnerHost host_;
 	private AgentSession[int] sessions_;
-	private SysTime[int] runStarts_;
+	private Rebindable!(immutable(SharedTmpBaseline))[int] sharedTmpBaselines_;
 	private string[ConfiguredNativeHistoryContext] usageProfiles_;
 	private LiveHistoryBinding[int] liveHistoryBindings_;
 	private CodexForkSourceOperation[int] forkSourceOperations_;
@@ -1062,9 +1062,9 @@ public:
 		return TaskSessionLaunch(processLaunch, sessionConfig);
 	}
 
-	SysTime runStart(int tid)
+	immutable(SharedTmpBaseline) sharedTmpBaseline(int tid)
 	{
-		return runStarts_[tid];
+		return sharedTmpBaselines_[tid].get;
 	}
 
 	void spawnTaskSession(int tid)
@@ -1085,8 +1085,8 @@ public:
 		auto launch = prepareTaskSessionLaunch(tid, taskAgent, typeDef);
 		td = requireTask(tid, "Task disappeared before session creation");
 		auto resumeSessionId = td.agentSessionId;
-		// Match the realtime clock used for filesystem birth times.
-		auto started = Clock.currTime!(ClockType.coarse);
+		// The shared directory and TMPDIR exist, and the agent cannot write yet.
+		auto sharedBaseline = snapshotSharedTmp(launch.processLaunch.sandbox.sharedTmpPath);
 		auto session = taskAgent.createSession(tid, resumeSessionId,
 			launch.processLaunch, launch.sessionConfig);
 		if (auto binding = tid in liveHistoryBindings_)
@@ -1096,7 +1096,7 @@ public:
 				liveHistoryBindings_.remove(tid);
 		}
 		sessions_[tid] = session;
-		runStarts_[tid] = started;
+		sharedTmpBaselines_[tid] = rebindable(sharedBaseline);
 		host_.openToolCalls(tid);
 		session.onNativeSessionStarted = (string sessionId) {
 			enforce(sessionId.length > 0,
@@ -1317,7 +1317,7 @@ public:
 				return;
 			scope (exit)
 				if (tid !in sessions_)
-					runStarts_.remove(tid);
+					sharedTmpBaselines_.remove(tid);
 			if (auto binding = tid in liveHistoryBindings_)
 				enforce((*binding).owner is session,
 					"Exiting session does not own its live history binding");
@@ -3884,12 +3884,12 @@ version (unittest) private final class SynchronousCloseTestAgent : ClaudeCodeAge
 version (unittest) private final class YieldGateTestAgent : ClaudeCodeAgent
 {
 	YieldGateTestSession session;
-	SysTime sessionCreatedAt;
 
 	override AgentSession createSession(int tid, string resumeSessionId,
 		ProcessLaunch launch, SessionConfig config = SessionConfig.init)
 	{
-		sessionCreatedAt = Clock.currTime!(ClockType.coarse);
+		import std.file : write;
+		write(buildPath(launch.sandbox.sharedTmpPath, "agent-first-write"), "agent");
 		session = new YieldGateTestSession;
 		return session;
 	}
@@ -3909,7 +3909,8 @@ version (unittest) private void assertYieldGateRunnerCase(
 	import ae.utils.statequeue : StateQueue;
 	import std.algorithm.searching : canFind;
 	import std.conv : to;
-	import std.file : readText;
+	import std.file : readText, write;
+	import cydo.runtime.storage.disk_usage : DiskScanInput, measureDiskUsage;
 	import std.process : environment;
 	import configy.attributes : SetInfo;
 	import cydo.domain.task_types.definition : substituteVars;
@@ -4167,10 +4168,14 @@ version (unittest) private void assertYieldGateRunnerCase(
 				return;
 			}
 
-			auto beforeLaunch = Clock.currTime!(ClockType.coarse);
+			auto sharedTmp = buildPath(fixture.root, "shared-tmp");
+			mkdirRecurse(sharedTmp);
+			write(buildPath(sharedTmp, "pre-launch"), "preexisting");
 			runner.spawnTaskSession(1);
-			assert(runner.runStart(1) >= beforeLaunch);
-			assert(runner.runStart(1) <= agent.sessionCreatedAt);
+			auto usage = measureDiskUsage(DiskScanInput(fixture.linkedCheckout,
+				launchSandbox.taskTmpHostPath(sharedTmp, 1), sharedTmpDir: sharedTmp,
+				sharedBaseline: runner.sharedTmpBaseline(1)));
+			assert(usage.sharedTemporaryBytes == 5);
 			if (heldEventAtIdle)
 			{
 				enum answer = "I verified the report format.";
@@ -4571,15 +4576,21 @@ unittest
 /// session callback wiring and exit handling.
 version (unittest) private final class FollowUpExitRunner : TaskSessionRunner
 {
-	this(TaskSessionRunnerHost host)
+	private string sharedTmpPath_;
+
+	this(string fixtureRoot, TaskSessionRunnerHost host)
 	{
 		super(host);
+		sharedTmpPath_ = buildPath(fixtureRoot, "shared-tmp");
+		mkdirRecurse(sharedTmpPath_);
 	}
 
 	override TaskSessionLaunch prepareTaskSessionLaunch(int tid, Agent taskAgent,
 		TaskTypeDef* typeDef)
 	{
-		return TaskSessionLaunch.init;
+		TaskSessionLaunch launch;
+		launch.processLaunch.sandbox.sharedTmpPath = sharedTmpPath_;
+		return launch;
 	}
 }
 
@@ -4623,7 +4634,7 @@ version (unittest) void finishFollowUpSession(TaskData* child, TaskSessionRunner
 			scope(exit) child.projectPath = originalProjectPath;
 			child.processQueue = new StateQueue!ProcessState(
 				(ProcessState state) => resolve(state), ProcessState.Alive);
-			auto runner = new FollowUpExitRunner(host);
+			auto runner = new FollowUpExitRunner(fixture.root, host);
 			runner.spawnTaskSession(child.tid);
 			auto awaitingAnswer = host.hasPendingChildQuestion(child.tid);
 			agent.session.result();

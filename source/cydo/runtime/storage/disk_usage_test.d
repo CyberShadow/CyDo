@@ -168,10 +168,7 @@ unittest
 // Only new top-level shared entries count, including their nested contents.
 unittest
 {
-    import core.thread : Thread;
-    import core.time : ClockType;
     import cydo.runtime.launch.sandbox_materialization : taskTmpHostPath, tmpRuntimeDirName;
-    import std.datetime : Clock;
     import std.file : symlink;
 
     DiskFixture fixture = DiskFixture("shared-tmp");
@@ -185,14 +182,7 @@ unittest
     mkdirRecurse(oldDir);
     write(buildPath(sharedTmp, "old-file"), "old");
 
-    // The old entries must precede the cutoff even if they share a clock tick.
-    auto afterOldEntries = Clock.currTime!(ClockType.coarse);
-    auto since = afterOldEntries;
-    while (since == afterOldEntries)
-    {
-        Thread.yield();
-        since = Clock.currTime!(ClockType.coarse);
-    }
+    auto baseline = snapshotSharedTmp(sharedTmp);
 
     auto nested = buildPath(sharedTmp, "new-dir", "nested");
     mkdirRecurse(nested);
@@ -217,7 +207,7 @@ unittest
     }
 
     auto result = measureDiskUsage(DiskScanInput(task, temporary,
-        sharedTmpDir: sharedTmp, sharedSince: since));
+        sharedTmpDir: sharedTmp, sharedBaseline: baseline));
     assert(result.temporaryBytes == 5);
     assert(result.sharedTemporaryBytes == 31);
     assert(result.totalBytes == 36);
@@ -243,34 +233,65 @@ unittest
     auto error = collectException(measureDiskUsage(DiskScanInput("/task", "/task/tmp",
         sharedTmpDir: "/shared")));
     assert(error !is null);
-    assert(error.msg.canFind("requires a birth-time cutoff: /shared"));
+    assert(error.msg.canFind("requires a launch baseline: /shared"));
 }
 
-// An entry created immediately after sampling the launch clock counts.
+// An entry created immediately after the launch snapshot counts.
 unittest
 {
-    import core.time : ClockType;
-    import std.datetime : Clock;
-    import std.file : remove;
-
-    DiskFixture fixture = DiskFixture("shared-tmp-clock-boundary");
+    DiskFixture fixture = DiskFixture("shared-tmp-launch-boundary");
     auto task = buildPath(fixture.root, "task");
     auto temporary = buildPath(fixture.root, "tmp");
     auto sharedTmp = buildPath(fixture.root, "shared");
-    auto file = buildPath(sharedTmp, "immediate");
     mkdirRecurse(task);
     mkdirRecurse(temporary);
     mkdirRecurse(sharedTmp);
 
-    foreach (i; 0 .. 50)
-    {
-        auto since = Clock.currTime!(ClockType.coarse);
-        write(file, "123");
-        auto result = measureDiskUsage(DiskScanInput(task, temporary,
-            sharedTmpDir: sharedTmp, sharedSince: since));
-        assert(result.sharedTemporaryBytes == 3, "Immediate entry lost on iteration " ~ i.to!string);
-        remove(file);
-    }
+    auto baseline = snapshotSharedTmp(sharedTmp);
+    write(buildPath(sharedTmp, "immediate"), "123");
+    auto result = measureDiskUsage(DiskScanInput(task, temporary,
+        sharedTmpDir: sharedTmp, sharedBaseline: baseline));
+    assert(result.sharedTemporaryBytes == 3);
+}
+
+// Replacements count at their new sizes, while renaming an old entry leaves it excluded.
+unittest
+{
+    import std.file : remove, rename;
+    import std.stdio : File;
+
+    DiskFixture fixture = DiskFixture("shared-tmp-replacements");
+    auto task = buildPath(fixture.root, "task");
+    auto temporary = buildPath(fixture.root, "tmp");
+    auto sharedTmp = buildPath(fixture.root, "shared");
+    auto replaced = buildPath(sharedTmp, "replaced");
+    auto renamed = buildPath(sharedTmp, "renamed-src");
+    auto overwritten = buildPath(sharedTmp, "overwritten");
+    auto incoming = buildPath(sharedTmp, "incoming");
+    mkdirRecurse(task);
+    mkdirRecurse(temporary);
+    mkdirRecurse(sharedTmp);
+    write(replaced, "old");
+    write(renamed, "stay excluded");
+    write(overwritten, "old");
+    auto baseline = snapshotSharedTmp(sharedTmp);
+
+    // Keep the unlinked inode alive so filesystem inode reuse cannot make the
+    // fixture depend on birth-time precision.
+    auto oldFile = File(replaced, "rb");
+    remove(replaced);
+    write(replaced, "123456789");
+    rename(renamed, buildPath(sharedTmp, "renamed-dst"));
+    write(incoming, "12345");
+    rename(incoming, overwritten);
+
+    auto result = measureDiskUsage(DiskScanInput(task, temporary,
+        sharedTmpDir: sharedTmp, sharedBaseline: baseline));
+    assert(result.sharedTemporaryBytes == 14);
+    assert(result.topPaths == [
+        DiskTopPath(DiskCategory.sharedTemporary, "replaced", 9),
+        DiskTopPath(DiskCategory.sharedTemporary, "overwritten", 5),
+    ]);
 }
 
 unittest
@@ -278,7 +299,6 @@ unittest
     import core.stdc.errno : EACCES;
     import core.sys.posix.sys.stat : chmod;
     import core.sys.posix.unistd : geteuid;
-    import std.datetime : SysTime;
     import std.file : FileException;
     import std.string : toStringz;
 
@@ -289,12 +309,14 @@ unittest
     auto blocked = buildPath(sharedTmp, "blocked");
     mkdirRecurse(task);
     mkdirRecurse(temporary);
+    mkdirRecurse(sharedTmp);
+    auto baseline = snapshotSharedTmp(sharedTmp);
     mkdirRecurse(blocked);
     write(buildPath(blocked, "hidden"), "unmeasured");
     write(buildPath(sharedTmp, "readable"), "123");
 
     auto input = DiskScanInput(task, temporary,
-        sharedTmpDir: sharedTmp, sharedSince: SysTime.fromUnixTime(0));
+        sharedTmpDir: sharedTmp, sharedBaseline: baseline);
     assert(chmod(blocked.toStringz, 0) == 0);
     scope (exit) assert(chmod(blocked.toStringz, 448) == 0);
     auto result = geteuid() == 0
@@ -548,7 +570,6 @@ unittest
 // A shared entry can disappear before statx or after its metadata was read.
 unittest
 {
-    import std.datetime : SysTime;
     import std.file : remove;
 
     DiskFixture fixture = DiskFixture("vanishing-shared-entries");
@@ -559,13 +580,15 @@ unittest
     auto vanishing = buildPath(sharedTmp, "dir");
     mkdirRecurse(task);
     mkdirRecurse(temporary);
+    mkdirRecurse(sharedTmp);
+    auto baseline = snapshotSharedTmp(sharedTmp);
     mkdirRecurse(vanishing);
     write(buildPath(vanishing, "hidden"), "discarded");
     write(missing, "discarded");
     write(buildPath(sharedTmp, "retained"), "123");
 
     auto result = measureDiskUsage(DiskScanInput(task, temporary,
-        sharedTmpDir: sharedTmp, sharedSince: SysTime.fromUnixTime(0)), (string dir) {
+        sharedTmpDir: sharedTmp, sharedBaseline: baseline), (string dir) {
         if (dir == vanishing)
             rmdirRecurse(vanishing);
         auto children = listDirectory(dir);
@@ -850,11 +873,11 @@ unittest
     invalid.forkBaseSha = "invalid-revision";
     auto badRevision = collectException(measureDiskUsage(invalid));
     assert(badRevision && badRevision.msg.canFind(fork));
-    invalid = input;
-    invalid.forkRepository = buildPath(fixture.root, "no-such-repo");
-    assertThrown(measureDiskUsage(invalid));
-    invalid.forkRepository = "";
-    auto emptyRepository = collectException(measureDiskUsage(invalid));
+    auto invalidRepository = input;
+    invalidRepository.forkRepository = buildPath(fixture.root, "no-such-repo");
+    assertThrown(measureDiskUsage(invalidRepository));
+    invalidRepository.forkRepository = "";
+    auto emptyRepository = collectException(measureDiskUsage(invalidRepository));
     assert(emptyRepository && emptyRepository.msg.canFind("Cannot resolve fork repository"));
 
     auto readable = measureDiskUsage(input);

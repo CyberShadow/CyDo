@@ -1,13 +1,11 @@
 module cydo.workflow.sessions.disk_usage;
 
-import std.datetime : Clock, SysTime;
-
 import ae.utils.promise : Promise;
 import ae.utils.promise.concurrency : threadAsync;
 import cydo.runtime.launch.sandbox_materialization : taskTmpAgentPath, taskTmpHostPath;
 import cydo.runtime.storage.nix_roots : NixClosureReport, reportNixClosures;
 import cydo.runtime.storage.disk_usage : DiskScanInput, DiskUsageResult, DiskSymlink,
-	listDirectory, measureDiskUsage;
+	SharedTmpBaseline, listDirectory, measureDiskUsage, snapshotSharedTmp;
 
 struct DiskEvaluation
 {
@@ -19,7 +17,7 @@ struct DiskUsageHost
 {
 	string delegate(int tid) taskDir;
 	string delegate(int tid) sharedTmpPath;
-	SysTime delegate(int tid) runStart;
+	immutable(SharedTmpBaseline) delegate(int tid) sharedTmpBaseline;
 	bool delegate(int tid) ownsWorktree;
 	string delegate(int tid) worktreePath;
 	string delegate(int tid) forkBaseSha;
@@ -28,10 +26,8 @@ struct DiskUsageHost
 
 DiskScanInput buildDiskScanInput(int tid, DiskUsageHost host)
 {
-	DiskScanInput input;
-	input.taskDir = host.taskDir(tid);
-	input.sharedTmpDir = host.sharedTmpPath(tid);
-	input.sharedSince = host.runStart(tid);
+	auto input = DiskScanInput(taskDir: host.taskDir(tid),
+		sharedTmpDir: host.sharedTmpPath(tid), sharedBaseline: host.sharedTmpBaseline(tid));
 	input.temporaryDir = taskTmpHostPath(input.sharedTmpDir, tid);
 	if (host.ownsWorktree(tid))
 	{
@@ -79,11 +75,12 @@ unittest
 	auto sharedRoot = buildPath(root, "shared");
 	mkdirRecurse(task);
 	mkdirRecurse(sharedRoot);
+	auto sharedBaseline = snapshotSharedTmp(sharedRoot);
 	scope (exit) rmdirRecurse(root);
 	auto host = DiskUsageHost(
 		taskDir: (int tid) => task,
 		sharedTmpPath: (int tid) => sharedRoot,
-		runStart: (int tid) => Clock.currTime,
+		sharedTmpBaseline: (int tid) => sharedBaseline,
 		ownsWorktree: (int tid) => false,
 		worktreePath: (int tid) => "",
 		forkBaseSha: (int tid) => "",
@@ -99,7 +96,7 @@ unittest
 	auto inheritedHost = DiskUsageHost(
 		taskDir: (int tid) => task,
 		sharedTmpPath: (int tid) => sharedRoot,
-		runStart: (int tid) => Clock.currTime,
+		sharedTmpBaseline: (int tid) => sharedBaseline,
 		ownsWorktree: (int tid) => false,
 		worktreePath: (int tid) => "/elsewhere/parent-fork",
 		forkBaseSha: (int tid) { baseCalled = true; return "base"; },
@@ -163,7 +160,7 @@ unittest
 	auto ownedHost = DiskUsageHost(
 		taskDir: (int tid) => task,
 		sharedTmpPath: (int tid) => sharedRoot,
-		runStart: (int tid) => Clock.currTime,
+		sharedTmpBaseline: (int tid) => sharedBaseline,
 		ownsWorktree: (int tid) => true,
 		worktreePath: (int tid) => fork,
 		forkBaseSha: (int tid) => "",

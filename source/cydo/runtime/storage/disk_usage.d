@@ -9,7 +9,6 @@ import core.sys.posix.sys.stat : S_ISDIR, S_ISLNK, S_ISREG, lstat, stat_t;
 import core.sys.posix.sys.types : mode_t;
 import std.algorithm : sort, startsWith;
 import std.conv : to;
-import std.datetime.systime : SysTime, unixTimeToStdTime;
 import std.exception : enforce;
 import std.file : FileException, readLink;
 import std.path : baseName, buildNormalizedPath, buildPath, isAbsolute;
@@ -19,6 +18,24 @@ import std.traits : EnumMembers;
 
 enum DiskCategory { task, temporary, sharedTemporary }
 
+private struct SharedTmpEntryId
+{
+	ulong device;
+	ulong inode;
+	long birthSeconds;
+	uint birthNanoseconds;
+}
+
+final class SharedTmpBaseline
+{
+	private immutable(bool[SharedTmpEntryId]) ids;
+
+	private this(immutable(bool[SharedTmpEntryId]) ids) immutable
+	{
+		this.ids = ids;
+	}
+}
+
 struct DiskScanInput
 {
 	string taskDir;
@@ -27,7 +44,7 @@ struct DiskScanInput
 	string forkBaseSha;
 	string forkRepository;
 	string sharedTmpDir;
-	SysTime sharedSince;
+	immutable(SharedTmpBaseline) sharedBaseline;
 }
 
 struct DiskEntry
@@ -290,9 +307,42 @@ private extern(C) ulong gnu_dev_makedev(uint major, uint minor) nothrow @nogc;
 private extern(C) int statx(int dirfd, const(char)* path, int flags, uint mask,
 	Statx* info) nothrow @nogc;
 
+private bool readSharedTmpEntry(string path, out Statx info)
+{
+	enum basicMask = STATX_TYPE | STATX_INO | STATX_SIZE;
+	if (statx(AT_FDCWD, path.toStringz, AT_SYMLINK_NOFOLLOW, basicMask | STATX_BTIME, &info) != 0)
+	{
+		auto error = errno;
+		if (error == ENOENT) return false;
+		throw new FileException(path, error);
+	}
+	enforce((info.mask & basicMask) == basicMask, "Disk usage metadata unavailable for " ~ path);
+	enforce((info.mask & STATX_BTIME) != 0, "Disk usage birth time unavailable for " ~ path);
+	return true;
+}
+
+private SharedTmpEntryId sharedTmpEntryId(ref const Statx info)
+{
+	return SharedTmpEntryId(gnu_dev_makedev(info.devMajor, info.devMinor), info.inode,
+		info.birthTime.seconds, info.birthTime.nanoseconds);
+}
+
+immutable(SharedTmpBaseline) snapshotSharedTmp(string sharedTmpDir)
+{
+	bool[SharedTmpEntryId] ids;
+	foreach (path; listDirectory(sharedTmpDir))
+	{
+		Statx info;
+		if (readSharedTmpEntry(path, info))
+			ids[sharedTmpEntryId(info)] = true;
+	}
+	// The snapshot owns the only reference to the assembled set.
+	return new immutable SharedTmpBaseline(cast(immutable) ids);
+}
+
 private void walkRoot(string root, DiskCategory category, ref DiskEntry[] entries,
 	ref DiskUnmeasured[] unmeasured, string[] delegate(string dir) list,
-	SysTime sharedSince = SysTime.init)
+	immutable(SharedTmpBaseline) sharedBaseline = null)
 {
 	void recordUnmeasured(string path, string error)
 	{
@@ -309,25 +359,16 @@ private void walkRoot(string root, DiskCategory category, ref DiskEntry[] entrie
 		if (sharedTopLevel)
 		{
 			Statx info;
-			enum basicMask = STATX_TYPE | STATX_INO | STATX_SIZE;
-			if (statx(AT_FDCWD, path.toStringz, AT_SYMLINK_NOFOLLOW, basicMask | STATX_BTIME, &info) != 0)
-			{
-				auto error = errno;
-				if (error == ENOENT) return;
-				throw new FileException(path, error);
-			}
-			enforce((info.mask & basicMask) == basicMask, "Disk usage metadata unavailable for " ~ path);
+			if (!readSharedTmpEntry(path, info)) return;
 			auto name = path.baseName;
 			if (S_ISDIR(info.mode) && (isTaskTmpDirName(name) || name == runtimeName))
 				return;
-			enforce((info.mask & STATX_BTIME) != 0, "Disk usage birth time unavailable for " ~ path);
-			if (unixTimeToStdTime(info.birthTime.seconds) + info.birthTime.nanoseconds / 100
-				< sharedSince.stdTime)
-				return;
+			auto identity = sharedTmpEntryId(info);
+			if (identity in sharedBaseline.ids) return;
 			mode = info.mode;
 			bytes = cast(long) info.size;
-			device = gnu_dev_makedev(info.devMajor, info.devMinor);
-			inode = info.inode;
+			device = identity.device;
+			inode = identity.inode;
 		}
 		else
 		{
@@ -415,8 +456,8 @@ DiskUsageResult measureDiskUsage(DiskScanInput input,
 			enforce(root.isAbsolute && root == buildNormalizedPath(root),
 				"Disk usage root must be a normalized absolute path: " ~ root);
 	if (input.sharedTmpDir.length > 0)
-		enforce(input.sharedSince.stdTime != SysTime.init.stdTime,
-			"Disk usage shared temporary directory requires a birth-time cutoff: " ~ input.sharedTmpDir);
+		enforce(input.sharedBaseline !is null,
+			"Disk usage shared temporary directory requires a launch baseline: " ~ input.sharedTmpDir);
 	long[string] baseline;
 	if (input.forkWorktree.length > 0)
 	{
@@ -436,6 +477,6 @@ DiskUsageResult measureDiskUsage(DiskScanInput input,
 	walkRoot(input.temporaryDir, DiskCategory.temporary, entries, unmeasured, list);
 	if (input.sharedTmpDir.length > 0)
 		walkRoot(input.sharedTmpDir, DiskCategory.sharedTemporary, entries, unmeasured, list,
-			input.sharedSince);
+			input.sharedBaseline);
 	return aggregateDiskUsage(input, entries, baseline, unmeasured);
 }
