@@ -301,7 +301,13 @@ export async function undoThroughBridge(
 
 type TestFixtures = {
   agentType: AgentType;
-  backend: { port: number; baseURL: string; pid: number; wsDir: string };
+  backend: {
+    port: number;
+    baseURL: string;
+    pid: number;
+    wsDir: string;
+    restart: () => Promise<void>;
+  };
   backendEnv: Record<string, string>;
   cydoConfig: string | undefined;
 };
@@ -328,68 +334,86 @@ export const test = base.extend<TestFixtures>({
       writeTestConfig("/tmp/playwright-home/.config/cydo/config.yaml", cydoConfig);
     }
 
-    const proc = spawn(process.env.CYDO_BIN!, [], {
-      detached: true,
-      cwd: workDir,
-      env: {
-        ...process.env,
-        ...backendEnv,
-        XDG_DATA_HOME: `${workDir}/data`,
-      },
-      stdio: ["ignore", "inherit", "inherit"],
-    });
-
-    // Poll for readiness
     const baseURL = "http://localhost:3940";
-    const READY_TIMEOUT_MS = 60_000;
-    const pollInterval = 500;
-    const maxAttempts = READY_TIMEOUT_MS / pollInterval;
-    let ready = false;
-    for (let i = 0; i < maxAttempts; i++) {
+    const start = async () => {
+      const proc = spawn(process.env.CYDO_BIN!, [], {
+        detached: true,
+        cwd: workDir,
+        env: {
+          ...process.env,
+          ...backendEnv,
+          XDG_DATA_HOME: `${workDir}/data`,
+        },
+        stdio: ["ignore", "inherit", "inherit"],
+      });
+
+      // Poll for readiness
+      const READY_TIMEOUT_MS = 60_000;
+      const pollInterval = 500;
+      const maxAttempts = READY_TIMEOUT_MS / pollInterval;
+      let ready = false;
       try {
-        const res = await fetch(baseURL);
-        if (res.ok || res.status < 500) {
-          ready = true;
-          break;
+        for (let i = 0; i < maxAttempts; i++) {
+          try {
+            const res = await fetch(baseURL);
+            if (res.ok || res.status < 500) {
+              ready = true;
+              return proc;
+            }
+          } catch {
+            // not ready yet
+          }
+          if (proc.exitCode !== null || proc.signalCode !== null) {
+            throw new Error(`CyDo backend exited before readiness: ${proc.signalCode ?? proc.exitCode}`);
+          }
+          await new Promise((r) => setTimeout(r, pollInterval));
         }
-      } catch {
-        // not ready yet
+        throw new Error(`Backend did not become ready within ${READY_TIMEOUT_MS}ms`);
+      } finally {
+        if (!ready && proc.exitCode === null && proc.signalCode === null) {
+          await killBackend(proc);
+        }
       }
-      if (proc.exitCode !== null) {
-        throw new Error(`CyDo backend exited with code ${proc.exitCode}`);
+    };
+
+    const stop = async (proc: ChildProcess) => {
+      // SIGTERM the process group and wait for exit.
+      // Acceptable outcomes:
+      //   - clean exit (code === 0, signal === null) — backend handled SIGTERM.
+      //   - terminated by SIGTERM (signal === "SIGTERM", code === null) — kernel
+      //     delivered the signal before the backend's handler ran, or the handler
+      //     re-raised. Both are normal.
+      // Any other exit (non-zero code, or any other signal) indicates an abnormal
+      // shutdown — including uncaught Throwables escaping main() (which exit with
+      // a non-zero code and no signal).
+      if (proc.exitCode === null && proc.signalCode === null) {
+        await killBackend(proc);
       }
-      await new Promise((r) => setTimeout(r, pollInterval));
-    }
-    if (!ready) {
-      throw new Error(`Backend did not become ready within ${READY_TIMEOUT_MS}ms`);
-    }
+      const { exitCode: code, signalCode: signal } = proc;
+      if (signal !== null && signal !== "SIGTERM") {
+        throw new Error(`Backend exited with unexpected signal: ${signal}`);
+      }
+      if (signal === null && code !== 0) {
+        throw new Error(`Backend exited abnormally with code ${code} (no signal)`);
+      }
+    };
 
-    await use({
-      port: 3940,
-      baseURL,
-      pid: proc.pid!,
-      wsDir: "/tmp/cydo-test-workspace",
-    });
-
-    // Teardown — SIGTERM the process group and wait for exit.
-    // Acceptable outcomes:
-    //   - clean exit (code === 0, signal === null) — backend handled SIGTERM.
-    //   - terminated by SIGTERM (signal === "SIGTERM", code === null) — kernel
-    //     delivered the signal before the backend's handler ran, or the handler
-    //     re-raised. Both are normal.
-    // Any other exit (non-zero code, or any other signal) indicates an abnormal
-    // shutdown — including uncaught Throwables escaping main() (which exit with
-    // a non-zero code and no signal).
-    const exitResult = new Promise<{ code: number | null; signal: string | null }>(
-      (r) => proc.on("exit", (code, signal) => r({ code, signal })),
-    );
-    await killBackend(proc);
-    const { code, signal } = await exitResult;
-    if (signal !== null && signal !== "SIGTERM") {
-      throw new Error(`Backend exited with unexpected signal: ${signal}`);
-    }
-    if (signal === null && code !== 0) {
-      throw new Error(`Backend exited abnormally with code ${code} (no signal)`);
+    let proc = await start();
+    try {
+      await use({
+        port: 3940,
+        baseURL,
+        get pid() {
+          return proc.pid!;
+        },
+        wsDir: "/tmp/cydo-test-workspace",
+        restart: async () => {
+          await stop(proc);
+          proc = await start();
+        },
+      });
+    } finally {
+      await stop(proc);
     }
   },
 
