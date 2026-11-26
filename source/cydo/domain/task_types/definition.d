@@ -1660,28 +1660,34 @@ bool[string] computeTreeReadOnly(TaskTypeDef[] types)
 /// edges terminate the search, and fork edges are ignored.
 bool[string] computeReachesRequiredWorktree(TaskTypeDef[] types)
 {
+	return computeWorktreeReachability(types, false);
+}
+
+private bool[string] computeWorktreeReachability(TaskTypeDef[] types, bool includeFork)
+{
 	bool[string] reaches;
 	foreach (ref def; types)
 		reaches[def.name] = false;
 
-	bool leadsToRequire(WorktreeMode mode, string target)
+	bool reachesWorktree(WorktreeMode mode, string target)
 	{
 		return mode == WorktreeMode.require
+			|| (mode == WorktreeMode.fork && includeFork)
 			|| (mode == WorktreeMode.inherit && reaches.get(target, false));
 	}
 
-	bool hasRequiredWorktree(ref TaskTypeDef def)
+	bool hasWorktreeEdge(ref TaskTypeDef def)
 	{
 		foreach (ref edge; def.creatable_tasks)
-			if (leadsToRequire(edge.worktree, edge.resolvedType))
+			if (reachesWorktree(edge.worktree, edge.resolvedType))
 				return true;
 
 		foreach (ref edge; def.continuations)
-			if (leadsToRequire(edge.worktree, edge.task_type))
+			if (reachesWorktree(edge.worktree, edge.task_type))
 				return true;
 
 		return def.on_yield.task_type.length > 0
-			&& leadsToRequire(def.on_yield.worktree, def.on_yield.task_type);
+			&& reachesWorktree(def.on_yield.worktree, def.on_yield.task_type);
 	}
 
 	bool changed;
@@ -1689,7 +1695,7 @@ bool[string] computeReachesRequiredWorktree(TaskTypeDef[] types)
 	{
 		changed = false;
 		foreach (ref def; types)
-			if (!reaches[def.name] && hasRequiredWorktree(def))
+			if (!reaches[def.name] && hasWorktreeEdge(def))
 			{
 				reaches[def.name] = true;
 				changed = true;
@@ -1798,55 +1804,27 @@ unittest // Exactly the shipped types whose workflows can require a worktree.
 /// worktree results (cherry-pick, merge).
 bool[string] computeReachesWorktree(TaskTypeDef[] types)
 {
-	bool[string] cache;
-	bool[string] inProgress;
+	return computeWorktreeReachability(types, true);
+}
 
-	bool reaches(string typeName)
+unittest // An exit from a cycle makes every member reachable, in either order.
+{
+	auto a = TaskTypeDef(name: "a", creatable_tasks: [CreatableTaskDef(name: "b")]);
+	auto leaf = TaskTypeDef(name: "leaf");
+	foreach (mode; [WorktreeMode.require, WorktreeMode.fork])
 	{
-		if (auto p = typeName in cache)
-			return *p;
-		if (typeName in inProgress)
-			return false; // pessimistic for cycles
-
-		inProgress[typeName] = true;
-		scope(exit) inProgress.remove(typeName);
-
-		auto def = types.byName(typeName);
-		if (def is null)
+		auto b = TaskTypeDef(name: "b", creatable_tasks: [
+			CreatableTaskDef(name: "a"),
+			CreatableTaskDef(name: "leaf", worktree: mode),
+		]);
+		foreach (types; [[a, b, leaf], [b, a, leaf]])
 		{
-			cache[typeName] = false;
-			return false;
+			auto reaches = computeReachesWorktree(types);
+			assert(reaches["a"]);
+			assert(reaches["b"]);
+			assert(!reaches["leaf"]);
 		}
-
-		foreach (ref edge; def.creatable_tasks)
-			if (edge.worktree != WorktreeMode.inherit || reaches(edge.resolvedType))
-			{
-				cache[typeName] = true;
-				return true;
-			}
-
-		foreach (cname, ref cont; def.continuations)
-			if (cont.worktree != WorktreeMode.inherit || reaches(cont.task_type))
-			{
-				cache[typeName] = true;
-				return true;
-			}
-
-		if (def.on_yield.task_type.length > 0)
-			if (def.on_yield.worktree != WorktreeMode.inherit || reaches(def.on_yield.task_type))
-			{
-				cache[typeName] = true;
-				return true;
-			}
-
-		cache[typeName] = false;
-		return false;
 	}
-
-	foreach (ref def; types)
-		reaches(def.name);
-
-	return cache;
 }
 
 /// Detect unconditional cycles in continuation chains.
