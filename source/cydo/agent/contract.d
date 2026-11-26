@@ -2,6 +2,7 @@ module cydo.agent.contract;
 
 import std.typecons : Nullable;
 
+import ae.utils.json : JSONOptional;
 import ae.utils.time.types : AbsTime;
 import ae.utils.promise : Promise;
 
@@ -36,6 +37,28 @@ struct RewindResult
 {
 	bool success;
 	string output; /// stdout from --rewind-files; contains file list on success, error on failure
+}
+
+/// What a file rewind would change, as the agent reports it.
+struct FileRevertPreview
+{
+	@JSONOptional Nullable!(string[]) files_changed; /// Absent when the agent reports counts only.
+	uint insertions;
+	uint deletions;
+
+	/// Whether the rewind would change anything.
+	bool changesFiles() const
+	{
+		return files_changed.isNull ? insertions + deletions > 0 : files_changed.get.length > 0;
+	}
+}
+
+unittest
+{
+	assert(FileRevertPreview(Nullable!(string[])(["/work/empty.txt"]), 0, 0).changesFiles());
+	assert(!FileRevertPreview(Nullable!(string[])([]), 1, 1).changesFiles());
+	assert(FileRevertPreview(Nullable!(string[]).init, 0, 1).changesFiles());
+	assert(!FileRevertPreview.init.changesFiles());
 }
 
 /// Lightweight info from directory scanning — no file reads.

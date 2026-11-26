@@ -17,7 +17,7 @@ import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPar
 import ae.utils.promise : Promise, reject, resolve;
 import ae.utils.time.types : AbsTime;
 
-import cydo.agent.contract : Agent, HistoryReplay, DiscoveredSession, InterruptedToolCallRepair,
+import cydo.agent.contract : Agent, HistoryReplay, DiscoveredSession, FileRevertPreview, InterruptedToolCallRepair,
 	PersistedHistoryBoundary, PersistedHistoryBoundaryKind, OneShotHandle,
 	RewindResult, SessionConfig, SessionMeta;
 import cydo.protocol;
@@ -2292,6 +2292,31 @@ class ClaudeCodeSession : AgentSession, UsageSource
 			.then((JSONFragment) => "Files rewound to state at message " ~ userMessageId);
 	}
 
+	/// Preview a file rewind. Claude answers this request even mid-turn.
+	Promise!(Nullable!FileRevertPreview) previewFileRewind(string userMessageId)
+	{
+		static struct Request
+		{
+			string subtype;
+			string user_message_id;
+			bool dry_run;
+		}
+		@JSONPartial static struct Response
+		{
+			bool canRewind;
+			@JSONOptional Nullable!(string[]) filesChanged;
+			@JSONOptional uint insertions, deletions;
+		}
+		return sendControlRequest(Request("rewind_files", userMessageId, true))
+			.then((JSONFragment fragment) {
+				auto response = jsonParse!Response(fragment.json);
+				return response.canRewind
+					? Nullable!FileRevertPreview(FileRevertPreview(
+						response.filesChanged, response.insertions, response.deletions))
+					: Nullable!FileRevertPreview.init;
+			});
+	}
+
 	/// Drop the user message `targetUuid` and everything after it from the
 	/// CLI's in-memory conversation (`rewind_conversation`). The CLI leaves
 	/// the abandoned rows in the session file; the next turn chains onto the
@@ -4045,6 +4070,82 @@ unittest
 	session.closeStdin();
 	socketManager.loop();
 	assertUsageTestRejection(usage, "Claude exited before answering");
+}
+
+unittest
+{
+	import ae.net.asockets : socketManager;
+	import std.file : mkdir, readText, rmdirRecurse, tempDir;
+	import std.path : buildPath;
+	import std.string : splitLines;
+	import std.uuid : randomUUID;
+
+	auto root = buildPath(tempDir(), "cydo-claude-rewind-preview-" ~ randomUUID().toString());
+	mkdir(root);
+	scope(exit) rmdirRecurse(root);
+	auto transcript = buildPath(root, "stdin.jsonl");
+	auto session = new ClaudeCodeSession("cat",
+		cmdPrefix: ["sh", "-c", `exec cat > "$1"`, "record-stdin", transcript]);
+	scope(exit) session.stop();
+	answerUsageTestRequest(session, `"subtype":"success","response":{}`);
+
+	string[] expectedRequests;
+	auto requestPreview(string messageId)
+	{
+		auto preview = session.previewFileRewind(messageId);
+		drainNextTicks();
+		auto requestId = pendingUsageTestRequestId(session);
+		expectedRequests ~= `{"type":"control_request","request_id":"` ~ requestId
+			~ `","request":{"subtype":"rewind_files","user_message_id":"` ~ messageId
+			~ `","dry_run":true}}`;
+		return preview;
+	}
+
+	Nullable!FileRevertPreview readPreview(string messageId, string body)
+	{
+		bool resolved;
+		Nullable!FileRevertPreview result;
+		requestPreview(messageId).then((Nullable!FileRevertPreview value) {
+			resolved = true;
+			result = value;
+		}).ignoreResult();
+		answerUsageTestRequest(session, `"subtype":"success","response":` ~ body);
+		assert(resolved, body);
+		return result;
+	}
+
+	auto changed = readPreview("changed", `{"canRewind":true,"filesChanged":["/work/F.txt"],"insertions":1,"deletions":1}`).get;
+	assert(changed.files_changed.get == ["/work/F.txt"]);
+	assert(changed.insertions == 1 && changed.deletions == 1);
+
+	auto empty = readPreview("empty", `{"canRewind":true,"filesChanged":[],"insertions":0,"deletions":0}`).get;
+	assert(empty.files_changed.get.length == 0);
+	assert(empty.insertions == 0 && empty.deletions == 0);
+	assert(!empty.changesFiles());
+
+	assert(readPreview("unknown", `{"canRewind":false,"error":"No file checkpoint found for this message."}`).isNull);
+
+	auto counts = readPreview("counts", `{"canRewind":true,"insertions":0,"deletions":1}`).get;
+	assert(counts.files_changed.isNull);
+	assert(counts.insertions == 0 && counts.deletions == 1);
+	assert(counts.changesFiles());
+
+	string rejection;
+	requestPreview("error").then((Nullable!FileRevertPreview) {
+		assert(false, "File rewind preview should have rejected");
+	}, (Exception error) {
+		rejection = error.msg;
+	}).ignoreResult();
+	answerUsageTestRequest(session, `"subtype":"error","error":"rewind unavailable"`);
+	assert(rejection == "Claude refused the control request: rewind unavailable", rejection);
+
+	session.closeStdin();
+	socketManager.loop();
+	auto sent = readText(transcript).splitLines();
+	assert(sent.length == 1 + expectedRequests.length);
+	assert(parseJSON(sent[0])["request"]["subtype"].str == "initialize");
+	foreach (i, expected; expectedRequests)
+		assert(parseJSON(sent[i + 1]) == parseJSON(expected), sent[i + 1]);
 }
 
 // A message replayed while another message's turn is running was absorbed
