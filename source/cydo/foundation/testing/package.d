@@ -10,15 +10,10 @@ void drainNextTicks()
 {
 	import ae.net.asockets : socketManager;
 
-	for (;;)
-	{
-		auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-		if (handlers.length == 0)
-			return;
-		mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-		foreach (handler; handlers)
-			handler();
-	}
+	// Use ae's batch drain so callbacks scheduled during a drain stay queued
+	// for the next batch. Tests using this helper intentionally leave I/O alone.
+	while (__traits(getMember, socketManager, "nextTickHandlers").length)
+		__traits(getMember, socketManager, "nextTickHandlers").drain();
 }
 
 /// Drain promise callbacks and run timers already due without waiting for I/O
