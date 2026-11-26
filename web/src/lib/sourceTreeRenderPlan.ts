@@ -6,7 +6,11 @@ import {
   type SourceSegment,
 } from "./sourceTree";
 
-type SourceEmbedRenderMode = "inline" | "rich-markdown" | "rich-code";
+type SourceEmbedRenderMode =
+  | "inline"
+  | "rich-markdown"
+  | "rich-code"
+  | "rich-patch";
 
 type EmbedSegment = Extract<SourceSegment, { kind: "embed" }>;
 
@@ -37,6 +41,7 @@ function getRichRenderModeForLanguage(
   language: string,
 ): Exclude<SourceEmbedRenderMode, "inline"> | null {
   if (language === "markdown") return "rich-markdown";
+  if (language === "apply-patch") return "rich-patch";
   if (language === "") return null;
   if (language === "text" || language === "plain") return null;
   if (language === "terminal-output" || language === "process-output")

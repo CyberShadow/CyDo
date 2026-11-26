@@ -366,7 +366,7 @@ export function analyzeCodeModeCell(root: Node, source: string): FlowDocument {
     {
       operand: Operand;
       value: FlowValue;
-      sinks: FlowSink[];
+      sinks: Extract<FlowSink, { kind: "program" }>[];
     } | null
   >();
   if (!bindings.has("tools")) {
@@ -374,11 +374,14 @@ export function analyzeCodeModeCell(root: Node, source: string): FlowDocument {
       const parts = callParts(call);
       if (!parts) continue;
       const [callee, args] = parts;
-      if (memberName(callee, "tools") !== "exec_command") continue;
+      const tool = memberName(callee, "tools");
+      if (tool !== "exec_command" && tool !== "apply_patch") continue;
       if (args.type !== "arguments") continue;
       const argumentsList = listItems(args, "(", ")");
       if (argumentsList?.length !== 1) continue;
-      const input = execCommandOperand(argumentsList[0]!);
+      const argument = argumentsList[0]!;
+      const input =
+        tool === "exec_command" ? execCommandOperand(argument) : argument;
       if (input === null) continue;
       const initializer = operandInitializer(
         input,
@@ -389,7 +392,7 @@ export function analyzeCodeModeCell(root: Node, source: string): FlowDocument {
       if (initializer === null) continue;
       const sink = {
         kind: "program",
-        language: "bash",
+        language: tool === "exec_command" ? "bash" : "apply-patch",
         channel: "argv",
       } as const;
       const id = initializer.node.id;
@@ -430,7 +433,9 @@ export function analyzeCodeModeCell(root: Node, source: string): FlowDocument {
           construct: operand.construct,
           attributes: { binding: operand.binding },
         },
-        layout: "inline",
+        layout: sinks.every((sink) => sink.language === "apply-patch")
+          ? "block"
+          : "inline",
         child: null,
       }),
     );

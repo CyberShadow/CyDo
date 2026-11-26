@@ -19,6 +19,17 @@ const exec = (operand: string) =>
   `await tools.exec_command({cmd: ${operand}});`;
 const echo = exec('"echo hi"');
 const bound = 'const c = "echo hi"; ' + exec("c");
+const applyPatch = (operand: string) => `await tools.apply_patch(${operand});`;
+const patch =
+  "*** Begin Patch\n*** Add File: a.txt\n+hello\\nworld\n*** End Patch";
+const quotedPatch = JSON.stringify(patch);
+const bindPatch = (operand: string) => `const patch = ${operand};\n`;
+const patchReference = applyPatch("patch");
+const patchSink = {
+  kind: "program",
+  language: "apply-patch",
+  channel: "argv",
+};
 
 async function analyze(cell: string) {
   const flow = await analyzeEmbedded("codex-code-mode", cell);
@@ -260,7 +271,10 @@ it.each([
   ["bracket method", 'await tools["exec_command"]({cmd: "echo hi"});'],
   ["nested receiver", "await x." + echo.slice("await ".length)],
   ["write_stdin", String.raw`await tools.write_stdin({chars: "y\n"});`],
-  ["apply_patch", 'await tools.apply_patch("patch");'],
+  [
+    "interpolated patch template",
+    applyPatch("`*** Begin Patch\n${body}\n*** End Patch`"),
+  ],
   ["missing closing parenthesis", 'await tools.exec_command({cmd: "echo hi"};'],
   ["unterminated initializer", "const c = `echo hi\n" + exec("c")],
   ["potential binding in an ERROR region", bound + "\nconst c +"],
@@ -270,6 +284,90 @@ it.each([
   expect(embeds(tree)).toEqual([]);
   expect(pieces).toMatchObject([
     { kind: "inline", language: "javascript", text: cell },
+  ]);
+});
+
+it.each([
+  [
+    "inline literal",
+    applyPatch(quotedPatch),
+    quotedPatch.slice(1, -1),
+    "string-literal",
+    "inline",
+    1,
+  ],
+  [
+    "const literal",
+    bindPatch(quotedPatch) + patchReference,
+    quotedPatch.slice(1, -1),
+    "string-literal",
+    "const",
+    1,
+  ],
+  [
+    "const String.raw",
+    bindPatch("String.raw`" + patch + "`") + patchReference,
+    patch,
+    "string-raw",
+    "const",
+    1,
+  ],
+  [
+    "const with two uses",
+    bindPatch(quotedPatch) + patchReference + "\n" + patchReference,
+    quotedPatch.slice(1, -1),
+    "string-literal",
+    "const",
+    2,
+  ],
+] as const)(
+  "renders a rich patch for %s",
+  async (_label, cell, raw, construct, binding, uses) => {
+    const { flow, tree, pieces } = await analyze(cell);
+    const start = cell.indexOf(raw);
+    const span = { start, end: start + raw.length };
+    expect(flow.sources).toMatchObject([
+      {
+        span,
+        value: { text: patch },
+        origin: { language: "javascript", construct, attributes: { binding } },
+        sinks: Array.from({ length: uses }, () => patchSink),
+        layout: "block",
+        child: null,
+      },
+    ]);
+    expect(embeds(tree)).toEqual([[[0], "apply-patch", "rich"]]);
+    expect(pieces.filter((piece) => piece.kind === "rich")).toMatchObject([
+      {
+        language: "apply-patch",
+        mode: "rich-patch",
+        text: patch,
+        sourceText: raw,
+        sourceSpan: span,
+      },
+    ]);
+  },
+);
+
+it("keeps a const shared by Bash and apply_patch as inline text", async () => {
+  const cell = bindPatch(quotedPatch) + exec("patch") + "\n" + patchReference;
+  const { flow, tree, pieces } = await analyze(cell);
+  expect(flow.sources).toMatchObject([
+    {
+      value: { text: patch },
+      sinks: [
+        { kind: "program", language: "bash", channel: "argv" },
+        patchSink,
+      ],
+      layout: "inline",
+      child: null,
+    },
+  ]);
+  expect(embeds(tree)).toEqual([[[0], "text", "inline"]]);
+  expect(pieces.map(({ kind, language }) => [kind, language])).toEqual([
+    ["inline", "javascript"],
+    ["inline", "text"],
+    ["inline", "javascript"],
   ]);
 });
 
@@ -361,6 +459,26 @@ it("preserves nested Markdown after a non-BMP escape in the Bash prefix", async 
     "bash",
   ]);
 });
+
+it.each([
+  'tools.apply_patch(,"demo");',
+  'tools.apply_patch("demo",,);',
+  'tools?.apply_patch("demo");',
+  'tools.apply_patch?.("demo");',
+  "tools.apply_patch(String?.raw`demo`);",
+])("rejects unsupported patch syntax in %s", async (cell) => {
+  expect((await analyze(cell)).flow.sources).toHaveLength(0);
+});
+
+it.each(["undefined", String.raw`\u0075ndefined`])(
+  "resolves patch const reference %s with a trailing comma",
+  async (reference) => {
+    const cell =
+      bindPatch(quotedPatch).replace("const patch", "const undefined") +
+      `tools.apply_patch(${reference},);`;
+    expect((await analyze(cell)).flow.sources[0]?.value.text).toBe(patch);
+  },
+);
 
 it("classifies a deep binding pattern without reading an ancestor per identifier", async () => {
   const depth = 1024;
@@ -506,4 +624,11 @@ it("handles every prefix and single-character mutation of a code-mode cell", asy
       analyzeCodeModeCell(root, source),
     );
   }
+});
+
+it("keeps a valid exec sibling when an error-free patch literal contains a raw LF", async () => {
+  const cell =
+    'tools.exec_command({cmd:"echo ok"});\ntools.apply_patch("bad\n");';
+  const { flow } = await analyze(cell);
+  expect(flow.sources.map(({ value }) => value.text)).toEqual(["echo ok"]);
 });

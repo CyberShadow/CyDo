@@ -26,6 +26,16 @@ const escapedCell = makeCell(JSON.stringify(command));
 const tree = '[data-testid="source-tree-input"]';
 const rich = ".source-tree-rich-block";
 const pre = "pre.write-content";
+const addPatch =
+  "*** Begin Patch\n*** Add File: docs/a.md\n+# Added\n*** End Patch";
+const twoFilePatch = addPatch.replace(
+  "*** End Patch",
+  "*** Update File: src/x.py\n@@\n-print(1)\n+print(2)\n*** End Patch",
+);
+const rawPatchCell = `const patch = String.raw\`${twoFilePatch}\`; await tools.apply_patch(patch);`;
+const sectionlessPatch = "*** Begin Patch\n@@\n-old\n+new\n*** End Patch";
+const patchCell = (patch: string) =>
+  `await tools.apply_patch(${JSON.stringify(patch)});`;
 
 function toolInput(cell: string, Component = ToolCall, Theme = ThemeContext) {
   return (
@@ -167,6 +177,81 @@ function expectWholeCell(root: HTMLElement, cell: string) {
   expect(root.querySelector(pre)?.textContent).toBe(cell);
   expect(new Set(expectHighlightedPre(root, pre)).size).toBeGreaterThan(1);
 }
+
+it("renders the same two-file patch list in a cell and a direct tool call", (context) =>
+  run(context, async ({ root, poll }) => {
+    await actStep(() => {
+      render(
+        <>
+          <div id="cell">{toolInput(rawPatchCell)}</div>
+          <div id="direct">
+            <ThemeContext.Provider value="dark">
+              <ToolCall
+                name="apply_patch"
+                driver="codex"
+                toolUseId="tool-direct-apply-patch"
+                input={{ input: twoFilePatch }}
+              />
+            </ThemeContext.Provider>
+          </div>
+        </>,
+        root,
+      );
+    });
+    const cellList = `#cell ${rich} .filechange-list`;
+    const directList = "#direct .filechange-list";
+    await poll(
+      coloredPre(root, `${cellList} pre`),
+      coloredPre(root, `${directList} pre`),
+      {
+        description: "Markdown preview in both patch lists",
+        ready: () =>
+          root.querySelector(`${cellList} h1`)?.textContent === "Added" &&
+          root.querySelector(`${directList} h1`)?.textContent === "Added",
+      },
+    );
+    expect(
+      root.querySelectorAll(`${cellList} .filechange-change`),
+    ).toHaveLength(2);
+    expect(root.querySelector(cellList)!.outerHTML).toBe(
+      root.querySelector(directList)!.outerHTML,
+    );
+  }));
+
+it("shows the action and path for a single-file patch in a cell", (context) =>
+  run(context, async ({ root, poll }) => {
+    await actStep(() => {
+      render(toolInput(patchCell(addPatch)), root);
+    });
+    const list = `${rich} .filechange-list`;
+    await poll({
+      description: "single-file patch in the rich block",
+      ready: () =>
+        root.querySelectorAll(`${list} .filechange-change`).length === 1,
+    });
+    const meta = root.querySelector(`${list} .filechange-meta`);
+    expect(meta?.querySelector(".tool-subtitle-tag")?.textContent).toBe("Add");
+    expect(meta?.textContent).toContain("docs/a.md");
+  }));
+
+it("shows a diff-highlighted fallback for a patch with no file sections", (context) =>
+  run(context, async ({ root, poll }) => {
+    const tokens = await tokenize(sectionlessPatch, "diff");
+    expect(tokens).not.toBeNull();
+    const style = document.createElement("span").style;
+    const diffColors = tokens!.flat().map(({ color }) => {
+      style.color = color ?? "";
+      return style.color;
+    });
+    await actStep(() => {
+      render(toolInput(patchCell(sectionlessPatch)), root);
+    });
+    const fallback = `${rich} ${pre}`;
+    await poll(coloredPre(root, fallback));
+    expect(root.querySelector(`${rich} .filechange-list`)).toBeNull();
+    expect(root.querySelector(fallback)?.textContent).toBe(sectionlessPatch);
+    expect(expectHighlightedPre(root, fallback)).toEqual(diffColors);
+  }));
 
 it("shows a single highlighted JavaScript pre for a malformed cell", (context) =>
   run(context, async ({ root, poll }) => {

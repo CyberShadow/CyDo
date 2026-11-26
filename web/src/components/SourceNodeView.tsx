@@ -16,6 +16,7 @@ import { useCurrentTheme } from "../useTheme";
 import { CodePre, CopyButton } from "./CopyButton";
 import { LocalFileDocument } from "./LocalFileContext";
 import { Markdown } from "./Markdown";
+import { ApplyPatchChanges } from "./FileChangeRow";
 import { FileContentPreview } from "./file-preview/FileContentPreview";
 import { SourceRenderedToggle } from "./file-preview/SourceRenderedToggle";
 
@@ -171,6 +172,14 @@ function SourceRichEmbedView({
             )
           }
         />
+      </div>
+    );
+  }
+
+  if (piece.mode === "rich-patch") {
+    return (
+      <div class={`source-tree-rich-block${blockClassName}`}>
+        <ApplyPatchChanges patchText={piece.text} alwaysShowMeta />
       </div>
     );
   }

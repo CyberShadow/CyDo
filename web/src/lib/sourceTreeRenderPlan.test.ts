@@ -25,6 +25,48 @@ async function buildLoadedShellSourceTree(source: string) {
 }
 
 describe("source tree render plan", () => {
+  it("renders a rich patch whose source span begins and ends mid-line", () => {
+    const text = "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch";
+    const prefix = "await tools.apply_patch(`";
+    const suffix = "`);";
+    const span = { start: prefix.length, end: prefix.length + text.length };
+    const root: SourceNode = {
+      language: "javascript",
+      text: prefix + text + suffix,
+      segments: [
+        { kind: "text", span: { start: 0, end: span.start } },
+        {
+          kind: "embed",
+          span,
+          presentation: { kind: "rich" },
+          content: {
+            language: "apply-patch",
+            text,
+            segments: [{ kind: "text", span: { start: 0, end: text.length } }],
+          },
+        },
+        {
+          kind: "text",
+          span: { start: span.end, end: span.end + suffix.length },
+        },
+      ],
+    };
+
+    const pieces = buildSourceRenderPieces(root);
+    expect(pieces).toMatchObject([
+      { kind: "inline", language: "javascript", text: prefix },
+      {
+        kind: "rich",
+        language: "apply-patch",
+        mode: "rich-patch",
+        text,
+        sourceSpan: span,
+      },
+      { kind: "inline", language: "javascript", text: suffix },
+    ]);
+    expect(pieces.map(sourceTextOfPiece).join("")).toBe(root.text);
+  });
+
   it("carries the document into a rich render piece for a mid-line embed", () => {
     const text = "<svg></svg>";
     const prefix = "const svg = `";

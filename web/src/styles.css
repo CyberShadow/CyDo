@@ -3346,6 +3346,7 @@ button.task-bar-title {
 .source-tree-blocks > .source-tree-block,
 .source-tree-blocks > .source-tree-rich-block,
 .source-tree-blocks > .source-tree-rich-block > .markdown-diff-wrap,
+.source-tree-blocks > .source-tree-rich-block > .filechange-list,
 .source-tree-blocks > .source-tree-rich-block > .write-content-markdown {
   margin-top: 0;
   margin-bottom: 0;
