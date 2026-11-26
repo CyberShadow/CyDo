@@ -453,6 +453,7 @@ class App
 				persistence.upsertSessionMetaCache(driverName, profileRoot, sessionId,
 					mtime, projectPath, title, hasMessages);
 			},
+			reportDiscoveryFailures: &reportDiscoveryFailures,
 		));
 		configWatcher = new ConfigWatcher(ConfigWatcherHost(
 			onConfigChanged: &onConfigChanged,
@@ -4323,6 +4324,21 @@ class App
 			activeNotices.remove(id);
 			clientHub.broadcast(buildNoticesList(activeNotices));
 		}
+	}
+
+	private void reportDiscoveryFailures(string[string] errorsByWorkspace)
+	{
+		import std.algorithm : startsWith;
+
+		enum prefix = "discovery:";
+		foreach (id; activeNotices.keys)
+			if (id.startsWith(prefix) && id[prefix.length .. $] !in errorsByWorkspace)
+				setNotice(id, Nullable!Notice.init);
+
+		foreach (workspace, error; errorsByWorkspace)
+			setNotice(prefix ~ workspace, Nullable!Notice(Notice(NoticeLevel.warning,
+				"Project discovery for workspace '" ~ workspace ~ "' is unavailable",
+				"Projects in this workspace are not listed.", error)));
 	}
 
 	private void reportProjectTaskTypeLoad(string projectPath, string error, bool keptPrevious)

@@ -87,6 +87,7 @@ struct DiscoveryServiceHost
 	void delegate(string driverName, string profileRoot, string sessionId,
 		long mtime, string projectPath, string title, bool hasMessages)
 		upsertSessionMetaCache;
+	void delegate(string[string] errorsByWorkspace) reportDiscoveryFailures;
 }
 
 private struct DiscoveryCandidate
@@ -168,33 +169,32 @@ class DiscoveryService
 	{
 		discoveryConfig_ = config;
 		workspacesInfo_ = null;
+		string[string] errorsByWorkspace;
 		foreach (ref ws; config.workspaces)
 		{
-			auto sandbox = resolveSandboxForDiscovery(
-				config.sandbox, ws.sandbox, ws.root, ws.name);
-			auto cmdPrefix = buildCommandPrefix(sandbox, "/");
-			auto isProjectExpr = ws.project_discovery.is_project;
-			auto recurseWhenExpr = ws.project_discovery.recurse_when;
-			auto cmd = (cmdPrefix !is null ? cmdPrefix : []) ~ cydoBinaryPath
-				~ ["discover", ws.root, ws.name, isProjectExpr, recurseWhenExpr]
-				~ ws.exclude;
-
-			typeof(execute(cmd)) result;
+			typeof(execute(string[].init)) result;
 			try
+			{
+				auto sandbox = resolveSandboxForDiscovery(
+					config.sandbox, ws.sandbox, ws.root, ws.name);
+				scope (exit) cleanup(sandbox);
+				auto cmdPrefix = buildCommandPrefix(sandbox, "/");
+				auto cmd = cmdPrefix ~ cydoBinaryPath
+					~ ["discover", ws.root, ws.name, ws.project_discovery.is_project,
+						ws.project_discovery.recurse_when]
+					~ ws.exclude;
 				result = execute(cmd);
+			}
 			catch (Exception e)
 			{
-				cleanup(sandbox);
-				warningf("Discovery subprocess failed for workspace '%s': %s", ws.name, e.msg);
+				errorsByWorkspace[ws.name] = e.msg;
 				workspacesInfo_ ~= WorkspaceInfo(ws.name, null, ws.default_agent, ws.default_task_type);
 				continue;
 			}
-			cleanup(sandbox);
 
 			if (result.status != 0)
 			{
-				warningf("Discovery failed for workspace '%s': exit %d: %s", ws.name,
-					result.status, result.output);
+				errorsByWorkspace[ws.name] = format("exit %d: %s", result.status, result.output);
 				workspacesInfo_ ~= WorkspaceInfo(ws.name, null, ws.default_agent, ws.default_task_type);
 				continue;
 			}
@@ -217,6 +217,7 @@ class DiscoveryService
 				tracef("  - %s (%s)", p.name, p.path);
 		}
 		injectVirtualProjects(config, host_.snapshotTasks());
+		host_.reportDiscoveryFailures(errorsByWorkspace);
 	}
 
 	void enumerateSessions()
@@ -664,9 +665,51 @@ private DiscoveryScanOutput testScanOutput(ScannedSessionRecord[] records)
 
 unittest
 {
+	import std.algorithm : canFind;
+	import std.process : environment;
+	import configy.attributes : SetInfo;
+	import cydo.runtime.config : WorkspaceConfig;
+
+	if (exists("/run/wrappers/bin/bwrap") || exists("/usr/bin/bwrap"))
+		return;
+
+	auto oldPath = environment.get("PATH", "");
+	environment["PATH"] = "/tmp/cydo-find-bwrap-without-binary";
+	scope (exit) environment["PATH"] = oldPath;
+
+	WorkspaceConfig workspace;
+	workspace.name = "sandboxed";
+	workspace.root = "/tmp";
+	workspace.default_agent = "codex";
+	workspace.default_task_type = "review";
+	workspace.sandbox.isolate_filesystem = SetInfo!bool(true);
+	CydoConfig config;
+	config.workspaces = [workspace];
+
+	string[string] reportedErrors;
 	DiscoveryTaskSnapshot[int] tasks;
 	auto service = new DiscoveryService(DiscoveryServiceHost(
 		snapshotTasks: () => tasks,
+		reportDiscoveryFailures: (string[string] errors) { reportedErrors = errors; },
+	));
+
+	service.discoverAllWorkspaces(config);
+
+	assert(service.workspacesInfo == [
+		WorkspaceInfo(workspace.name, null, workspace.default_agent, workspace.default_task_type),
+	]);
+	assert(reportedErrors.length == 1);
+	auto error = workspace.name in reportedErrors;
+	assert(error !is null);
+	assert((*error).canFind("bubblewrap"), *error);
+}
+
+unittest
+{
+	DiscoveryTaskSnapshot[int] tasks;
+	auto service = new DiscoveryService(DiscoveryServiceHost(
+		snapshotTasks: () => tasks,
+		reportDiscoveryFailures: (string[string]) {},
 	));
 
 	tasks[1] = DiscoveryTaskSnapshot(1, 0, "", "", "", "", "/tmp/other");
@@ -851,6 +894,7 @@ unittest
 	tasks[2] = DiscoveryTaskSnapshot(2, 0, "", "", "", "", projectLink);
 	auto service = new DiscoveryService(DiscoveryServiceHost(
 		snapshotTasks: () => tasks,
+		reportDiscoveryFailures: (string[string]) {},
 	));
 
 	service.discoverAllWorkspaces(CydoConfig.init);
