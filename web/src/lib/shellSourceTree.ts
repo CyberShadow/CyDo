@@ -191,16 +191,18 @@ function sourceTreeRejection(
   return null;
 }
 
+export function shellFlowDocument(
+  document: ParsedShellDocument,
+): FlowDocument | SourceTreeRejection {
+  assertValidParsedShellDocument(document);
+  return sourceTreeRejection(document) ?? analyzeShellDocument(document);
+}
+
 export function buildShellSourceTree(
   document: ParsedShellDocument,
 ): SourceTreeParseResult {
-  assertValidParsedShellDocument(document);
-  return (
-    sourceTreeRejection(document) ?? {
-      ok: true,
-      value: buildFlowSourceTree(analyzeShellDocument(document)),
-    }
-  );
+  const flow = shellFlowDocument(document);
+  return "ok" in flow ? flow : { ok: true, value: buildFlowSourceTree(flow) };
 }
 
 function reject(
