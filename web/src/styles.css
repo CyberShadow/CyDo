@@ -1138,6 +1138,10 @@ body,
   contain-intrinsic-size: auto 100px;
 }
 
+.user-message {
+  --badge-base: var(--user-bg);
+}
+
 .user-message,
 .user-content-item {
   background: var(--user-bg);
@@ -1148,7 +1152,8 @@ body,
   padding: 12px 16px;
 }
 
-.multipart-user-message {
+.user-message.multipart-user-message {
+  --badge-base: var(--bg);
   padding: 0;
   background: transparent;
   border-left: 0;
@@ -1211,6 +1216,8 @@ body,
 }
 
 .assistant-message {
+  --badge-base: var(--assistant-bg);
+
   background: var(--assistant-bg);
   border-left: 3px solid var(--assistant-border);
 }
@@ -2725,6 +2732,8 @@ body,
 }
 
 .meta-badge {
+  background-color: var(--badge-base);
+  background-image: linear-gradient(var(--badge-tint), var(--badge-tint));
   padding: 1px 6px;
   font-size: 10px;
   text-transform: uppercase;
@@ -2732,13 +2741,13 @@ body,
 }
 
 .meta-badge.sidechain {
-  background: rgba(136, 160, 176, 0.12);
+  --badge-tint: rgba(136, 160, 176, 0.12);
   color: var(--info);
   border: 1px solid rgba(136, 160, 176, 0.3);
 }
 
 .meta-badge.meta {
-  background: rgba(160, 140, 176, 0.12);
+  --badge-tint: rgba(160, 140, 176, 0.12);
   color: var(--text-dim);
   border: 1px solid rgba(160, 140, 176, 0.3);
 }
@@ -2748,7 +2757,7 @@ body,
 }
 
 .meta-badge.synthetic {
-  background: rgba(160, 140, 176, 0.12);
+  --badge-tint: rgba(160, 140, 176, 0.12);
   color: var(--text-dim);
   border: 1px solid rgba(160, 140, 176, 0.3);
 }
@@ -2761,13 +2770,13 @@ body,
 }
 
 .meta-badge.steering {
-  background: rgba(140, 160, 176, 0.12);
+  --badge-tint: rgba(140, 160, 176, 0.12);
   color: var(--text-dim);
   border: 1px solid rgba(140, 160, 176, 0.3);
 }
 
 .meta-badge.compact-summary {
-  background: rgba(140, 160, 176, 0.12);
+  --badge-tint: rgba(140, 160, 176, 0.12);
   color: var(--text-dim);
   border: 1px solid rgba(140, 160, 176, 0.3);
 }
@@ -2791,13 +2800,13 @@ body,
 }
 
 .meta-badge.summary {
-  background: rgba(140, 160, 176, 0.12);
+  --badge-tint: rgba(140, 160, 176, 0.12);
   color: var(--text-dim);
   border: 1px solid rgba(140, 160, 176, 0.3);
 }
 
 .meta-badge.removed {
-  background: rgba(200, 120, 120, 0.12);
+  --badge-tint: rgba(200, 120, 120, 0.12);
   color: var(--text-dim);
   border: 1px solid rgba(200, 120, 120, 0.35);
 }
@@ -2807,7 +2816,7 @@ body,
 }
 
 .meta-badge.retracted {
-  background: rgba(200, 120, 120, 0.12);
+  --badge-tint: rgba(200, 120, 120, 0.12);
   color: var(--text-dim);
   border: 1px solid rgba(200, 120, 120, 0.35);
 }
@@ -2831,6 +2840,10 @@ body,
 
 .sticky-scroll-content {
   display: flow-root;
+}
+
+.sub-agent-messages .user-message.multipart-user-message {
+  --badge-base: var(--tool-bg);
 }
 
 .sub-agent-messages > .sticky-scroll-content > .message {
