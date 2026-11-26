@@ -1,4 +1,5 @@
 import type { ComponentChildren, Ref } from "preact";
+import editIcon from "../icons/edit.svg?raw";
 import type { SessionInfo } from "../types";
 import { useCopyFeedback } from "./CopyButton";
 
@@ -20,6 +21,12 @@ export function TaskId({ tid }: { tid: number }) {
 interface Props {
   tid: number;
   panelRef: Ref<HTMLElement>;
+  title: string;
+  /** The unsaved title while the title is being edited, null otherwise. */
+  titleDraft: string | null;
+  onTitleDraftChange: (draft: string | null) => void;
+  titleInputRef: Ref<HTMLInputElement>;
+  onSetTitle?: (title: string) => void;
   agentName?: string;
   agentDisplayName?: string;
   taskType?: string;
@@ -35,6 +42,11 @@ interface Props {
 export function TaskPanel({
   tid,
   panelRef,
+  title,
+  titleDraft,
+  onTitleDraftChange,
+  titleInputRef,
+  onSetTitle,
   agentName,
   agentDisplayName,
   taskType,
@@ -54,6 +66,64 @@ export function TaskPanel({
           ×
         </button>
       </header>
+      {onSetTitle &&
+        (titleDraft === null ? (
+          <div class="task-panel-title">
+            <span class="detail-label">Title</span>
+            <span>{title}</span>
+            <button
+              type="button"
+              class="msg-action-btn"
+              onClick={() => {
+                onTitleDraftChange(title);
+              }}
+              aria-label="Edit title"
+              title="Edit title"
+            >
+              <span
+                class="action-icon"
+                dangerouslySetInnerHTML={{ __html: editIcon }}
+              />
+            </button>
+          </div>
+        ) : (
+          <form
+            class="task-panel-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const trimmed = titleDraft.trim();
+              // A changed title stays in the editor until the server
+              // accepts it, so a rejected edit can be corrected.
+              if (trimmed === title) onTitleDraftChange(null);
+              else onSetTitle(trimmed);
+            }}
+          >
+            <label>
+              <span class="detail-label">Title</span>
+              <input
+                ref={titleInputRef}
+                class="text-input"
+                type="text"
+                value={titleDraft}
+                onInput={(event) => {
+                  onTitleDraftChange(event.currentTarget.value);
+                }}
+              />
+            </label>
+            <button type="submit" class="btn">
+              Save
+            </button>
+            <button
+              type="button"
+              class="btn"
+              onClick={() => {
+                onTitleDraftChange(null);
+              }}
+            >
+              Cancel
+            </button>
+          </form>
+        ))}
       <dl class="task-panel-info">
         {agentName && (
           <div>

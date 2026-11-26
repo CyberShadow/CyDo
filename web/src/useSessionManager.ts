@@ -229,6 +229,7 @@ export interface TaskManager {
   undoDismiss: (tid: number) => void;
   dismissAttention: (tid: number) => void;
   clearInputDraft: (tid: number) => void;
+  setTaskTitle: (tid: number, title: string) => void;
   setArchived: (tid: number, archived: boolean) => void;
   saveDraft: (tid: number, draft: string) => void;
   sendAskUserResponse: (tid: number, content: string) => void;
@@ -3191,6 +3192,10 @@ export function useTaskManager(
     connRef.current?.promoteTask(tid, readBrowserRoute().workspace ?? "");
   }, []);
 
+  const setTaskTitle = useCallback((tid: number, title: string) => {
+    connRef.current?.setTaskTitle(tid, title);
+  }, []);
+
   const setArchived = useCallback((tid: number, archived: boolean) => {
     connRef.current?.setArchived(tid, archived);
   }, []);
@@ -3454,6 +3459,7 @@ export function useTaskManager(
     undoDismiss,
     dismissAttention,
     clearInputDraft,
+    setTaskTitle,
     setArchived,
     saveDraft,
     sendAskUserResponse,

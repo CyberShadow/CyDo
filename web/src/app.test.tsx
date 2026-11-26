@@ -88,6 +88,7 @@ vi.mock("./connection", () => ({
 
     disconnect() {}
     undoTask() {}
+    setTaskTitle() {}
   },
 }));
 
@@ -130,6 +131,7 @@ vi.mock("./useSessionManager", async (importOriginal) => {
         dismissAttention: vi.fn(),
         clearInputDraft: vi.fn(),
         setArchived: vi.fn(),
+        setTaskTitle: vi.fn(),
         saveDraft: vi.fn(),
         sendAskUserResponse: vi.fn(),
         sendPermissionPromptResponse: state.sendPermissionPromptResponse,
@@ -470,7 +472,7 @@ describe("server command errors", () => {
     }
   });
 
-  it("shows a rejected command without clearing a pending undo preview", async () => {
+  it("shows a rejected title edit without clearing a pending undo preview", async () => {
     liveManager.enabled = true;
     const root = roots.create();
     await act(() => {
@@ -501,18 +503,19 @@ describe("server command errors", () => {
     });
     await act(() => {
       liveManager.manager!.undoPreview(tid, "before:message");
+      liveManager.manager!.setTaskTitle(tid, "");
     });
     expect(currentTask()!.undoPending).toMatchObject({
       kind: "requesting",
       anchor: "before:message",
     });
 
-    const reason = "Stop the session before editing messages";
+    const reason = "Title cannot be empty after a task has started";
     await actStep(() => {
       receive({ type: "error", message: reason, tid });
     });
     await actPoll({
-      description: "command error dialog rendered",
+      description: "title error dialog rendered",
       ready: () => root.querySelector(".command-error-dialog") !== null,
     });
     const dialog = root.querySelector(".command-error-dialog")!;

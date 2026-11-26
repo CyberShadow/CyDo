@@ -1160,6 +1160,7 @@ ItemStartedEvent buildSyntheticUserEvent(string text,
 struct WsMessage
 {
 	string type;
+	string title;
 	@JSONOptional JSONFragment content;  // string (for legacy fields) or ContentBlock[] (for messages)
 	int tid = -1;
 	int seq = -1;

@@ -1478,6 +1478,7 @@ class App
 			case "edit_message":      handleEditMessage(ws, json); break;
 			case "edit_raw_event":    handleEditRawEvent(ws, json); break;
 			case "set_archived":      handleSetArchivedMsg(ws, json); break;
+			case "set_task_title":    handleSetTaskTitleMsg(ws, json); break;
 			case "set_draft":         handleSetDraftMsg(ws, json); break;
 			case "delete_task":       handleDeleteTaskMsg(json); break;
 			case "ask_user_response": workflowTools.handleAskUserResponse(json); break;
@@ -2096,11 +2097,10 @@ class App
 			td.inFlightUiNonceGeneration[msgNonce] = submissionGeneration;
 
 		auto initializesDescription = td.description.length == 0;
-		auto initializesTitle = td.title.length == 0;
 		auto draftAtSubmission = td.draft;
 		submissionIntake.submit(tid, blocks, (ContentBlock[] normalized) {
 			dispatchBrowserSubmission(ws, tid, msgNonce, submissionGeneration, normalized,
-				initializesDescription, initializesTitle, draftAtSubmission);
+				initializesDescription, draftAtSubmission);
 		}, (AttachmentRejection rejection) {
 			if (auto current = tid in tasks)
 				releaseUiNonceLease(current, msgNonce, submissionGeneration);
@@ -2111,7 +2111,7 @@ class App
 
 	private void dispatchBrowserSubmission(WebSocketAdapter ws, int tid, string msgNonce,
 		ulong submissionGeneration, ContentBlock[] blocks, bool initializesDescription,
-		bool initializesTitle, string draftAtSubmission)
+		string draftAtSubmission)
 	{
 		auto td = tid in tasks;
 		auto refusal = browserSubmissionRefusal(tid, submissionGeneration);
@@ -2142,13 +2142,13 @@ class App
 
 		scope (failure) releaseUiNonceLease(td, msgNonce, submissionGeneration);
 		prepareBrowserSubmission(td, tid, msgNonce, submissionGeneration, blocks,
-			initializesDescription, initializesTitle, draftAtSubmission)
+			initializesDescription, draftAtSubmission)
 			.except(&rejectSubmission).ignoreResult();
 	}
 
 	private Promise!void prepareBrowserSubmission(TaskData* td, int tid, string msgNonce,
 		ulong submissionGeneration, ContentBlock[] blocks, bool initializesDescription,
-		bool initializesTitle, string draftAtSubmission)
+		string draftAtSubmission)
 	{
 		auto textContent = extractContentText(blocks);
 
@@ -2206,7 +2206,7 @@ class App
 				accepted.status = TaskStatus.active;
 				persistence.setStatus(tid, cast(string) TaskStatus.active);
 			}
-			if (initializesTitle && accepted.title.length == 0)
+			if (accepted.title.length == 0)
 			{
 				accepted.title = truncateTitle(textContent, 80);
 				persistence.setTitle(tid, accepted.title);
@@ -2383,6 +2383,76 @@ class App
 	{
 		bool archived = json.content.json == `"true"`;
 		archiveManager.handleSetArchived(ws, json.tid, archived);
+	}
+
+	private static string validateUserTitle(string title, bool isDraft, out string trimmed) pure
+	{
+		import std.algorithm : any;
+		import std.range : walkLength;
+		import std.utf : byDchar;
+
+		// Unicode Cc (C0 and C1), Zl (line separator), and Zp (paragraph separator).
+		if (title.byDchar.any!(c => c <= 0x1F || (c >= 0x7F && c <= 0x9F)
+			|| c == '\u2028' || c == '\u2029'))
+			return "Title must be a single line without control characters";
+		trimmed = title.strip();
+		if (!isDraft && trimmed.length == 0)
+			return "Title cannot be empty after a task has started";
+		if (trimmed.byDchar.walkLength >= 200)
+			return "Title must be under 200 characters";
+		return null;
+	}
+
+	unittest
+	{
+		import std.array : replicate;
+		import std.conv : to;
+
+		string trimmed;
+		assert(validateUserTitle("  ", true, trimmed) is null && trimmed.length == 0);
+		assert(validateUserTitle("  ", false, trimmed) == "Title cannot be empty after a task has started");
+		foreach (c; 0 .. 0xA0)
+			if (c <= 0x1F || c >= 0x7F)
+			{
+				auto control = (cast(dchar) c).to!string;
+				assert(validateUserTitle(control ~ "title", true, trimmed)
+					== "Title must be a single line without control characters");
+				assert(validateUserTitle("first" ~ control ~ "second", false, trimmed)
+					== "Title must be a single line without control characters");
+			}
+		foreach (separator; ["\u2028", "\u2029"])
+			assert(validateUserTitle("first" ~ separator ~ "second", false, trimmed)
+				== "Title must be a single line without control characters");
+		auto valid = "é".replicate(199);
+		assert(validateUserTitle(" " ~ valid ~ " ", false, trimmed) is null && trimmed == valid);
+		foreach (length; [200, 201])
+			assert(validateUserTitle("é".replicate(length), false, trimmed) == "Title must be under 200 characters");
+	}
+
+	private void handleSetTaskTitleMsg(WebSocketAdapter ws, WsMessage json)
+	{
+		auto tid = json.tid;
+		auto td = tid in tasks;
+		if (td is null)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Task does not exist", tid)).representation));
+			return;
+		}
+
+		const isDraft = td.status == TaskStatus.pending;
+		string title;
+		if (auto error = validateUserTitle(json.title, isDraft, title))
+		{
+			ws.send(Data(toJson(ErrorMessage("error", error, tid)).representation));
+			return;
+		}
+
+		derivedTextJobs.cancelTitleGeneration(tid);
+		if (isDraft && title.length == 0)
+			td.titleGenDone = false;
+		td.title = title;
+		persistence.setTitle(tid, title);
+		broadcastTitleUpdate(tid, title);
 	}
 
 	private void handleSetDraftMsg(WebSocketAdapter senderWs, WsMessage json)
@@ -9322,7 +9392,7 @@ unittest
 		"sigint", "close_stdin", "stop", "dismiss_attention", "fork_task", "undo_task",
 		"edit_message", "edit_raw_event", "set_archived", "set_draft", "delete_task",
 		"ask_user_response", "permission_prompt_response", "approve_retry", "refresh_workspaces",
-		"set_task_type", "set_entry_point", "set_agent_name", "request_task_types"])
+		"set_task_title", "set_task_type", "set_entry_point", "set_agent_name", "request_task_types"])
 	{
 		message.type = command;
 		foreach (dryRun; command == "undo_task" ? [false, true] : [false])
@@ -9353,6 +9423,20 @@ unittest
 	message.type = "promote_task";
 	app.handleWsMessage(socket, toJson(message));
 	assert(task.status == TaskStatus.completed && task.workspace == "local");
+
+	assert(task.description.length == 0);
+	auto importedTitle = task.title;
+	assert(importedTitle.length > 0);
+	auto before = socket.sent.length;
+	app.handleWsMessage(socket, toJson(WsMessage(type: "set_task_title",
+		tid: fixture.tid, title: "")));
+	assert(socket.sent.length == before + 1);
+	auto error = jsonParse!ErrorMessage(socket.sent[$ - 1]);
+	assert(error.tid == fixture.tid && error.message == "Title cannot be empty after a task has started");
+	assert(task.title == importedTitle);
+	foreach (row; app.persistence.loadTasks())
+		if (row.tid == fixture.tid)
+			assert(row.title == importedTitle);
 }
 
 unittest
@@ -9570,4 +9654,31 @@ unittest // An archived task refuses live-file reads before building a launch or
 	assert(result.get.status == LiveFileLookupStatus.unavailable);
 	assert(result.get.reason == "The task is archived");
 	assert(!task.history.isLoaded && !task.history.isLoading);
+}
+
+unittest // A draft title cleared during submission falls back to automatic generation.
+{
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope(exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	auto app = fixture.app;
+	auto task = fixture.tid in app.tasks;
+	auto socket = fixture.socket;
+	task.agentName = "test";
+	task.status = TaskStatus.pending;
+	task.description = "";
+	app.handleWsMessage(socket, toJson(WsMessage(type: "set_task_title",
+		tid: fixture.tid, title: "Preset title")));
+	app.handleUserMessage(socket,
+		testBrowserSubmission(fixture.tid, "First prompt", "title-clear-race"));
+	drainSubmissionNextTicks();
+	assert(fixture.session.sendCalls == 1 && task.description == "");
+	app.handleWsMessage(socket, toJson(WsMessage(type: "set_task_title",
+		tid: fixture.tid, title: "")));
+	assert(task.title == "" && !task.titleGenDone);
+	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
+	drainSubmissionNextTicks();
+	assert(task.description == "First prompt");
+	assert(task.title == "First prompt");
+	assert(app.persistence.loadTasks()[0].title == task.title);
+	assert(fixture.titlePromptReads == 1);
 }

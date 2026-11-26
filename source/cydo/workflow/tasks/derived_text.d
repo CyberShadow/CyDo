@@ -61,6 +61,18 @@ public:
 		cancelSessionBackgroundWork(tid);
 	}
 
+	void cancelTitleGeneration(int tid)
+	{
+		auto td = host_.getTask(tid);
+		assert(td !is null);
+		auto kill = td.titleGenKill;
+		td.titleGenHandle = null;
+		td.titleGenKill = null;
+		td.titleGenDone = true;
+		if (kill !is null)
+			kill();
+	}
+
 	void cancelSessionBackgroundWork(int tid)
 	{
 		auto td = host_.getTask(tid);
@@ -129,9 +141,10 @@ public:
 		auto titleHandle = host_.agentForTask(tid).completeOneShot(prompt, "small", td.launch);
 		td.titleGenHandle = titleHandle.promise;
 		td.titleGenKill = titleHandle.cancel;
-		td.titleGenHandle.then((string title) {
+		auto promise = titleHandle.promise;
+		promise.then((string title) {
 			auto task = host_.getTask(tid);
-			if (task is null)
+			if (task is null || task.titleGenHandle !is promise)
 				return;
 			task.titleGenHandle = null;
 			task.titleGenKill = null;
@@ -144,7 +157,7 @@ public:
 			}
 		}).except((Exception e) {
 			auto task = host_.getTask(tid);
-			if (task is null)
+			if (task is null || task.titleGenHandle !is promise)
 				return;
 			task.titleGenHandle = null;
 			task.titleGenKill = null;
@@ -315,4 +328,63 @@ unittest
 	jobs.discardInFlightSuggestions(1);
 	ready[1]();
 	assert(promptReads == 1);
+}
+
+unittest
+{
+	import ae.net.asockets : socketManager;
+	import ae.utils.promise : Promise;
+	import cydo.agent.contract : OneShotHandle;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.runtime.launch.types : ProcessLaunch;
+
+	static class DelayedTitleAgent : ClaudeCodeAgent
+	{
+		Promise!string[] completions;
+		size_t cancellations;
+
+		override OneShotHandle completeOneShot(string prompt, string modelClass,
+			ProcessLaunch launch)
+		{
+			auto completion = new Promise!string;
+			completions ~= completion;
+			return OneShotHandle(completion, () { cancellations++; });
+		}
+	}
+
+	auto task = TaskData(1, "local", "/tmp");
+	auto agent = new DelayedTitleAgent;
+	string[] persisted;
+	string[] broadcast;
+	auto jobs = new DerivedTextJobs(DerivedTextJobsHost(
+		getTask: (int tid) => &task,
+		agentForTask: (int tid) => agent,
+		readPromptFile: (int tid, string relativePath, string[string] vars) => vars["user_message"],
+		persistTitle: (int tid, string title) { persisted ~= title; },
+		broadcastTitleUpdate: (int tid, string title) { broadcast ~= title; },
+	));
+
+	jobs.generateTitle(1, "First prompt");
+	assert(agent.completions.length == 1);
+	jobs.cancelTitleGeneration(1);
+	task.title = "User title";
+	assert(agent.cancellations == 1);
+	agent.completions[0].fulfill("Stale generated title");
+	socketManager.loop();
+
+	assert(task.title == "User title");
+	assert(persisted.length == 0 && broadcast.length == 0);
+	jobs.generateTitle(1, "Another prompt");
+	assert(agent.completions.length == 1, "A user title suppresses generation");
+
+	// A cleared draft title is eligible for generation on submission.
+	task.title = "";
+	task.titleGenDone = false;
+	jobs.generateTitle(1, "Draft prompt");
+	assert(agent.completions.length == 2);
+	agent.completions[1].fulfill("Generated draft title");
+	socketManager.loop();
+
+	assert(task.title == "Generated draft title");
+	assert(persisted == [task.title] && broadcast == [task.title]);
 }

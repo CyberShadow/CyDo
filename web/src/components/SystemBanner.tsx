@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { SessionInfo } from "../types";
 import type { Theme } from "../useTheme";
 import filesIcon from "../icons/copy.svg?raw";
@@ -10,6 +10,7 @@ interface Props {
   sessionInfo?: SessionInfo | null;
   tid?: number;
   title?: string;
+  onSetTitle?: (title: string) => void;
   agentName?: string;
   agentDisplayName?: string;
   agentDriver?: string;
@@ -55,6 +56,7 @@ export function SystemBanner({
   sessionInfo,
   tid,
   title,
+  onSetTitle,
   agentName,
   agentDisplayName,
   agentDriver,
@@ -85,20 +87,40 @@ export function SystemBanner({
   exportMode,
 }: Props) {
   const [panelOpen, setPanelOpen] = useState(false);
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
+  const editingTitle = titleDraft !== null;
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const titleButtonRef = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (editingTitle) titleInputRef.current?.focus();
+  }, [editingTitle]);
+  useEffect(() => {
+    setTitleDraft((draft) => (draft?.trim() === (title ?? "") ? null : draft));
+  }, [title]);
+  const closePanel = () => {
+    setPanelOpen(false);
+    setTitleDraft(null);
+  };
   const panelRef = useRef<HTMLElement>(null);
   const panelToggleRef = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
     if (!panelOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPanelOpen(false);
+      if (event.key !== "Escape") return;
+      if (editingTitle) setTitleDraft(null);
+      else closePanel();
     };
     const onClick = (event: MouseEvent) => {
-      const target = event.target as Node;
+      const target = event.target as Element;
       if (
         !panelRef.current?.contains(target) &&
-        !panelToggleRef.current?.contains(target)
+        !panelToggleRef.current?.contains(target) &&
+        !titleButtonRef.current?.contains(target) &&
+        // Dismissing a modal dialog, such as a rejected title edit, must
+        // leave the panel as it was.
+        !target.closest(".undo-overlay")
       ) {
-        setPanelOpen(false);
+        closePanel();
       }
     };
     document.addEventListener("keydown", onKeyDown);
@@ -107,7 +129,7 @@ export function SystemBanner({
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("click", onClick, true);
     };
-  }, [panelOpen]);
+  }, [panelOpen, editingTitle]);
   const connection = exportMode
     ? undefined
     : !connected
@@ -195,9 +217,26 @@ export function SystemBanner({
           <TaskId tid={tid} />
         </span>
       )}
-      <span class="task-bar-title" title={barTitle}>
-        {barTitle}
-      </span>
+      {onSetTitle ? (
+        <button
+          type="button"
+          ref={titleButtonRef}
+          class="task-bar-title"
+          title={barTitle}
+          aria-label={barTitle ? `Edit title: ${barTitle}` : "Edit title"}
+          onClick={() => {
+            setPanelOpen(true);
+            setTitleDraft((draft) => draft ?? title ?? "");
+            titleInputRef.current?.focus();
+          }}
+        >
+          {barTitle || "Edit title"}
+        </button>
+      ) : (
+        <span class="task-bar-title" title={barTitle}>
+          {barTitle}
+        </span>
+      )}
       {trackedFileCount > 0 && (
         <button
           type="button"
@@ -249,7 +288,8 @@ export function SystemBanner({
           aria-label="Task details"
           aria-expanded={panelOpen}
           onClick={() => {
-            setPanelOpen(!panelOpen);
+            if (panelOpen) closePanel();
+            else setPanelOpen(true);
           }}
         >
           ▾
@@ -259,6 +299,11 @@ export function SystemBanner({
         <TaskPanel
           tid={tid}
           panelRef={panelRef}
+          title={title ?? ""}
+          titleDraft={titleDraft}
+          onTitleDraftChange={setTitleDraft}
+          titleInputRef={titleInputRef}
+          onSetTitle={onSetTitle}
           agentName={agentName}
           agentDisplayName={agentDisplayName}
           sessionInfo={sessionInfo}
@@ -268,9 +313,7 @@ export function SystemBanner({
           createdAt={createdAt}
           lastActive={lastActive}
           mobileAction={secondaryAction}
-          onClose={() => {
-            setPanelOpen(false);
-          }}
+          onClose={closePanel}
         />
       )}
       <ThemeToggle theme={theme} onToggle={onToggleTheme} />

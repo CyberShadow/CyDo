@@ -243,6 +243,7 @@ export function useExportedTaskManager(): TaskManager {
     undoDismiss: noop,
     dismissAttention: noop,
     clearInputDraft: noop,
+    setTaskTitle: noop,
     setArchived: noop,
     saveDraft: noop,
     sendAskUserResponse: noop,

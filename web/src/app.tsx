@@ -61,6 +61,7 @@ function AppContent() {
     dismissAttention,
     clearInputDraft,
     ordinaryDraftStore,
+    setTaskTitle,
     setArchived,
     saveDraft,
     sendAskUserResponse,
@@ -610,6 +611,7 @@ function AppContent() {
                         onToggleTheme={toggleTheme}
                         onToggleSidebar={toggleSidebar}
                         hasGlobalAttention={attention.size > 0}
+                        onSetTaskTitle={setTaskTitle}
                         onSetArchived={setArchived}
                         onAskUserResponse={sendAskUserResponse}
                         onPermissionPromptResponse={

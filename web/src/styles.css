@@ -742,6 +742,17 @@ body,
   font-weight: 600;
 }
 
+button.task-bar-title {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: start;
+  cursor: pointer;
+}
+
 .task-bar-files,
 .task-bar-id,
 .task-bar-panel-toggle,
@@ -3616,6 +3627,23 @@ body,
   margin-left: auto;
 }
 
+.task-panel-title,
+.task-panel-title label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-panel-title {
+  margin-top: 12px;
+}
+
+.task-panel-title label,
+.task-panel-title input {
+  flex: 1;
+  min-width: 0;
+}
+
 .task-panel-info {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4283,6 +4311,16 @@ pre.extra-field-value {
 
   .task-panel-info {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The title editor's buttons get a row of their own below the field. */
+  form.task-panel-title {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .task-panel-title label {
+    flex-basis: 100%;
   }
 
   .task-panel-mobile-action:not(:empty) {

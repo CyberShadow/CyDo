@@ -304,6 +304,10 @@ export class Connection {
     );
   }
 
+  setTaskTitle(tid: number, title: string) {
+    this.send(JSON.stringify({ type: "set_task_title", tid, title }));
+  }
+
   setTaskType(tid: number, taskType: string) {
     this.send(
       JSON.stringify({ type: "set_task_type", tid, task_type: taskType }),

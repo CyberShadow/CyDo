@@ -209,6 +209,133 @@ describe("task bar", () => {
     expect(root.querySelector(".task-panel")).toBeNull();
   });
 
+  async function click(element: Element) {
+    await act(() => {
+      (element as HTMLElement).click();
+    });
+  }
+
+  async function typeTitle(input: HTMLInputElement, value: string) {
+    await act(() => {
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  async function pressEscape() {
+    await act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+  }
+
+  const titleInput = (root: Element) =>
+    root.querySelector<HTMLInputElement>(".task-panel input");
+
+  async function openTitleEditor(root: Element) {
+    await click(root.querySelector("button.task-bar-title")!);
+    return titleInput(root)!;
+  }
+
+  const panelButton = (root: Element, text: string) =>
+    [...root.querySelectorAll(".task-panel-title button")].find(
+      (button) => button.textContent === text,
+    )!;
+
+  const titleBar = (onSetTitle = vi.fn(), title = "Review task") =>
+    bar({ tid: 42, title, onSetTitle });
+
+  it("shows the panel title as text until editing is requested", async () => {
+    const root = roots.create();
+    roots.render(titleBar(), root);
+    await click(root.querySelector(".task-bar-panel-toggle")!);
+    expect(root.querySelector(".task-panel-title")?.textContent).toContain(
+      "Review task",
+    );
+    expect(titleInput(root)).toBeNull();
+
+    await click(root.querySelector('[aria-label="Edit title"]')!);
+    expect(titleInput(root)!.value).toBe("Review task");
+    expect(document.activeElement).toBe(titleInput(root));
+  });
+
+  it("opens the title editor focused from the bar title", async () => {
+    const root = roots.create();
+    roots.render(titleBar(), root);
+    const input = await openTitleEditor(root);
+    expect(input.value).toBe("Review task");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("keeps editing until the saved title is accepted", async () => {
+    const root = roots.create();
+    const onSetTitle = vi.fn();
+    roots.render(titleBar(onSetTitle), root);
+    const input = await openTitleEditor(root);
+    await typeTitle(input, "  Revised title  ");
+    await click(panelButton(root, "Save"));
+    expect(onSetTitle).toHaveBeenCalledExactlyOnceWith("Revised title");
+    expect(titleInput(root)!.value).toBe("  Revised title  ");
+
+    await act(() => {
+      roots.render(titleBar(onSetTitle, "Revised title"), root);
+    });
+    expect(titleInput(root)).toBeNull();
+    expect(root.querySelector(".task-panel-title")?.textContent).toContain(
+      "Revised title",
+    );
+  });
+
+  it("returns to the read-only title when saving it unchanged", async () => {
+    const root = roots.create();
+    const onSetTitle = vi.fn();
+    roots.render(titleBar(onSetTitle), root);
+    await openTitleEditor(root);
+    await click(panelButton(root, "Save"));
+    expect(titleInput(root)).toBeNull();
+    expect(root.querySelector(".task-panel")).not.toBeNull();
+    expect(onSetTitle).not.toHaveBeenCalled();
+  });
+
+  it("keeps the editor open when a modal dialog is dismissed", async () => {
+    const root = roots.create();
+    roots.render(titleBar(), root);
+    const input = await openTitleEditor(root);
+    await typeTitle(input, "");
+    const overlay = document.body.appendChild(document.createElement("div"));
+    overlay.className = "undo-overlay";
+    try {
+      await click(overlay.appendChild(document.createElement("button")));
+    } finally {
+      overlay.remove();
+    }
+    expect(titleInput(root)!.value).toBe("");
+  });
+
+  it.each([
+    ["Cancel", (root: Element) => click(panelButton(root, "Cancel"))],
+    ["Escape", () => pressEscape()],
+  ])("discards the unsaved title on %s", async (_name, discard) => {
+    const root = roots.create();
+    const onSetTitle = vi.fn();
+    roots.render(titleBar(onSetTitle), root);
+    const input = await openTitleEditor(root);
+    await typeTitle(input, "Unsaved title");
+    await discard(root);
+    expect(titleInput(root)).toBeNull();
+    expect(root.querySelector(".task-panel")).not.toBeNull();
+    expect((await openTitleEditor(root)).value).toBe("Review task");
+    expect(onSetTitle).not.toHaveBeenCalled();
+  });
+
+  it("closes the panel on a second Escape", async () => {
+    const root = roots.create();
+    roots.render(titleBar(), root);
+    await openTitleEditor(root);
+    await pressEscape();
+    await pressEscape();
+    expect(root.querySelector(".task-panel")).toBeNull();
+  });
+
   it.each([
     new MouseEvent("click", { bubbles: true }),
     new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
