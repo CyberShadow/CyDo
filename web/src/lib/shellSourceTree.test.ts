@@ -131,7 +131,7 @@ describe("sourceTree projection parser", () => {
     expect(tree.ok).toBe(true);
     if (!tree.ok) return;
     expect(reconstructSource(tree.value)).toBe(source);
-  }, 30_000);
+  });
 
   it("preserves every Python embed and reconstructs a 4,000-command wrapper chain", async () => {
     const payloads = Array.from(
@@ -152,7 +152,7 @@ describe("sourceTree projection parser", () => {
       embeds.map(({ content }) => [content.language, content.text]),
     ).toEqual(payloads.map((payload) => ["python", payload]));
     expect(reconstructSource(tree.value)).toBe(source);
-  }, 30_000);
+  });
 
   it("returns a typed child rejection for a 4,000-command broken Bash wrapper chain", async () => {
     const source = Array(4_000).fill("bash -c 'if'").join(" && ");
@@ -161,7 +161,7 @@ describe("sourceTree projection parser", () => {
       code: "unsafe_shell_syntax",
       reason: "shell parser rejected child: unsafe_shell_syntax",
     });
-  }, 30_000);
+  });
 
   it("parses at least three nested shell wrapper levels", async () => {
     const command = 'zsh -lc "bash -lc \'sh -c \\"cat README.md\\"\'"';

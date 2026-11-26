@@ -137,7 +137,7 @@ it("returns an unsupported command result for a long && chain with redirects", a
     ok: false,
     code: "unsupported_command",
   });
-}, 30_000);
+});
 
 it("classifies a 4,000-stage read pipeline", async () => {
   const source = ["cat file", ...Array<string>(3_999).fill("head -n 1")].join(
@@ -150,7 +150,7 @@ it("classifies a 4,000-stage read pipeline", async () => {
       output: [fileRows("file", { type: "head", count: 1 })],
     },
   });
-}, 30_000);
+});
 
 it("classifies a diff source in a 4,000-stage formatting pipeline", async () => {
   const source = ["git diff", ...Array<string>(3_999).fill("head -n 1")].join(
@@ -160,7 +160,7 @@ it("classifies a diff source in a 4,000-stage formatting pipeline", async () => 
     ok: true,
     value: { kind: "output", command: source, output: [diff()] },
   });
-}, 30_000);
+});
 
 it("returns an unsupported command result for a 4,000-command Python wrapper chain", async () => {
   const source = Array(4_000).fill("python -c 'pass'").join(" && ");
@@ -168,7 +168,7 @@ it("returns an unsupported command result for a 4,000-command Python wrapper cha
     ok: false,
     code: "unsupported_command",
   });
-}, 30_000);
+});
 
 it("classifies a Python wrapper after 3,999 literal cd commands", async () => {
   const source = [
@@ -179,7 +179,7 @@ it("classifies a Python wrapper after 3,999 literal cd commands", async () => {
     ok: true,
     value: { kind: "script-exec", language: "python", command: source },
   });
-}, 30_000);
+});
 
 // ---------------------------------------------------------------------------
 // Accepted read forms
@@ -788,7 +788,7 @@ describe("stream composition", () => {
       code: "unsafe_shell_syntax",
       reason: "wc output is not planned",
     });
-  }, 30_000);
+  });
 });
 
 describe("unpositioned rows", () => {

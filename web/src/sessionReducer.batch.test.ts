@@ -511,7 +511,7 @@ describe.each(["claude", "codex"] as const)("%s reducer replay", (driver) => {
     expect(copiedEntries(driver, large, 1)).toBeGreaterThan(
       50 * copiedEntries(driver, small, 1),
     );
-  }, 30_000);
+  });
 });
 
 describe.each(imageCompanionStreams)("$name", ({ events }) => {

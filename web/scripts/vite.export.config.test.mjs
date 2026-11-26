@@ -265,7 +265,7 @@ describe("export CDN Vite configuration", () => {
     expect(
       capturedModuleIds.some((id) => id.includes("/node_modules/mermaid/")),
     ).toBe(false);
-  }, 30_000);
+  });
 
   it("keeps the export shell generated and removes superseded CDN adapters", () => {
     const template = readFileSync(join(webRoot, "export.html"), "utf8");

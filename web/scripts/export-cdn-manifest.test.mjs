@@ -247,13 +247,13 @@ describe("export CDN manifest", () => {
     for (const scope of Object.values(first.importMap.scopes)) {
       expectSortedKeys(scope);
     }
-  }, 30_000);
+  });
 
   it("exposes asynchronous fixture operations", async () => {
     const fixtureRoot = temporaryDirectory();
     await expect(writeExportCdnFixtures({ fixtureRoot, ...actualInputs })).resolves.toBeUndefined();
     await expect(validateExportCdnFixtures(fixtureRoot, actualInputs)).resolves.toBeUndefined();
-  }, 30_000);
+  });
 
   it("uses lockfile-installed bytes and preserves the WASM fallback order", async () => {
     const { runtimeManifest: runtime, fixtureManifest: fixture } =
@@ -400,7 +400,7 @@ describe("export CDN manifest", () => {
       expect(record.integrity).toBe(fileIntegrity.get(record.file));
     }
     await expect(validateExportCdnFixtures(fixtureRoot, actualInputs)).resolves.toBeUndefined();
-  }, 30_000);
+  });
 
   it("writes and validates fixtures through its CLI", async () => {
     const snapshot = await generateExportCdnSnapshot(actualInputs);
@@ -429,7 +429,7 @@ describe("export CDN manifest", () => {
     expect(invalid.status).not.toBe(0);
     expect(invalid.stdout).toBe("");
     expect(invalid.stderr).toContain("export CDN manifest: usage:");
-  }, 30_000);
+  });
 
   it("keeps colliding scoped package names in distinct fixture files", async () => {
     const firstPackage = "@a/b__c";

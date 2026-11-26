@@ -682,7 +682,7 @@ describe.sequential("shell parser service", () => {
         destination: { kind: "literal", value: destinations[index] },
       });
     }
-  }, 30_000);
+  });
 
   describe.each([
     ["LF", "\n"],
