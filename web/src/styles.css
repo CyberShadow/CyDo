@@ -2027,6 +2027,18 @@ body,
   field-sizing: content;
 }
 
+/* Keep the empty field one line when the steering hint is wider than the
+   field. Chromium draws the ellipsis only while unfocused. */
+.input-textarea::placeholder {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.input-textarea:placeholder-shown {
+  text-overflow: ellipsis;
+}
+
 .input-textarea:focus {
   border-color: var(--accent);
 }

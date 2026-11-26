@@ -32,9 +32,13 @@ test("mobile new-task description can scroll into view after layout resize", asy
   expect(bottom).toBeLessThanOrEqual(visibleBottom);
 });
 
+function fieldHeight(field: Locator) {
+  return field.evaluate((textarea) => textarea.getBoundingClientRect().height);
+}
+
 async function expectResponsiveDraftHeight(page: Page, field: Locator) {
   await expect(field).toHaveValue("");
-  const height = () => field.evaluate((textarea) => textarea.getBoundingClientRect().height);
+  const height = () => fieldHeight(field);
   await expect.poll(height).toBe(composerHeight);
   await field.fill("A short draft");
   await expect.poll(height).toBe(composerHeight);
@@ -68,3 +72,32 @@ test("mobile session draft height follows the viewport", async ({ page, agentTyp
   });
   await expectResponsiveDraftHeight(page, field);
 });
+
+test(
+  "mobile steering composer keeps the idle height",
+  { tag: "@claude-only" },
+  async ({ page, agentType }) => {
+    await enterSession(page);
+    await sendMessage(page, 'Please reply with "steering-height-idle"');
+    await expect(assistantText(page, "steering-height-idle")).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
+    const field = page.locator(".input-textarea:visible");
+    const height = () => fieldHeight(field);
+    await expect(field).toHaveAttribute("placeholder", "Type a message...", {
+      timeout: responseTimeout(agentType),
+    });
+    await expect.poll(height).toBe(composerHeight);
+
+    // The mock never finishes this reply, so the turn stays in steering.
+    await sendMessage(page, "stall session");
+    await expect(field).toHaveAttribute("placeholder", "Type a steering message...", {
+      timeout: responseTimeout(agentType),
+    });
+    await expect(page.locator(".input-box .btn-stop:visible")).toBeVisible();
+    await expect.poll(height).toBe(composerHeight);
+
+    await field.fill("A short draft");
+    await expect.poll(height).toBe(composerHeight);
+  },
+);
