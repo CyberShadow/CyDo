@@ -976,17 +976,17 @@ public:
 
 		if (td.hasWorktree && workDir.length > 0)
 		{
-			// Read-only tasks need the worktree mounted too: the task
-			// directory tree is not necessarily reachable through the
-			// workspace-root mount (it may live on another volume).
+			// An owned worktree lives in the always-writable task directory.
+			// Launching again must preserve that write access.
 			auto wtPath = host_.worktreePath(td);
 			enforce(wtPath.length > 0, "Worktree path must not be empty for worktree task");
 			linkCheckoutFiles(td.repoPath, wtPath, worktreeLinks(td));
-			auto wtAccess = readOnly ? PathAccess.ro : PathAccess.rw;
+			bool worktreeReadOnly = readOnly && !td.ownsWorktree;
+			auto wtAccess = worktreeReadOnly ? PathAccess.ro : PathAccess.rw;
 			sandbox.paths.require(wtPath, wtAccess,
 				SandboxPathOrigin(SandboxPathOriginKind.launchRequirement, wtPath,
 					"active worktree"));
-			if (readOnly)
+			if (worktreeReadOnly)
 				sandbox.paths.restrictExactToReadOnly(wtPath,
 					SandboxPathOrigin(SandboxPathOriginKind.exactReadOnly, wtPath,
 						"active worktree"));
@@ -3197,13 +3197,14 @@ unittest
 			assert(managedGitDir.status == 0, managedGitDir.output);
 
 			TaskData[int] readonlyTasks;
-			readonlyTasks[1] = TaskData(1, "local", fixture.linkedCheckout);
-			readonlyTasks[1].taskType = "readonly";
-			readonlyTasks[1].agentName = "claude";
-			readonlyTasks[1].worktreeTid = 1;
+			readonlyTasks[2] = TaskData(2, "local", fixture.linkedCheckout);
+			readonlyTasks[2].taskType = "readonly";
+			readonlyTasks[2].agentName = "claude";
+			readonlyTasks[2].parentTid = 1;
+			readonlyTasks[2].worktreeTid = 1;
 			auto readonlyRunner = gitMetadataTestRunner(&readonlyTasks, catalog, fixture,
 				unrestrictedLaunchTestSandbox(), managedCheckout, managedCheckout, mcpSocket);
-			auto readonly = readonlyRunner.prepareTaskSessionLaunch(1,
+			auto readonly = readonlyRunner.prepareTaskSessionLaunch(2,
 				new LinkedWorktreeSandboxTestAgent(), readonlyDef);
 			auto readonlyPaths = readonly.processLaunch.sandbox.paths;
 			assert(readonlyPaths.exact(fixture.linkedCheckout).get.effectiveMode == PathMode.ro);
@@ -3483,6 +3484,68 @@ unittest
 			assert(managedGitMode.get.effectiveMode == PathMode.rw);
 			assert(commonGitMode.get.effectiveMode == PathMode.rw);
 		});
+}
+
+version (unittest) private void assertReadOnlyManagedWorktreeAccess(
+	string fixtureName, int tid, int parentTid, PathMode expectedMode)
+{
+	import std.conv : to;
+	import std.file : mkdirRecurse;
+
+	withGitMetadataLaunchFixture(fixtureName, (GitMetadataLaunchFixture fixture) {
+		auto tasksRoot = buildPath(fixture.root, "tasks");
+		auto ownerTaskDir = buildPath(tasksRoot, "1");
+		mkdirRecurse(ownerTaskDir);
+		auto managedCheckout = buildPath(ownerTaskDir, "worktree");
+		assert(execute(["git", "-C", fixture.primaryRepo, "worktree", "add", "--detach",
+			managedCheckout]).status == 0);
+		auto managedGitDir = execute(["git", "-C", managedCheckout, "rev-parse",
+			"--path-format=absolute", "--git-dir"]);
+		assert(managedGitDir.status == 0, managedGitDir.output);
+
+		auto catalog = gitMetadataTaskCatalog(fixture,
+			"task_types:\n"
+			~ "  readonly:\n"
+			~ "    model_class: large\n"
+			~ "    read_only: true\n");
+		auto typeDef = catalog.getTaskTypesForProject(fixture.linkedCheckout).byName("readonly");
+		assert(typeDef !is null);
+
+		TaskData[int] tasks;
+		tasks[tid] = TaskData(tid, "local", fixture.linkedCheckout);
+		tasks[tid].taskType = "readonly";
+		tasks[tid].agentName = "claude";
+		tasks[tid].parentTid = parentTid;
+		tasks[tid].worktreeTid = 1;
+
+		auto runner = gitMetadataTestRunner(&tasks, catalog, fixture,
+			unrestrictedLaunchTestSandbox(), managedCheckout, managedCheckout,
+			taskDirPath: buildPath(tasksRoot, tid.to!string));
+		auto launch = runner.prepareTaskSessionLaunch(tid,
+			new LinkedWorktreeSandboxTestAgent(), typeDef);
+		auto paths = launch.processLaunch.sandbox.paths;
+		auto checkoutMode = paths.exact(fixture.linkedCheckout);
+		auto worktreeMode = paths.exact(managedCheckout);
+		auto gitDirMode = paths.exact(managedGitDir.output.strip);
+		assert(!checkoutMode.isNull && checkoutMode.get.effectiveMode == PathMode.ro,
+			"Base checkout must be mounted read-only");
+		assert(!worktreeMode.isNull && worktreeMode.get.effectiveMode == expectedMode,
+			"Managed worktree must be mounted " ~ expectedMode.to!string);
+		assert(!gitDirMode.isNull && gitDirMode.get.effectiveMode == expectedMode,
+			"Managed worktree Git directory must be mounted " ~ expectedMode.to!string);
+	});
+}
+
+unittest
+{
+	assertReadOnlyManagedWorktreeAccess("cydo-task-runner-readonly-owned-worktree",
+		1, 0, PathMode.rw);
+}
+
+unittest
+{
+	assertReadOnlyManagedWorktreeAccess("cydo-task-runner-readonly-shared-worktree",
+		2, 1, PathMode.ro);
 }
 
 unittest
