@@ -373,26 +373,6 @@ function makeDraftViewSnapshot(
   };
 }
 
-export function receiveServerError(
-  tasks: Map<string, TaskState>,
-  message: string,
-  tid?: number,
-): {
-  serverError: { message: string; tid?: number };
-  tasks: Map<string, TaskState>;
-} {
-  const serverError = { message, tid };
-  if (tid === undefined) return { serverError, tasks };
-
-  for (const [uuid, task] of tasks) {
-    if (task.tid !== tid || !task.undoPending) continue;
-    const nextTasks = new Map(tasks);
-    nextTasks.set(uuid, { ...task, undoPending: null });
-    return { serverError, tasks: nextTasks };
-  }
-  return { serverError, tasks };
-}
-
 /** Snapshot entry shape shared by tasks_list and task_updated messages. */
 export type TaskSnapshotEntry = TaskListEntry;
 
@@ -1727,18 +1707,10 @@ export function useTaskManager(
     [applyDraftEvent, bindTaskUuid, releaseTombstonedActivity],
   );
 
-  const showServerError = useCallback(
-    (message: string, tid?: number) => {
-      console.error("Server error:", message, "tid:", tid);
-      const transition = receiveServerError(liveStates, message, tid);
-      if (transition.tasks !== liveStates) {
-        const task = findByTid(tid!);
-        commitTask(task!.uuid, transition.tasks.get(task!.uuid)!, "if-present");
-      }
-      setServerError(transition.serverError);
-    },
-    [commitTask],
-  );
+  const showServerError = useCallback((message: string, tid?: number) => {
+    console.error("Server error:", message, "tid:", tid);
+    setServerError({ message, tid });
+  }, []);
 
   const recoverSubmission = useCallback(
     (editorId: EditorId, tid?: number) => {
@@ -2395,7 +2367,17 @@ export function useTaskManager(
           break;
         }
         case "error": {
-          const { message, tid } = msg;
+          const { message, tid, operation } = msg;
+          if (operation === "undo_preview" && tid !== undefined) {
+            const task = findByTid(tid);
+            if (task?.undoPending?.kind === "requesting") {
+              commitTask(
+                task.uuid,
+                { ...task, undoPending: null },
+                "if-present",
+              );
+            }
+          }
           showServerError(message, tid);
           break;
         }

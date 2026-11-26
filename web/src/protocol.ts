@@ -346,6 +346,7 @@ export interface ErrorMessage {
   type: "error";
   message: string;
   tid?: number;
+  operation?: "undo_preview";
 }
 export type UndoCountUnit = "codex_turns" | "history_entries";
 export interface UndoPreviewMessage {

@@ -11,8 +11,9 @@ import {
 import renderToString from "preact-render-to-string";
 import { act } from "preact/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { actStep, ownedRoots } from "./test-support/preactAct";
+import { actPoll, actStep, ownedRoots } from "./test-support/preactAct";
 import type { ControlledImageStore } from "./controlledImageStore";
+import type { ControlMessage } from "./protocol";
 import type { DraftViewSnapshot, TaskManager } from "./useSessionManager";
 import { makeTaskState, type TaskState } from "./types";
 import { createOrdinaryDraftStore } from "./ordinaryDraftStore";
@@ -66,71 +67,106 @@ vi.hoisted(() => {
   }));
 });
 
-vi.mock("./useSessionManager", () => ({
-  parseTaskId: (id: string | null) => {
-    if (id === null) return null;
-    const tid = parseInt(id, 10);
-    return String(tid) === id ? tid : null;
-  },
-  useTaskManager: () =>
-    ({
-      tasks: state.tasks,
-      agentUsage: state.agentUsage,
-      ordinaryDraftStore: (state.ordinaryDraftStore ??=
-        createOrdinaryDraftStore()),
-      activeTaskId: state.activeTaskId,
-      getActiveTaskId: () => state.activeTaskId,
-      setActiveTaskId: vi.fn(),
-      connected: state.connected,
-      tasksLoaded: state.tasksLoaded,
-      send: vi.fn(),
-      interrupt: vi.fn(),
-      stop: vi.fn(),
-      closeStdin: vi.fn(),
-      resume: vi.fn(),
-      promote: vi.fn(),
-      fork: vi.fn(),
-      undo: vi.fn(),
-      undoPreview: vi.fn(),
-      unsendMessage: vi.fn(),
-      approveRetry: vi.fn(),
-      undoConfirm: vi.fn(),
-      undoDismiss: vi.fn(),
-      dismissAttention: vi.fn(),
-      clearInputDraft: vi.fn(),
-      setArchived: vi.fn(),
-      saveDraft: vi.fn(),
-      sendAskUserResponse: vi.fn(),
-      sendPermissionPromptResponse: state.sendPermissionPromptResponse,
-      editMessage: vi.fn(),
-      editRawEvent: vi.fn(),
-      draftView: state.draftView,
-      sidebarTasks: [],
-      workspaces: [],
-      entryPoints: state.entryPoints,
-      typeInfo: [],
-      agents: state.agents,
-      defaultAgent: "",
-      defaultTaskType: "",
-      activeWorkspace: state.activeWorkspace,
-      activeProject: state.activeProject,
-      notices: {},
-      localNotices: {},
-      serverError: state.serverError,
-      dismissServerError: state.dismissServerError,
-      devMode: false,
-      ui: {},
-      heicConversion: { available: false, reason: "not configured" },
-      getHeicConversion: () => ({ available: false, reason: "not configured" }),
-      navigateHome: vi.fn(),
-      navigateToProject: vi.fn(),
-      getProjectHref: vi.fn(),
-      getTaskHref: vi.fn(),
-      getByTid: state.getByTid,
-      refreshWorkspaces: vi.fn(),
-      scanState: "idle",
-    }) satisfies TaskManager,
+const liveManager = vi.hoisted(() => ({
+  enabled: false,
+  manager: null as TaskManager | null,
+  receive: null as ((message: ControlMessage) => void) | null,
+  route: vi.fn(),
 }));
+
+vi.mock("./connection", () => ({
+  Connection: class {
+    onControlMessage?: (message: ControlMessage) => void;
+    onStatusChange?: (connected: boolean) => void;
+
+    connect() {
+      this.onStatusChange?.(true);
+      liveManager.receive = (message) => {
+        this.onControlMessage?.(message);
+      };
+    }
+
+    disconnect() {}
+    undoTask() {}
+  },
+}));
+
+vi.mock("./useSessionManager", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./useSessionManager")>();
+  return {
+    parseTaskId: (id: string | null) => {
+      if (id === null) return null;
+      const tid = parseInt(id, 10);
+      return String(tid) === id ? tid : null;
+    },
+    useTaskManager: (...args: Parameters<typeof actual.useTaskManager>) => {
+      if (liveManager.enabled) {
+        liveManager.manager = actual.useTaskManager(...args);
+        return liveManager.manager;
+      }
+      return {
+        tasks: state.tasks,
+        agentUsage: state.agentUsage,
+        ordinaryDraftStore: (state.ordinaryDraftStore ??=
+          createOrdinaryDraftStore()),
+        activeTaskId: state.activeTaskId,
+        getActiveTaskId: () => state.activeTaskId,
+        setActiveTaskId: vi.fn(),
+        connected: state.connected,
+        tasksLoaded: state.tasksLoaded,
+        send: vi.fn(),
+        interrupt: vi.fn(),
+        stop: vi.fn(),
+        closeStdin: vi.fn(),
+        resume: vi.fn(),
+        promote: vi.fn(),
+        fork: vi.fn(),
+        undo: vi.fn(),
+        undoPreview: vi.fn(),
+        unsendMessage: vi.fn(),
+        approveRetry: vi.fn(),
+        undoConfirm: vi.fn(),
+        undoDismiss: vi.fn(),
+        dismissAttention: vi.fn(),
+        clearInputDraft: vi.fn(),
+        setArchived: vi.fn(),
+        saveDraft: vi.fn(),
+        sendAskUserResponse: vi.fn(),
+        sendPermissionPromptResponse: state.sendPermissionPromptResponse,
+        editMessage: vi.fn(),
+        editRawEvent: vi.fn(),
+        draftView: state.draftView,
+        sidebarTasks: [],
+        workspaces: [],
+        entryPoints: state.entryPoints,
+        typeInfo: [],
+        agents: state.agents,
+        defaultAgent: "",
+        defaultTaskType: "",
+        activeWorkspace: state.activeWorkspace,
+        activeProject: state.activeProject,
+        notices: {},
+        localNotices: {},
+        serverError: state.serverError,
+        dismissServerError: state.dismissServerError,
+        devMode: false,
+        ui: {},
+        heicConversion: { available: false, reason: "not configured" },
+        getHeicConversion: () => ({
+          available: false,
+          reason: "not configured",
+        }),
+        navigateHome: vi.fn(),
+        navigateToProject: vi.fn(),
+        getProjectHref: vi.fn(),
+        getTaskHref: vi.fn(),
+        getByTid: state.getByTid,
+        refreshWorkspaces: vi.fn(),
+        scanState: "idle",
+      } satisfies TaskManager;
+    },
+  };
+});
 
 vi.mock("./controlledImageStore", async (importOriginal) => {
   const actual =
@@ -146,6 +182,7 @@ vi.mock("./controlledImageStore", async (importOriginal) => {
 });
 
 vi.mock("preact-iso", () => ({
+  useLocation: () => ({ route: liveManager.route, path: "/" }),
   Router: ({ children }: { children: ComponentChildren }) => {
     const firstRoute = toChildArray(children)[0] as VNode<{
       component: () => VNode;
@@ -234,6 +271,9 @@ vi.mock("./useErrorOverlay", () => ({
 import { App } from "./app";
 
 beforeEach(() => {
+  liveManager.enabled = false;
+  liveManager.manager = null;
+  liveManager.receive = null;
   state.serverError = null;
   state.dismissServerError.mockReset();
   state.draftView = null;
@@ -428,6 +468,93 @@ describe("server command errors", () => {
     } finally {
       options.vnode = previousVNode;
     }
+  });
+
+  it("shows a rejected command without clearing a pending undo preview", async () => {
+    liveManager.enabled = true;
+    const root = roots.create();
+    await act(() => {
+      render(h(App, {}), root);
+    });
+
+    const tid = 7;
+    const receive = liveManager.receive!;
+    const currentTask = () => liveManager.manager!.getByTid(tid);
+    await actStep(() => {
+      receive({
+        type: "tasks_list",
+        complete: true,
+        tasks: [
+          {
+            tid,
+            alive: false,
+            resumable: false,
+            isProcessing: false,
+            child_count: 0,
+          },
+        ],
+      });
+    });
+    await actPoll({
+      description: "task snapshot received",
+      ready: () => currentTask() !== undefined,
+    });
+    await act(() => {
+      liveManager.manager!.undoPreview(tid, "before:message");
+    });
+    expect(currentTask()!.undoPending).toMatchObject({
+      kind: "requesting",
+      anchor: "before:message",
+    });
+
+    const reason = "Stop the session before editing messages";
+    await actStep(() => {
+      receive({ type: "error", message: reason, tid });
+    });
+    await actPoll({
+      description: "command error dialog rendered",
+      ready: () => root.querySelector(".command-error-dialog") !== null,
+    });
+    const dialog = root.querySelector(".command-error-dialog")!;
+    expect(dialog.textContent).toContain(reason);
+    expect(currentTask()!.undoPending).toMatchObject({
+      kind: "requesting",
+      anchor: "before:message",
+    });
+    await actStep(() => {
+      receive({
+        type: "undo_preview",
+        tid,
+        messages_removed: 2,
+        count_unit: "history_entries",
+      });
+    });
+    await actPoll({
+      description: "undo preview arrived with its anchor",
+      ready: () => currentTask()?.undoPending?.kind === "history_entries",
+    });
+    expect(currentTask()!.undoPending?.anchor).toBe("before:message");
+
+    await act(() => {
+      dialog.querySelector("button")!.click();
+    });
+    expect(root.querySelector(".command-error-dialog")).toBeNull();
+
+    await act(() => {
+      liveManager.manager!.undoPreview(tid, "before:another-message");
+    });
+    await actStep(() => {
+      receive({
+        type: "error",
+        message: "Undo preview refused",
+        tid,
+        operation: "undo_preview",
+      });
+    });
+    await actPoll({
+      description: "the undo preview error cleared the pending request",
+      ready: () => currentTask()?.undoPending === null,
+    });
   });
 
   it("hides the dialog after its error state is cleared", () => {

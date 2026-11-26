@@ -1391,6 +1391,7 @@ struct ErrorMessage
 	string type = "error";
 	string message;
 	int tid = -1;
+	@JSONOptional string operation;
 }
 
 struct UndoPreviewMessage

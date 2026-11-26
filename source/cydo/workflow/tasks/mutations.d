@@ -48,7 +48,14 @@ alias MutationReply = void delegate(Data);
 private struct MutationReplySocket
 {
 	MutationReply reply;
+	string operation;
+
 	void send(Data data) { reply(data); }
+
+	void sendError(int tid, string message)
+	{
+		send(Data(toJson(ErrorMessage("error", message, tid, operation)).representation));
+	}
 }
 
 
@@ -268,21 +275,20 @@ public:
 
 	void handleUndoTaskMsg(MutationReply reply, WsMessage json)
 	{
-		auto ws = MutationReplySocket(reply);
+		auto ws = MutationReplySocket(reply, json.dry_run ? "undo_preview" : null);
 		auto tid = json.tid;
 		auto td = host_.getTask(tid);
 		if (tid < 0 || td is null)
 			return;
 		if (td.agentSessionId.length == 0)
 		{
-			ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
+			ws.sendError(tid, "Task has no agent session ID");
 			return;
 		}
 		if (!json.dry_run && (td.nativeUndoState == NativeUndoState.backingUp
 			|| td.nativeUndoState == NativeUndoState.inFlight))
 		{
-			ws.send(Data(toJson(ErrorMessage("error",
-				"Native undo is already in progress", tid)).representation));
+			ws.sendError(tid, "Native undo is already in progress");
 			return;
 		}
 
@@ -300,23 +306,23 @@ public:
 		if (!host_.resolveFreshPersistedBoundary(tid, access, json.anchor, boundary,
 			opensConversation))
 		{
-			ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
+			ws.sendError(tid, "UUID not found in task history");
 			return;
 		}
 		auto nativeSourceState = host_.nativeSessionState(tid);
 		auto operations = selectHistoryOperations(ta.driver, nativeSourceState, 0);
 		if (!allowsOperation(boundary, opensConversation, operations, HistoryOperation.undo))
 		{
-			ws.send(Data(toJson(ErrorMessage("error", opensConversation
+			ws.sendError(tid, opensConversation
 				? "Undoing the first message needs its agent session running and idle"
-				: "UUID not found in task history", tid)).representation));
+				: "UUID not found in task history");
 			return;
 		}
 		auto mechanism = operationMechanism(boundary, opensConversation, operations,
 			HistoryOperation.undo);
 		if (json.revert_files && !allowsFileRevert(boundary))
 		{
-			ws.send(Data(toJson(ErrorMessage("error", "File revert is unavailable for this history boundary", tid)).representation));
+			ws.sendError(tid, "File revert is unavailable for this history boundary");
 			return;
 		}
 		if (json.dry_run)
@@ -329,7 +335,7 @@ public:
 				ta.inactiveHistoryLines(readText(access.path)));
 			if (count < 0)
 			{
-				ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
+				ws.sendError(tid, "UUID not found in task history");
 				return;
 			}
 			ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid,
@@ -341,9 +347,7 @@ public:
 		{
 			if (td.nativeUndoState == NativeUndoState.unverified)
 			{
-				ws.send(Data(toJson(ErrorMessage("error",
-					"Claude may already have changed history; native undo is blocked in this running CyDo process",
-					tid)).representation));
+				ws.sendError(tid, "Claude may already have changed history; native undo is blocked in this running CyDo process");
 				return;
 			}
 			auto claudeSession = cast(ClaudeCodeSession) host_.sessionForTask(tid);
@@ -522,7 +526,7 @@ private:
 		case TaskHistoryResolutionKind.orphanAgent:
 			break;
 		}
-		ws.send(Data(toJson(ErrorMessage("error", failure, tid)).representation));
+		ws.sendError(tid, failure);
 		return false;
 	}
 
@@ -885,7 +889,7 @@ private:
 	{
 		void fail(string message)
 		{
-			ws.send(Data(toJson(ErrorMessage("error", message, tid)).representation));
+			ws.sendError(tid, message);
 		}
 		host_.whenHistoryLoaded(tid, () {
 			auto td = host_.getTask(tid);
@@ -1876,8 +1880,12 @@ unittest
 	service.handleUndoTaskMsg(reply, undo("before:t2"));
 	mode = CodexHistoryMode.paginated;
 	assert(replies.length == 7);
-	foreach (refusal; replies)
-		assert(refusal.canFind("UUID not found in task history"));
+	foreach (i, refusal; replies)
+	{
+		auto error = jsonParse!ErrorMessage(refusal);
+		assert(error.message == "UUID not found in task history");
+		assert(error.operation == (i % 2 == 1 ? "undo_preview" : null));
+	}
 	assert(effects.length == 0 && session.reverts.length == 0 && task.history.isLoaded);
 	// The preview counts the turns the undo removes.
 	replies = null;
