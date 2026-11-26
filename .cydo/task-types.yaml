@@ -29,6 +29,8 @@ task_types:
     read_only: true
     output_type: []
     knowledge_base: .cydo/memory/flaky-tests/
+    creatable_entry_points:
+      agentic: { default: true }
     creatable_tasks:
       bug:
         prompt_template: prompts/bug.md
