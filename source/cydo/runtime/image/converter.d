@@ -37,14 +37,14 @@ final class UnavailableHeicConverter : HeicConverter
 
 enum maxHeicInputBytes = 32 * 1024 * 1024;
 
-HeicConverter createHeicConverter(string manifestPath)
+HeicConverter createHeicConverter(string manifestPath, void delegate() statusChanged = null)
 {
 	version (linux)
 	{
 		if (!manifestPath.length)
 			return new UnavailableHeicConverter("not configured");
 		try
-			return JailedHeicConverter.loadManifest(manifestPath);
+			return JailedHeicConverter.loadManifest(manifestPath, statusChanged);
 		catch (Exception e)
 			return new UnavailableHeicConverter(e.msg);
 	}
@@ -57,11 +57,12 @@ version (linux)
 	import core.time : seconds;
 	import std.algorithm : any, startsWith;
 	import std.exception : enforce;
-	import std.file : exists, readText;
+	import std.file : exists, read, readText;
 	import std.json : JSONType, parseJSON;
 	import std.path : dirName;
 	import std.string : lineSplitter;
 
+	import ae.net.asockets : onNextTick, socketManager;
 	import ae.sys.file : realPath;
 
 	import cydo.agent.process : ProcessResourceLimits;
@@ -88,13 +89,29 @@ version (linux)
 
 		private string[] command;
 		private Conversion[] queue;
+		private typeof(&runBoundedFilter) filter;
+		private HeicConversionStatus conversionStatus =
+			HeicConversionStatus(false, "checking the HEIC converter");
 
-		private this(string[] command)
+		private this(string[] command, immutable(ubyte)[] probeInput,
+			void delegate() statusChanged, typeof(&runBoundedFilter) filter = &runBoundedFilter)
 		{
 			this.command = command;
+			this.filter = filter;
+			onNextTick(socketManager, {
+				toJpeg(probeInput).then((immutable(ubyte)[]) {
+					conversionStatus = HeicConversionStatus(true);
+				}).except((Exception e) {
+					conversionStatus = HeicConversionStatus(false,
+						"HEIC converter self-check failed: " ~ e.msg);
+				}).finish({
+					if (statusChanged !is null)
+						statusChanged();
+				}).ignoreResult();
+			});
 		}
 
-		static JailedHeicConverter loadManifest(string path)
+		static JailedHeicConverter loadManifest(string path, void delegate() statusChanged = null)
 		{
 			enforce(exists(path), "HEIC converter manifest file does not exist");
 			auto json = parseJSON(readText(path));
@@ -145,12 +162,14 @@ version (linux)
 					"HEIC converter store argument is outside the closure: " ~ arg);
 			}
 			enforce(exists(manifest.probe_input), "HEIC converter probe input does not exist");
-			return new JailedHeicConverter(buildHelperJailCommand(jail, manifest.argv));
+			auto command = buildHelperJailCommand(jail, manifest.argv);
+			auto probeInput = cast(immutable(ubyte)[]) read(manifest.probe_input, maxHeicInputBytes + 1);
+			return new JailedHeicConverter(command, probeInput, statusChanged);
 		}
 
 		override @property HeicConversionStatus status()
 		{
-			return HeicConversionStatus(true);
+			return conversionStatus;
 		}
 
 		override Promise!(immutable(ubyte)[]) toJpeg(immutable(ubyte)[] heic)
@@ -170,7 +189,7 @@ version (linux)
 			enum limits = FilterLimits(ProcessResourceLimits(1024UL * 1024 * 1024,
 				30, 64 * 1024 * 1024), 30.seconds, 32 * 1024 * 1024);
 			auto conversion = queue[0];
-			runBoundedFilter(command, conversion.input, limits).then((immutable(ubyte)[] jpeg) {
+			filter(command, conversion.input, limits).then((immutable(ubyte)[] jpeg) {
 				enum ubyte[3] jpegPrefix = [0xff, 0xd8, 0xff];
 				if (jpeg.length < jpegPrefix.length || jpeg[0 .. jpegPrefix.length] != jpegPrefix[])
 					throw new FilterFailure(FilterFailureKind.failed);
@@ -246,14 +265,6 @@ version (linux) unittest
 	manifest.argv = [executable, otherOutput];
 	write(manifestPath, toJson(manifest));
 	assertRefusal("HEIC converter store argument is outside the closure");
-
-	write(buildPath(dir, "bwrap"), "");
-	auto oldPath = environment.get("PATH", "");
-	environment["PATH"] = dir ~ ":" ~ oldPath;
-	scope (exit) environment["PATH"] = oldPath;
-	manifest.argv = [executable];
-	write(manifestPath, toJson(manifest));
-	assert(JailedHeicConverter.loadManifest(manifestPath).status.available);
 }
 
 version (linux) unittest
@@ -263,5 +274,63 @@ version (linux) unittest
 		auto status = createHeicConverter(path).status;
 		assert(!status.available);
 		assert(status.reason == "not configured", status.reason);
+	}
+}
+
+version (linux) version (unittest)
+{
+	import cydo.foundation.testing : drainNextTicks;
+
+	private Promise!(immutable(ubyte)[]) startupFilterResult;
+	private enum startupInput = cast(immutable(ubyte)[]) "startup HEIC";
+
+	private Promise!(immutable(ubyte)[]) startupFilter(string[], immutable(ubyte)[] input, FilterLimits)
+	{
+		assert(input == startupInput);
+		auto result = startupFilterResult;
+		assert(result !is null, "unexpected second startup filter call");
+		startupFilterResult = null;
+		return result;
+	}
+
+	JailedHeicConverter makeGatedStartupConverter(Promise!(immutable(ubyte)[]) result,
+		void delegate() statusChanged)
+	{
+		startupFilterResult = result;
+		auto converter = new JailedHeicConverter(["startup-filter"], startupInput,
+			statusChanged, &startupFilter);
+		drainNextTicks();
+		assert(startupFilterResult is null, "startup filter did not run");
+		return converter;
+	}
+
+	unittest
+	{
+		auto result = new Promise!(immutable(ubyte)[]);
+		HeicConversionStatus[] notifications;
+		JailedHeicConverter converter;
+		converter = makeGatedStartupConverter(result, { notifications ~= converter.status; });
+		assert(converter.status == HeicConversionStatus(false, "checking the HEIC converter"));
+		assert(notifications.length == 0);
+
+		result.fulfill(cast(immutable(ubyte)[]) "\xff\xd8\xff\xd9");
+		drainNextTicks();
+		assert(converter.status == HeicConversionStatus(true));
+		assert(notifications == [HeicConversionStatus(true)]);
+	}
+
+	unittest
+	{
+		auto result = new Promise!(immutable(ubyte)[]);
+		HeicConversionStatus[] notifications;
+		JailedHeicConverter converter;
+		converter = makeGatedStartupConverter(result, { notifications ~= converter.status; });
+		assert(notifications.length == 0);
+
+		result.reject(new FilterFailure(FilterFailureKind.timedOut));
+		drainNextTicks();
+		auto unavailable = HeicConversionStatus(false, "HEIC converter self-check failed: timed out");
+		assert(converter.status == unavailable);
+		assert(notifications == [unavailable]);
 	}
 }

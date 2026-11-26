@@ -206,7 +206,7 @@ static:
 			import std.process : environment;
 			import std.stdio : stdin, stdout;
 
-			import cydo.runtime.image.converter : createHeicConverter, maxHeicInputBytes;
+			import cydo.runtime.image.converter : HeicConverter, createHeicConverter, maxHeicInputBytes;
 			import cydo.runtime.image.heif : isHeifStill;
 
 			initializeProcessSignals();
@@ -226,15 +226,24 @@ static:
 				exit(1);
 			}
 
-			auto converter = createHeicConverter(environment.get("CYDO_HEIC_CONVERTER"));
+			HeicConverter converter;
 			bool failed;
-			converter.toJpeg(input.data).then((immutable(ubyte)[] jpeg) {
-				stdout.rawWrite(jpeg);
-			}).except((Exception e) {
-				stderr.writeln(e.msg);
-				failed = true;
-			}).ignoreResult();
+			converter = createHeicConverter(environment.get("CYDO_HEIC_CONVERTER"), {
+				if (!converter.status.available)
+					return;
+				converter.toJpeg(input.data).then((immutable(ubyte)[] jpeg) {
+					stdout.rawWrite(jpeg);
+				}).except((Exception e) {
+					stderr.writeln(e.msg);
+					failed = true;
+				}).ignoreResult();
+			});
 			socketManager.loop();
+			if (!converter.status.available)
+			{
+				stderr.writeln(converter.status.reason);
+				exit(1);
+			}
 			if (failed)
 				exit(1);
 		}

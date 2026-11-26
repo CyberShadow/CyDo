@@ -82,12 +82,24 @@ def allocate_memory():
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--allocate"]:
-        sys.exit(allocate_memory())
-    if sys.argv[1:] == ["--close-stdin"]:
-        # The first byte confirms the writer is inside the intercepted call.
-        if not os.read(0, 1):
+    mode = sys.argv[1:]
+    if mode in (["--allocate"], ["--close-stdin"], ["--fail-startup"]):
+        # The manifest's one-byte startup input lets the helper distinguish
+        # the phases even when the preload pauses the writer after one byte.
+        first = os.read(0, 1)
+        if not first:
             sys.exit(2)
+        if mode == ["--fail-startup"]:
+            diagnostic = (
+                "rejected startup probe" if first == b"P" else "attempted stdin conversion"
+            )
+            print(f"image-jail: {diagnostic}", file=sys.stderr)
+            sys.exit(1)
+        if first == b"P":
+            sys.stdout.buffer.write(JPEG_PREFIX)
+            sys.exit(0)
+        if mode == ["--allocate"]:
+            sys.exit(allocate_memory())
         os.close(0)
         time.sleep(0.2)
         sys.exit(7)

@@ -283,7 +283,7 @@ class App
 	{
 		// Consume server-only settings before anything can spawn a child.
 		auto serverEnv = consumeServerEnvironment();
-		heicConverter = createHeicConverter(serverEnv.heicConverter);
+		heicConverter = createHeicConverter(serverEnv.heicConverter, &broadcastServerStatus);
 		submissionIntake = new SubmissionIntake(heicConverter);
 		initLogger();
 		applyConfiguredLogLevel("info");
@@ -3978,6 +3978,13 @@ class App
 		clientHub.broadcast(buildAgentsList(snapshotAgentEntries(), config.default_agent));
 		clientHub.broadcast(buildWorkspacesList(discoveryService.workspacesInfo));
 		broadcastTaskTypeLists();
+		broadcastServerStatus();
+		infof("Config reloaded successfully");
+		discoveryService.endScan();
+	}
+
+	private void broadcastServerStatus()
+	{
 		clientHub.broadcast(buildServerStatus(
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
@@ -3985,8 +3992,6 @@ class App
 			config.ui,
 			heicConverter.status,
 		));
-		infof("Config reloaded successfully");
-		discoveryService.endScan();
 	}
 
 	private void onProjectConfigChanged(string projectPath)
@@ -5330,6 +5335,56 @@ unittest
 		BrowserSubmissionRejectionKind.attachment_rejected);
 	assert(rejection["attachment"].integer == 0 && rejection["reason"].str.canFind("no bwrap"));
 	assert(fixture.session.sendCalls == 0);
+}
+
+version (linux) unittest
+{
+	import cydo.runtime.image.converter : makeGatedStartupConverter;
+
+	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope (exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
+	fixture.app.tasks[fixture.tid].agentName = "test";
+	auto gate = new Promise!(immutable(ubyte)[]);
+	fixture.app.heicConverter = makeGatedStartupConverter(gate, &fixture.app.broadcastServerStatus);
+	fixture.app.submissionIntake = new SubmissionIntake(fixture.app.heicConverter);
+
+	auto message = testBrowserHeicSubmission(fixture.tid, "photo", "checking-photo");
+	fixture.app.handleUserMessage(fixture.socket, message);
+	drainSubmissionNextTicks();
+	auto rejection = assertBrowserRejection(fixture.socket, message.correlation_id, fixture.tid,
+		BrowserSubmissionRejectionKind.attachment_rejected);
+	assert(rejection["attachment"].integer == 0);
+	assert(rejection["reason"].str ==
+		"HEIC conversion is unavailable on this server: checking the HEIC converter");
+	assert(fixture.session.sendCalls == 0);
+	gate.fulfill(testJpegBytes);
+	drainSubmissionNextTicks();
+}
+
+version (linux) unittest
+{
+	import cydo.runtime.image.converter : makeGatedStartupConverter;
+
+	auto app = new App;
+	auto first = new SubmissionCaptureWebSocket;
+	scope (exit) first.disconnect("test complete", DisconnectType.requested);
+	auto second = new SubmissionCaptureWebSocket;
+	scope (exit) second.disconnect("test complete", DisconnectType.requested);
+	app.clientHub.add(first);
+	app.clientHub.add(second);
+	auto gate = new Promise!(immutable(ubyte)[]);
+	app.heicConverter = makeGatedStartupConverter(gate, &app.broadcastServerStatus);
+	assert(first.sent.length == 0 && second.sent.length == 0);
+	gate.fulfill(testJpegBytes);
+	drainSubmissionNextTicks();
+
+	foreach (client; [first, second])
+	{
+		assert(client.sent.length == 1);
+		auto packet = parseJSON(client.sent[0]);
+		assert(packet["type"].str == "server_status");
+		assert(packet["heic_conversion"]["available"].boolean);
+	}
 }
 
 unittest

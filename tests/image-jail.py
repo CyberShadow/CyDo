@@ -49,18 +49,22 @@ class ImageJailTests(unittest.TestCase):
             os.environ["CYDO_IMAGE_JAIL_PROBE"],
         ]
 
-    def convert(self, data, probe_args=None, *, preload=None):
+    def convert(self, data, probe_args=None, *, preload=None, probe_input=None):
         env = os.environ.copy()
         env.pop("CYDO_HEIC_CONVERTER", None)
         if preload is not None:
             env["LD_PRELOAD"] = preload
         if probe_args is not None:
+            probe_path = FIXTURE
+            if probe_input is not None:
+                probe_path = self.directory / "startup-input"
+                probe_path.write_bytes(probe_input)
             manifest = self.directory / "probe.json"
             manifest.write_text(json.dumps({
                 "argv": [*self.probe, *probe_args],
                 "env": {},
                 "store_paths": env["CYDO_IMAGE_JAIL_PROBE_PATHS"],
-                "probe_input": str(FIXTURE),
+                "probe_input": str(probe_path),
             }))
             env["CYDO_HEIC_CONVERTER"] = str(manifest)
         return subprocess.run(
@@ -131,6 +135,7 @@ class ImageJailTests(unittest.TestCase):
             self.fixture.ljust(4 * 1024**2, b"\0"),
             ["--close-stdin"],
             preload=os.environ["CYDO_IMAGE_JAIL_PIPE_PROBE"],
+            probe_input=b"P",
         )
         self.assert_exit(result, 1)
         self.assertEqual(result.stdout, b"")
@@ -138,10 +143,21 @@ class ImageJailTests(unittest.TestCase):
         self.assertEqual(result.stderr.splitlines()[-1:], [b"conversion failed"])
 
     def test_jail_rejects_two_gib_allocation(self):
-        result = self.convert(self.fixture, ["--allocate"])
+        result = self.convert(self.fixture, ["--allocate"], probe_input=b"P")
         self.assert_exit(result, 1)
         self.assertEqual(result.stdout, b"")
         self.assertEqual(result.stderr.splitlines()[-1:], [b"conversion failed"])
+
+    def test_failed_startup_probe_prevents_stdin_conversion(self):
+        result = self.convert(self.fixture, ["--fail-startup"], probe_input=b"P")
+        self.assert_exit(result, 1)
+        self.assertEqual(result.stdout, b"")
+        self.assertIn(b"image-jail: rejected startup probe", result.stderr)
+        self.assertNotIn(b"image-jail: attempted stdin conversion", result.stderr)
+        self.assertEqual(
+            result.stderr.splitlines()[-1:],
+            [b"HEIC converter self-check failed: conversion failed"],
+        )
 
 
 if __name__ == "__main__":
