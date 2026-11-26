@@ -1849,6 +1849,7 @@ describe("sidebar keyboard navigation", () => {
     state.activeProject = "project";
     state.sidebarTasks = [1, 2, 3, 4, 5].map((tid) => ({
       tid,
+      lastActive: [0, 5, 50, 10, 20, 40][tid],
       parentTid: tid === 2 || tid === 3 ? 1 : undefined,
       status: "completed",
       alive: false,
@@ -1860,12 +1861,14 @@ describe("sidebar keyboard navigation", () => {
   });
 
   it.each([
-    ["oldest_first", [null, "1", "2", "3", "4", "5", null]],
-    ["newest_first", [null, "5", "4", "1", "3", "2", null]],
+    ["creation", "oldest_first", [null, "1", "2", "3", "4", "5", null]],
+    ["creation", "newest_first", [null, "5", "4", "1", "3", "2", null]],
+    ["activity", "oldest_first", [null, "4", "5", "1", "3", "2", null]],
+    ["activity", "newest_first", [null, "1", "2", "3", "5", "4", null]],
   ] as const)(
-    "moves through New Task and wraps with %s",
-    async (order, cycle) => {
-      state.ui = { sidebar: { order } };
+    "moves through New Task and hidden descendants without visiting the summary (%s, %s)",
+    async (sort, order, cycle) => {
+      state.ui = { sidebar: { sort, order } };
       const container = roots.create();
       for (const key of ["ArrowDown", "ArrowUp"]) {
         const route = key === "ArrowDown" ? cycle : [...cycle].reverse();
@@ -1896,12 +1899,14 @@ describe("sidebar keyboard navigation", () => {
   );
 
   it.each([
-    ["oldest_first", "2", "3"],
-    ["newest_first", "3", "2"],
+    ["creation", "oldest_first", "2", "3"],
+    ["activity", "oldest_first", "3", "2"],
+    ["creation", "newest_first", "3", "2"],
+    ["activity", "newest_first", "2", "3"],
   ] as const)(
-    "jumps to attention in both directions with %s",
-    async (order, down, up) => {
-      state.ui = { sidebar: { order } };
+    "jumps to attention in both directions with %s and %s",
+    async (sort, order, down, up) => {
+      state.ui = { sidebar: { sort, order } };
       state.activeTaskId = "4";
       state.attention = new Set([2, 3]);
       const container = roots.create();

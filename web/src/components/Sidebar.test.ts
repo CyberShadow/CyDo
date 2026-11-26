@@ -204,55 +204,191 @@ describe("Sidebar newest-first rendering", () => {
   });
 });
 
-describe("Sidebar newest-first subtask collapsing", () => {
+describe("Sidebar activity order", () => {
   const tasks = [
-    task(1),
-    task(2, { parentTid: 1, status: "completed" }),
-    task(3, { parentTid: 1, status: "completed" }),
-    task(4, { parentTid: 3, status: "completed" }),
-    task(5, { parentTid: 1, alive: true }),
-    task(6, { parentTid: 5, alive: true }),
-    task(7, { parentTid: 1, status: "completed" }),
+    task(1, { lastActive: 1 }),
+    task(2, { lastActive: 20 }),
+    task(3, { parentTid: 1, lastActive: 2 }),
+    task(4, { parentTid: 3, lastActive: 60 }),
+    task(5, { lastActive: 10 }),
+    task(6, { parentTid: 5, archived: true, lastActive: 70 }),
+    task(7, { archived: true, lastActive: 100 }),
+    task(8, { status: "importable", lastActive: 90 }),
   ];
 
-  function newestItems(activeTaskId: string | null) {
-    return flattenTree(
-      buildTree(tasks, { order: "newest_first" }),
-      activeTaskId,
-      [],
-      false,
-      true,
-    ).filter((item) => item.kind === "ordinary");
-  }
-
-  it("folds the oldest stopped run and ends its guide after the visible children", () => {
-    const rows = newestItems(null);
-    expect(rows.map(({ id, depth, guides }) => [id, depth, guides])).toEqual([
-      ["1", 0, 0],
-      ["7", 1, 1],
-      ["5", 1, 1],
-      ["6", 2, 1],
-      ["subtasks:1", 1, 0],
-    ]);
-    expect(rows.at(-1)).toMatchObject({
-      title: "(2 subtasks)",
-      selectId: "1",
-      attentionTids: [3, 4, 2],
-    });
-  });
-
-  it.each(["1", "4"])(
-    "expands the oldest run when task %s is selected",
-    (activeTaskId) => {
-      expect(newestItems(activeTaskId).map(({ id }) => id)).toEqual([
-        "1",
+  it.each([
+    [
+      "oldest_first",
+      [
+        "archive",
         "7",
+        "import",
+        "8",
+        "2",
+        "1",
+        "3",
+        "4",
         "5",
+        "archive:5",
         "6",
+      ],
+    ],
+    [
+      "newest_first",
+      [
+        "5",
+        "archive:5",
+        "6",
+        "1",
         "3",
         "4",
         "2",
-      ]);
+        "import",
+        "8",
+        "archive",
+        "7",
+      ],
+    ],
+  ] as const)(
+    "orders subtrees by live and archived descendant activity with %s",
+    (order, expected) => {
+      expect(flatTaskOrder(tasks, { sort: "activity", order })).toEqual(
+        expected,
+      );
+    },
+  );
+
+  it.each([
+    ["oldest_first", ["import", "3", "2", "4", "1"]],
+    ["newest_first", ["import", "1", "2", "4", "3"]],
+  ] as const)(
+    "preserves pre-epoch subtree activity with %s",
+    (order, expected) => {
+      const tasks = [
+        task(1, { status: "importable" }),
+        task(2, { status: "importable", lastActive: -3000 }),
+        task(3, { status: "importable", lastActive: -2000 }),
+        task(4, { parentTid: 2, lastActive: -1000 }),
+      ];
+
+      expect(flatTaskOrder(tasks, { sort: "activity", order })).toEqual(
+        expected,
+      );
+    },
+  );
+
+  it("treats missing activity as zero and breaks activity ties by TID", () => {
+    const tasks = [
+      task(5, { lastActive: 20 }),
+      task(4),
+      task(3, { lastActive: 20 }),
+      task(2, { lastActive: 0 }),
+    ];
+    expect(flatTaskOrder(tasks, { sort: "activity" })).toEqual([
+      "2",
+      "4",
+      "3",
+      "5",
+    ]);
+  });
+});
+
+describe("Sidebar stale subtask collapsing", () => {
+  const tasks = [
+    task(1),
+    task(2, { parentTid: 1, status: "completed", lastActive: 50 }),
+    task(3, { parentTid: 1, status: "completed", lastActive: 1 }),
+    task(4, { parentTid: 3, status: "completed", lastActive: 10 }),
+    task(5, { parentTid: 1, alive: true, lastActive: 20 }),
+    task(6, { parentTid: 5, alive: true, lastActive: 30 }),
+    task(7, { parentTid: 1, status: "completed", lastActive: 2 }),
+  ];
+  const summary = "subtasks:1";
+
+  describe.each([
+    {
+      sort: "creation",
+      order: "oldest_first",
+      visible: [
+        ["1", 0, 0],
+        [summary, 1, 1],
+        ["5", 1, 1],
+        ["6", 2, 1],
+        ["7", 1, 0],
+      ],
+      hidden: [2, 3, 4],
+      expanded: ["1", "2", "3", "4", "5", "6", "7"],
+    },
+    {
+      sort: "creation",
+      order: "newest_first",
+      visible: [
+        ["1", 0, 0],
+        ["7", 1, 1],
+        ["5", 1, 1],
+        ["6", 2, 1],
+        [summary, 1, 0],
+      ],
+      hidden: [3, 4, 2],
+      expanded: ["1", "7", "5", "6", "3", "4", "2"],
+    },
+    {
+      sort: "activity",
+      order: "oldest_first",
+      visible: [
+        ["1", 0, 0],
+        [summary, 1, 1],
+        ["5", 1, 1],
+        ["6", 2, 1],
+        ["2", 1, 0],
+      ],
+      hidden: [7, 3, 4],
+      expanded: ["1", "7", "3", "4", "5", "6", "2"],
+    },
+    {
+      sort: "activity",
+      order: "newest_first",
+      visible: [
+        ["1", 0, 0],
+        ["2", 1, 1],
+        ["5", 1, 1],
+        ["6", 2, 1],
+        [summary, 1, 0],
+      ],
+      hidden: [3, 4, 7],
+      expanded: ["1", "2", "5", "6", "3", "4", "7"],
+    },
+  ] as const)(
+    "$sort / $order",
+    ({ sort, order, visible, hidden, expanded }) => {
+      function rows(activeTaskId: string | null) {
+        return flattenTree(
+          buildTree(tasks, { sort, order }),
+          activeTaskId,
+          [],
+          false,
+          order === "newest_first",
+        ).filter((item) => item.kind === "ordinary");
+      }
+
+      it("folds the stale stopped run and terminates the tree guide at the last row", () => {
+        const items = rows(null);
+        expect(
+          items.map(({ id, depth, guides }) => [id, depth, guides]),
+        ).toEqual(visible);
+        expect(items.find(({ id }) => id === summary)).toMatchObject({
+          title: "(2 subtasks)",
+          selectId: "1",
+          attentionTids: hidden,
+        });
+      });
+
+      it.each(["1", "4"])(
+        "keeps the stale run expanded when task %s is selected",
+        (activeTaskId) => {
+          expect(rows(activeTaskId).map(({ id }) => id)).toEqual(expanded);
+        },
+      );
     },
   );
 });

@@ -407,6 +407,7 @@ export interface UsageUiConfig {
 }
 
 export interface SidebarUiConfig {
+  sort?: "creation" | "activity";
   order?: "oldest_first" | "newest_first";
 }
 

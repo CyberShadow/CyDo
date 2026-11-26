@@ -73,6 +73,7 @@ const MockConnection = vi.hoisted(
       onControlMessage!: NonNullable<Connection["onControlMessage"]>;
       onStatusChange!: NonNullable<Connection["onStatusChange"]>;
 
+      readonly requestTaskTypes = vi.fn<Connection["requestTaskTypes"]>();
       readonly sendMessage = vi.fn<Connection["sendMessage"]>();
       readonly sendPermissionPromptResponse =
         vi.fn<Connection["sendPermissionPromptResponse"]>();
@@ -172,6 +173,73 @@ describe("task event batches", () => {
     });
     frames.clear();
     vi.unstubAllGlobals();
+  });
+
+  describe("sidebar projection", () => {
+    beforeEach(async () => {
+      await flush(() => {
+        connection.onControlMessage({
+          type: "workspaces_list",
+          workspaces: [
+            { name: "source", projects: [{ name: "project", path }] },
+          ],
+        });
+      });
+    });
+
+    const updateActivity = (last_active: number) =>
+      flush(() => {
+        connection.onControlMessage({
+          type: "task_updated",
+          task: {
+            tid,
+            child_count: 0,
+            alive: true,
+            resumable: false,
+            isProcessing: true,
+            status: "active",
+            workspace: "source",
+            project_path: path,
+            last_active,
+          },
+        });
+      });
+
+    const setSort = (sort: "creation" | "activity") =>
+      flush(() => {
+        connection.onControlMessage({
+          type: "server_status",
+          ui: { sidebar: { sort } },
+          heic_conversion: { available: false },
+          auth_enabled: false,
+        });
+      });
+
+    it("keeps the creation projection stable across an activity-only update", async () => {
+      await updateActivity(100);
+      const before = manager.sidebarTasks;
+      expect(before).toHaveLength(1);
+      expect(before[0]).not.toHaveProperty("lastActive");
+
+      await updateActivity(200);
+      expect(currentTask().lastActive).toBe(200);
+      expect(manager.sidebarTasks).toBe(before);
+    });
+
+    it("publishes activity changes during activity sort and omits activity again after switching back", async () => {
+      await updateActivity(100);
+      await setSort("activity");
+      const before = manager.sidebarTasks;
+      expect(before).toMatchObject([{ tid, lastActive: 100 }]);
+
+      await updateActivity(200);
+      expect(manager.sidebarTasks).not.toBe(before);
+      expect(manager.sidebarTasks).toMatchObject([{ tid, lastActive: 200 }]);
+
+      await setSort("creation");
+      expect(manager.sidebarTasks).toMatchObject([{ tid }]);
+      expect(manager.sidebarTasks[0]).not.toHaveProperty("lastActive");
+    });
   });
 
   it("publishes one tasks map for 200 events and matches sequential reduction", async () => {

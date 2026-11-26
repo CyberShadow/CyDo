@@ -187,9 +187,12 @@ struct UsageUiConfig
 
 enum SidebarOrder { oldest_first, newest_first }
 
+enum SidebarSort { creation, activity }
+
 struct SidebarUiConfig
 {
 	@Optional SidebarOrder order = SidebarOrder.oldest_first;
+	@Optional SidebarSort sort = SidebarSort.creation;
 }
 
 struct UiConfig
@@ -1075,4 +1078,30 @@ unittest // Sidebar order accepts both directions and rejects unknown values.
 		prefix ~ "newest_first } }\n", "config.yaml").ui.sidebar.order == SidebarOrder.newest_first);
 	assertThrown!Exception(parseYamlConfigString!CydoConfig(
 		prefix ~ "recent_first } }\n", "config.yaml"));
+}
+
+unittest // Sidebar sort defaults to creation at every optional level.
+{
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	foreach (ui; ["", "ui: {}\n", "ui: { sidebar: {} }\n"])
+	{
+		auto config = parseYamlConfigString!CydoConfig(
+			"workspaces: {}\n" ~ ui, "config.yaml");
+		assert(config.ui.sidebar.sort == SidebarSort.creation);
+	}
+}
+
+unittest // Sidebar sort accepts both modes and rejects unknown values.
+{
+	import std.exception : assertThrown;
+	import cydo.runtime.config.yaml : parseYamlConfigString;
+
+	enum prefix = "workspaces: {}\nui: { sidebar: { sort: ";
+	assert(parseYamlConfigString!CydoConfig(
+		prefix ~ "creation } }\n", "config.yaml").ui.sidebar.sort == SidebarSort.creation);
+	assert(parseYamlConfigString!CydoConfig(
+		prefix ~ "activity } }\n", "config.yaml").ui.sidebar.sort == SidebarSort.activity);
+	assertThrown!Exception(parseYamlConfigString!CydoConfig(
+		prefix ~ "alphabetical } }\n", "config.yaml"));
 }

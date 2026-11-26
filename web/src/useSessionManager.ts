@@ -3329,10 +3329,12 @@ export function useTaskManager(
     submitDraft,
   ]);
 
-  // Build sidebar task list filtered by active workspace/project and sorted by createdAt/tid
-  const prevSidebarTasksRef = useRef<
-    import("./components/Sidebar").SidebarTask[]
-  >([]);
+  // Keep the sidebar projection in TID order. The tree sorts siblings.
+  const activitySort = ui.sidebar?.sort === "activity";
+  const prevSidebarTasksRef = useRef<{
+    activitySort: boolean;
+    tasks: import("./components/Sidebar").SidebarTask[];
+  }>({ activitySort: false, tasks: [] });
   const sidebarTasks = useMemo(() => {
     let filtered: Array<TaskState & { tid: number }> = [];
     for (const task of tasks.values()) {
@@ -3369,6 +3371,7 @@ export function useTaskManager(
             : t.serverDraft;
         return {
           tid: t.tid,
+          ...(activitySort && { lastActive: t.lastActive }),
           alive: t.alive,
           canStop: t.canStop,
           resumable: t.resumable,
@@ -3393,11 +3396,13 @@ export function useTaskManager(
 
     const prev = prevSidebarTasksRef.current;
     if (
-      prev.length === result.length &&
+      prev.activitySort === activitySort &&
+      prev.tasks.length === result.length &&
       result.every((t, i) => {
-        const p = prev[i]!;
+        const p = prev.tasks[i]!;
         return (
           t.tid === p.tid &&
+          (!activitySort || t.lastActive === p.lastActive) &&
           t.alive === p.alive &&
           t.canStop === p.canStop &&
           t.resumable === p.resumable &&
@@ -3416,11 +3421,18 @@ export function useTaskManager(
         );
       })
     ) {
-      return prev;
+      return prev.tasks;
     }
-    prevSidebarTasksRef.current = result;
+    prevSidebarTasksRef.current = { activitySort, tasks: result };
     return result;
-  }, [tasks, draftRevision, activeWorkspace, activeProject, workspaces]);
+  }, [
+    tasks,
+    draftRevision,
+    activeWorkspace,
+    activeProject,
+    workspaces,
+    activitySort,
+  ]);
 
   const getProjectedByTid = useCallback(
     (tid: number) => {

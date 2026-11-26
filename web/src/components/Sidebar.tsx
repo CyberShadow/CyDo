@@ -161,6 +161,7 @@ function TreeConnectors({
 
 export interface SidebarTask {
   tid: number;
+  lastActive?: number;
   alive: boolean;
   canStop: boolean;
   resumable: boolean;
@@ -262,6 +263,9 @@ export function buildTree(
   }
 
   let tree = toNodes(roots);
+  // Sort real siblings before grouping so archived descendants count
+  // toward their ancestors and the synthetic groups keep their positions.
+  if (config?.sort === "activity") sortByActivity(tree);
   tree = insertArchiveNodes(tree);
 
   // Handle archived roots
@@ -318,6 +322,25 @@ export function buildTree(
   // end so current tasks stay closest to New Task.
   if (config?.order === "newest_first") reverseLevels(tree);
   return tree;
+}
+
+function sortByActivity(nodes: TreeNode[]): number {
+  const activity = new Map<TreeNode, number>();
+  let latest = -Infinity;
+  for (const node of nodes) {
+    // Missing timestamps use zero. Persisted drafts start with their
+    // creation time as the activity timestamp. The TID breaks ties.
+    const key = Math.max(
+      node.task.lastActive ?? 0,
+      sortByActivity(node.children),
+    );
+    activity.set(node, key);
+    latest = Math.max(latest, key);
+  }
+  nodes.sort(
+    (a, b) => activity.get(a)! - activity.get(b)! || a.task.tid - b.task.tid,
+  );
+  return latest;
 }
 
 function reverseLevels(nodes: TreeNode[]): void {
@@ -483,7 +506,7 @@ export function flattenTree(
 
     const hasLoadingChild = hasIncompleteChildren(node, tasksLoading);
 
-    // Fold the oldest run of finished subtrees unless the selection is
+    // Fold the least recent run in the current sort unless the selection is
     // the parent or inside that run. Running work always stays visible.
     const children = node.children;
     let collapsed: TreeNode[] = [];

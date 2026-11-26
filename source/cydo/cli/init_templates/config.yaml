@@ -862,9 +862,14 @@ workspaces: {}
 ##   when CyDo reloads the config.
 ## order: oldest_first (default) puts newer tasks and New Task at the
 ##   bottom. newest_first puts them at the top.
+## sort: creation (default) follows task ID order. activity sorts siblings
+##   by the latest activity in each subtree, including archived subtasks.
+##   Missing activity timestamps count as zero. Persisted drafts start
+##   with their creation time as the activity timestamp.
 # ui:
 #   sidebar:
 #     order: oldest_first
+#     sort: creation
 
 ## disk_cleanup_threshold_bytes
 ## Purpose: Sets the threshold for a task's disk cleanup request.
@@ -897,5 +902,6 @@ workspaces: {}
 #     remaining: false
 #   sidebar:
 #     order: oldest_first
+#     sort: creation
 # disk_cleanup_threshold_bytes: 10485760
 ## cydo-init: complete-example end
