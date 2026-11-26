@@ -1076,6 +1076,11 @@ EOF
           ) prunedTests);
         in
         pkgs.lib.optionalAttrs pkgs.stdenv.isLinux ({
+          vm-memory-limits = import ./tests/vm/memory-limits.nix {
+            inherit pkgs cydoTest mockApiSrc;
+            claude = pkgs.claude-code;
+            testsSrc = ./tests;
+          };
           unittests = pkgs.buildDubPackage {
             pname = "cydo-unittests";
             version = "0.1.0";

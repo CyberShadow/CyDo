@@ -40,7 +40,9 @@ The CLI tests run the binary at `CYDO_TEST_CYDO_BIN` and fail fast if it is unse
 
 Besides the e2e tests, the checks are `unittests`, `frontend-unit-tests`,
 `typecheck`, `lint`, `lint-css`, `format`, `protocol-types-fresh`,
-`tool-descriptions`, `sandbox-init`, `image-jail` and `release-build`.
+`tool-descriptions`, `sandbox-init`, `image-jail`, `release-build` and
+`vm-memory-limits`. Run the VM check with
+`nix build -L .#checks.x86_64-linux.vm-memory-limits`.
 Each e2e test is its own check, named `e2e-<project>-<spec>-L<line>`
 (`<project>` is `claude`, `codex`, `copilot` or `failure`), so a spec or a
 single test can be run on its own. Checks build from the git-tracked tree:
