@@ -152,12 +152,17 @@ private size_t[int] countTaskListChildren(TaskListScope[] scopes)
 	return childCounts;
 }
 
-private string mcpToolDescriptionLimitNoticeId(string projectPath, string taskType)
+private string encodeNoticeProjectPath(string projectPath)
 {
 	auto encodedPath = appender!string();
 	foreach (immutable ubyte b; cast(const(ubyte)[]) projectPath)
 		encodedPath.put(format!"%02x"(b));
-	return "mcp-tool-description-limit:" ~ encodedPath.data ~ ":" ~ taskType;
+	return encodedPath.data;
+}
+
+private string mcpToolDescriptionLimitNoticeId(string projectPath, string taskType)
+{
+	return "mcp-tool-description-limit:" ~ encodeNoticeProjectPath(projectPath) ~ ":" ~ taskType;
 }
 
 private Notice buildMcpToolDescriptionLimitNotice(
@@ -336,7 +341,8 @@ class App
 			auto taskTypesPath = buildPath(baseDir, "defs/task-types.yaml");
 			webDistDir = buildPath(baseDir, "web/dist/");
 			taskTypeCatalog = new TaskTypeCatalog(taskTypesDir, taskTypesPath,
-				(string name) => isConfiguredAgentName(config, name));
+				(string name) => isConfiguredAgentName(config, name), &reportProjectTaskTypeLoad,
+				projectPath => configWatcher.ensureProjectWatch(projectPath));
 		}
 		taskTypeCatalog.reloadGlobal();
 		{
@@ -1556,6 +1562,13 @@ class App
 		broadcastTaskUpdate(tid);
 	}
 
+	private string taskTypeLoadRefusal(string projectPath)
+	{
+		if (!taskTypeCatalog.hasTaskTypes(projectPath))
+			return "Task types for this project failed to load: " ~ taskTypeCatalog.loadError(projectPath);
+		return null;
+	}
+
 	private void handleCreateTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		auto at = json.agent_name.length > 0 ? json.agent_name : defaultAgentName(json.workspace);
@@ -1575,6 +1588,13 @@ class App
 		}
 		// Top-level user task creation must always come through a concrete entry point.
 		// Internal tasks (subtasks, continuations, imports) are created through other paths.
+		if (auto refusal = taskTypeLoadRefusal(projectPath))
+		{
+			ws.send(Data(toJson(ErrorMessage("error", refusal)).representation));
+			sendBrowserSubmissionRejected(ws, json.correlation_id, -1,
+				BrowserSubmissionRejectionKind.validation, refusal);
+			return;
+		}
 		auto entryPoints = taskTypeCatalog.getEntryPointsForProject(projectPath);
 		if (json.entry_point.length == 0)
 		{
@@ -1999,6 +2019,12 @@ class App
 			sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
 				BrowserSubmissionRejectionKind.task_archiving,
 				"Task is being archived");
+			return;
+		}
+		if (auto refusal = taskTypeLoadRefusal(td.projectPath))
+		{
+			sendBrowserSubmissionRejected(ws, json.correlation_id, tid,
+				BrowserSubmissionRejectionKind.validation, refusal);
 			return;
 		}
 		assert(td.taskType.length > 0, "Task must have a task_type when receiving a message");
@@ -3824,6 +3850,7 @@ class App
 		catch (ConfigFileException e)
 		{
 			warningf("Config reload rejected; keeping the current config: %s", e.msg);
+			reportLoadFailure("config", "config.yaml was not reloaded", e.msg, true);
 			return false;
 		}
 
@@ -3842,6 +3869,7 @@ class App
 		}
 		agentsByName = planned;
 		agent = planned[newDefault];
+		setNotice("config", Nullable!Notice.init);
 		return true;
 	}
 
@@ -3904,8 +3932,10 @@ class App
 		catch (ConfigFileException e)
 		{
 			warningf("Global task types rejected; keeping the previous version: %s", e.msg);
+			reportLoadFailure("task-types", "Global task types were not reloaded", e.msg, true);
 			return false;
 		}
+		setNotice("task-types", Nullable!Notice.init);
 		return true;
 	}
 
@@ -4123,7 +4153,6 @@ class App
 					"Project path must be an existing directory")).representation));
 				return;
 			}
-			configWatcher.ensureProjectWatch(projectPath);
 			auto workspace = workspaceNameForProjectPath(projectPath);
 			ws.send(Data(buildTaskTypesListForProject(
 				projectPath,
@@ -4185,7 +4214,7 @@ class App
 		return entries;
 	}
 
-	private void setNotice(string id, Nullable!Notice n)
+	private void setNotice(string id, Nullable!Notice n, bool logNotice = true)
 	{
 		if (!n.isNull)
 		{
@@ -4194,10 +4223,13 @@ class App
 			if (existing !is null && *existing == newNotice)
 				return;
 			activeNotices[id] = newNotice;
-			if (newNotice.level == NoticeLevel.alert || newNotice.level == NoticeLevel.warning)
-				warningf("NOTICE [%s]: %s — %s — %s", id, newNotice.description, newNotice.impact, newNotice.action);
-			else
-				infof("NOTICE [%s]: %s", id, newNotice.description);
+			if (logNotice)
+			{
+				if (newNotice.level == NoticeLevel.alert || newNotice.level == NoticeLevel.warning)
+					warningf("NOTICE [%s]: %s — %s — %s", id, newNotice.description, newNotice.impact, newNotice.action);
+				else
+					infof("NOTICE [%s]: %s", id, newNotice.description);
+			}
 			clientHub.broadcast(buildNoticesList(activeNotices));
 		}
 		else
@@ -4207,6 +4239,25 @@ class App
 			activeNotices.remove(id);
 			clientHub.broadcast(buildNoticesList(activeNotices));
 		}
+	}
+
+	private void reportProjectTaskTypeLoad(string projectPath, string error, bool keptPrevious)
+	{
+		auto id = "task-types:" ~ encodeNoticeProjectPath(projectPath);
+		if (error is null)
+			setNotice(id, Nullable!Notice.init);
+		else
+			reportLoadFailure(id, "Task types for " ~ projectPath ~ " failed to load", error,
+				keptPrevious);
+	}
+
+	private void reportLoadFailure(string id, string description, string error, bool keptPrevious)
+	{
+		auto impact = keptPrevious
+			? "Keeping the previously loaded version."
+			: "Tasks in this project cannot be started until this is fixed.";
+		setNotice(id, Nullable!Notice(Notice(NoticeLevel.alert, description, impact, error)),
+			logNotice: false);
 	}
 
 	private void reportMcpToolDescriptionLimit(string projectPath, string taskType,
@@ -4816,7 +4867,14 @@ version (unittest) private final class GatedSubmissionFixture
 		claudeConfig.driver = typeof(claudeConfig.driver)(AgentDriver.claude, true);
 		app.config.agents["claude"] = claudeConfig;
 		app.agentsByName["claude"] = new TestClaudePromptAgent;
-		app.taskTypeCatalog = new TaskTypeCatalog("", "", (string name) => true);
+		auto defs = buildPath(tempDir(), "cydo-app-submission-task-types");
+		mkdirRecurse(defs);
+		scope (exit) rmdirRecurse(defs);
+		auto definitions = buildPath(defs, "task-types.yaml");
+		write(definitions, "task_types: {}\n");
+		auto bundled = environment.get("CYDO_TEST_DEFS", "defs");
+		app.taskTypeCatalog = new TaskTypeCatalog(bundled, definitions, (string name) => true);
+		app.taskTypeCatalog.reloadGlobal();
 		socket = new SubmissionCaptureWebSocket((string payload) {
 			if (payload.canFind(`"type":"task_updated"`))
 				publicationOrder ~= "task_update";
@@ -7268,6 +7326,12 @@ unittest // Config reload publishes agent changes only after validation.
 		foreach (name, originalAgent; acceptedAgents)
 			assert(app.agentsByName.get(name, null) is originalAgent, name);
 		assert(app.agent is acceptedDefault, candidate);
+		auto notice = "config" in app.activeNotices;
+		assert(notice !is null, "A rejected config reload should raise a notice");
+		assert(notice.level == NoticeLevel.alert);
+		assert(notice.description == "config.yaml was not reloaded");
+		assert(notice.impact == "Keeping the previously loaded version.");
+		assert(notice.action.canFind(configFile));
 	}
 
 	// Exercise the same config and agent publication as the watcher callback.
@@ -7278,11 +7342,243 @@ unittest // Config reload publishes agent changes only after validation.
 		.replace("other:\n    driver: claude", "other:\n    driver: codex")
 		.replace("default_agent: work-claude", "default_agent: other"));
 	assert(app.tryApplyRuntimeConfig());
+	assert("config" !in app.activeNotices, "An accepted config reload should clear the notice");
 	assert(app.agentsByName["work-claude"] is acceptedDefault);
 	assert(acceptedDefault.resolveModelSpec("large").model == "after-reload");
 	assert(app.agentsByName["other"] !is acceptedAgents["other"]);
 	assert(app.agentsByName["other"].driver == AgentDriver.codex);
 	assert(app.agent is app.agentsByName["other"]);
+}
+
+version (unittest) private struct TaskTypeLoadNoticeFixture
+{
+	enum invalidYaml = "task_types: [\n";
+
+	App app;
+	string root, project, overridePath, projectNoticeId;
+	private string oldHome;
+	private bool hadHome;
+
+	void setup(string name)
+	{
+		import std.algorithm : map;
+		import std.array : join;
+
+		root = buildPath(tempDir(), "cydo-app-task-type-" ~ name);
+		project = buildPath(root, "project");
+		auto projectConfig = buildPath(project, ".cydo");
+		mkdirRecurse(projectConfig);
+		project = canonicalProjectPath(project);
+		overridePath = buildPath(project, ".cydo", "task-types.yaml");
+		projectNoticeId = "task-types:" ~ (cast(const(ubyte)[]) project).map!(b => format!"%02x"(b)).join;
+		auto home = buildPath(root, "home");
+		mkdirRecurse(buildPath(home, ".config", "cydo"));
+		oldHome = environment.get("HOME", "");
+		hadHome = "HOME" in environment;
+		environment["HOME"] = home;
+
+		auto defs = buildPath(root, "defs");
+		mkdirRecurse(buildPath(defs, "prompts"));
+		write(buildPath(defs, "prompts", "blank.md"), "Blank prompt\n");
+		auto definitions = buildPath(defs, "task-types.yaml");
+		write(definitions, "task_types:\n  worker: {}\n"
+			~ "user_entry_points:\n  start:\n    task_type: worker\n    description: Start work\n"
+			~ "    prompt_template: prompts/blank.md\n");
+		app = new App;
+		app.config.default_agent = "claude";
+		AgentConfig claudeConfig;
+		claudeConfig.driver = typeof(claudeConfig.driver)(AgentDriver.claude, true);
+		app.config.agents["claude"] = claudeConfig;
+		app.configWatcher = new ConfigWatcher(ConfigWatcherHost(
+			onProjectConfigChanged: &app.onProjectConfigChanged,
+		));
+		app.taskTypeCatalog = new TaskTypeCatalog(defs, definitions, (string name) => name == "claude",
+			&app.reportProjectTaskTypeLoad, &app.configWatcher.ensureProjectWatch);
+		app.taskTypeCatalog.reloadGlobal();
+		app.discoveryService = new DiscoveryService(DiscoveryServiceHost.init);
+		app.taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost.init);
+	}
+
+	void repairThroughWatcher()
+	{
+		import ae.sys.timing : setTimeout;
+
+		write(overridePath, "task_types: {}\n");
+		setTimeout(&app.configWatcher.stop, 1.seconds);
+		socketManager.loop();
+		assert(projectNoticeId !in app.activeNotices, "Repair should clear the notice via the watcher");
+	}
+
+	void cleanup()
+	{
+		if (hadHome)
+			environment["HOME"] = oldHome;
+		else
+			environment.remove("HOME");
+		rmdirRecurse(root);
+	}
+
+	void assertLoadNotice(string id, string description, string impact, string path)
+	{
+		auto notice = id in app.activeNotices;
+		assert(notice !is null, "Expected load failure notice " ~ id);
+		assert(notice.level == NoticeLevel.alert);
+		assert(notice.description == description);
+		assert(notice.impact == impact);
+		assert(notice.action.canFind(path) && notice.action.canFind("syntax error"), notice.action);
+	}
+
+	void assertSubmissionRefused(SubmissionCaptureWebSocket socket, string correlationId, int tid)
+	{
+		import std.algorithm : startsWith;
+
+		assert(submissionRejectionCount(socket.sent) == 1, "Expected one submission rejection");
+		auto rejection = parseJSON(socket.sent[$ - 1]);
+		assert(rejection["correlation_id"].str == correlationId);
+		assert(tid == -1 ? "tid" !in rejection.object : rejection["tid"].integer == tid);
+		assert(rejection["kind"].str == "validation");
+		auto reason = rejection["reason"].str;
+		assert(reason.startsWith("Task types for this project failed to load: ")
+			&& reason.canFind(overridePath) && reason.canFind("syntax error"), reason);
+	}
+}
+
+unittest // A cold project publishes its load error and clears it after repair.
+{
+	TaskTypeLoadNoticeFixture fixture;
+	fixture.setup("cold");
+	scope (exit) fixture.cleanup();
+	write(fixture.overridePath, fixture.invalidYaml);
+	fixture.app.configWatcher.start();
+	{
+		auto socket = new SubmissionCaptureWebSocket;
+		scope (exit) socket.disconnect("test complete", DisconnectType.requested);
+		fixture.app.handleRequestTaskTypesMsg(socket, WsMessage(project_path: fixture.project));
+	}
+
+	fixture.assertLoadNotice(fixture.projectNoticeId,
+		"Task types for " ~ fixture.project ~ " failed to load",
+		"Tasks in this project cannot be started until this is fixed.", fixture.overridePath);
+
+	fixture.repairThroughWatcher();
+	assert(fixture.app.taskTypeCatalog.getEntryPointsForProject(fixture.project).byName("start") !is null);
+}
+
+unittest // A failed warm reload reports that the previous project snapshot is kept.
+{
+	TaskTypeLoadNoticeFixture fixture;
+	fixture.setup("warm");
+	scope (exit) fixture.cleanup();
+	fixture.app.configWatcher.start();
+	scope (exit) fixture.app.configWatcher.stop();
+	assert(fixture.app.taskTypeCatalog.getEntryPointsForProject(fixture.project).byName("start") !is null);
+
+	write(fixture.overridePath, fixture.invalidYaml);
+	fixture.app.onProjectConfigChanged(fixture.project);
+	fixture.assertLoadNotice(fixture.projectNoticeId,
+		"Task types for " ~ fixture.project ~ " failed to load",
+		"Keeping the previously loaded version.", fixture.overridePath);
+	assert(fixture.app.taskTypeCatalog.getEntryPointsForProject(fixture.project).byName("start") !is null);
+}
+
+unittest // A rejected global edit raises a notice until the next accepted edit.
+{
+	import cydo.runtime.config.paths : userTaskTypesPath;
+
+	TaskTypeLoadNoticeFixture fixture;
+	fixture.setup("global");
+	scope (exit) fixture.cleanup();
+	auto path = userTaskTypesPath();
+	write(path, fixture.invalidYaml);
+	fixture.app.onUserTaskTypesChanged();
+	fixture.assertLoadNotice("task-types", "Global task types were not reloaded",
+		"Keeping the previously loaded version.", path);
+	assert(fixture.app.taskTypeCatalog.getEntryPoints().byName("start") !is null);
+
+	write(path, "task_types: {}\n");
+	fixture.app.onUserTaskTypesChanged();
+	assert("task-types" !in fixture.app.activeNotices);
+}
+
+unittest // A create-first load rejects until the watcher observes a repair.
+{
+	TaskTypeLoadNoticeFixture fixture;
+	fixture.setup("create-refusal");
+	scope (exit) fixture.cleanup();
+	write(fixture.overridePath, fixture.invalidYaml);
+	auto app = fixture.app;
+	app.persistence = Persistence(":memory:");
+	app.archiveManager = new ArchiveManager(ArchiveManagerHost.init);
+
+	app.configWatcher.start();
+	auto message = WsMessage(type: "create_task", workspace: "local",
+		project_path: fixture.project, agent_name: "claude", entry_point: "start",
+		correlation_id: "create-with-broken-task-types");
+	{
+		auto socket = new SubmissionCaptureWebSocket;
+		app.clientHub.add(socket);
+		scope (exit)
+		{
+			app.clientHub.remove(socket);
+			socket.disconnect("test complete", DisconnectType.requested);
+		}
+		app.handleCreateTaskMsg(socket, message);
+		fixture.assertSubmissionRefused(socket, "create-with-broken-task-types", -1);
+	}
+	assert(app.persistence.loadTasks().length == 0);
+	assert(fixture.projectNoticeId in app.activeNotices);
+
+	fixture.repairThroughWatcher();
+	auto socket = new SubmissionCaptureWebSocket;
+	scope (exit) socket.disconnect("test complete", DisconnectType.requested);
+	message.correlation_id = "create-after-repair";
+	app.handleCreateTaskMsg(socket, message);
+	assert(submissionRejectionCount(socket.sent) == 0);
+	assert(socket.sent[0].canFind(`"type":"task_created"`)
+		&& socket.sent[0].canFind(`"correlation_id":"create-after-repair"`));
+	auto rows = app.persistence.loadTasks();
+	assert(rows.length == 1 && rows[0].projectPath == fixture.project);
+}
+
+unittest // Sending the first message to a pending task requires a project snapshot.
+{
+	TaskTypeLoadNoticeFixture fixture;
+	fixture.setup("pending-refusal");
+	scope (exit) fixture.cleanup();
+	write(fixture.overridePath, fixture.invalidYaml);
+	auto app = fixture.app;
+	app.configWatcher.start();
+	scope (exit) app.configWatcher.stop();
+	app.persistence = Persistence(":memory:");
+	auto tid = app.persistence.createTask("local", fixture.project, "claude", "start");
+	app.persistence.setTaskType(tid, "worker");
+	app.persistence.setDraft(tid, "Start work");
+	app.tasks[tid] = TaskData(tid, "local", fixture.project);
+	app.tasks[tid].taskType = "worker";
+	app.tasks[tid].entryPoint = "start";
+	app.tasks[tid].draft = "Start work";
+	app.tasks[tid].processQueue = new StateQueue!ProcessState(
+		delegate Promise!ProcessState(ProcessState state) {
+			assert(false, "A refused draft must not start the task");
+		},
+		ProcessState.Dead,
+	);
+	app.archiveManager = new ArchiveManager(ArchiveManagerHost(
+		tryGetTask: (int lookupTid, out ArchiveTaskSnapshot snapshot) {
+			snapshot.tid = lookupTid;
+			return lookupTid == tid;
+		},
+	));
+	auto socket = new SubmissionCaptureWebSocket;
+	app.clientHub.add(socket);
+	scope (exit) socket.disconnect("test complete", DisconnectType.requested);
+
+	app.handleUserMessage(socket, testBrowserSubmission(tid, "Start work", "send-with-broken-task-types"));
+	fixture.assertSubmissionRefused(socket, "send-with-broken-task-types", tid);
+	auto rows = app.persistence.loadTasks();
+	assert(rows.length == 1 && rows[0].tid == tid);
+	assert(rows[0].status == TaskStatus.pending && rows[0].description.length == 0);
+	assert(rows[0].draft == "Start work");
 }
 
 version (unittest) private final class FailingLaunchAgent : CodexAgent

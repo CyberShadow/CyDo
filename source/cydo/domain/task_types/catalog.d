@@ -104,9 +104,11 @@ class TaskTypeCatalog
 	private string taskTypesPath;
 	private bool delegate(string) isConfiguredAgentName;
 	private void delegate(string, string, bool) onProjectLoad;
+	private void delegate(string) beforeProjectLoad;
 
 	this(string taskTypesDir, string taskTypesPath, bool delegate(string) isConfiguredAgentName,
-		void delegate(string projectPath, string error, bool keptPrevious) onProjectLoad = null)
+		void delegate(string projectPath, string error, bool keptPrevious) onProjectLoad = null,
+		void delegate(string projectPath) beforeProjectLoad = null)
 	{
 		this.taskTypesDir = taskTypesDir;
 		this.taskTypesPath = taskTypesPath;
@@ -114,12 +116,17 @@ class TaskTypeCatalog
 		this.onProjectLoad = onProjectLoad is null
 			? delegate void(string projectPath, string error, bool keptPrevious) {}
 			: onProjectLoad;
+		this.beforeProjectLoad = beforeProjectLoad is null
+			? delegate void(string projectPath) {}
+			: beforeProjectLoad;
 	}
 
 	this(string taskTypesDir, string taskTypesPath, bool function(string) isConfiguredAgentName,
-		void delegate(string projectPath, string error, bool keptPrevious) onProjectLoad = null)
+		void delegate(string projectPath, string error, bool keptPrevious) onProjectLoad = null,
+		void delegate(string projectPath) beforeProjectLoad = null)
 	{
-		this(taskTypesDir, taskTypesPath, (string name) => isConfiguredAgentName(name), onProjectLoad);
+		this(taskTypesDir, taskTypesPath, (string name) => isConfiguredAgentName(name),
+			onProjectLoad, beforeProjectLoad);
 	}
 
 	private static TaskTypeSnapshot buildSnapshot(TaskTypeLayerSource[] sources, string[] promptDirs,
@@ -155,6 +162,7 @@ class TaskTypeCatalog
 	void reloadProject(string projectPath)
 	{
 		assert(projectPath.length > 0);
+		beforeProjectLoad(projectPath);
 		TaskTypeSnapshot* snapshot;
 		string error;
 		try
