@@ -1656,6 +1656,142 @@ bool[string] computeTreeReadOnly(TaskTypeDef[] types)
 	return cache;
 }
 
+/// Unlike computeReachesWorktree, only inherit edges propagate, only require
+/// edges terminate the search, and fork edges are ignored.
+bool[string] computeReachesRequiredWorktree(TaskTypeDef[] types)
+{
+	bool[string] reaches;
+	foreach (ref def; types)
+		reaches[def.name] = false;
+
+	bool leadsToRequire(WorktreeMode mode, string target)
+	{
+		return mode == WorktreeMode.require
+			|| (mode == WorktreeMode.inherit && reaches.get(target, false));
+	}
+
+	bool hasRequiredWorktree(ref TaskTypeDef def)
+	{
+		foreach (ref edge; def.creatable_tasks)
+			if (leadsToRequire(edge.worktree, edge.resolvedType))
+				return true;
+
+		foreach (ref edge; def.continuations)
+			if (leadsToRequire(edge.worktree, edge.task_type))
+				return true;
+
+		return def.on_yield.task_type.length > 0
+			&& leadsToRequire(def.on_yield.worktree, def.on_yield.task_type);
+	}
+
+	bool changed;
+	do
+	{
+		changed = false;
+		foreach (ref def; types)
+			if (!reaches[def.name] && hasRequiredWorktree(def))
+			{
+				reaches[def.name] = true;
+				changed = true;
+			}
+	} while (changed);
+
+	return reaches;
+}
+
+version (unittest) package(cydo) string packagedTaskTypesPath()
+{
+	import std.path : buildPath;
+	import std.process : environment;
+
+	auto packagedPath = environment.get("CYDO_TEST_PACKAGED_TASK_TYPES", "");
+	if (packagedPath == "")
+	{
+		import ae.utils.path : findProgramDirectory;
+		auto programDir = findProgramDirectory("defs/task-types.yaml");
+		assert(programDir !is null);
+		packagedPath = buildPath(programDir, "defs/task-types.yaml");
+	}
+	return packagedPath;
+}
+
+unittest // Creatable inherit edges resolve their targets and propagate transitively.
+{
+	auto reaches = computeReachesRequiredWorktree([
+		TaskTypeDef(name: "root", creatable_tasks: [
+			CreatableTaskDef(name: "start", task_type: "middle"),
+		]),
+		TaskTypeDef(name: "middle", creatable_tasks: [CreatableTaskDef(name: "needs-worktree")]),
+		TaskTypeDef(name: "needs-worktree", creatable_tasks: [
+			CreatableTaskDef(name: "leaf", worktree: WorktreeMode.require),
+		]),
+		TaskTypeDef(name: "leaf"),
+	]);
+	assert(reaches.get("root", false));
+}
+
+unittest // Keep-context continuations and on_yield can each reach a require edge.
+{
+	auto reaches = computeReachesRequiredWorktree([
+		TaskTypeDef(name: "switcher", continuations: [
+			"switch": ContinuationDef(task_type: "worker", keep_context: true),
+		]),
+		TaskTypeDef(name: "yielder", on_yield: ContinuationDef(task_type: "worker")),
+		TaskTypeDef(name: "worker", creatable_tasks: [
+			CreatableTaskDef(name: "leaf", worktree: WorktreeMode.require),
+		]),
+		TaskTypeDef(name: "leaf"),
+	]);
+	assert(reaches.get("switcher", false));
+	assert(reaches.get("yielder", false));
+}
+
+unittest // Both members of a cycle reach the require edge in either input order.
+{
+	auto a = TaskTypeDef(name: "a", creatable_tasks: [CreatableTaskDef(name: "b")]);
+	auto b = TaskTypeDef(name: "b", creatable_tasks: [
+		CreatableTaskDef(name: "a"),
+		CreatableTaskDef(name: "leaf", worktree: WorktreeMode.require),
+	]);
+	auto leaf = TaskTypeDef(name: "leaf");
+
+	foreach (types; [[a, b, leaf], [b, a, leaf]])
+	{
+		auto reaches = computeReachesRequiredWorktree(types);
+		assert(reaches.get("a", false));
+		assert(reaches.get("b", false));
+	}
+}
+
+unittest // Fork edges neither create a requirement nor propagate one.
+{
+	auto reaches = computeReachesRequiredWorktree([
+		TaskTypeDef(name: "fork-to-leaf", creatable_tasks: [
+			CreatableTaskDef(name: "leaf", worktree: WorktreeMode.fork),
+		]),
+		TaskTypeDef(name: "fork-to-worker", creatable_tasks: [
+			CreatableTaskDef(name: "worker", worktree: WorktreeMode.fork),
+		]),
+		TaskTypeDef(name: "worker", creatable_tasks: [
+			CreatableTaskDef(name: "leaf", worktree: WorktreeMode.require),
+		]),
+		TaskTypeDef(name: "leaf"),
+	]);
+	assert(reaches.get("worker", false));
+	assert(!reaches.get("fork-to-leaf", false));
+	assert(!reaches.get("fork-to-worker", false));
+}
+
+unittest // Exactly the shipped types whose workflows can require a worktree.
+{
+	auto config = loadTaskTypes(packagedTaskTypesPath());
+	auto reaches = computeReachesRequiredWorktree(config.types);
+	auto eligible = reaches.keys.filter!(name => reaches[name]).array;
+	eligible.sort();
+	assert(eligible == ["bug_mode", "conversation", "plan_mode", "write_mode"],
+		eligible.to!string);
+}
+
 /// Compute which task types can transitively reach a worktree (require or fork)
 /// via any edge (creatable_tasks, continuations, on_yield). Types that reach a
 /// worktree need writable git dirs in their sandbox so they can integrate

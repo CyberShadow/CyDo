@@ -25,6 +25,8 @@ import std.stdio : File, writeln;
 import std.string : indexOf, lineSplitter, strip;
 import std.traits : EnumMembers, FieldNameTuple, getUDAs;
 
+version (unittest) import cydo.domain.task_types.definition : packagedTaskTypesPath;
+
 import core.stdc.errno : ENOENT;
 import object : Throwable;
 
@@ -475,19 +477,6 @@ unittest
 		}
 	}
 	assert(iconCount > 0, "No commented icon examples found in task-types.yaml");
-}
-
-private string packagedTaskTypesPath()
-{
-	auto packagedPath = environment.get("CYDO_TEST_PACKAGED_TASK_TYPES", "");
-	if (packagedPath == "")
-	{
-		import ae.utils.path : findProgramDirectory;
-		auto programDir = findProgramDirectory("defs/task-types.yaml");
-		assert(programDir !is null);
-		packagedPath = buildPath(programDir, "defs/task-types.yaml");
-	}
-	return packagedPath;
 }
 
 unittest
