@@ -3685,7 +3685,7 @@ unittest
 	scope(exit) stopAndAwaitExit(older);
 	init(older, "probe-unsupported");
 	answerProbe(older, `"subtype":"error",`
-		~ `"error":"Unsupported control request subtype: rewind_conversation"}`);
+		~ `"error":"Unsupported control request subtype: rewind_conversation"`);
 	assert(!older.rewindSupported_.get);
 	assert(!ClaudeCodeSession.rewindSupportByVersion_["probe-unsupported"]);
 }
