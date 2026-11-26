@@ -1,6 +1,6 @@
 module cydo.agent.terminal;
 
-import core.stdc.errno : errno, ESRCH;
+import core.stdc.errno : EINVAL, errno, ESRCH;
 import core.sys.posix.signal : SIGKILL, SIGTERM, siginfo_t, signalProcess = kill;
 import core.sys.posix.unistd : close, dup, setsid;
 import core.sys.posix.sys.types : pid_t;
@@ -17,6 +17,11 @@ private extern(C) int pidfd_open(pid_t pid, uint flags) nothrow @nogc;
 private extern(C) int pidfd_send_signal(int fd, int sig, siginfo_t* info, uint flags) nothrow @nogc;
 private enum PIDFD_SIGNAL_PROCESS_GROUP = 1u << 2;
 
+// Cleared for good once the kernel rejects PIDFD_SIGNAL_PROCESS_GROUP (added in
+// Linux 6.9). This is a property of the kernel, hence one per process; __gshared
+// needs no synchronization because only the event loop thread signals terminals.
+private __gshared bool pidfdGroupSignalSupported = true;
+
 /// Manages a terminal process: spawns a command with combined stdout+stderr,
 /// captures raw output bytes, and ends group supervision once the leader is
 /// reaped and output is drained. Detached survivors of natural exits can continue.
@@ -26,6 +31,8 @@ class TerminalProcess
 	private bool ownProcessGroup;
 	private bool terminationRequested;
 	private int groupFd = -1;
+	// Kept separately because reaping the leader clears pid.processID.
+	private pid_t processGroup;
 	private FileConnection outConn;
 	private bool exited;
 	private int exitStatus_;
@@ -56,6 +63,7 @@ class TerminalProcess
 
 		if (ownProcessGroup)
 		{
+			processGroup = pid.processID;
 			// Keep a reference to the original group before asyncWait can reap its leader.
 			groupFd = pidfd_open(pid.processID, 0);
 			errnoEnforce(groupFd >= 0, "Cannot open terminal process group pidfd");
@@ -154,7 +162,7 @@ class TerminalProcess
 		// Shutdown can request SIGKILL again while a killed group is still draining.
 		if (groupFd < 0)
 			return;
-		if (pidfd_send_signal(groupFd, signal, null, PIDFD_SIGNAL_PROCESS_GROUP) == 0)
+		if (sendGroupSignal(signal) == 0)
 		{
 			if (signal == SIGKILL)
 				closeGroupFd();
@@ -162,6 +170,23 @@ class TerminalProcess
 		}
 		errnoEnforce(errno == ESRCH, "Cannot signal terminal process group");
 		closeGroupFd();
+	}
+
+	private int sendGroupSignal(int signal)
+	{
+		if (pidfdGroupSignalSupported)
+		{
+			auto result = pidfd_send_signal(groupFd, signal, null, PIDFD_SIGNAL_PROCESS_GROUP);
+			if (result == 0 || errno != EINVAL)
+				return result;
+			pidfdGroupSignalSupported = false;
+		}
+		// Accepted risk on older kernels: unlike the pidfd, a PGID number does not
+		// pin the original group. It cannot be reused while any member exists, so
+		// a late kill of a survivor still holding the pipe is safe. The only
+		// exposure is a narrow race where the group has just emptied and an
+		// unrelated process has taken the number as its own group leader.
+		return signalProcess(-processGroup, signal);
 	}
 
 	private void tryFireExit()
@@ -315,7 +340,7 @@ version (unittest) private void waitForGrandchildToStop(int grandchild)
 	}
 }
 
-unittest
+static foreach (forceFallback; [false, true]) unittest
 {
 	import core.memory : GC;
 	import core.time : msecs, seconds;
@@ -326,6 +351,10 @@ unittest
 
 	GC.disable();
 	scope (exit) GC.enable();
+	auto groupSignalSupported = pidfdGroupSignalSupported;
+	scope (exit) pidfdGroupSignalSupported = groupSignalSupported;
+	static if (forceFallback)
+		pidfdGroupSignalSupported = false;
 	auto baseline = openPidfds();
 
 	// The shell exits, leaving the grandchild holding the output pipe open.
