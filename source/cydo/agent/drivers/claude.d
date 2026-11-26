@@ -802,8 +802,25 @@ class ClaudeCodeAgent : Agent
 
 	bool[int] inactiveHistoryLines(string content)
 	{
+		import std.string : lineSplitter;
 		import cydo.agent.drivers.claude_branches : claudeRewoundLines;
-		return claudeRewoundLines(content);
+		import cydo.domain.tasks.model : isQueueOperation;
+
+		auto rewound = claudeRewoundLines(content);
+		if (rewound is null)
+			return null;
+
+		// Queue records follow their outcome's rewind verdict, wherever the
+		// individual records sit in the transcript.
+		auto inactive = historyLinesDependentOn(content, l => (l in rewound) !is null);
+		int lineNum;
+		foreach (line; content.lineSplitter)
+		{
+			lineNum++;
+			if (lineNum in rewound && !isQueueOperation(line))
+				inactive[lineNum] = true;
+		}
+		return inactive;
 	}
 
 	PersistedHistoryBoundary[] extractPersistedHistoryBoundaries(string content, int lineOffset = 0)

@@ -146,6 +146,8 @@ bool[int] claudeQueueRecordsDependentOn(string content, scope bool delegate(int 
 		dependent[enqueueLine] = true;
 		if (outcome.kind == ClaudeQueueOutcomeKind.turnStart)
 			dependent[outcome.dequeueLine] = true;
+		else
+			dependent[outcome.line] = true;
 	}
 	return dependent;
 }
@@ -330,7 +332,7 @@ unittest
 		assert(outcomes[15] == ClaudeQueueOutcome(queued, 0));
 	}
 	assert(outcomes.length == 5);
-	assert(claudeQueueRecordsDependentOn(content, line => line == 9) == [5: true]);
+	assert(claudeQueueRecordsDependentOn(content, line => line == 9) == [5: true, 9: true]);
 }
 
 // Editing a message rewrites its echo row but not its enqueue record.
@@ -369,7 +371,7 @@ unittest
 		assert(outcomes[2] == ClaudeQueueOutcome(turnStart, 6, 5));
 		assert(outcomes[3] == ClaudeQueueOutcome(cancelled, 4));
 	}
-	assert(claudeQueueRecordsDependentOn(content, line => line == 4) == [3: true]);
+	assert(claudeQueueRecordsDependentOn(content, line => line == 4) == [3: true, 4: true]);
 }
 
 // Pre-2.1.250 CLIs: a reason-less remove took the message off the queue
@@ -393,7 +395,7 @@ unittest
 		assert(outcomes[2] == ClaudeQueueOutcome(steering, 3));
 		assert(outcomes[5] == ClaudeQueueOutcome(removed, 6));
 	}
-	assert(claudeQueueRecordsDependentOn(content, line => line == 3) == [2: true]);
+	assert(claudeQueueRecordsDependentOn(content, line => line == 3) == [2: true, 3: true]);
 }
 
 @("Claude parent-linked queue confirmation waits for the canonical root echo")

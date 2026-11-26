@@ -207,3 +207,58 @@ version (unittest) enum claudeQueueCutRows = [
 	`{"type":"assistant","uuid":"reply","parentUuid":"x","message":{"id":"reply","content":[{"type":"text","text":"X reply"}]}}`,
 	`{"type":"last-prompt","lastPrompt":"X"}`,
 ];
+
+version (unittest) private enum rewindFirstTurnMetadata = ()
+{
+	auto rows = new string[](25);
+	rows[] = `{"type":"api-request","version":"2.1.330"}`;
+	return rows;
+}();
+
+version (unittest) enum claudeQueueRewindRows = claudeQueueCutRows[0 .. 3]
+	~ rewindFirstTurnMetadata ~ claudeQueueCutRows[3 .. 5] ~ [
+	`{"type":"queue-operation","operation":"enqueue","content":"Y"}`,
+] ~ claudeQueueCutRows[5 .. 7] ~ [
+	`{"type":"file-history-snapshot","messageId":"x"}`,
+	`{"type":"api-request","version":"2.1.330"}`,
+	`{"type":"queue-operation","operation":"enqueue","content":"steer abandoned turn"}`,
+	`{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"steer abandoned turn","commandUuid":"S"}`,
+	`{"type":"attachment","uuid":"attach","parentUuid":"x","attachment":{"type":"queued_command","prompt":"steer abandoned turn","source_uuid":"S"}}`,
+	claudeQueueCutRows[7],
+	`{"type":"last-prompt","lastPrompt":"X","rewound":true,"leafUuid":"A","cutUuid":"x"}`,
+];
+
+version (unittest) enum claudeLegacyQueueRewindRows = claudeQueueRewindRows[0 .. 30]
+	~ claudeQueueRewindRows[31 .. 34] ~ [
+	`{"type":"api-request","version":"2.1.249"}`,
+	claudeQueueRewindRows[35],
+	claudeQueueCutRows[5],
+	claudeQueueRewindRows[30],
+] ~ claudeQueueRewindRows[$ - 2 .. $];
+
+@("Claude native rewind inactivates the enqueue before the retained leaf")
+unittest
+{
+	import std.algorithm : sort;
+	import std.array : array, join;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	auto agent = new ClaudeCodeAgent();
+	auto content = claudeQueueRewindRows.join("\n") ~ "\n";
+	assert(agent.inactiveHistoryLines(content).keys.sort.array == [29, 32, 33, 34, 35, 36, 37, 38, 39, 40]);
+	assert(claudeRewoundLines(content).keys.sort.array == [31, 32, 33, 34, 35, 36, 37, 38, 39, 40]);
+	assert(agent.inactiveHistoryLines(claudeQueueRewindRows[0 .. $ - 1].join("\n")) is null);
+}
+
+@("Claude native rewind inactivates legacy dequeue steering")
+unittest
+{
+	import std.algorithm : sort;
+	import std.array : array, join;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	auto content = claudeLegacyQueueRewindRows.join("\n") ~ "\n";
+	assert((new ClaudeCodeAgent()).inactiveHistoryLines(content).keys.sort.array
+		== [29, 31, 32, 33, 34, 35, 36, 38, 39]);
+	assert(claudeRewoundLines(content).keys.sort.array == [31, 32, 33, 34, 35, 36, 37, 38, 39]);
+}

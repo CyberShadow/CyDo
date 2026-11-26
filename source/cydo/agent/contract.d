@@ -183,8 +183,9 @@ interface Agent
 
 	/// The 1-based lines of a whole history file that are not part of the
 	/// conversation the agent continues: turns it rolled back or rewound
-	/// in place, which stay in the file. Readers interpreting the file as
-	/// a conversation skip these lines; line numbers stay stable.
+	/// in place and the bookkeeping of messages consumed on those turns.
+	/// Readers interpreting the file as a conversation skip these lines;
+	/// line numbers stay stable.
 	bool[int] inactiveHistoryLines(string content);
 
 	/// Extract persisted history boundaries with explicit kinds.
@@ -205,10 +206,9 @@ interface Agent
 	/// Used by truncation/fork logic to find the cut point.
 	bool forkIdMatchesLine(string line, int lineNum, string forkId);
 
-	/// The 1-based lines of a whole history file that only record messages
-	/// whose outcome lies on `dropped` lines, wherever they sit. A cut or
-	/// rewind that drops those lines must drop these too, or the messages
-	/// resurface without their outcome.
+	/// The 1-based lines of every queue record belonging to messages whose
+	/// outcome lies on `dropped` lines in the whole history file, including
+	/// outcomes recorded as queue operations.
 	bool[int] historyLinesDependentOn(string content, scope bool delegate(int line) dropped);
 
 	/// Whether the JSONL message editor can rewrite this driver's user records.

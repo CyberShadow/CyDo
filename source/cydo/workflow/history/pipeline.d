@@ -1947,6 +1947,93 @@ unittest
 				"withdrawn message must not keep a provisional boundary");
 }
 
+@("Claude history reload does not resurrect a cut prompt as pending")
+unittest
+{
+	import std.algorithm : any;
+	import std.array : join;
+	import std.file : getSize, mkdir, rmdirRecurse, tempDir, write;
+	import std.path : buildPath;
+	import std.uuid : randomUUID;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.agent.drivers.claude_branches : claudeLegacyQueueRewindRows, claudeQueueCutRows, claudeQueueRewindRows;
+	import cydo.runtime.launch.types : NativeHistoryProfile;
+	import cydo.workflow.history.jsonl_store : truncateJsonl;
+
+	auto dir = buildPath(tempDir(), "cydo-queue-cut-replay-" ~ randomUUID().toString());
+	mkdir(dir);
+	scope(exit) rmdirRecurse(dir);
+	auto path = buildPath(dir, "S.jsonl");
+
+	enum tid = 1;
+	auto td = TaskData(tid, "local", dir);
+	td.agentName = "claude";
+	td.agentSessionId = "S";
+
+	auto agent = new ClaudeCodeAgent();
+	auto profile = NativeHistoryProfile(agent.driver, dir);
+	HistoryEventPipelineHost host;
+	host.getTask = (int t) => t == tid ? &td : null;
+	host.resolveTaskHistory = (int t) => TaskHistoryResolution.access(
+		HistoryAccess(agent, profile, td.agentSessionId, path));
+	host.injectAgentNameIntoSessionInit = (string translated, string agentName) => translated;
+	host.normalizeKnownSystemMessageMeta = (string translated, int t) => translated;
+	host.makeTaskDiagnosticEventJson = (string subject, string body) => "";
+	host.broadcastHistoryOperations = (int t) {};
+	auto pipeline = new HistoryEventPipeline(host);
+
+	string[] replayMismatches;
+	void checkReload(string mechanism, bool expectPendingY)
+	{
+		td.history.reset(Watermark.atBytes(getSize(path)));
+		pipeline.ensureHistoryLoaded(tid);
+		assert(td.history.isLoaded, mechanism);
+
+		@JSONPartial static struct ReplayItem
+		{
+			string type;
+			@JSONOptional string item_type;
+			@JSONOptional string text;
+			@JSONOptional ContentBlock[] content;
+			@JSONOptional bool pending;
+		}
+
+		bool sawRetainedReply, sawPendingY;
+		foreach (i, ref entry; td.history)
+		{
+			auto event = jsonParse!ReplayItem(extractEventFromEnvelope(cast(string) entry.toGC()));
+			if (event.type == "user_message/consumed")
+				replayMismatches ~= mechanism ~ " replay confirmed a removed prompt or consumed pending Y";
+			if (event.type != "item/started")
+				continue;
+			if (event.item_type == "user_message")
+			{
+				if (event.content.any!(block => block.type == "text" && block.text == "X"))
+					replayMismatches ~= mechanism ~ " replay emitted the undone prompt X";
+				if (event.content.any!(block => block.type == "text" && block.text == "steer abandoned turn"))
+					replayMismatches ~= mechanism ~ " replay emitted the abandoned steer";
+				if (event.pending && event.content.any!(block => block.type == "text" && block.text == "Y"))
+					sawPendingY = true;
+			}
+			if (event.item_type == "text" && event.text == "prior reply")
+				sawRetainedReply = true;
+		}
+		if (sawPendingY != expectPendingY)
+			replayMismatches ~= mechanism ~ " replay has the wrong pending state for Y";
+		assert(sawRetainedReply, mechanism ~ " replay must retain the previous assistant reply");
+	}
+
+	write(path, claudeQueueCutRows.join("\n") ~ "\n");
+	assert(truncateJsonl(path, "x", &agent.forkIdMatchesLine, &agent.historyLinesDependentOn, true) >= 0);
+	checkReload("JSONL truncation", false);
+
+	write(path, claudeQueueRewindRows.join("\n") ~ "\n");
+	checkReload("native rewind with absorbed steering", true);
+	write(path, claudeLegacyQueueRewindRows.join("\n") ~ "\n");
+	checkReload("native rewind with legacy dequeue steering", true);
+	assert(replayMismatches.length == 0, replayMismatches.join("\n"));
+}
+
 version (unittest) private final class DriverHistoryPipelineFixture
 {
 	enum tid = 1;
