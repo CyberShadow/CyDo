@@ -1209,13 +1209,13 @@ private:
 
 		bool snapshotContainsUndoAnchor(string snapshot, string forkId)
 		{
-			import std.string : lineSplitter;
+			import cydo.foundation.text.jsonl : jsonlRows;
 
 			if (snapshot.length == 0 || forkId.length == 0)
 				return false;
 
 			int lnum = 0;
-			foreach (rawLine; snapshot.lineSplitter)
+			foreach (rawLine; snapshot.jsonlRows)
 			{
 				lnum++;
 				if (rawLine.length == 0)
@@ -1427,7 +1427,8 @@ private:
 	/// still holds after an undo, so a reload does not recover them.
 	void trimPendingSteeringTexts(int tid, HistoryAccess access)
 	{
-		import std.string : splitLines;
+		import std.range : enumerate;
+		import cydo.foundation.text.jsonl : jsonlRows;
 
 		auto td = host_.getTask(tid);
 		if (td.pendingSteeringTexts.length == 0 || !exists(access.path))
@@ -1435,8 +1436,8 @@ private:
 		auto content = readText(access.path);
 		auto inactive = access.agent.inactiveHistoryLines(content);
 		int remaining = 0;
-		foreach (i, line; content.splitLines())
-			if (cast(int) i + 1 !in inactive && access.agent.isHistoryPrompt(line))
+		foreach (i, line; content.jsonlRows.enumerate(1))
+			if (cast(int) i !in inactive && access.agent.isHistoryPrompt(line))
 				remaining++;
 		if (remaining < cast(int) td.pendingSteeringTexts.length)
 			td.pendingSteeringTexts = td.pendingSteeringTexts[0 .. remaining].dup;

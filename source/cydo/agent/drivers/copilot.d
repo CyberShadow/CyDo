@@ -765,14 +765,14 @@ class CopilotAgent : Agent
 
 	PersistedHistoryBoundary[] extractPersistedHistoryBoundaries(string content, int lineOffset = 0)
 	{
-		import std.string : lineSplitter;
+		import cydo.foundation.text.jsonl : jsonlRows;
 
 		@JSONPartial static struct TypeIdProbe { string type; string id;
 			@JSONPartial static struct Data { string content; }
 			Data data; }
 
 		PersistedHistoryBoundary[] ids;
-		foreach (line; content.lineSplitter)
+		foreach (line; content.jsonlRows)
 		{
 			if (line.length == 0)
 				continue;

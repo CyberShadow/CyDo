@@ -802,7 +802,7 @@ class ClaudeCodeAgent : Agent
 
 	bool[int] inactiveHistoryLines(string content)
 	{
-		import std.string : lineSplitter;
+		import cydo.foundation.text.jsonl : jsonlRows;
 		import cydo.agent.drivers.claude_branches : claudeRewoundLines;
 		import cydo.domain.tasks.model : isQueueOperation;
 
@@ -814,7 +814,7 @@ class ClaudeCodeAgent : Agent
 		// individual records sit in the transcript.
 		auto inactive = historyLinesDependentOn(content, l => (l in rewound) !is null);
 		int lineNum;
-		foreach (line; content.lineSplitter)
+		foreach (line; content.jsonlRows)
 		{
 			lineNum++;
 			if (lineNum in rewound && !isQueueOperation(line))
@@ -834,10 +834,10 @@ class ClaudeCodeAgent : Agent
 		scope void delegate(PersistedHistoryBoundary, int firstBlockIndex, int lastBlockIndex, bool joinedApiReply) visitBoundary,
 		scope void delegate() endMessage = null)
 	{
-		import std.string : lineSplitter;
+		import cydo.foundation.text.jsonl : jsonlRows;
 
 		int lineNum = lineOffset;
-		foreach (line; content.lineSplitter)
+		foreach (line; content.jsonlRows)
 		{
 			lineNum++;
 			visitPersistedHistoryRow(line, lineNum, visitBoundary, endMessage);
@@ -7561,6 +7561,37 @@ package(cydo) string[] claudeHistoryAgreementFixture(string toolInputType)
 		`{"type":"assistant","parent_tool_use_id":"t","message":{"id":"X","content":[{"type":"text","text":"nested"}]}}`,
 		`{"type":"assistant","isSidechain":true,"message":{"id":"X","content":[{"type":"text","text":"detached"}]}}`,
 	];
+}
+
+@("Claude history boundary scan preserves Unicode separators inside JSON strings")
+unittest
+{
+	import std.conv : to;
+	import std.format : format;
+	import std.json : parseJSON;
+
+	auto agent = new ClaudeCodeAgent();
+	enum control = `{"type":"user","uuid":"next","message":{"content":"next"}}`;
+	auto controlBoundaries = agent.extractPersistedHistoryBoundaries(control ~ "\n");
+	assert(controlBoundaries.length == 1 && controlBoundaries[0].sourceLine == 1);
+
+	string[] failures;
+	foreach (separator; ['\u2028', '\u2029', '\u0085'])
+	{
+		auto prompt = "before" ~ separator.to!string ~ "after";
+		auto row = `{"type":"user","uuid":"prompt","message":{"content":"`
+			~ prompt ~ `"}}`;
+		assert(parseJSON(row)["message"]["content"].str == prompt);
+
+		auto boundaries = agent.extractPersistedHistoryBoundaries(row ~ "\n" ~ control ~ "\n");
+		string[] actual;
+		foreach (boundary; boundaries)
+			actual ~= format!"%s@%d"(boundary.anchor, boundary.sourceLine);
+		if (actual != ["prompt@1", "next@2"])
+			failures ~= format!"U+%04X: got %s"(cast(uint) separator, actual);
+	}
+	assert(failures.length == 0,
+		format!"Expected [prompt@1, next@2] for each separator; %s"(failures));
 }
 
 @("Claude replay, extracted boundaries and cuts agree on root message members")

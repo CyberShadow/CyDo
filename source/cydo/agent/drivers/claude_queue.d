@@ -24,7 +24,7 @@
 /// classifies the whole file up front.
 module cydo.agent.drivers.claude_queue;
 
-import std.string : lineSplitter;
+import cydo.foundation.text.jsonl : jsonlRows;
 
 import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse;
 
@@ -58,7 +58,7 @@ ClaudeQueueOutcome[int] classifyClaudeQueueRecords(string content,
 	const bool[int] inactiveLines)
 {
 	Row[] rows;
-	foreach (line; content.lineSplitter)
+	foreach (line; content.jsonlRows)
 		rows ~= cast(int) rows.length + 1 in inactiveLines ? Row.init : Row.parse(line);
 
 	ClaudeQueueOutcome[int] outcomes;

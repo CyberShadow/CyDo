@@ -20,7 +20,7 @@ import cydo.runtime.config : AgentDriver;
 import cydo.foundation.platform.inotify : RefCountedINotify;
 import cydo.domain.tasks.model : TaskData, Watermark,
 	extractEventFromEnvelope;
-import cydo.workflow.history.jsonl_store : completeJsonlPrefix;
+import cydo.foundation.text.jsonl : completeJsonlPrefix, jsonlRows;
 import cydo.workflow.history.native_history : LiveHistoryContext,
 	HistoryAccess, LiveHistoryWatchResolution, LiveHistoryWatchResolutionKind, LiveHistoryWatchTarget,
 	TaskHistoryResolution,
@@ -492,11 +492,9 @@ struct JsonlTracker
 	private void ingestClaudeFileRows(int tid, string content, int firstLine,
 		scope bool delegate(string uuid) admit)
 	{
-		import std.string : lineSplitter;
-
 		string[] rows;
 		int[] physicalLines;
-		foreach (row; content.lineSplitter)
+		foreach (row; content.jsonlRows)
 		{
 			if (admit(transcriptRowUuid(row)))
 			{
@@ -522,8 +520,6 @@ struct JsonlTracker
 	{
 		import std.algorithm : min;
 		import std.file : exists;
-		import std.string : lineSplitter;
-
 		if (tid in claudeFeeds)
 			return;
 		attachLiveContext(tid, target.context);
@@ -536,7 +532,7 @@ struct JsonlTracker
 		ClaudeTranscriptFeed feed;
 		feed.pastAttachRead = content.length == 0;
 		int firstLine = 1;
-		foreach (row; prefix.lineSplitter)
+		foreach (row; prefix.jsonlRows)
 		{
 			feed.noteBaseline(transcriptRowUuid(row));
 			++firstLine;
@@ -645,8 +641,6 @@ struct JsonlTracker
 		if (tid !in jsonlReadPos)
 		{
 			import std.file : getSize, read;
-			import std.string : lineSplitter;
-
 			auto watermark = getTask(tid).history.watermark;
 			// The history store loads complete lines within a snapshot's byte
 			// limit. Leave an unfinished record for the tail to read in full.
@@ -657,7 +651,7 @@ struct JsonlTracker
 			if (pos > 0)
 				prefix = completeJsonlPrefix(cast(string) read(jsonlPath, cast(size_t) pos));
 			int lines = 0;
-			foreach (_; prefix.lineSplitter)
+			foreach (_; prefix.jsonlRows)
 				lines++;
 			jsonlReadPos[tid] = prefix.length;
 			jsonlLineCount[tid] = lines;
@@ -687,8 +681,6 @@ struct JsonlTracker
 		import std.array : array;
 		import std.file : exists, getSize;
 		import std.logger : tracef;
-		import std.string : lineSplitter;
-
 		auto context = tid in liveContexts;
 		assert(context is null || context.agent.driver != AgentDriver.claude);
 		if (jsonlPath.length == 0 || !exists(jsonlPath))
@@ -723,7 +715,7 @@ struct JsonlTracker
 		boundaryState[tid].partialLine = cast(ubyte[]) newContent[completeBytes .. $].dup;
 
 		auto lineOffset = jsonlLineCount.get(tid, 0);
-		auto rows = completeContent.lineSplitter.array;
+		auto rows = completeContent.jsonlRows.array;
 		jsonlLineCount[tid] = lineOffset + cast(int) rows.length;
 		ingestPersistedRows(tid, rows, lineOffset + 1);
 	}
@@ -1770,12 +1762,10 @@ unittest
 
 unittest
 {
-	import std.string : lineSplitter;
-
 	auto firstNotification = `{"type":"user.message","id":"u"}`;
 	assert(completeJsonlPrefix(firstNotification).length == 0);
 	int incompleteLines;
-	foreach (_; firstNotification.lineSplitter)
+	foreach (_; firstNotification.jsonlRows)
 		incompleteLines++;
 	assert(incompleteLines == 1);
 
@@ -1784,7 +1774,7 @@ unittest
 	assert(completeBytes == completedNotification.length);
 	auto completeContent = completedNotification[0 .. completeBytes];
 	int completeLines;
-	foreach (_; completeContent.lineSplitter)
+	foreach (_; completeContent.jsonlRows)
 		completeLines++;
 	assert(completeLines == 1);
 }

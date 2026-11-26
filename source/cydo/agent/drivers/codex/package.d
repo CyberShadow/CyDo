@@ -4663,7 +4663,7 @@ version (unittest) private string[string] finalItemTexts(TranslatedEvent[] event
 // Reasoning reads the same live and replayed, however its text arrives.
 unittest
 {
-	import std.string : lineSplitter;
+	import cydo.foundation.text.jsonl : jsonlRows;
 	import cydo.agent.drivers.codex.thread_items_fixtures : reasoningItemEntry,
 		reasoningLiveNotifications;
 
@@ -4675,7 +4675,7 @@ unittest
 		auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
 		TranslatedEvent[] live;
 		session.onOutput((TranslatedEvent event) { live ~= event; });
-		foreach (line; reasoningLiveNotifications.lineSplitter)
+		foreach (line; reasoningLiveNotifications.jsonlRows)
 		{
 			auto notification = jsonParse!Notification(line);
 			if (notification.method == "item/started")
@@ -4716,7 +4716,7 @@ unittest
 unittest
 {
 	import std.json : JSONValue, parseJSON;
-	import std.string : lineSplitter;
+	import cydo.foundation.text.jsonl : jsonlRows;
 	import cydo.agent.drivers.codex.thread_items_fixtures : nineTurnItemsPage,
 		nineTurnLiveNotifications, nineTurnTurnsPage;
 	import cydo.protocol : ItemStartedEvent;
@@ -4797,7 +4797,7 @@ unittest
 	bootstrap.item.id = "bootstrap";
 	enum bootstrapText = "[SYSTEM: Session start: test]\n\nfirst prompt\n\n[/SYSTEM]";
 	bootstrap.item.content = jsonParse!SO(toJson([ContentBlock("text", bootstrapText)]));
-	foreach (line; nineTurnLiveNotifications.lineSplitter)
+	foreach (line; nineTurnLiveNotifications.jsonlRows)
 	{
 		auto notification = jsonParse!Notification(line);
 		auto params = notification.params.json;

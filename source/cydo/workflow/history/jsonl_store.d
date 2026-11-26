@@ -8,16 +8,11 @@ import std.string : representation;
 import ae.sys.data : Data;
 import ae.utils.json : JSONFragment, toJson;
 
+import cydo.foundation.text.jsonl : completeJsonlPrefix, jsonlRows;
 import cydo.protocol : TaskEventEnvelope, TranslatedEvent;
 import cydo.agent.contract : InterruptedToolCallRepair;
 import cydo.domain.storage.persistence : LoadedHistory, Persistence, createForkTask, noSourceLine;
 import cydo.workflow.history.native_history : HistoryAccess;
-
-package(cydo) string completeJsonlPrefix(string content)
-{
-	import std.string : lastIndexOf;
-	return content[0 .. content.lastIndexOf('\n') + 1];
-}
 
 /// Load task history from a JSONL file.
 /// Returns events wrapped in file-event envelopes paired with raw source lines.
@@ -46,8 +41,6 @@ package(cydo) LoadedHistory loadTaskHistoryContent(int tid, string content,
 	TranslatedEvent[] delegate(string, int) translateLine,
 	TranslatedEvent[] delegate() finishReplay = null)
 {
-	import std.string : lineSplitter;
-
 	LoadedHistory result;
 	int lineNum = 0;
 	void appendTranslated(TranslatedEvent[] translated, int sourceLine)
@@ -63,7 +56,7 @@ package(cydo) LoadedHistory loadTaskHistoryContent(int tid, string content,
 				: (t.sourceLine != noSourceLine ? t.sourceLine : sourceLine);
 		}
 	}
-	foreach (line; content.lineSplitter)
+	foreach (line; content.jsonlRows)
 	{
 		lineNum++;
 		if (line.length == 0)
@@ -113,8 +106,6 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid,
 {
 	import std.file : exists, mkdirRecurse, readText, write;
 	import std.path : dirName, isAbsolute;
-	import std.string : lineSplitter;
-
 	assert(exists(source.path), "Fork source history file must exist");
 	assert(destination.sessionId.length > 0 && destination.path.length > 0
 		&& isAbsolute(destination.path),
@@ -125,7 +116,7 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid,
 	auto content = readText(source.path);
 	int lastMatch = 0;
 	int lineNum = 0;
-	foreach (line; content.lineSplitter)
+	foreach (line; content.jsonlRows)
 	{
 		lineNum++;
 		if (line.length > 0 && matchFn(line, lineNum, afterForkId))
@@ -138,7 +129,7 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid,
 	auto dependent = dependentFn(content, line => line > lastMatch);
 	string output;
 	lineNum = 0;
-	foreach (line; content.lineSplitter)
+	foreach (line; content.jsonlRows)
 	{
 		lineNum++;
 		if (lineNum > lastMatch)
@@ -171,15 +162,13 @@ bool editJsonlMessage(string jsonlPath, string targetId,
 	string delegate(string line) editFn)
 {
 	import std.file : exists, readText, write;
-	import std.string : lineSplitter;
-
 	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return false;
 
 	string output;
 	bool found = false;
 	int lineNum = 0;
-	foreach (line; readText(jsonlPath).lineSplitter)
+	foreach (line; readText(jsonlPath).jsonlRows)
 	{
 		lineNum++;
 		if (line.length == 0)
@@ -217,14 +206,12 @@ string repairInterruptedToolCallFile(string jsonlPath,
 	import std.array : array, join;
 	import std.file : exists, readText, write;
 	import std.logger : infof, warningf;
-	import std.string : lineSplitter;
-
 	try
 	{
 		if (jsonlPath.length == 0 || !exists(jsonlPath))
 			return null;
 
-		auto repaired = repairFn(readText(jsonlPath).lineSplitter.array,
+		auto repaired = repairFn(readText(jsonlPath).jsonlRows.array,
 			toolName, resultText);
 		if (repaired is null)
 		{
@@ -294,15 +281,13 @@ unittest
 bool spliceJsonlByLine(string jsonlPath, int lineNum, string[] newLines)
 {
 	import std.file : exists, readText, write;
-	import std.string : lineSplitter;
-
 	if (jsonlPath.length == 0 || !exists(jsonlPath) || lineNum == noSourceLine)
 		return false;
 
 	string output;
 	bool found = false;
 	int currentLineNum = 0;
-	foreach (line; readText(jsonlPath).lineSplitter)
+	foreach (line; readText(jsonlPath).jsonlRows)
 	{
 		currentLineNum++;
 		if (line.length == 0)
@@ -411,15 +396,13 @@ int truncateJsonl(string jsonlPath, string afterForkId,
 	bool excludeMatch = false)
 {
 	import std.file : exists, readText, write;
-	import std.string : lineSplitter;
-
 	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return -1;
 
 	auto content = readText(jsonlPath);
 	int cut = 0;
 	int lineNum = 0;
-	foreach (line; content.lineSplitter)
+	foreach (line; content.jsonlRows)
 	{
 		lineNum++;
 		if (line.length > 0 && matchFn(line, lineNum, afterForkId))
@@ -436,7 +419,7 @@ int truncateJsonl(string jsonlPath, string afterForkId,
 	int removedCount = 0;
 	string output;
 	lineNum = 0;
-	foreach (line; content.lineSplitter)
+	foreach (line; content.jsonlRows)
 	{
 		lineNum++;
 		if (line.length == 0)
@@ -461,15 +444,13 @@ int countLinesAfterForkId(string jsonlPath, string afterForkId,
 	bool delegate(string line) countFn, const bool[int] inactiveLines)
 {
 	import std.file : exists, readText;
-	import std.string : lineSplitter;
-
 	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return -1;
 
 	bool pastTarget = false;
 	int count = 0;
 	int lineNum = 0;
-	foreach (line; readText(jsonlPath).lineSplitter)
+	foreach (line; readText(jsonlPath).jsonlRows)
 	{
 		lineNum++;
 		if (line.length == 0 || lineNum in inactiveLines)
@@ -493,14 +474,12 @@ string findNextUserUuid(string jsonlPath, string forkId,
 	bool delegate(string line, int lineNum, string forkId) matchFn)
 {
 	import std.file : exists, readText;
-	import std.string : lineSplitter;
-
 	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return null;
 
 	bool pastTarget = false;
 	int lineNum = 0;
-	foreach (line; readText(jsonlPath).lineSplitter)
+	foreach (line; readText(jsonlPath).jsonlRows)
 	{
 		lineNum++;
 		if (line.length == 0)
@@ -680,6 +659,29 @@ unittest
 	assert(readText(path) == "one\n");
 }
 
+@("JSONL replay and fork preview use physical source lines")
+unittest
+{
+	import std.file : remove, tempDir, write;
+	import std.path : buildPath;
+	import std.uuid : randomUUID;
+
+	enum first = `{"type":"user","content":"` ~ "a\u2028b\u2029c\u0085d" ~ `"}`;
+	enum anchor = `{"type":"assistant","content":"anchor"}`;
+	enum last = `{"type":"user","content":"next"}`;
+	auto path = buildPath(tempDir(), "cydo-jsonl-physical-lines-" ~ randomUUID().toString() ~ ".jsonl");
+	write(path, first ~ "\r\n\r\n" ~ anchor ~ "\r\n" ~ last ~ "\n");
+	scope(exit) remove(path);
+
+	auto replay = loadTaskHistory(1, path);
+	assert(replay.rawSource == [first, anchor, last]);
+	assert(replay.sourceLine == [1, 3, 4]);
+
+	assert(countLinesAfterForkId(path, "line:3",
+		(line, lineNum, forkId) => forkId == "line:3" && lineNum == 3 && line == anchor,
+		line => line == last, null) == 1);
+}
+
 @("Claude fork and undo cut at the last and first root message records")
 unittest
 {
@@ -736,7 +738,6 @@ unittest
 	import std.file : readText, remove, tempDir, write;
 	import std.json : parseJSON;
 	import std.path : buildPath;
-	import std.string : lineSplitter;
 	import std.uuid : randomUUID;
 	import cydo.agent.drivers.claude : ClaudeCodeAgent, claudeHistoryAgreementFixture;
 	import cydo.workflow.history.jsonl_edit : replaceUserMessageContent;
@@ -754,7 +755,7 @@ unittest
 		(string line) => replaceUserMessageContent(line, replacement)),
 		"editJsonlMessage did not find the meta image companion by UUID");
 
-	auto after = readText(path).lineSplitter.array;
+	auto after = readText(path).jsonlRows.array;
 	assert(after.length == before.length);
 	enum companionIndex = 3;
 	assert(after[0 .. companionIndex] == before[0 .. companionIndex]);

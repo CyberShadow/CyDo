@@ -439,11 +439,11 @@ package RolloutLineEvidence parseRolloutLineEvidence(string line, int lineNumber
 /// Scan rollout JSONL in physical line order, preserving the source line numbers.
 package RolloutLineEvidence[] scanRollout(string content)
 {
-	import std.string : lineSplitter;
+	import cydo.foundation.text.jsonl : jsonlRows;
 
 	RolloutLineEvidence[] lines;
 	int lineNumber;
-	foreach (line; content.lineSplitter)
+	foreach (line; content.jsonlRows)
 		lines ~= parseRolloutLineEvidence(line, ++lineNumber);
 	return lines;
 }

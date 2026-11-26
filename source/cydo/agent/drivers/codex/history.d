@@ -129,7 +129,7 @@ TranslatedEvent[] decodeLegacyRollout(string content, string systemKeyword,
 	const bool[string] liveTurnIds)
 {
 	import std.conv : to;
-	import std.string : lineSplitter;
+	import cydo.foundation.text.jsonl : jsonlRows;
 
 	auto scan = scanRollout(content);
 	auto rolledBack = computeRollbackSkipLines(scan);
@@ -157,7 +157,7 @@ TranslatedEvent[] decodeLegacyRollout(string content, string systemKeyword,
 	ptrdiff_t pendingUser = -1;
 	string pendingUserText;
 	int lineNumber;
-	foreach (line; content.lineSplitter)
+	foreach (line; content.jsonlRows)
 	{
 		lineNumber++;
 		if (line.length == 0)
@@ -267,9 +267,9 @@ version (unittest)
 	private string[] legacyLines()
 	{
 		import std.array : array;
-		import std.string : lineSplitter;
+		import cydo.foundation.text.jsonl : jsonlRows;
 
-		return legacyRollout.lineSplitter.array;
+		return legacyRollout.jsonlRows.array;
 	}
 }
 

@@ -32,7 +32,8 @@ import cydo.domain.tasks.model : QueueOperationProbe, TaskData, TaskStatus, Task
 import cydo.workflow.history.native_history : HistoryAccess,
 	TaskHistoryResolution, TaskHistoryResolutionKind, UnavailableHistory,
 	UnavailableHistoryKind;
-import cydo.workflow.history.jsonl_store : completeJsonlPrefix, loadTaskHistoryContent;
+import cydo.foundation.text.jsonl : completeJsonlPrefix;
+import cydo.workflow.history.jsonl_store : loadTaskHistoryContent;
 import cydo.workflow.history.operations : HistoryBoundaryEvent, HistoryOperations;
 
 package(cydo):

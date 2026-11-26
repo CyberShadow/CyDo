@@ -13,7 +13,7 @@ module cydo.agent.drivers.claude_branches;
 import std.algorithm : canFind;
 import std.exception : enforce;
 import std.json : JSONException, JSONType, JSONValue, parseJSON;
-import std.string : lineSplitter;
+import cydo.foundation.text.jsonl : jsonlRows;
 
 /// The 1-based lines of a Claude session file that belong to rewound
 /// branches, i.e. are not part of the conversation the CLI continues.
@@ -40,7 +40,7 @@ bool[int] claudeRewoundLines(string content)
 	Row[] rows;
 	size_t[string] lineOfUuid; // 0-based row index
 	string finalLeaf;
-	foreach (line; content.lineSplitter)
+	foreach (line; content.jsonlRows)
 	{
 		Row row;
 		scope(success) rows ~= row;
@@ -158,11 +158,11 @@ unittest
 
 	// Before the third turn the leaf is the marker's: the attachment after
 	// the reply is off the conversation as well.
-	auto rewoundOnly = content.lineSplitter.array[0 .. 13].join("\n") ~ "\n";
+	auto rewoundOnly = content.jsonlRows.array[0 .. 13].join("\n") ~ "\n";
 	assert(claudeRewoundLines(rewoundOnly).keys.sort.array == [5, 6, 7, 8, 9, 10, 11, 12]);
 
 	// Without a rewind marker nothing is rewound, whatever the chain says.
-	assert(claudeRewoundLines(content.lineSplitter.array[0 .. 11].join("\n")) is null);
+	assert(claudeRewoundLines(content.jsonlRows.array[0 .. 11].join("\n")) is null);
 }
 
 // Rewinding to the first message leaves no leaf: everything up to the
