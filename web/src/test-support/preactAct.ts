@@ -1,6 +1,7 @@
 import { render, type ComponentChild } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, expect, vi, type TestContext } from "vitest";
+import { hangTimeout } from "./hangTimeout";
 
 // Own each jsdom root here or unmount it through act in a try/finally.
 // While a root is mounted, await through act or an act-based helper. Trigger
@@ -66,14 +67,14 @@ async function pollStages(
   ...stages: [PollStage, ...PollStage[]]
 ): Promise<void> {
   for (const stage of stages) {
-    const steps = stage.steps ?? 100;
+    const deadline = performance.now() + hangTimeout;
     let used = 0;
     for (;;) {
       signal?.throwIfAborted();
       const ready = stage.ready();
       signal?.throwIfAborted();
       if (ready) break;
-      if (used === steps) {
+      if (used === stage.steps || performance.now() >= deadline) {
         throw new Error(`timed out waiting for ${stage.description}`);
       }
       used++;

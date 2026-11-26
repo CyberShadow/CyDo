@@ -4,6 +4,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { actStep, ownedRoots } from "../test-support/preactAct";
+import { waitFor } from "../test-support/waitFor";
 import { act } from "preact/test-utils";
 import type {
   DraftView,
@@ -90,6 +91,9 @@ function mockImageReader() {
     });
 
   return {
+    get pending() {
+      return readers.length;
+    },
     complete() {
       for (const reader of readers.splice(0)) {
         reader.onload?.({
@@ -228,30 +232,41 @@ describe("DraftSessionView draft availability", () => {
         { ...successor, editorId, viewKey: editorId, text: "discard" },
         store,
       );
-      await actStep(() => {
-        pasteImage(controls().textarea);
-      });
-      await actStep(() => {
+      const pasteAndWaitForRead = async () => {
+        await act(() => {
+          pasteImage(controls().textarea);
+        });
+        await waitFor(() => {
+          expect(reader.pending).toBe(1);
+        });
+      };
+      await pasteAndWaitForRead();
+      await act(() => {
         reader.complete();
-        pasteImage(controls().textarea);
       });
       const entry = store.entries.get(editorId)!;
-      expect(entry.images).toHaveLength(1);
+      await waitFor(() => {
+        expect(entry.images).toHaveLength(1);
+      });
+      await pasteAndWaitForRead();
       mount(successor, store);
-      await actStep(() => {
+      await act(() => {
         reader.complete();
       });
-      expect(entry.images).toHaveLength(2);
+      await waitFor(() => {
+        expect(entry.images).toHaveLength(2);
+      });
       mount(
         { ...successor, editorId, viewKey: editorId, text: "discard" },
         store,
       );
       expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
-      await actStep(() => pasteImage(controls().textarea));
+      await pasteAndWaitForRead();
       await act(() => {
         retireControlledImage(store, editorId);
       });
       mount(successor, store);
+      // The retired read has no completion signal. Check for unexpected publication.
       await actStep(() => {
         reader.complete();
       });
@@ -290,10 +305,8 @@ describe("DraftSessionView draft availability", () => {
       await actStep(() => {
         pasteImage(controls().textarea);
       });
-      await actStep(() => {
-        imageReader.complete();
-      });
-
+      // Disabled intake has no completion signal. Check that no read started.
+      expect(imageReader.pending).toBe(0);
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
     } finally {
       imageReader.restore();
@@ -444,10 +457,8 @@ describe("DraftSessionView draft availability", () => {
       await actStep(() => {
         dropImage(container.querySelector<HTMLElement>(".input-box")!);
       });
-      await actStep(() => {
-        imageReader.complete();
-      });
-
+      // Disabled intake has no completion signal. Check that no read started.
+      expect(imageReader.pending).toBe(0);
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
     } finally {
       imageReader.restore();

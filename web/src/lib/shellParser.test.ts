@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "../test-support/waitFor";
 import { shellParserCorpus } from "./fixtures/shellParserCorpus";
 import type * as ShellParserTypes from "./shellParser";
 import type * as TreeSitterTypes from "web-tree-sitter";
@@ -1129,7 +1130,7 @@ describe.sequential("shell parser service", () => {
 
       const pending = service.loadParsedShellDocument("echo hi");
       runtimeGate.resolve(runtime);
-      await Promise.resolve();
+      await runtimeGate.promise;
       expect(init).not.toHaveBeenCalled();
       expect(languageLoad).not.toHaveBeenCalled();
       grammarGate.resolve(bash);
@@ -1239,12 +1240,15 @@ describe.sequential("shell parser service", () => {
       expect(() => {
         service.preloadShellParser();
       }).not.toThrow();
+      await waitFor(() => {
+        expect(consoleError).toHaveBeenCalledWith(
+          "Failed to preload shell parser",
+          error,
+        );
+      });
+      // Node emits unhandledRejection after the promise jobs for that turn.
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       expect(consoleError).toHaveBeenCalledTimes(1);
-      expect(consoleError).toHaveBeenCalledWith(
-        "Failed to preload shell parser",
-        error,
-      );
       expect(unhandled).toEqual([]);
       await expect(
         service.loadParsedShellDocument("echo later"),

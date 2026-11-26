@@ -4,6 +4,7 @@ import { h, render } from "preact";
 import { act } from "preact/test-utils";
 import type { Root } from "mdast";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { actPoll } from "../test-support/preactAct";
 
 const shiki = vi.hoisted(() => ({
   createHighlighter: vi.fn(),
@@ -27,22 +28,11 @@ function ast(language: string, value: string): Root {
   };
 }
 
-async function flushPromises() {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-}
-
 async function waitForMermaid(root: HTMLElement, selector: string) {
-  const deadline = performance.now() + 1000;
-  while (!root.querySelector(selector)) {
-    if (performance.now() >= deadline) {
-      throw new Error(`Timed out waiting for Mermaid markup: ${selector}`);
-    }
-    await act(async () => {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    });
-  }
+  await actPoll({
+    description: `Mermaid markup: ${selector}`,
+    ready: () => root.querySelector(selector) !== null,
+  });
 }
 
 async function importRenderer() {
@@ -76,9 +66,12 @@ describe("MdastRenderer export fallback boundaries", () => {
     const { MdastRenderer } = await importRenderer();
 
     try {
-      await act(async () => {
+      await act(() => {
         render(h(MdastRenderer, { ast: ast("rust", "fn main() {}") }), root);
-        await flushPromises();
+      });
+      await actPoll({
+        description: "Shiki initialization failure",
+        ready: () => warn.mock.calls.length > 0,
       });
 
       const code = root.querySelector("pre.language-rust code");

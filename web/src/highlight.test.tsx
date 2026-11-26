@@ -3,6 +3,7 @@
 import { h, render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { actPoll, actStep } from "./test-support/preactAct";
 
 const shiki = vi.hoisted(() => ({
   createHighlighter: vi.fn(),
@@ -32,12 +33,6 @@ function tokenLines(code: string) {
 async function importHighlight() {
   vi.resetModules();
   return import("./highlight");
-}
-
-async function flushPromises(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
 }
 
 afterEach(() => {
@@ -124,41 +119,60 @@ describe("useHighlight", () => {
     }
 
     try {
-      await act(async () => {
+      await act(() => {
         render(h(Probe, { code: "shown code", lang: "shown" }), container);
-        await flushPromises();
       });
-      expect(highlighter.loadLanguage).toHaveBeenCalledWith("shown");
+      await actPoll({
+        description: "shown language load to start",
+        ready: () =>
+          highlighter.loadLanguage.mock.calls.some(
+            ([lang]) => lang === "shown",
+          ),
+      });
 
-      await act(async () => {
+      await act(() => {
         shownLanguage.resolve(undefined);
-        await flushPromises();
+      });
+      await actPoll({
+        description: "shown code tokens to render",
+        ready: () => tokens !== null,
       });
       expect(tokens).toEqual(tokenLines("shown code"));
 
-      await act(async () => {
+      await act(() => {
         render(h(Probe, { code: "old code", lang: "old" }), container);
-        await flushPromises();
       });
-      expect(highlighter.loadLanguage).toHaveBeenCalledWith("old");
+      await actPoll({
+        description: "old language load to start",
+        ready: () =>
+          highlighter.loadLanguage.mock.calls.some(([lang]) => lang === "old"),
+      });
       expect(tokens).toBeNull();
 
-      await act(async () => {
+      await act(() => {
         render(h(Probe, { code: "new code", lang: "new" }), container);
-        await flushPromises();
       });
-      expect(highlighter.loadLanguage).toHaveBeenCalledWith("new");
+      await actPoll({
+        description: "new language load to start",
+        ready: () =>
+          highlighter.loadLanguage.mock.calls.some(([lang]) => lang === "new"),
+      });
 
-      await act(async () => {
+      await act(() => {
         newLanguage.resolve(undefined);
-        await flushPromises();
+      });
+      await actPoll({
+        description: "new code tokens to render",
+        ready: () => tokens !== null,
       });
       expect(tokens).toEqual(tokenLines("new code"));
 
       await act(async () => {
         oldLanguage.resolve(undefined);
-        await flushPromises();
+        await oldLanguage.promise;
       });
+      // This non-flaky negative check has no completion signal for cancelled work.
+      await actStep();
       expect(tokens).toEqual(tokenLines("new code"));
     } finally {
       await act(() => {
@@ -187,9 +201,12 @@ describe("useHighlight", () => {
     }
 
     try {
-      await act(async () => {
+      await act(() => {
         render(h(Probe, {}), container);
-        await flushPromises();
+      });
+      await actPoll({
+        description: "TypeScript language load to start",
+        ready: () => highlighter.loadLanguage.mock.calls.length > 0,
       });
       expect(highlighter.loadLanguage).toHaveBeenCalledWith("typescript");
 
@@ -200,8 +217,10 @@ describe("useHighlight", () => {
 
       await act(async () => {
         language.resolve(undefined);
-        await flushPromises();
+        await language.promise;
       });
+      // This non-flaky negative check has no completion signal for cancelled work.
+      await actStep();
       expect(renders).toHaveLength(renderCountAtUnmount);
     } finally {
       await act(() => {

@@ -1,7 +1,9 @@
 /** @vitest-environment jsdom */
 import { render } from "preact";
 import { act } from "preact/test-utils";
+import { actStep } from "../test-support/preactAct";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { waitFor } from "../test-support/waitFor";
 import {
   createControlledImageStore,
   resetControlledImageStore,
@@ -135,11 +137,10 @@ function holdFullReads() {
     async finish(name: string) {
       const reader = pending.get(name)!;
       pending.delete(name);
-      await act(async () => {
+      await act(() => {
         reader.onload?.({
           target: { result: "data:application/octet-stream;base64,aW1hZ2U=" },
         } as ProgressEvent<FileReader>);
-        await Promise.resolve();
       });
     },
   };
@@ -159,7 +160,7 @@ it.each(modes)("opens the multiple-image picker in the %s composer", (mode) => {
 it.each(modes)("previews picked images in the %s composer", async (mode) => {
   mount(mode);
   pick(png(), new File(["image"], "animation.gif", { type: "image/gif" }));
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(
       Array.from(previews(), (image) => image.getAttribute("src")),
     ).toEqual(
@@ -185,7 +186,7 @@ it("names every refused file in a mixed selection after the valid image loads", 
     new File(["text"], "notes.txt", { type: "text/plain" }),
   );
 
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(previews()).toHaveLength(1);
   });
   expect(previews()[0]?.getAttribute("src")).toMatch(/^data:image\/png;/);
@@ -216,7 +217,7 @@ it("clears a refusal when sending a text-only suggestion", async () => {
     );
   });
   pick(heic(), png());
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(previews()).toHaveLength(1);
   });
   expect(status()?.textContent).toContain("photo.heic");
@@ -238,7 +239,7 @@ it.each(["paste", "drop"] as const)(
       new File(["text"], "notes.txt", { type: "text/plain" }),
     ]);
     expect(event.defaultPrevented).toBe(true);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(status()?.textContent).toContain("notes.txt");
     });
     expect(previews()).toHaveLength(0);
@@ -273,9 +274,8 @@ it.each(modes)(
     expect(transfer("paste", [png(), heic()]).defaultPrevented).toBe(true);
     expect(transfer("drop", [png(), heic()]).defaultPrevented).toBe(true);
 
-    await act(async () => {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    });
+    // Disabled intake has no completion signal. Check for unexpected reads.
+    await actStep();
     expect(sniff).not.toHaveBeenCalled();
     expect(read).not.toHaveBeenCalled();
     expect(status()).toBeNull();
@@ -296,7 +296,7 @@ it("clears a refusal when switching controlled editors", async () => {
   const imageStore = createControlledImageStore();
   mount("controlled", { imageStore, imageKey: "first" });
   pick(heic());
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(status()?.textContent).toContain("photo.heic");
   });
 
@@ -307,7 +307,7 @@ it("clears a refusal when switching controlled editors", async () => {
 it("clears a refusal when resetting a controlled editor", async () => {
   mount("controlled", { composerResetToken: 1 });
   pick(heic());
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(status()?.textContent).toContain("photo.heic");
   });
 
@@ -321,7 +321,7 @@ it.each(modes)(
     mount(mode, { heicConversion: available });
     transfer("drop", [untypedHeic()]);
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(chips()).toHaveLength(1);
       expect(chips()[0]?.textContent).toContain("HEIC");
       expect(chips()[0]?.textContent).toContain("IMG_0001.HEIC");
@@ -339,7 +339,7 @@ it.each(
     mount(mode, { heicConversion: unavailable });
     transfer("drop", [new File([heicBytes], "IMG_0001.HEIC", { type })]);
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const error = container.querySelector(".attach-error")?.textContent;
       expect(error).toContain("IMG_0001.HEIC");
       expect(error).toContain(unavailable.reason);
@@ -357,7 +357,7 @@ it.each(modes)("previews an untyped PNG in the %s composer", async (mode) => {
     ),
   );
 
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(previews()).toHaveLength(1);
     expect(previews()[0]?.getAttribute("src")).toMatch(
       /^data:image\/png;base64,/,
@@ -371,7 +371,7 @@ it.each(modes)(
     mount(mode, { heicConversion: available });
     pick(new File(["not an image"], "unknown.bin"));
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(status()?.textContent).toContain("unknown.bin");
     });
     expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
@@ -389,16 +389,18 @@ it.each(modes)(
       new File(["BM"], "c.bmp", { type: "image/bmp" }),
     );
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(reads.pending.size).toBe(2);
     });
     await reads.finish("b.heic");
+    // A partial batch has no observable completion before the remaining read.
+    await actStep();
     expect(previews()).toHaveLength(0);
     expect(chips()).toHaveLength(0);
     expect(status()).toBeNull();
     await reads.finish("a.png");
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const batch = container.querySelectorAll(".image-preview");
       expect(batch).toHaveLength(2);
       expect(batch[0]?.querySelector("img")?.getAttribute("src")).toMatch(
@@ -419,7 +421,7 @@ it.each(modes)(
     mount(mode, { heicConversion: available });
     expect(transfer("paste", [untypedHeic()]).defaultPrevented).toBe(true);
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(chips()).toHaveLength(1);
       expect(chips()[0]?.textContent).toContain("HEIC");
     });
@@ -461,7 +463,7 @@ it.each(modes)(
       imageKey,
     });
     pick(oldFile);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(delayedSniff).toHaveBeenCalledWith(oldFile);
     });
 
@@ -480,7 +482,7 @@ it.each(modes)(
     if (mode === "controlled")
       expect(imageStore.entries.get(imageKey)?.images).toEqual([]);
     pick(untypedHeic("new.heic"));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(chips()).toHaveLength(1);
       expect(chips()[0]?.textContent).toContain("new.heic");
     });
@@ -505,7 +507,7 @@ it.each(modes)(
     mount(mode, { heicConversion: unavailable });
     finish("image/heic");
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(previews()).toHaveLength(1);
       const error = container.querySelector(".attach-error")?.textContent;
       expect(error).toContain(photo.name);
@@ -538,7 +540,7 @@ it.each(["header", "full"] as const)(
 
     mount("ordinary");
     pick(unreadable, png());
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(previews()).toHaveLength(1);
       expect(previews()[0]?.getAttribute("src")).toMatch(/^data:image\/png;/);
       expect(container.querySelector(".attach-error")?.textContent).toContain(
@@ -561,7 +563,7 @@ it("reports a non-I/O exception instead of refusing the file", async () => {
   mount("ordinary", { heicConversion: available });
   pick(untypedHeic());
 
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(report).toHaveBeenCalledOnce();
   });
   expect(() => {
@@ -582,15 +584,16 @@ it.each(
     const photo = untypedHeic();
     mount(mode, { heicConversion: availableAtStart ? available : unavailable });
     pick(png(), photo);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(reads.pending.has("photo.png")).toBe(true);
+      expect(reads.pending.has(photo.name)).toBe(true);
     });
-    if (reads.pending.has(photo.name)) await reads.finish(photo.name);
+    await reads.finish(photo.name);
 
     mount(mode, { heicConversion: availableAtStart ? unavailable : available });
     await reads.finish("photo.png");
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(previews()).toHaveLength(1);
       if (availableAtStart) {
         expect(chips()).toHaveLength(0);
@@ -622,7 +625,7 @@ it.each(["before", "after"] as const)(
     };
     mountEditor();
     pick(png(), photo);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(reads.pending.size).toBe(2);
     });
 
@@ -633,15 +636,17 @@ it.each(["before", "after"] as const)(
     if (remount === "before") mountEditor();
     await reads.finish(photo.name);
     await reads.finish("photo.png");
+    const entry = imageStore.entries.get(imageKey)!;
+    await waitFor(() => {
+      expect(entry.images.map(({ name }) => name)).toEqual(["photo.png"]);
+      expect(entry.refusals.join(" ")).toContain(photo.name);
+    });
     if (remount === "after") mountEditor();
 
     expect(previews()).toHaveLength(1);
     expect(chips()).toHaveLength(0);
     expect(status()?.textContent).toContain(photo.name);
     expect(status()?.textContent).toContain(unavailable.reason);
-    const entry = imageStore.entries.get(imageKey)!;
-    expect(entry.images.map(({ name }) => name)).toEqual(["photo.png"]);
-    expect(entry.refusals.join(" ")).toContain(photo.name);
   },
 );
 
@@ -652,13 +657,14 @@ it.each(modes)(
     mount(mode);
     pick(png());
     pick(new File(["text"], "last.txt", { type: "text/plain" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(status()?.textContent).toContain("last.txt");
     });
 
     await reads.finish("photo.png");
-
-    expect(previews()).toHaveLength(1);
+    await waitFor(() => {
+      expect(previews()).toHaveLength(1);
+    });
     expect(status()?.textContent).toContain("last.txt");
   },
 );
@@ -673,12 +679,17 @@ it.each(modes)(
       new File(["notes"], "notes.txt", { type: "text/plain" }),
     );
     pick(new File(["b"], "b.png", { type: "image/png" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(reads.pending.size).toBe(2);
     });
     await reads.finish("b.png");
+    await waitFor(() => {
+      expect(previews()).toHaveLength(1);
+    });
     await reads.finish("a.png");
-    expect(previews()).toHaveLength(2);
+    await waitFor(() => {
+      expect(previews()).toHaveLength(2);
+    });
     expect(status()?.textContent).toContain("notes.txt");
   },
 );
@@ -689,16 +700,18 @@ it.each(modes)(
     const reads = holdFullReads();
     mount(mode);
     pick(new File(["notes"], "notes.txt", { type: "text/plain" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(status()?.textContent).toContain("notes.txt");
     });
     pick(png());
     expect(status()).toBeNull();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(reads.pending.has("photo.png")).toBe(true);
     });
     await reads.finish("photo.png");
-    expect(previews()).toHaveLength(1);
+    await waitFor(() => {
+      expect(previews()).toHaveLength(1);
+    });
   },
 );
 
@@ -716,11 +729,11 @@ it.each(["store reset", "editor reset", "retirement"] as const)(
       new File(["image"], "stale.png", { type: "image/png" }),
       new File(["text"], "stale.txt", { type: "text/plain" }),
     );
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(reads.pending.has("stale.png")).toBe(true);
     });
     pick(heic());
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(status()?.textContent).toContain("photo.heic");
     });
 
@@ -737,17 +750,21 @@ it.each(["store reset", "editor reset", "retirement"] as const)(
     expect(status()).toBeNull();
 
     await reads.finish("stale.png");
+    // The discarded batch has no completion signal, so check for unexpected publication.
+    await actStep();
     expect(detached.images).toEqual([]);
     expect(detached.refusals).toEqual([]);
     expect(previews()).toHaveLength(0);
     expect(status()).toBeNull();
 
     pick(png(), new File(["text"], "notes.txt", { type: "text/plain" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(reads.pending.has("photo.png")).toBe(true);
     });
     await reads.finish("photo.png");
-    expect(previews()).toHaveLength(1);
+    await waitFor(() => {
+      expect(previews()).toHaveLength(1);
+    });
     expect(status()?.textContent).toContain("notes.txt");
     expect(
       imageStore.entries.get(imageKey)?.images.map(({ name }) => name),
@@ -762,14 +779,16 @@ it("keeps a switched-to owner's pending intake and refusals across different res
   const reads = holdFullReads();
   mount("controlled", a);
   pick(png(), new File(["text"], "bad-a.txt", { type: "text/plain" }));
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(reads.pending.has("photo.png")).toBe(true);
   });
   mount("controlled", b);
   mount("controlled", a);
   await reads.finish("photo.png");
-  expect(status()?.textContent).toContain("bad-a.txt");
-  expect(previews()).toHaveLength(1);
+  await waitFor(() => {
+    expect(status()?.textContent).toContain("bad-a.txt");
+    expect(previews()).toHaveLength(1);
+  });
 });
 
 it("keeps a published refusal when returning to its editor with a different reset token", async () => {
@@ -778,7 +797,7 @@ it("keeps a published refusal when returning to its editor with a different rese
   const b = { imageStore, imageKey: "b", composerResetToken: 8 };
   mount("controlled", a);
   pick(heic());
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(status()?.textContent).toContain("photo.heic");
   });
   mount("controlled", b);

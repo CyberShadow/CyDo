@@ -21,6 +21,7 @@ import { configureShellParserAssets } from "../lib/shellParser";
 import { loadParsedShellDocument } from "../lib/shellParser";
 import type { ItemEnrichment, ToolResult } from "../types";
 import { actPoll, ownedRoots } from "../test-support/preactAct";
+import { waitFor } from "../test-support/waitFor";
 import bashEditDiff from "../testFixtures/claude-bash-edit-diff.json";
 import {
   ToolCall,
@@ -950,7 +951,7 @@ describe("ToolCall semantic shell output", () => {
 
     const block = root.querySelector('[data-testid="semantic-shell-block-0"]');
     expect(block).not.toBeNull();
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       await act(async () => {});
       expect(block?.querySelector("pre span[style*='color']")).not.toBeNull();
     });
@@ -1051,7 +1052,7 @@ describe("ToolCall semantic shell output", () => {
     );
     const block = root.querySelector('[data-testid="semantic-shell-block-0"]');
     expect(block).not.toBeNull();
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       await act(async () => {});
       expect(block?.querySelector("span[style*='color']")).not.toBeNull();
     });
@@ -1070,7 +1071,7 @@ describe("ToolCall semantic shell output", () => {
         '[data-testid="semantic-shell-block-0"]',
       );
       expect(block?.querySelector(".search-group-separator")).not.toBeNull();
-      await vi.waitFor(async () => {
+      await waitFor(async () => {
         await act(async () => {});
         expect(block?.querySelector("span[style*='color']")).not.toBeNull();
       });
@@ -1099,7 +1100,7 @@ describe("ToolCall semantic shell output", () => {
     );
     const block = root.querySelector('[data-testid="semantic-shell-block-0"]');
     expect(block).not.toBeNull();
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       await act(async () => {});
       expect(block?.querySelector("span[style*='color']")).not.toBeNull();
     });
@@ -1270,12 +1271,11 @@ describe("ToolCall asynchronous shell source tree", () => {
     expect(root.querySelector(".write-content")).not.toBeNull();
     expect(root.querySelector('[data-testid="source-tree-input"]')).toBeNull();
 
-    await act(async () => {
-      await loadParsedShellDocument(command);
+    await waitFor(() => {
+      expect(
+        root.querySelector('[data-testid="source-tree-input"]'),
+      ).not.toBeNull();
     });
-    expect(
-      root.querySelector('[data-testid="source-tree-input"]'),
-    ).not.toBeNull();
   });
 
   it("keeps typed parser failures usable as raw command text", async () => {
@@ -1294,28 +1294,17 @@ describe("ToolCall asynchronous shell source tree", () => {
 
   it("renders a settled-cache remount as structured on its first render", async () => {
     const command = "python3 -c 'print(cache-hit)'";
-    const originalLoad = shellParser.loadParsedShellDocument;
-    let firstLoad: Promise<ParseResult> | undefined;
-    const load = vi
-      .spyOn(shellParser, "loadParsedShellDocument")
-      .mockImplementation((source) => {
-        const result = originalLoad(source);
-        firstLoad = result;
-        return result;
-      });
+    const load = vi.spyOn(shellParser, "loadParsedShellDocument");
 
     const root = roots.create();
     await act(() => {
       mountedShellInput(root, command);
     });
-    expect(firstLoad).toBeDefined();
-    if (!firstLoad) return;
-    await act(async () => {
-      await firstLoad;
+    await waitFor(() => {
+      expect(
+        root.querySelector('[data-testid="source-tree-input"]'),
+      ).not.toBeNull();
     });
-    expect(
-      root.querySelector('[data-testid="source-tree-input"]'),
-    ).not.toBeNull();
 
     await act(() => {
       roots.render(null, root);
@@ -1350,6 +1339,7 @@ describe("ToolCall asynchronous shell source tree", () => {
       firstPending.resolve(successfulParse(first));
       await firstPending.promise;
     });
+    // The superseded parse has no separate consumption signal. Check for an unexpected render.
     expect(root.querySelector('[data-testid="source-tree-input"]')).toBeNull();
     expect(root.querySelector(".write-content")?.textContent).toContain(second);
 
@@ -1357,10 +1347,12 @@ describe("ToolCall asynchronous shell source tree", () => {
       secondPending.resolve(successfulParse(second));
       await secondPending.promise;
     });
-    expect(
-      root.querySelector('[data-testid="source-tree-input"]'),
-    ).not.toBeNull();
-    expect(root.textContent).toContain(second);
+    await waitFor(() => {
+      expect(
+        root.querySelector('[data-testid="source-tree-input"]'),
+      ).not.toBeNull();
+      expect(root.textContent).toContain(second);
+    });
     expect(root.textContent).not.toContain(first);
     load.mockRestore();
   });

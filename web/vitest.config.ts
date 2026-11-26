@@ -1,6 +1,5 @@
 import { defineConfig } from "vitest/config";
-
-const hangTimeout = 540_000;
+import { hangTimeout } from "./src/test-support/hangTimeout";
 
 export default defineConfig({
   test: {

@@ -5,6 +5,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "preact";
 import { act } from "preact/test-utils";
+import { actPoll, actStep } from "../test-support/preactAct";
+import { waitFor } from "../test-support/waitFor";
 import {
   createControlledImageStore,
   resetControlledImageStore,
@@ -29,36 +31,34 @@ const animationFrames = vi.hoisted(() => {
   });
 
   return {
-    take() {
-      const pending = [...callbacks.values()];
-      callbacks.clear();
-      return pending;
+    get pending() {
+      return callbacks.size > 0;
+    },
+    runFrame() {
+      const pending = [...callbacks.keys()];
+      const timestamp = performance.now();
+      for (const id of pending) {
+        const callback = callbacks.get(id);
+        callbacks.delete(id);
+        callback?.(timestamp);
+      }
     },
   };
 });
 
-const flush = async (update?: () => void) => {
-  await act(async () => {
-    update?.();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    let idlePasses = 0;
-    for (let pass = 0; pass < 10; pass++) {
-      await new Promise((resolve) => setTimeout(resolve));
-      const callbacks = animationFrames.take();
-      if (callbacks.length === 0) {
-        if (++idlePasses === 2) return;
-        continue;
-      }
-
-      idlePasses = 0;
-      for (const callback of callbacks) {
-        callback(performance.now());
-      }
-    }
+async function updateInput(update: () => void) {
+  await act(update);
+  await actPoll({
+    description: "mocked animation frame queue to empty",
+    ready: () => {
+      if (!animationFrames.pending) return true;
+      void act(() => {
+        animationFrames.runFrame();
+      });
+      return !animationFrames.pending;
+    },
   });
-};
+}
 
 function pasteImage(textarea: HTMLTextAreaElement) {
   const file = new File(["image"], "image.png", { type: "image/png" });
@@ -104,13 +104,22 @@ function mockImageReader() {
     } as ProgressEvent<FileReader>);
   };
 
+  const waitForRead = () =>
+    actPoll({
+      description: "image FileReader to start",
+      ready: () => readers.length > 0,
+    });
+
   return {
-    complete() {
-      for (const reader of readers.splice(0)) complete(reader);
+    waitForRead,
+    async completeNext() {
+      await waitForRead();
+      await act(() => {
+        complete(readers.shift()!);
+      });
     },
-    completeNext() {
-      const reader = readers.shift();
-      if (reader) complete(reader);
+    get pendingReads() {
+      return readers.length;
     },
     restore() {
       for (const reader of readers.splice(0)) reader.onload = null;
@@ -165,9 +174,8 @@ describe("controlled InputBox", () => {
   });
 
   afterEach(async () => {
-    await act(async () => {
+    await updateInput(() => {
       render(null, container);
-      await flush();
     });
     container.remove();
   });
@@ -176,7 +184,7 @@ describe("controlled InputBox", () => {
     mount("first value");
     expect(textarea().value).toBe("first value");
 
-    await flush(() => {
+    await updateInput(() => {
       textarea().value = "typed value";
       textarea().dispatchEvent(new Event("input", { bubbles: true }));
     });
@@ -197,7 +205,7 @@ describe("controlled InputBox", () => {
     });
 
     expect(textarea().value).toBe("controlled text");
-    await flush(() => {
+    await updateInput(() => {
       textarea().value = "new controlled text";
       textarea().dispatchEvent(new Event("input", { bubbles: true }));
     });
@@ -285,26 +293,21 @@ describe("controlled InputBox", () => {
   });
 
   it("retains controlled text and submitted images until its reset token changes", async () => {
-    class Reader {
-      onload: ((event: ProgressEvent<FileReader>) => void) | null = null;
-      readAsDataURL() {
-        setTimeout(() => {
-          this.onload?.({
-            target: { result: "data:image/png;base64,aW1hZ2U=" },
-          } as ProgressEvent<FileReader>);
-        });
-      }
-    }
-    vi.stubGlobal("FileReader", Reader);
-    vi.stubGlobal("crypto", { randomUUID: () => "image-id" });
+    const imageReader = mockImageReader();
+    const randomUUID = vi
+      .spyOn(crypto, "randomUUID")
+      .mockReturnValue("00000000-0000-4000-8000-000000000000");
     try {
       mount("  send this  ");
-      await flush(() => {
+      await updateInput(() => {
         pasteImage(textarea());
       });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      await imageReader.completeNext();
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      });
 
-      await flush(() => {
+      await updateInput(() => {
         send().click();
       });
 
@@ -314,7 +317,7 @@ describe("controlled InputBox", () => {
           text: "send this",
           images: [
             {
-              id: "image-id",
+              id: "00000000-0000-4000-8000-000000000000",
               dataURL: "data:image/png;base64,aW1hZ2U=",
               base64: "aW1hZ2U=",
               name: "image.png",
@@ -333,38 +336,31 @@ describe("controlled InputBox", () => {
 
       mount("  send this  ");
       expect(send().disabled).toBe(false);
-      await flush(() => {
+      await updateInput(() => {
         send().click();
       });
       expect(submits).toEqual([submits[0], submits[0]]);
 
       mount("", 1);
-      await flush();
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
     } finally {
-      vi.unstubAllGlobals();
-      vi.stubGlobal("CSS", { supports: () => false });
+      imageReader.restore();
+      randomUUID.mockRestore();
     }
   });
 
   it("submits an image-only controlled draft", async () => {
-    class Reader {
-      onload: ((event: ProgressEvent<FileReader>) => void) | null = null;
-      readAsDataURL() {
-        setTimeout(() => {
-          this.onload?.({
-            target: { result: "data:image/png;base64,aW1hZ2U=" },
-          } as ProgressEvent<FileReader>);
-        });
-      }
-    }
-    vi.stubGlobal("FileReader", Reader);
+    const imageReader = mockImageReader();
     try {
       mount("");
-      await flush(() => {
+      await updateInput(() => {
         pasteImage(textarea());
       });
-      await flush(() => {
+      await imageReader.completeNext();
+      await waitFor(() => {
+        expect(send().disabled).toBe(false);
+      });
+      await updateInput(() => {
         send().click();
       });
 
@@ -372,8 +368,7 @@ describe("controlled InputBox", () => {
       expect(submits[0]?.text).toBe("");
       expect(submits[0]?.images).toHaveLength(1);
     } finally {
-      vi.unstubAllGlobals();
-      vi.stubGlobal("CSS", { supports: () => false });
+      imageReader.restore();
     }
   });
 
@@ -381,28 +376,27 @@ describe("controlled InputBox", () => {
     const imageReader = mockImageReader();
     try {
       mount("", 0, { disabled: true });
-      await flush(() => {
+      // This non-flaky negative check has no completion signal for disabled intake.
+      await actStep(() => {
         pasteImage(textarea());
         dropImage(container.querySelector<HTMLElement>(".input-box")!);
-        imageReader.complete();
       });
 
+      expect(imageReader.pendingReads).toBe(0);
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
 
       mount("");
-      await flush();
 
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
       expect(send().disabled).toBe(true);
 
-      await flush(() => {
+      await updateInput(() => {
         dropImage(container.querySelector<HTMLElement>(".input-box")!);
       });
-      await flush(() => {
-        imageReader.complete();
+      await imageReader.completeNext();
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
       });
-
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
       expect(send().disabled).toBe(false);
     } finally {
       imageReader.restore();
@@ -413,18 +407,19 @@ describe("controlled InputBox", () => {
     const imageReader = mockImageReader();
     try {
       mount("draft A", 7);
-      void act(() => {
+      await updateInput(() => {
         pasteImage(textarea());
       });
+      await imageReader.waitForRead();
       mount("", 8);
-      await flush(() => {
-        imageReader.completeNext();
-      });
+      // The stale local read has no completion signal. This checkpoint only checks for an unexpected update.
+      await imageReader.completeNext();
+      await actStep();
 
       expect(textarea().value).toBe("");
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
       expect(send().disabled).toBe(true);
-      await flush(() => {
+      await updateInput(() => {
         send().click();
       });
       expect(submits).toEqual([]);
@@ -437,28 +432,30 @@ describe("controlled InputBox", () => {
     const imageReader = mockImageReader();
     try {
       mount("", 0);
-      void act(() => {
+      await updateInput(() => {
         pasteImage(textarea());
       });
+      await imageReader.waitForRead();
       mount("", 0, { disabled: true });
-      await flush(() => {
-        imageReader.completeNext();
-      });
+      await imageReader.completeNext();
+      // This negative check has no completion signal for the discarded local read.
+      await actStep();
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
 
       mount("", 0);
-      void act(() => {
+      await updateInput(() => {
         pasteImage(textarea());
       });
+      await imageReader.waitForRead();
       mount("", 0, { disabled: true });
       mount("", 0);
-      await flush(() => {
-        imageReader.completeNext();
-      });
+      await imageReader.completeNext();
+      // This negative check has no completion signal for the discarded local read.
+      await actStep();
 
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
       expect(send().disabled).toBe(true);
-      await flush(() => {
+      await updateInput(() => {
         send().click();
       });
       expect(submits).toEqual([]);
@@ -488,15 +485,14 @@ describe("controlled InputBox", () => {
           container,
         );
       });
-      await flush(() => {
+      await updateInput(() => {
         pasteImage(textarea());
       });
-      await flush(() => {
-        imageReader.completeNext();
+      await imageReader.completeNext();
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
       });
-
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
-      await flush(() => {
+      await updateInput(() => {
         send().click();
       });
       expect(sent).toHaveLength(1);
@@ -511,27 +507,26 @@ describe("controlled InputBox", () => {
     const imageReader = mockImageReader();
     try {
       mount("replacement B", 7);
-      await flush(() => {
+      await updateInput(() => {
         pasteImage(textarea());
       });
-      await flush(() => {
-        imageReader.completeNext();
+      await imageReader.completeNext();
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
       });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
-      void act(() => {
+      await updateInput(() => {
         pasteImage(textarea());
       });
+      await imageReader.waitForRead();
 
       mount("replacement B", 7);
-      await flush();
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
-      await flush(() => {
-        imageReader.completeNext();
+      await imageReader.completeNext();
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
       });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
 
       mount("replacement B", 8);
-      await flush();
       expect(container.querySelectorAll(".image-preview")).toHaveLength(0);
     } finally {
       imageReader.restore();

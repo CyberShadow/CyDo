@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { describe, expect, it, vi } from "vitest";
+import { waitFor } from "../test-support/waitFor";
 import { render } from "preact";
 import { act } from "preact/test-utils";
 import renderToString from "preact-render-to-string";
@@ -62,7 +63,7 @@ describe("MessageList history editing", () => {
             .find((button) => button.textContent === "Raw")!
             .click();
         });
-        await vi.waitFor(() => {
+        await waitFor(() => {
           expect(root.querySelector(".source-view pre")?.textContent).toContain(
             rawEvent.rawText,
           );

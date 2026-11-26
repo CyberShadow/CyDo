@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { DraftSessionView } from "./components/SessionView";
 import { actPoll } from "./test-support/preactAct";
+import { waitFor } from "./test-support/waitFor";
 import { DRAFT_SAVE_DELAY_MS } from "./draftReconciler";
 import { h, render } from "preact";
 import { act } from "preact/test-utils";
@@ -470,7 +471,7 @@ async function prepareEditableDraft(): Promise<DraftViewSnapshot> {
   await act(() => {
     draftView.onTextChange("draft to delete");
   });
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(testState.connection!.createTask).toHaveBeenCalledWith(
       "source",
       "/source-project",
@@ -507,7 +508,7 @@ async function prepareCreatingDraft(): Promise<string> {
   await act(() => {
     draftView.onTextChange("editing create before acknowledgement");
   });
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(testState.connection!.createTask).toHaveBeenCalledWith(
       "source",
       "/source-project",
@@ -756,7 +757,7 @@ describe("submission acknowledgement routing", () => {
     await act(() => {
       initial.onTextChange("a");
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(testState.connection!.createTask).toHaveBeenCalled();
     });
     await act(() => {
@@ -1314,7 +1315,7 @@ describe("submission acknowledgement routing", () => {
     await act(() => {
       successor.onTextChange("replacement B");
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(testState.connection!.createTask).toHaveBeenCalledTimes(2);
     });
     expect(testState.connection!.deleteTask.mock.calls).toEqual([[71]]);
@@ -2199,7 +2200,7 @@ describe("submission acknowledgement routing", () => {
       editorId: "task:91",
       text: "local A",
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(connection.saveDraft.mock.calls).toEqual([
         [91, "local A"],
         [92, "local B"],
@@ -2378,7 +2379,7 @@ describe("submission acknowledgement routing", () => {
     await act(() => {
       connection.onControlMessage?.(projectTaskTypes("project-entry", "blank"));
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(connection.createTask).toHaveBeenCalledTimes(1);
     });
 
@@ -2893,7 +2894,7 @@ describe("submission acknowledgement routing", () => {
       disabled: false,
       metadataReady: false,
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(testState.connection!.requestTaskTypes).toHaveBeenCalledWith(
         "/source-project",
       );
@@ -2953,7 +2954,7 @@ describe("submission acknowledgement routing", () => {
     await act(() => {
       draftView.onTextChange("project-only bootstrap");
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(testState.connection!.createTask).toHaveBeenCalledWith(
         "source",
         "/source-project",
@@ -4076,7 +4077,7 @@ describe("submission acknowledgement routing", () => {
     await act(() => {
       initial.onTextChange("transient A");
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(testState.connection!.createTask).toHaveBeenCalledWith(
         "source",
         "/source-project",
@@ -5209,7 +5210,7 @@ describe("submission acknowledgement routing", () => {
     await act(() => {
       successor.onTextChange("discard while creating");
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(testState.connection!.createTask).toHaveBeenCalledTimes(1);
     });
     const second = seedEditorImage(successor.editorId);
@@ -6040,7 +6041,7 @@ describe("submission acknowledgement routing", () => {
     await act(() => {
       b.onTextChange("B survives");
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(connection.createTask).toHaveBeenCalledTimes(2);
     });
 

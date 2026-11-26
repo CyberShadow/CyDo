@@ -12,6 +12,7 @@ import renderToString from "preact-render-to-string";
 import { act } from "preact/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { actPoll, actStep, ownedRoots } from "./test-support/preactAct";
+import { waitFor } from "./test-support/waitFor";
 import type { ControlledImageStore } from "./controlledImageStore";
 import type { ControlMessage } from "./protocol";
 import type { DraftViewSnapshot, TaskManager } from "./useSessionManager";
@@ -867,15 +868,23 @@ describe("server command errors", () => {
         container.querySelector<HTMLElement>(".input-box")!;
       const beforeTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await actStep(() => {
-        pasteImage(beforeTextarea);
-      });
-      await actStep(() => {
-        completeNextReader();
-      });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
       await act(() => {
         pasteImage(beforeTextarea);
+      });
+      await waitFor(() => {
+        expect(readers.length).toBeGreaterThan(0);
+      });
+      await act(() => {
+        completeNextReader();
+      });
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      });
+      await act(() => {
+        pasteImage(beforeTextarea);
+      });
+      await waitFor(() => {
+        expect(readers.length).toBeGreaterThan(0);
       });
 
       const pending = {
@@ -912,10 +921,12 @@ describe("server command errors", () => {
       expect(container.textContent).not.toContain("Loading task…");
       expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
 
-      await actStep(() => {
+      await act(() => {
         completeNextReader();
       });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
+      });
 
       state.activeTaskId = null;
       state.draftView = {
@@ -1013,14 +1024,22 @@ describe("server command errors", () => {
         container.querySelector<HTMLElement>(".input-box")!;
       const beforeTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await actStep(() => {
+      await act(() => {
         pasteImage(beforeTextarea);
       });
-      await actStep(() => {
+      await waitFor(() => {
+        expect(readers.length).toBeGreaterThan(0);
+      });
+      await act(() => {
         completeNextReader();
         pasteImage(beforeTextarea);
       });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      await waitFor(() => {
+        expect(readers.length).toBeGreaterThan(0);
+      });
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      });
 
       state.draftView = {
         ...projectDraft,
@@ -1050,10 +1069,12 @@ describe("server command errors", () => {
       expect(
         container.querySelector<HTMLSelectElement>(".agent-picker")?.value,
       ).toBe("agent");
-      await actStep(() => {
+      await act(() => {
         completeNextReader();
       });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
+      });
 
       state.draftView = projectDraft;
       await act(() => {
@@ -1173,19 +1194,27 @@ describe("server command errors", () => {
 
       const rootTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await actStep(() => {
+      await act(() => {
         pasteImage(rootTextarea);
       });
-      await actStep(() => {
+      await waitFor(() => {
+        expect(readers.length).toBeGreaterThan(0);
+      });
+      await act(() => {
         completeNextReader();
         pasteImage(rootTextarea);
       });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      await waitFor(() => {
+        expect(readers.length).toBeGreaterThan(0);
+      });
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      });
 
       state.activeTaskId = "72";
       state.tasks = new Map([[realTaskB.uuid, realTaskB]]);
       state.draftView = null;
-      await actStep(() => {
+      await act(() => {
         render(h(App, {}), container);
         completeNextReader();
       });
@@ -1219,7 +1248,9 @@ describe("server command errors", () => {
       expect(
         container.querySelector<HTMLTextAreaElement>("textarea")?.value,
       ).toBe("retain A across metadata-gap navigation");
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
+      });
       expect(
         container.querySelector(".task-type-row.selected .task-type-name")
           ?.textContent,
@@ -1343,15 +1374,23 @@ describe("server command errors", () => {
 
       const aTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await actStep(() => {
+      await act(() => {
         pasteImage(aTextarea);
       });
-      await actStep(() => {
+      await waitFor(() => {
+        expect(readers).toHaveLength(1);
+      });
+      await act(() => {
         complete(readers[0]!);
         pasteImage(aTextarea);
       });
+      await waitFor(() => {
+        expect(readers).toHaveLength(2);
+      });
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      });
       const heldAcrossHome = readers[1]!;
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
       expect(aEntry.images).toHaveLength(1);
 
       state.activeProject = null;
@@ -1362,17 +1401,22 @@ describe("server command errors", () => {
 
       state.activeProject = "project-a";
       state.draftView = draftA;
-      await actStep(() => {
+      await act(() => {
         render(h(App, {}), container);
         complete(heldAcrossHome);
       });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(2);
+      });
       expect(aEntry.images).toHaveLength(2);
 
-      await actStep(() => {
+      await act(() => {
         const current =
           container.querySelector<HTMLTextAreaElement>("textarea")!;
         pasteImage(current);
+      });
+      await waitFor(() => {
+        expect(readers).toHaveLength(3);
       });
       const heldAcrossReset = readers[2]!;
 
@@ -1385,13 +1429,18 @@ describe("server command errors", () => {
 
       const bTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await actStep(() => {
+      await act(() => {
         pasteImage(bTextarea);
       });
-      await actStep(() => {
+      await waitFor(() => {
+        expect(readers).toHaveLength(4);
+      });
+      await act(() => {
         complete(readers[3]!);
       });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      });
       const bEntry = imageStore.entries.get(draftB.editorId)!;
       expect(imageStore.entries.size).toBe(2);
       expect(bEntry.images).toHaveLength(1);
@@ -1415,6 +1464,7 @@ describe("server command errors", () => {
       expect(aEntry.generation).toBe(aResetGeneration);
       expect(bEntry.generation).toBe(bResetGeneration);
 
+      // No completion signal is exposed for the reset editor's stale read.
       await actStep(() => {
         complete(heldAcrossReset);
       });
@@ -1444,15 +1494,20 @@ describe("server command errors", () => {
       });
       expect(freshSubmit).toHaveBeenCalledWith("fresh A", []);
 
-      await actStep(() => {
+      await act(() => {
         const current =
           container.querySelector<HTMLTextAreaElement>("textarea")!;
         pasteImage(current);
       });
-      await actStep(() => {
+      await waitFor(() => {
+        expect(readers).toHaveLength(5);
+      });
+      await act(() => {
         complete(readers[4]!);
       });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      });
 
       state.draftView = {
         ...state.draftView,
@@ -1608,13 +1663,18 @@ describe("server command errors", () => {
         container.querySelector<HTMLElement>(".input-box")!;
       const beforeTextarea =
         container.querySelector<HTMLTextAreaElement>("textarea")!;
-      await actStep(() => {
+      await act(() => {
         pasteImage(beforeTextarea);
       });
-      await actStep(() => {
+      await waitFor(() => {
+        expect(readers.length).toBeGreaterThan(0);
+      });
+      await act(() => {
         completeNextReader();
       });
-      expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      await waitFor(() => {
+        expect(container.querySelectorAll(".image-preview")).toHaveLength(1);
+      });
 
       state.activeTaskId = "72";
       state.draftView = draftB;
@@ -1866,13 +1926,12 @@ describe("completion-aware task loading", () => {
     state.connected = true;
     state.tasksLoaded = false;
 
-    await act(async () => {
+    await act(() => {
       render(h(App, {}), container);
-      await Promise.resolve();
     });
     expect(latest(componentProps.welcomePage)).toEqual({ tasksLoaded: false });
 
-    await act(async () => {
+    await act(() => {
       document.dispatchEvent(
         new KeyboardEvent("keydown", {
           bubbles: true,
@@ -1880,14 +1939,12 @@ describe("completion-aware task loading", () => {
           key: "k",
         }),
       );
-      await Promise.resolve();
     });
     expect(latest(componentProps.searchPopup)).toEqual({ tasksLoaded: false });
 
     state.tasksLoaded = true;
-    await act(async () => {
+    await act(() => {
       render(h(App, {}), container);
-      await Promise.resolve();
     });
 
     expect(latest(componentProps.welcomePage)).toEqual({ tasksLoaded: true });
