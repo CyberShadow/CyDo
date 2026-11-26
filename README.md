@@ -212,6 +212,18 @@ build/cydo init
 build/cydo
 ```
 
+### HEIC attachments
+
+On Linux, CyDo discovers `heif-dec` with the libde265 decoder, `jpegtran`,
+and `bwrap` on the server's `PATH`. The Nix package supplies these tools.
+CyDo checks the converter at startup and reports a reason when conversion
+is unavailable. HEIC files containing multiple images are unsupported.
+
+By default, the converter runs in Bubblewrap with read-only runtime mounts.
+If both global `sandbox.isolate_filesystem` and `sandbox.isolate_processes`
+are set to `false`, CyDo runs the two image tools directly without needing
+`bwrap`.
+
 ### Development setup
 
 Run `nix develop` to get the build dependencies and

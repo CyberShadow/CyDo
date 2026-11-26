@@ -23,7 +23,6 @@ struct ServerEnvironment
 	string listenSocket;
 	string listenAddress;
 	string listenPort;
-	string heicConverter;
 }
 
 /// Read the server-level settings from the process environment and unset
@@ -45,7 +44,6 @@ ServerEnvironment consumeServerEnvironment()
 		listenSocket: take("CYDO_LISTEN_SOCKET"),
 		listenAddress: take("CYDO_LISTEN_ADDRESS"),
 		listenPort: take("CYDO_LISTEN_PORT"),
-		heicConverter: take("CYDO_HEIC_CONVERTER"),
 	);
 }
 
@@ -56,7 +54,6 @@ unittest
 	environment["CYDO_AUTH_USER"] = "alice";
 	environment["CYDO_AUTH_PASS"] = "";
 	environment["CYDO_LISTEN_PORT"] = "4000";
-	environment["CYDO_HEIC_CONVERTER"] = "/converter.json";
 	environment.remove("CYDO_TLS_CERT");
 	environment.remove("CYDO_TLS_KEY");
 	environment.remove("CYDO_LISTEN_SOCKET");
@@ -66,14 +63,13 @@ unittest
 	assert(serverEnv.authUser == "alice");
 	assert(serverEnv.authPass !is null && serverEnv.authPass.length == 0);
 	assert(serverEnv.listenPort == "4000");
-	assert(serverEnv.heicConverter == "/converter.json");
 	assert(serverEnv.tlsCert is null);
 	assert(serverEnv.tlsKey is null);
 	assert(serverEnv.listenSocket is null);
 	assert(serverEnv.listenAddress is null);
 
 	// Nothing consumed remains visible to the backend or to its children.
-	foreach (name; ["CYDO_AUTH_USER", "CYDO_AUTH_PASS", "CYDO_LISTEN_PORT", "CYDO_HEIC_CONVERTER"])
+	foreach (name; ["CYDO_AUTH_USER", "CYDO_AUTH_PASS", "CYDO_LISTEN_PORT"])
 	{
 		assert(name !in environment, name);
 		assert(execute(["sh", "-c", "printf %s \"${" ~ name ~ "+set}\""]).output == "", name);

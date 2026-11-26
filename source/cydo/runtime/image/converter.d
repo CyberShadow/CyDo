@@ -1,7 +1,7 @@
 module cydo.runtime.image.converter;
 
 import ae.utils.json : JSONOptional;
-import ae.utils.promise : Promise, reject;
+import ae.utils.promise : Promise, Result, reject, resolve, toResult;
 
 struct HeicConversionStatus
 {
@@ -12,6 +12,7 @@ struct HeicConversionStatus
 interface HeicConverter
 {
 	@property HeicConversionStatus status();
+	void retire();
 	Promise!(immutable(ubyte)[]) toJpeg(immutable(ubyte)[] heic);
 }
 
@@ -29,6 +30,8 @@ final class UnavailableHeicConverter : HeicConverter
 		return HeicConversionStatus(false, reason);
 	}
 
+	override void retire() {}
+
 	override Promise!(immutable(ubyte)[]) toJpeg(immutable(ubyte)[] heic)
 	{
 		return reject!(immutable(ubyte)[])(new Exception(reason));
@@ -37,134 +40,179 @@ final class UnavailableHeicConverter : HeicConverter
 
 enum maxHeicInputBytes = 32 * 1024 * 1024;
 
-HeicConverter createHeicConverter(string manifestPath, void delegate() statusChanged = null)
+HeicConverter createHeicConverter(bool jailed, void delegate() statusChanged = null)
 {
 	version (linux)
 	{
-		if (!manifestPath.length)
-			return new UnavailableHeicConverter("not configured");
 		try
-			return JailedHeicConverter.loadManifest(manifestPath, statusChanged);
+			return BoundedHeicConverter.fromPath(jailed, statusChanged);
 		catch (Exception e)
 			return new UnavailableHeicConverter(e.msg);
 	}
 	else
-		return new UnavailableHeicConverter("HEIC conversion needs the Linux bubblewrap sandbox");
+		return new UnavailableHeicConverter("HEIC conversion needs Linux");
 }
 
 version (linux)
 {
-	import core.time : seconds;
-	import std.algorithm : any, startsWith;
+	import core.time : MonoTime, seconds;
+	import std.algorithm : startsWith;
 	import std.exception : enforce;
-	import std.file : exists, read, readText;
-	import std.json : JSONType, parseJSON;
-	import std.path : dirName;
-	import std.string : lineSplitter;
+	import std.file : exists, rmdirRecurse, symlink, tempDir, write;
+	import std.path : absolutePath, buildPath;
 
 	import ae.net.asockets : onNextTick, socketManager;
 	import ae.sys.file : realPath;
 
 	import cydo.agent.process : ProcessResourceLimits;
 	import cydo.runtime.image.bounded_filter : FilterFailure, FilterFailureKind, FilterLimits,
-		runBoundedFilter;
+		FilterOutput, filterExitDiagnostic, runBoundedFilter;
 	import cydo.runtime.launch.sandbox : HelperJail, PathAccess, SandboxPathOrigin,
 		SandboxPathOriginKind, buildHelperJailCommand, resolveExecutablePath;
 
-	final class JailedHeicConverter : HeicConverter
+	private alias Filter = Promise!FilterOutput delegate(
+		immutable(ubyte)[] input, FilterLimits limits);
+
+	final class BoundedHeicConverter : HeicConverter
 	{
-		private struct Manifest
-		{
-			string[] argv;
-			string[string] env;
-			string store_paths;
-			string probe_input;
-		}
+		private enum decoderStage = "heif-dec uses libde265";
+		private enum cleanerStage = "jpegtran";
 
 		private struct Conversion
 		{
 			immutable(ubyte)[] input;
 			Promise!(immutable(ubyte)[]) result;
+			bool startupProbe;
 		}
 
-		private string[] command;
+		private Filter decode;
+		private Filter clean;
+		private bool retired;
 		private Conversion[] queue;
-		private typeof(&runBoundedFilter) filter;
 		private HeicConversionStatus conversionStatus =
 			HeicConversionStatus(false, "checking the HEIC converter");
 
-		private this(string[] command, immutable(ubyte)[] probeInput,
-			void delegate() statusChanged, typeof(&runBoundedFilter) filter = &runBoundedFilter)
+		private this(Filter decode, Filter clean, immutable(ubyte)[] probeInput,
+			void delegate() statusChanged)
 		{
-			this.command = command;
-			this.filter = filter;
+			this.decode = decode;
+			this.clean = clean;
 			onNextTick(socketManager, {
-				toJpeg(probeInput).then((immutable(ubyte)[]) {
-					conversionStatus = HeicConversionStatus(true);
+				if (retired)
+					return;
+				enqueue(probeInput, true).then((immutable(ubyte)[]) {
+					if (!retired)
+						conversionStatus = HeicConversionStatus(true);
 				}).except((Exception e) {
-					conversionStatus = HeicConversionStatus(false,
-						"HEIC converter self-check failed: " ~ e.msg);
+					if (retired)
+						return;
+					auto reason = "HEIC converter self-check failed: " ~ e.msg;
+					auto failure = cast(FilterFailure) e;
+					if (failure !is null && failure.diagnostic.length)
+						reason ~= " - " ~ failure.diagnostic;
+					conversionStatus = HeicConversionStatus(false, reason);
 				}).finish({
-					if (statusChanged !is null)
+					if (!retired && statusChanged !is null)
 						statusChanged();
 				}).ignoreResult();
 			});
 		}
 
-		static JailedHeicConverter loadManifest(string path, void delegate() statusChanged = null)
+		static BoundedHeicConverter fromPath(bool jailed, void delegate() statusChanged)
 		{
-			enforce(exists(path), "HEIC converter manifest file does not exist");
-			auto json = parseJSON(readText(path));
-			enforce(json.type == JSONType.object, "HEIC converter manifest must be an object");
-			foreach (field; ["argv", "env", "store_paths", "probe_input"])
-				enforce(field in json.object, "HEIC converter manifest has missing fields: " ~ field);
+			static string findTool(string name)
+			{
+				auto path = resolveExecutablePath(name, null);
+				enforce(path.length, "HEIC conversion requires " ~ name ~ " on PATH");
+				return realPath(absolutePath(path));
+			}
 
-			Manifest manifest;
-			foreach (arg; json["argv"].array)
-				manifest.argv ~= arg.str;
-			foreach (key, value; json["env"].object)
-				manifest.env[key] = value.str;
-			manifest.store_paths = json["store_paths"].str;
-			manifest.probe_input = json["probe_input"].str;
-			enforce(manifest.argv.length && manifest.argv[0].length && manifest.store_paths.length
-				&& manifest.probe_input.length, "HEIC converter manifest has empty fields");
+			auto heif = findTool("heif-dec");
+			auto jpegtran = findTool("jpegtran");
+			enum decoderOptions = ["--quiet", "-d", "libde265", "--codec-threads", "2"];
+			auto clean = [jpegtran, "-copy", "icc"];
+			Filter decode;
+			if (jailed)
+			{
+				auto bwrap = findTool("bwrap");
+				auto decoderJail = toolJail(heif);
+				decoderJail.stdinFile = "/tmp/in.heic";
+				decoderJail.stdoutLink = "/tmp/out.jpg";
+				auto decoderCommand = buildHelperJailCommand(decoderJail,
+					[heif] ~ decoderOptions ~ [decoderJail.stdinFile, decoderJail.stdoutLink], bwrap);
+				auto cleanerJail = toolJail(jpegtran);
+				clean = buildHelperJailCommand(cleanerJail, clean, bwrap);
+				decode = (input, limits) => runBoundedFilter(decoderCommand, input, limits,
+					allowEmptyOutput: true);
+			}
+			else
+				decode = (input, limits) => decodeDirect(heif, decoderOptions, input, limits);
 
+			enum probe = cast(immutable(ubyte)[]) import("colors.heic");
+			return new BoundedHeicConverter(decode,
+				(input, limits) => runBoundedFilter(clean, input, limits), probe, statusChanged);
+		}
+
+		private Promise!FilterOutput runStage(Filter filter,
+			immutable(ubyte)[] input, FilterLimits limits, string stage)
+		{
+			return resolve().then(() {
+				if (retired)
+					throw new FilterFailure(FilterFailureKind.reconfigured);
+				return filter(input, limits);
+			}).then((FilterOutput output) => output,
+				delegate FilterOutput(Exception error) {
+					auto failure = cast(FilterFailure) error;
+					if (failure is null)
+						throw new FilterFailure(FilterFailureKind.failed, stage ~ ": " ~ error.msg);
+					auto diagnostic = stage;
+					if (failure.diagnostic.length)
+						diagnostic ~= ": " ~ failure.diagnostic;
+					throw new FilterFailure(failure.kind, diagnostic);
+				});
+		}
+
+		private static HelperJail toolJail(string executable)
+		{
 			HelperJail jail;
 			jail.tmpfsBytes = 96 * 1024 * 1024;
-			jail.env = manifest.env;
 			auto origin = SandboxPathOrigin(SandboxPathOriginKind.launchRequirement,
-				"HEIC converter", "closure");
-			string[] storePaths;
-			foreach (storePath; readText(manifest.store_paths).lineSplitter)
+				"HEIC converter", "tool runtime");
+			if (executable.startsWith("/nix/store/"))
+				jail.paths.require("/nix/store", PathAccess.ro, origin);
+			else
 			{
-				enforce(dirName(storePath) == "/nix/store" && exists(storePath)
-					&& realPath(storePath) == storePath,
-					"HEIC converter closure contains an invalid or missing store path: " ~ storePath);
-				jail.paths.require(storePath, PathAccess.ro, origin);
-				storePaths ~= storePath;
+				foreach (path; ["/usr/lib", "/usr/lib32", "/usr/lib64", "/usr/libx32",
+					"/lib", "/lib32", "/lib64", "/libx32", "/etc/ld.so.cache"])
+					if (exists(path))
+						jail.paths.require(path, PathAccess.ro, origin);
+				jail.paths.require(executable, PathAccess.ro, origin);
 			}
+			return jail;
+		}
 
-			auto executable = manifest.argv[0];
-			enforce(executable.startsWith("/nix/store/") && resolveExecutablePath(executable, null).length,
-				"HEIC converter executable must be an absolute store executable");
-			enforce(realPath(executable) == executable,
-				"HEIC converter executable must be a physical path");
-			enforce(storePaths.any!(p => executable == p || executable.startsWith(p ~ "/")),
-				"HEIC converter executable is outside the closure");
+		private static Promise!FilterOutput decodeDirect(string heif,
+			string[] options, immutable(ubyte)[] input, FilterLimits limits)
+		{
+			import core.sys.posix.stdlib : mkdtemp;
 
-			foreach (arg; manifest.argv[1 .. $])
-			{
-				if (!arg.startsWith("/nix/store/"))
-					continue;
-				enforce(realPath(arg) == arg,
-					"HEIC converter store argument must be a physical path: " ~ arg);
-				enforce(storePaths.any!(p => arg == p || arg.startsWith(p ~ "/")),
-					"HEIC converter store argument is outside the closure: " ~ arg);
-			}
-			enforce(exists(manifest.probe_input), "HEIC converter probe input does not exist");
-			auto command = buildHelperJailCommand(jail, manifest.argv);
-			auto probeInput = cast(immutable(ubyte)[]) read(manifest.probe_input, maxHeicInputBytes + 1);
-			return new JailedHeicConverter(command, probeInput, statusChanged);
+			auto templateName = (buildPath(absolutePath(tempDir()), "cydo-heic-XXXXXX") ~ '\0').dup;
+			enforce(mkdtemp(templateName.ptr) !is null, "Could not create HEIC staging directory");
+			auto staging = templateName[0 .. $ - 1].idup;
+			scope (failure) rmdirRecurse(staging);
+			auto source = buildPath(staging, "in.heic");
+			auto destination = buildPath(staging, "out.jpg");
+			write(source, input);
+			symlink("/proc/self/fd/1", destination);
+			return runBoundedFilter([heif] ~ options ~ [source, destination], null, limits,
+				allowEmptyOutput: true)
+				.then((FilterOutput output) {
+					rmdirRecurse(staging);
+					return output;
+				}, delegate FilterOutput(Exception error) {
+					rmdirRecurse(staging);
+					throw error;
+				});
 		}
 
 		override @property HeicConversionStatus status()
@@ -172,13 +220,30 @@ version (linux)
 			return conversionStatus;
 		}
 
+		override void retire()
+		{
+			retired = true;
+			conversionStatus = HeicConversionStatus(false,
+				new FilterFailure(FilterFailureKind.reconfigured).msg);
+			foreach (conversion; queue)
+				conversion.result.reject(new FilterFailure(FilterFailureKind.reconfigured));
+			queue = null;
+		}
+
 		override Promise!(immutable(ubyte)[]) toJpeg(immutable(ubyte)[] heic)
 		{
+			if (retired)
+				return reject!(immutable(ubyte)[], Exception)(new FilterFailure(FilterFailureKind.reconfigured));
 			if (heic.length > maxHeicInputBytes)
 				return reject!(immutable(ubyte)[])(new Exception("too large"));
 
+			return enqueue(heic, false);
+		}
+
+		private Promise!(immutable(ubyte)[]) enqueue(immutable(ubyte)[] heic, bool startupProbe)
+		{
 			auto result = new Promise!(immutable(ubyte)[]);
-			queue ~= Conversion(heic, result);
+			queue ~= Conversion(heic, result, startupProbe);
 			if (queue.length == 1)
 				startConversion();
 			return result;
@@ -186,94 +251,34 @@ version (linux)
 
 		private void startConversion()
 		{
-			enum limits = FilterLimits(ProcessResourceLimits(1024UL * 1024 * 1024,
-				30, 64 * 1024 * 1024), 30.seconds, 32 * 1024 * 1024);
+			auto limits = FilterLimits(ProcessResourceLimits(1024UL * 1024 * 1024,
+				30, 64 * 1024 * 1024), MonoTime.currTime + 30.seconds, 32 * 1024 * 1024);
 			auto conversion = queue[0];
-			filter(command, conversion.input, limits).then((immutable(ubyte)[] jpeg) {
-				enum ubyte[3] jpegPrefix = [0xff, 0xd8, 0xff];
-				if (jpeg.length < jpegPrefix.length || jpeg[0 .. jpegPrefix.length] != jpegPrefix[])
-					throw new FilterFailure(FilterFailureKind.failed);
-				conversion.result.fulfill(jpeg);
-			}).except((Exception e) {
-				conversion.result.reject(e);
-			}).finish({
-				queue = queue[1 .. $];
-				if (queue.length)
-					startConversion();
-			}).ignoreResult();
+			runStage(decode, conversion.input, limits, decoderStage)
+				.then((FilterOutput decoded) {
+					if (decoded.bytes.length)
+						return runStage(clean, decoded.bytes, limits, cleanerStage);
+					if (conversion.startupProbe)
+						throw new FilterFailure(FilterFailureKind.failed, decoderStage ~
+							": empty JPEG output: " ~ filterExitDiagnostic(0, decoded.stderr));
+					// A successful multi-image decode writes numbered files instead of the stdout symlink.
+					throw new FilterFailure(FilterFailureKind.multiImage);
+				}).then((FilterOutput cleaned) {
+					enum ubyte[3] jpegPrefix = [0xff, 0xd8, 0xff];
+					auto jpeg = cleaned.bytes;
+					if (jpeg.length < jpegPrefix.length || jpeg[0 .. jpegPrefix.length] != jpegPrefix[])
+						throw new FilterFailure(FilterFailureKind.failed, cleanerStage ~
+							": invalid JPEG output: " ~ filterExitDiagnostic(0, cleaned.stderr));
+					return jpeg;
+				}).toResult().then((Result!(immutable(ubyte)[]) result) {
+					if (retired)
+						return;
+					queue = queue[1 .. $];
+					conversion.result.resolve(result);
+					if (queue.length)
+						startConversion();
+				}).ignoreResult();
 		}
-	}
-}
-
-version (linux) unittest
-{
-	import std.algorithm : startsWith;
-	import std.exception : collectException;
-	import std.file : mkdir, rmdirRecurse, tempDir, write;
-	import std.path : buildPath;
-	import std.process : environment;
-	import std.uuid : randomUUID;
-
-	import ae.utils.json : toJson;
-
-	auto dir = buildPath(tempDir(), "cydo-heic-manifest-" ~ randomUUID().toString());
-	mkdir(dir);
-	scope (exit) rmdirRecurse(dir);
-
-	auto manifestPath = buildPath(dir, "converter.json");
-	auto closurePath = buildPath(dir, "store-paths");
-
-	void assertRefusal(string reason)
-	{
-		auto error = collectException(JailedHeicConverter.loadManifest(manifestPath));
-		assert(error !is null, "accepted a bad HEIC converter manifest");
-		assert(error.msg.startsWith(reason), error.msg);
-	}
-
-	assertRefusal("HEIC converter manifest file does not exist");
-	write(manifestPath, `{}`);
-	assertRefusal("HEIC converter manifest has missing fields");
-
-	auto aliasExecutable = environment.get("CYDO_TEST_HEIC_EXECUTABLE_ALIAS");
-	if (aliasExecutable is null)
-		return; // The store-path cases use the Nix check's fixture.
-
-	auto executable = realPath(environment["CYDO_TEST_CYDO_BIN"]);
-	auto executableOutput = dirName(dirName(executable));
-	auto otherOutput = environment["CYDO_TEST_DEFS"];
-	auto probeInput = buildPath(dir, "probe.heic");
-	write(probeInput, "");
-	string[string] env;
-	auto manifest = JailedHeicConverter.Manifest([executable], env, closurePath, probeInput);
-	write(manifestPath, toJson(manifest));
-	enum missingStorePath = "/nix/store/00000000000000000000000000000000-cydo-missing-heic-test";
-	write(closurePath, missingStorePath ~ "\n");
-	assertRefusal("HEIC converter closure contains an invalid or missing store path: " ~ missingStorePath);
-
-	write(closurePath, otherOutput ~ "\n");
-	assertRefusal("HEIC converter executable is outside the closure");
-
-	write(closurePath, executableOutput ~ "\n");
-	manifest.argv = [aliasExecutable];
-	write(manifestPath, toJson(manifest));
-	assertRefusal("HEIC converter executable must be a physical path");
-
-	manifest.argv = [executable, aliasExecutable];
-	write(manifestPath, toJson(manifest));
-	assertRefusal("HEIC converter store argument must be a physical path");
-
-	manifest.argv = [executable, otherOutput];
-	write(manifestPath, toJson(manifest));
-	assertRefusal("HEIC converter store argument is outside the closure");
-}
-
-version (linux) unittest
-{
-	foreach (path; ["", null])
-	{
-		auto status = createHeicConverter(path).status;
-		assert(!status.available);
-		assert(status.reason == "not configured", status.reason);
 	}
 }
 
@@ -284,21 +289,21 @@ version (linux) version (unittest)
 	private Promise!(immutable(ubyte)[]) startupFilterResult;
 	private enum startupInput = cast(immutable(ubyte)[]) "startup HEIC";
 
-	private Promise!(immutable(ubyte)[]) startupFilter(string[], immutable(ubyte)[] input, FilterLimits)
+	private Promise!FilterOutput startupFilter(immutable(ubyte)[] input, FilterLimits)
 	{
 		assert(input == startupInput);
 		auto result = startupFilterResult;
 		assert(result !is null, "unexpected second startup filter call");
 		startupFilterResult = null;
-		return result;
+		return result.then((immutable(ubyte)[] output) => FilterOutput(output));
 	}
 
-	JailedHeicConverter makeGatedStartupConverter(Promise!(immutable(ubyte)[]) result,
+	BoundedHeicConverter makeGatedStartupConverter(Promise!(immutable(ubyte)[]) result,
 		void delegate() statusChanged)
 	{
 		startupFilterResult = result;
-		auto converter = new JailedHeicConverter(["startup-filter"], startupInput,
-			statusChanged, &startupFilter);
+		auto converter = new BoundedHeicConverter((input, limits) => startupFilter(input, limits),
+			(input, limits) => resolve(FilterOutput(input)), startupInput, statusChanged);
 		drainNextTicks();
 		assert(startupFilterResult is null, "startup filter did not run");
 		return converter;
@@ -308,7 +313,7 @@ version (linux) version (unittest)
 	{
 		auto result = new Promise!(immutable(ubyte)[]);
 		HeicConversionStatus[] notifications;
-		JailedHeicConverter converter;
+		BoundedHeicConverter converter;
 		converter = makeGatedStartupConverter(result, { notifications ~= converter.status; });
 		assert(converter.status == HeicConversionStatus(false, "checking the HEIC converter"));
 		assert(notifications.length == 0);
@@ -323,14 +328,58 @@ version (linux) version (unittest)
 	{
 		auto result = new Promise!(immutable(ubyte)[]);
 		HeicConversionStatus[] notifications;
-		JailedHeicConverter converter;
+		BoundedHeicConverter converter;
 		converter = makeGatedStartupConverter(result, { notifications ~= converter.status; });
 		assert(notifications.length == 0);
 
 		result.reject(new FilterFailure(FilterFailureKind.timedOut));
 		drainNextTicks();
-		auto unavailable = HeicConversionStatus(false, "HEIC converter self-check failed: timed out");
+		auto unavailable = HeicConversionStatus(false, "HEIC converter self-check failed: timed out - heif-dec uses libde265");
 		assert(converter.status == unavailable);
 		assert(notifications == [unavailable]);
+	}
+
+	unittest
+	{
+		auto converter = new BoundedHeicConverter((input, limits) => resolve(FilterOutput(input)),
+			(input, limits) => reject!(FilterOutput, Exception)(
+				new FilterFailure(FilterFailureKind.failed, "exit status 1: invalid data")),
+			startupInput, null);
+		drainNextTicks();
+		assert(converter.status == HeicConversionStatus(false,
+			"HEIC converter self-check failed: conversion failed - jpegtran: exit status 1: invalid data"));
+	}
+
+	unittest
+	{
+		alias Bytes = immutable(ubyte)[];
+		auto decodeGate = new Promise!FilterOutput;
+		enum jpeg = cast(Bytes) "\xff\xd8\xff\xd9";
+		size_t decoderCalls, cleanerCalls;
+		auto converter = new BoundedHeicConverter((input, limits) {
+			return ++decoderCalls == 1 ? resolve(FilterOutput(jpeg)) : decodeGate;
+		}, (input, limits) {
+			cleanerCalls++;
+			return resolve(FilterOutput(input));
+		}, startupInput, null);
+		drainNextTicks();
+		assert(converter.status.available);
+
+		string[] refusals;
+		void refused(Exception error) { refusals ~= error.msg; }
+		converter.toJpeg(startupInput).except(&refused).ignoreResult();
+		converter.toJpeg(startupInput).except(&refused).ignoreResult();
+		drainNextTicks();
+		assert(decoderCalls == 2 && cleanerCalls == 1);
+
+		converter.retire();
+		drainNextTicks();
+		enum reason = "image converter reconfigured; resubmit";
+		assert(refusals == [reason, reason]);
+
+		decodeGate.fulfill(FilterOutput(jpeg));
+		drainNextTicks();
+		assert(decoderCalls == 2 && cleanerCalls == 1);
+		assert(refusals == [reason, reason]);
 	}
 }

@@ -203,11 +203,11 @@ static:
 		{
 			import core.stdc.stdlib : exit;
 			import std.array : appender;
-			import std.process : environment;
 			import std.stdio : stdin, stdout;
 
 			import cydo.runtime.image.converter : HeicConverter, createHeicConverter, maxHeicInputBytes;
 			import cydo.runtime.image.heif : isHeifStill;
+			import cydo.runtime.launch.sandbox_resolver : globalUsesBwrap;
 
 			initializeProcessSignals();
 			auto input = appender!(immutable(ubyte)[]);
@@ -228,7 +228,7 @@ static:
 
 			HeicConverter converter;
 			bool failed;
-			converter = createHeicConverter(environment.get("CYDO_HEIC_CONVERTER"), {
+			converter = createHeicConverter(globalUsesBwrap(loadRuntimeConfig().sandbox), {
 				if (!converter.status.available)
 					return;
 				converter.toJpeg(input.data).then((immutable(ubyte)[] jpeg) {

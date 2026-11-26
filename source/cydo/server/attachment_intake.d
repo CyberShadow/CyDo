@@ -43,6 +43,12 @@ final class SubmissionIntake
 		this.converter = converter;
 	}
 
+	void setConverter(HeicConverter converter)
+	{
+		this.converter.retire();
+		this.converter = converter;
+	}
+
 	Promise!(ContentBlock[]) normalize(ContentBlock[] blocks)
 	{
 		return async({
@@ -133,6 +139,8 @@ version (unittest)
 		{
 			return conversionStatus;
 		}
+
+		override void retire() {}
 
 		override Promise!(immutable(ubyte)[]) toJpeg(immutable(ubyte)[] input)
 		{

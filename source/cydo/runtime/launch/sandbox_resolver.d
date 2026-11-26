@@ -146,6 +146,14 @@ void grantGitMetadata(ref SandboxPaths paths, string checkoutPath, PathAccess ac
 	}
 }
 
+/// Resolve the namespace policy for server helpers, which have no workspace or agent.
+bool globalUsesBwrap(SandboxConfig global)
+{
+	ResolvedSandbox resolved;
+	resolveIsolationFlags(resolved, global, SandboxConfig.init);
+	return resolved.useBwrap;
+}
+
 private:
 
 /// Produce mounts from a detached logical snapshot without changing the
@@ -310,7 +318,7 @@ private bool isHostContent(PathMode mode)
 		|| mode == PathMode.always_rw;
 }
 
-private bool isStrictlyInside(string path, string ancestor)
+package(cydo.runtime.launch) bool isStrictlyInside(string path, string ancestor)
 {
 	return ancestor == "/"
 		? path != "/" && path.startsWith("/")

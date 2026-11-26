@@ -1,8 +1,8 @@
 """Exercise HEIC conversion and its real Bubblewrap jail through CyDo."""
 
-import errno
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -44,29 +44,27 @@ class ImageJailTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.directory = Path(directory.name)
-        self.probe = [
-            str(Path(sys.executable).resolve()),
-            os.environ["CYDO_IMAGE_JAIL_PROBE"],
-        ]
+        self.config = self.directory / "config"
+        self.config.mkdir()
 
-    def convert(self, data, probe_args=None, *, preload=None, probe_input=None):
+    def convert(self, data, *, omit=None, probe=None, cleaner=None, sandbox=True):
         env = os.environ.copy()
-        env.pop("CYDO_HEIC_CONVERTER", None)
-        if preload is not None:
-            env["LD_PRELOAD"] = preload
-        if probe_args is not None:
-            probe_path = FIXTURE
-            if probe_input is not None:
-                probe_path = self.directory / "startup-input"
-                probe_path.write_bytes(probe_input)
-            manifest = self.directory / "probe.json"
-            manifest.write_text(json.dumps({
-                "argv": [*self.probe, *probe_args],
-                "env": {},
-                "store_paths": env["CYDO_IMAGE_JAIL_PROBE_PATHS"],
-                "probe_input": str(probe_path),
-            }))
-            env["CYDO_HEIC_CONVERTER"] = str(manifest)
+        env["HOME"] = str(self.config)
+        path = self.directory / "bin"
+        path.mkdir(exist_ok=True)
+        for name in ("heif-dec", "jpegtran", "bwrap"):
+            link = path / name
+            link.unlink(missing_ok=True)
+            if name != omit:
+                tool = {"heif-dec": probe, "jpegtran": cleaner}.get(name) or shutil.which(name)
+                link.symlink_to(tool)
+        env["PATH"] = str(path)
+        if not sandbox:
+            config = self.config / ".config" / "cydo"
+            config.mkdir(parents=True, exist_ok=True)
+            (config / "config.yaml").write_text(
+                "workspaces: {}\nsandbox:\n  isolate_filesystem: false\n  isolate_processes: false\n"
+            )
         return subprocess.run(
             [CYDO, "convert-image"], input=data, capture_output=True,
             env=env, timeout=TIMEOUT,
@@ -90,6 +88,15 @@ class ImageJailTests(unittest.TestCase):
         self.assertTrue(result.stdout.startswith(JPEG_PREFIX))
         self.assertEqual(jpeg_dimensions(result.stdout), (64, 48))
 
+    def test_runs_decoder_from_tmp(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            decoder = Path(directory) / "heif-dec"
+            shutil.copy2(self.probe("static-decoder"), decoder)
+            self.assertTrue(decoder.resolve().is_relative_to("/tmp"))
+            result = self.convert(self.fixture, probe=decoder)
+        self.assert_exit(result, 0)
+        self.assertEqual(jpeg_dimensions(result.stdout), (64, 48))
+
     def test_refuses_non_heic(self):
         avif = bytearray(self.fixture)
         avif[8:12] = b"avif"
@@ -104,59 +111,80 @@ class ImageJailTests(unittest.TestCase):
                 self.assertEqual(result.stdout, b"")
                 self.assertEqual(result.stderr.strip(), b"not a HEIC/HEIF still image")
 
+    def test_missing_tools_are_named(self):
+        for name in ("heif-dec", "jpegtran", "bwrap"):
+            with self.subTest(name=name):
+                result = self.convert(self.fixture, omit=name)
+                self.assert_exit(result, 1)
+                self.assertIn(f"requires {name} on PATH".encode(), result.stderr)
+                self.assertEqual(result.stdout, b"")
+
+    def test_direct_works_without_bwrap(self):
+        result = self.convert(self.fixture, omit="bwrap", sandbox=False)
+        self.assert_exit(result, 0)
+        self.assertEqual(jpeg_dimensions(result.stdout), (64, 48))
+
+    def test_rejects_multi_image_heic(self):
+        data = self.probe("multi.heic").read_bytes()
+        for sandbox in (True, False):
+            with self.subTest(sandbox=sandbox):
+                result = self.convert(data, sandbox=sandbox)
+                self.assert_exit(result, 1)
+                self.assertEqual(result.stdout, b"")
+                self.assertEqual(
+                    result.stderr.splitlines()[-1:], [b"multi-image HEIC is not supported"],
+                )
+
+    def probe(self, name="heif-dec"):
+        return Path(os.environ["CYDO_IMAGE_JAIL_PROBE"]) / name
+
     def test_jail_denies_host_access(self):
         with self.host_resources() as args:
-            result = self.convert(self.fixture, args)
+            payload = self.fixture + b"\0probe:" + json.dumps(args).encode()
+            result = self.convert(payload, probe=self.probe())
         self.assert_exit(result, 0)
-        self.assertTrue(result.stdout.startswith(JPEG_PREFIX))
-        report = json.loads(result.stdout[len(JPEG_PREFIX):])
-        self.assertEqual(report["marker_errno"], errno.ENOENT)
-        self.assertIn(report["loopback_errno"], {errno.ECONNREFUSED, errno.ENETUNREACH})
-        self.assertTrue(report["lookup_failed"])
-        self.assertEqual(report["visible_host_paths"], [])
-        self.assertIn(report["store_write_errno"], {errno.EROFS, errno.EACCES})
-        self.assertTrue(report["closure_read_only"])
-        self.assertTrue(report["tmp_write_ok"])
-        self.assertEqual(report["root_entries"], ["nix", "tmp"])
-
-    def test_probe_can_access_host_resources_directly(self):
-        with self.host_resources() as args:
-            result = subprocess.run(
-                [*self.probe, *args], capture_output=True, timeout=TIMEOUT,
-            )
-        self.assert_exit(result, 1)
-        self.assertEqual(result.stdout, b"")
-        report = json.loads(result.stderr)
-        self.assertIsNone(report["marker_errno"])
-        self.assertIsNone(report["loopback_errno"])
-
-    def test_helper_closes_stdin_with_input_pending(self):
-        result = self.convert(
-            self.fixture.ljust(4 * 1024**2, b"\0"),
-            ["--close-stdin"],
-            preload=os.environ["CYDO_IMAGE_JAIL_PIPE_PROBE"],
-            probe_input=b"P",
-        )
-        self.assert_exit(result, 1)
-        self.assertEqual(result.stdout, b"")
-        self.assertIn(b"image-jail: queued write returned EPIPE", result.stderr.splitlines())
-        self.assertEqual(result.stderr.splitlines()[-1:], [b"conversion failed"])
+        self.assertEqual(jpeg_dimensions(result.stdout), (64, 48))
 
     def test_jail_rejects_two_gib_allocation(self):
-        result = self.convert(self.fixture, ["--allocate"], probe_input=b"P")
+        result = self.convert(self.fixture + b"\0probe:allocate", probe=self.probe())
         self.assert_exit(result, 1)
         self.assertEqual(result.stdout, b"")
         self.assertEqual(result.stderr.splitlines()[-1:], [b"conversion failed"])
+        self.assertIn(
+            b"image-jail: RLIMIT_AS=1073741824, 2 GiB mmap returned ENOMEM",
+            result.stderr,
+        )
 
-    def test_failed_startup_probe_prevents_stdin_conversion(self):
-        result = self.convert(self.fixture, ["--fail-startup"], probe_input=b"P")
+    def assert_startup_failure(self, result, stage, stderr):
         self.assert_exit(result, 1)
         self.assertEqual(result.stdout, b"")
-        self.assertIn(b"image-jail: rejected startup probe", result.stderr)
+        _, prefix, diagnostic = result.stderr.partition(b"HEIC converter self-check failed: ")
+        self.assertTrue(prefix, result.stderr)
+        self.assertIn(stage, diagnostic)
+        self.assertIn(stderr, diagnostic)
+
+    def test_startup_reports_empty_decoder_output_with_bounded_stderr(self):
+        result = self.convert(self.fixture, probe=self.probe("heif-dec-empty"))
+        self.assert_startup_failure(
+            result, b"heif-dec uses libde265: empty JPEG output: exit status 0",
+            b"image-jail: decoder emitted no JPEG",
+        )
+        self.assertNotIn(b"image-jail: end of decoder stderr", result.stderr)
+
+    def test_startup_reports_invalid_cleaner_output(self):
+        result = self.convert(self.fixture, cleaner=self.probe("jpegtran-invalid"))
+        self.assert_startup_failure(
+            result, b"jpegtran: invalid JPEG output: exit status 0",
+            b"image-jail: cleaner emitted invalid JPEG",
+        )
+
+    def test_failed_startup_probe_prevents_stdin_conversion(self):
+        result = self.convert(self.fixture + b"\0probe:unexpected",
+                              probe=self.probe("heif-dec-fail-startup"))
         self.assertNotIn(b"image-jail: attempted stdin conversion", result.stderr)
-        self.assertEqual(
-            result.stderr.splitlines()[-1:],
-            [b"HEIC converter self-check failed: conversion failed"],
+        self.assert_startup_failure(
+            result, b"heif-dec uses libde265: exit status 1",
+            b"image-jail: rejected startup probe",
         )
 
 

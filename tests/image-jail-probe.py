@@ -4,14 +4,11 @@ import errno
 import json
 import mmap
 import os
+import resource
 import socket
 import sys
 import tempfile
-import time
 from pathlib import Path
-
-
-JPEG_PREFIX = b"\xff\xd8\xff"
 
 
 def error_number(operation):
@@ -48,13 +45,14 @@ def check_isolation(marker, port):
         "loopback_errno": error_number(lambda: connect(port)),
         "lookup_failed": lookup_failed(),
         "visible_host_paths": [
-            path for path in ("/etc/passwd", "/home", "/proc/self")
+            path for path in ("/etc/passwd", "/home", "/run", "/sys")
             if os.path.lexists(path)
         ],
         "store_write_errno": error_number(lambda: write_tempfile("/nix/store")),
         "closure_read_only": bool(os.statvfs(python_output).f_flag & os.ST_RDONLY),
         "tmp_write_ok": error_number(lambda: write_tempfile("/tmp")) is None,
         "root_entries": sorted(os.listdir("/")),
+        "proc_pids": sorted(int(n) for n in os.listdir("/proc") if n.isdigit()),
     }
     isolated = (
         report["marker_errno"] == errno.ENOENT
@@ -64,44 +62,37 @@ def check_isolation(marker, port):
         and report["store_write_errno"] in {errno.EROFS, errno.EACCES}
         and report["closure_read_only"]
         and report["tmp_write_ok"]
-        and report["root_entries"] == ["nix", "tmp"]
+        and report["root_entries"] == ["nix", "proc", "tmp"]
+        and report["proc_pids"] == [1, os.getpid()]
     )
-    if isolated:
-        sys.stdout.buffer.write(JPEG_PREFIX + json.dumps(report).encode())
-        return 0
-    print(json.dumps(report), file=sys.stderr)
-    return 1
-
-
-def allocate_memory():
-    # A mapping reserves address space without committing 2 GiB of RAM on
-    # a regression. If it succeeds, the converter will accept this output.
-    with mmap.mmap(-1, 2 * 1024**3):
-        sys.stdout.buffer.write(JPEG_PREFIX)
-    return 0
+    if not isolated:
+        raise RuntimeError(json.dumps(report))
 
 
 if __name__ == "__main__":
-    mode = sys.argv[1:]
-    if mode in (["--allocate"], ["--close-stdin"], ["--fail-startup"]):
-        # The manifest's one-byte startup input lets the helper distinguish
-        # the phases even when the preload pauses the writer after one byte.
-        first = os.read(0, 1)
-        if not first:
-            sys.exit(2)
-        if mode == ["--fail-startup"]:
-            diagnostic = (
-                "rejected startup probe" if first == b"P" else "attempted stdin conversion"
-            )
-            print(f"image-jail: {diagnostic}", file=sys.stderr)
+    executable = Path(sys.argv[0])
+    if executable.name == "jpegtran-invalid":
+        sys.stdin.buffer.read()
+        sys.stdout.buffer.write(b"not a JPEG")
+        print("image-jail: cleaner emitted invalid JPEG", file=sys.stderr)
+        sys.exit(0)
+
+    source, destination = map(Path, sys.argv[-2:])
+    _, _, control = source.read_bytes().partition(b"\0probe:")
+    if executable.name.endswith("-fail-startup"):
+        phase = "attempted stdin conversion" if control else "rejected startup probe"
+        print(f"image-jail: {phase}", file=sys.stderr)
+        sys.exit(1)
+    if executable.name == "heif-dec-empty":
+        print("image-jail: decoder emitted no JPEG", file=sys.stderr)
+        print("padding\n" * 1024 + "image-jail: end of decoder stderr", file=sys.stderr)
+        sys.exit(0)
+    if control == b"allocate":
+        limit, _ = resource.getrlimit(resource.RLIMIT_AS)
+        if limit == 1024**3 and error_number(lambda: mmap.mmap(-1, 2 * 1024**3)) == errno.ENOMEM:
+            print("image-jail: RLIMIT_AS=1073741824, 2 GiB mmap returned ENOMEM", file=sys.stderr)
             sys.exit(1)
-        if first == b"P":
-            sys.stdout.buffer.write(JPEG_PREFIX)
-            sys.exit(0)
-        if mode == ["--allocate"]:
-            sys.exit(allocate_memory())
-        os.close(0)
-        time.sleep(0.2)
-        sys.exit(7)
-    marker, port = sys.argv[1:]
-    sys.exit(check_isolation(marker, int(port)))
+    elif control:
+        marker, port = json.loads(control)
+        check_isolation(marker, int(port))
+    destination.write_bytes(executable.with_name("colors.jpg").read_bytes())

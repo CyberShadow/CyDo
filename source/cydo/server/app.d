@@ -97,6 +97,7 @@ import cydo.domain.storage.persistence : LoadedHistory, Persistence, openDatabas
 import cydo.server.config_resolution : loadRuntimeConfig;
 import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
 import cydo.runtime.image.converter : HeicConverter, createHeicConverter;
+import cydo.runtime.launch.sandbox_resolver : globalUsesBwrap;
 version (unittest) import cydo.runtime.image.converter : UnavailableHeicConverter;
 import cydo.server.attachment_intake : AttachmentRejection, SubmissionIntake, needsNormalization;
 import cydo.server.environment : consumeServerEnvironment;
@@ -283,8 +284,6 @@ class App
 	{
 		// Consume server-only settings before anything can spawn a child.
 		auto serverEnv = consumeServerEnvironment();
-		heicConverter = createHeicConverter(serverEnv.heicConverter, &broadcastServerStatus);
-		submissionIntake = new SubmissionIntake(heicConverter);
 		initLogger();
 		applyConfiguredLogLevel("info");
 
@@ -334,6 +333,7 @@ class App
 		}
 
 		config = loadRuntimeConfig();
+		configureHeicConverter();
 		claudeUsageService.configChanged(config);
 		{
 			import ae.utils.path : findProgramDirectory;
@@ -3972,6 +3972,20 @@ class App
 		broadcastTaskUpdate(tid);
 	}
 
+	private void configureHeicConverter()
+	{
+		HeicConverter converter;
+		converter = createHeicConverter(globalUsesBwrap(config.sandbox), {
+			if (heicConverter is converter)
+				broadcastServerStatus();
+		});
+		heicConverter = converter;
+		if (submissionIntake is null)
+			submissionIntake = new SubmissionIntake(converter);
+		else
+			submissionIntake.setConverter(converter);
+	}
+
 	private bool tryApplyRuntimeConfig()
 	{
 		CydoConfig candidate;
@@ -4004,7 +4018,10 @@ class App
 			return false;
 		}
 
+		auto jailChanged = globalUsesBwrap(config.sandbox) != globalUsesBwrap(candidate.sandbox);
 		config = candidate;
+		if (jailChanged)
+			configureHeicConverter();
 		claudeUsageService.configChanged(config);
 		applyConfiguredLogLevel(config.log_level);
 		auto reloadedTaskDirTemplate = config.task_dir.length > 0

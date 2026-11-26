@@ -64,6 +64,7 @@
         root = ./.;
         fileset = lib.fileset.unions [
           ./source
+          ./tests/data/colors.heic
           ./dub.sdl
           ./dub.selections.json
         ];
@@ -97,6 +98,53 @@
         src = ./tests/mock-api;
         filter = _path: _type: true;
       };
+
+      # The browser fixtures exercise staging in their private /tmp. The
+      # image-jail check exercises these arguments with real Bubblewrap.
+      fakeHelperJail = ''
+        runHelperJail() (
+          set -e
+          local staged=()
+          trap 'rm -f -- "''${staged[@]}"' EXIT
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --)
+                shift
+                if [[ $# -gt 0 ]]; then
+                  env -i "$@"
+                  return
+                fi
+                break
+                ;;
+              --file)
+                staged+=("$3")
+                cat <&"$2" > "$3"
+                shift 3
+                ;;
+              --symlink)
+                ln -s -- "$2" "$3"
+                staged+=("$3")
+                shift 3
+                ;;
+              --chdir) cd -- "$2"; shift 2 ;;
+              --ro-bind) shift 3 ;;
+              --size|--tmpfs|--proc|--remount-ro) shift 2 ;;
+              --unshare-user|--unshare-ipc|--unshare-pid|--unshare-net|--unshare-uts|--unshare-cgroup|--disable-userns|--die-with-parent|--new-session|--clearenv)
+                shift ;;
+              *) echo "Unsupported helper jail option: $1" >&2; return 1 ;;
+            esac
+          done
+          echo "Missing helper jail command" >&2
+          return 1
+        )
+
+        for option in "$@"; do
+          case "$option" in
+            --) break ;;
+            --disable-userns) runHelperJail "$@"; exit ;;
+          esac
+        done
+      '';
 
       # Wrap a buildPhase body so it executes with /tmp on tmpfs.  The Nix
       # sandbox chroot root sits on the host's btrfs filesystem (under
@@ -289,27 +337,6 @@ EOF
             dubBuildType = "debug";
           });
 
-          heicConverter = let
-            busybox = pkgs.pkgsStatic.busybox;
-            heif = pkgs.libheif.bin;
-            jpeg = pkgs.libjpeg_turbo.bin;
-            closure = pkgs.closureInfo { rootPaths = [ busybox heif jpeg ]; };
-          in pkgs.writeText "cydo-heic-converter.json" (builtins.toJSON {
-            argv = [
-              "${busybox}/bin/busybox"
-              "sh"
-              "-c"
-              ''"$1" cat > /tmp/in.heic && "$2" --quiet -d libde265 --codec-threads 2 /tmp/in.heic /tmp/out.jpg >&2 && exec "$3" -copy icc /tmp/out.jpg''
-              "_"
-              "${busybox}/bin/busybox"
-              "${heif}/bin/heif-dec"
-              "${jpeg}/bin/jpegtran"
-            ];
-            env = {};
-            store_paths = "${closure}/store-paths";
-            probe_input = "${./tests/data/colors.heic}";
-          });
-
           mkCydo = backendPkg: { defs ? ./defs }: pkgs.stdenv.mkDerivation {
             pname = "cydo";
             version = "0.1.0";
@@ -327,8 +354,7 @@ EOF
               ln -s ${defs} $out/share/cydo/defs
 
               makeWrapper $out/share/cydo/cydo $out/bin/cydo \
-                --suffix PATH : ${pkgs.bubblewrap}/bin \
-                --set-default CYDO_HEIC_CONVERTER ${heicConverter}
+                --suffix PATH : ${lib.makeBinPath [ pkgs.bubblewrap pkgs.libheif.bin pkgs.libjpeg_turbo.bin ]}
               runHook postInstall
             '';
 
@@ -350,6 +376,7 @@ EOF
           cydoTest = mkCydo backendDebug { defs = testDefs; };
 
           fake-bwrap = pkgs.writeShellScript "bwrap" ''
+            ${fakeHelperJail}
             chdir=""
             clearenv=0
             clearenvKeys=()
@@ -453,6 +480,7 @@ EOF
 
             buildPhase = let
               fake-bwrap-local = pkgs.writeShellScript "bwrap" ''
+                ${fakeHelperJail}
                 chdir=""
                 clearenv=0
                 clearenvKeys=()
@@ -650,6 +678,7 @@ EOF
           # Fake bwrap that strips sandbox flags and exec's the inner command.
           # Keep the browser tests independent of agent sandbox setup.
           fake-bwrap = pkgs.writeShellScript "bwrap" ''
+            ${fakeHelperJail}
             chdir=""
             clearenv=0
             clearenvKeys=()
@@ -1060,9 +1089,6 @@ EOF
             CI = "1";
             # Build the real executable used by the CLI tests as a separate derivation.
             CYDO_TEST_CYDO_BIN = "${backendDebug}/bin/cydo";
-            CYDO_TEST_HEIC_EXECUTABLE_ALIAS = pkgs.runCommand "cydo-heic-executable-alias" {} ''
-              ln -s ${backendDebug}/bin/cydo "$out"
-            '';
 
             # The Codex driver's exact-shape grammar transcribes the model
             # catalog compiled into this binary; a unit test reads the catalog
@@ -1108,16 +1134,28 @@ EOF
             touch "$out"
           '';
           image-jail = let
-            probe = ./tests/image-jail-probe.py;
-            probeClosure = pkgs.closureInfo { rootPaths = [ pkgs.python3 probe ]; };
-          in pkgs.runCommandCC "cydo-image-jail-test" {
-            nativeBuildInputs = [ pkgs.bubblewrap pkgs.python3 ];
+            probe = pkgs.pkgsStatic.stdenv.mkDerivation {
+              name = "cydo-image-jail-probe";
+              dontUnpack = true;
+              nativeBuildInputs = [ pkgs.libheif.bin ];
+              buildCommand = ''
+                mkdir -p "$out"
+                heif-dec --quiet -d libde265 --codec-threads 2 ${./tests/data/colors.heic} "$out/colors.jpg"
+                heif-enc -p x265:pools=none -o "$out/multi.heic" "$out/colors.jpg" "$out/colors.jpg"
+                od -An -v -tu1 "$out/colors.jpg" | awk '{ for (i = 1; i <= NF; i++) printf "%s,", $i; print "" }' > colors.inc
+                "$CC" -static -I. -x c ${./tests/image-jail-decoder.c} -o "$out/static-decoder"
+                { echo '#!${pkgs.python3}/bin/python3'; cat ${./tests/image-jail-probe.py}; } > "$out/heif-dec"
+                chmod +x "$out/heif-dec"
+                cp "$out/heif-dec" "$out/heif-dec-fail-startup"
+                cp "$out/heif-dec" "$out/heif-dec-empty"
+                cp "$out/heif-dec" "$out/jpegtran-invalid"
+              '';
+            };
+          in pkgs.runCommand "cydo-image-jail-test" {
+            nativeBuildInputs = [ pkgs.bubblewrap pkgs.libheif.bin pkgs.libjpeg_turbo.bin pkgs.python3 ];
             CYDO_IMAGE_JAIL_PROBE = probe;
-            CYDO_IMAGE_JAIL_PROBE_PATHS = "${probeClosure}/store-paths";
           } ''
-            cc -fPIC -shared -o "$PWD/image-jail-pipe-probe.so" ${./tests/image-jail-pipe-probe.c} -ldl
-            export CYDO_IMAGE_JAIL_PIPE_PROBE="$PWD/image-jail-pipe-probe.so"
-            python3 ${./tests/image-jail.py} ${cydoDebug}/bin/cydo ${./tests/data/colors.heic}
+            python3 ${./tests/image-jail.py} ${backendDebug}/bin/cydo ${./tests/data/colors.heic}
             touch "$out"
           '';
           tool-descriptions = pkgs.stdenv.mkDerivation {

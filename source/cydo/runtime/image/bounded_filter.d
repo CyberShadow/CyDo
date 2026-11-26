@@ -1,41 +1,66 @@
 module cydo.runtime.image.bounded_filter;
 
-import core.time : Duration;
+import core.time : Duration, MonoTime, seconds;
 
 import ae.utils.promise : Promise;
 import cydo.agent.process : ProcessResourceLimits;
 
-enum FilterFailureKind { failed, timedOut, tooLarge }
+enum FilterFailureKind { failed, timedOut, tooLarge, multiImage, reconfigured }
 
 final class FilterFailure : Exception
 {
 	immutable FilterFailureKind kind;
+	immutable string diagnostic;
 
-	this(FilterFailureKind kind)
+	this(FilterFailureKind kind, string diagnostic = null)
 	{
-		super(["conversion failed", "timed out", "result too large"][kind]);
+		super(["conversion failed", "timed out", "result too large",
+			"multi-image HEIC is not supported", "image converter reconfigured; resubmit"][kind]);
 		this.kind = kind;
+		this.diagnostic = diagnostic;
 	}
 }
 
 struct FilterLimits
 {
 	ProcessResourceLimits resources;
-	Duration wall;
+	MonoTime deadline;
 	size_t outputBytes;
 }
 
+struct FilterOutput
+{
+	immutable(ubyte)[] bytes;
+	string stderr;
+}
+
+string filterExitDiagnostic(int status, string stderr)
+{
+	import std.conv : to;
+
+	auto diagnostic = "exit status " ~ status.to!string;
+	if (stderr.length)
+		diagnostic ~= ": " ~ stderr;
+	return diagnostic;
+}
+
 version (Posix)
-Promise!(immutable(ubyte)[]) runBoundedFilter(string[] command,
-	immutable(ubyte)[] input, FilterLimits limits)
+Promise!FilterOutput runBoundedFilter(string[] command,
+	immutable(ubyte)[] input, FilterLimits limits, bool allowEmptyOutput = false)
 {
 	import core.sys.posix.signal : SIGKILL;
-	import std.algorithm : min;
+	import std.algorithm : max, min;
 	import std.array : appender;
 	import std.logger : warningf;
 	import cydo.agent.process : AgentProcess, FramingMode;
 
-	auto result = new Promise!(immutable(ubyte)[]);
+	auto result = new Promise!FilterOutput;
+	if (limits.deadline <= MonoTime.currTime)
+	{
+		result.reject(new FilterFailure(FilterFailureKind.timedOut));
+		return result;
+	}
+
 	AgentProcess process;
 	try
 		process = new AgentProcess(command, mode: FramingMode.raw,
@@ -68,16 +93,17 @@ Promise!(immutable(ubyte)[]) runBoundedFilter(string[] command,
 	};
 	process.onExit = (int status) {
 		process.forceClosePipes();
-		if (failure == FilterFailureKind.failed && status == 0 && output.data.length)
-			result.fulfill(output.data);
+		if (failure == FilterFailureKind.failed && status == 0
+			&& (output.data.length || allowEmptyOutput))
+			result.fulfill(FilterOutput(output.data, diagnostics.data));
 		else
 		{
 			if (diagnostics.data.length)
 				warningf("Filter stderr: %s", diagnostics.data);
-			result.reject(new FilterFailure(failure));
+			result.reject(new FilterFailure(failure, filterExitDiagnostic(status, diagnostics.data)));
 		}
 	};
-	process.killAfterTimeout(limits.wall, { stop(FilterFailureKind.timedOut, false); });
+	process.killAfterTimeout(max(0.seconds, limits.deadline - MonoTime.currTime), { stop(FilterFailureKind.timedOut, false); });
 	process.sendMessage(cast(string) input);
 	process.closeStdin();
 	return result;
@@ -86,11 +112,23 @@ Promise!(immutable(ubyte)[]) runBoundedFilter(string[] command,
 version (Posix) version (unittest)
 {
 	import ae.utils.promise.await : awaitSync;
-	import core.time : msecs, seconds;
+	import core.time : msecs;
 	import std.exception : collectException;
 	import std.typecons : Nullable, nullable;
 
-	private enum testLimits = FilterLimits(ProcessResourceLimits.init, 15.seconds, 32 * 1024 * 1024);
+	private FilterLimits testLimits()
+	{
+		return FilterLimits(ProcessResourceLimits.init, MonoTime.currTime + 15.seconds, 32 * 1024 * 1024);
+	}
+
+	unittest
+	{
+		auto limits = testLimits;
+		limits.deadline = MonoTime.currTime;
+		auto failure = collectException!FilterFailure(
+			runBoundedFilter(["/nonexistent/cydo-filter"], null, limits).awaitSync());
+		assert(failure !is null && failure.kind == FilterFailureKind.timedOut);
+	}
 
 	unittest
 	{
@@ -101,7 +139,7 @@ version (Posix) version (unittest)
 			byteValue = cast(ubyte) (i ^ (i >> 8) ^ (i >> 16));
 
 		auto bytes = input.assumeUnique;
-		assert(runBoundedFilter(["cat"], bytes, testLimits).awaitSync() == bytes);
+		assert(runBoundedFilter(["cat"], bytes, testLimits).awaitSync().bytes == bytes);
 	}
 
 	unittest
@@ -118,7 +156,6 @@ version (Posix) version (unittest)
 		import core.stdc.errno : errno, ESRCH;
 		import core.sys.posix.signal : kill, SIGKILL;
 		import core.sys.posix.sys.types : pid_t;
-		import core.time : MonoTime;
 		import std.conv : to;
 		import std.file : exists, readText, remove, tempDir;
 		import std.path : buildPath;
@@ -154,14 +191,14 @@ version (Posix) version (unittest)
 
 	unittest
 	{
-		auto limits = FilterLimits(ProcessResourceLimits.init, 20.seconds, 1024 * 1024);
+		auto limits = FilterLimits(ProcessResourceLimits.init, MonoTime.currTime + 20.seconds, 1024 * 1024);
 		assertStopsWithInheritedPipes("head -c 40M /dev/zero && exec sleep 30",
 			limits, FilterFailureKind.tooLarge, 3.seconds);
 	}
 
 	unittest
 	{
-		auto limits = FilterLimits(ProcessResourceLimits.init, 200.msecs, testLimits.outputBytes);
+		auto limits = FilterLimits(ProcessResourceLimits.init, MonoTime.currTime + 200.msecs, testLimits.outputBytes);
 		assertStopsWithInheritedPipes("exec sleep 30", limits, FilterFailureKind.timedOut, 2.seconds);
 	}
 
@@ -177,12 +214,11 @@ version (Posix) version (unittest)
 		immutable(ubyte)[] input, FilterLimits limits)
 	{
 		import ae.net.asockets : socketManager;
-		import core.time : MonoTime;
 
 		FilterObservation observation;
 		auto start = MonoTime.currTime;
-		runBoundedFilter(command, input, limits).then((immutable(ubyte)[] output) {
-			observation.output = output;
+		runBoundedFilter(command, input, limits).then((FilterOutput output) {
+			observation.output = output.bytes;
 			observation.settled = MonoTime.currTime - start;
 		}).except((Exception failure) {
 			observation.failure = failure;
@@ -239,13 +275,13 @@ version (Posix) version (unittest)
 	unittest
 	{
 		assertStopsWithDescendant("head -c 8192 /dev/zero; exec sleep 30", "",
-			FilterLimits(ProcessResourceLimits.init, 20.seconds, 1024), nullable(FilterFailureKind.tooLarge));
+			FilterLimits(ProcessResourceLimits.init, MonoTime.currTime + 20.seconds, 1024), nullable(FilterFailureKind.tooLarge));
 	}
 
 	unittest
 	{
 		assertStopsWithDescendant("exec sleep 30", "",
-			FilterLimits(ProcessResourceLimits.init, 300.msecs, testLimits.outputBytes),
+			FilterLimits(ProcessResourceLimits.init, MonoTime.currTime + 300.msecs, testLimits.outputBytes),
 			nullable(FilterFailureKind.timedOut));
 	}
 
@@ -261,7 +297,7 @@ version (Posix) version (unittest)
 
 		// Daemon timers do not keep the loop alive, so also inspect the timer queue.
 		auto pendingTimers = mainTimer.pendingTasks().array;
-		auto limits = FilterLimits(ProcessResourceLimits.init, 30.seconds, testLimits.outputBytes);
+		auto limits = FilterLimits(ProcessResourceLimits.init, MonoTime.currTime + 30.seconds, testLimits.outputBytes);
 		assertStopsWithDescendant("printf ok", " </dev/null >/dev/null", limits,
 			Nullable!FilterFailureKind.init, 4.seconds);
 		assert(mainTimer.pendingTasks().array == pendingTimers, "stderr drain fallback leaked a timer");
@@ -282,13 +318,13 @@ version (Posix) version (unittest)
 			[ "${#v}" -eq 200000000 ] && printf '%s' "${#v}"`;
 		auto command = ["sh", "-c", script];
 		auto limits = FilterLimits(ProcessResourceLimits(64 * 1024 * 1024, 0, 0),
-			30.seconds, testLimits.outputBytes);
+			MonoTime.currTime + 30.seconds, testLimits.outputBytes);
 		auto failure = collectException!FilterFailure(
 			runBoundedFilter(command, null, limits).awaitSync());
 		assert(failure !is null && failure.kind == FilterFailureKind.failed);
 
 		limits.resources = ProcessResourceLimits.init;
-		assert(cast(string) runBoundedFilter(command, null, limits).awaitSync() == "200000000");
+		assert(cast(string) runBoundedFilter(command, null, limits).awaitSync().bytes == "200000000");
 	}
 
 	unittest
