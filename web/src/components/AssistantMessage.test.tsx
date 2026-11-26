@@ -322,14 +322,14 @@ describe("AssistantMessage thinking blocks", () => {
     creationOrder: 0,
   };
 
-  it("renders narration as thinking with a summary badge", () => {
+  it("renders narration as text with a summary badge", () => {
     const html = renderAssistantMessage(message, {
       ...thinking,
       narration: true,
     });
 
     expect(html).toContain('data-testid="assistant-narration"');
-    expect(html).toContain("thinking-text");
+    expect(html).toContain('class="markdown text-content"');
     expect(html).toContain("Checking the <strong>fixture</strong>.");
     expect(html).toContain('class="meta-badge summary"');
   });

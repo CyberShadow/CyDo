@@ -286,7 +286,10 @@ export const AssistantMessage = memo(
                       data-testid="thinking-dots"
                     />
                   ) : (
-                    <Markdown text={block.text} class="thinking-text" />
+                    <Markdown
+                      text={block.text}
+                      class={block.narration ? "text-content" : "thinking-text"}
+                    />
                   )}
                 </div>
                 {blockExtraEl}

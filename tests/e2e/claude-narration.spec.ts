@@ -26,11 +26,11 @@ test(
 
     const narration = page.getByTestId("assistant-narration");
     await expect(narration).toHaveCount(1);
-    await expect(narration).toContainText(
+    await expect(narration.locator(".text-content")).toContainText(
       "Checking the fixture before answering.",
     );
     await expect(page.locator(".meta-badge.summary")).toHaveText("summary");
-    await expect(page.locator(".thinking-text")).toHaveCount(2);
+    await expect(page.locator(".thinking-text")).toHaveCount(1);
     // The reload below replaces the live view, so check it for unknown agent
     // data (thinking frames carry extra fields) before the fixture's sweep.
     await expect(page.locator(".unknown-extra-fields")).toHaveCount(0);

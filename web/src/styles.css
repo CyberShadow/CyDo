@@ -2788,13 +2788,16 @@ body,
 
 /* The badge rides the narration block's top edge, on the left. */
 .thinking-block.narration {
+  margin-block: 14px 10px;
+  background: var(--overlay-light);
+  padding: 12px 12px 10px;
   position: relative;
 }
 
 .thinking-block.narration > .meta-badge.summary {
   position: absolute;
   top: 0;
-  left: 8px;
+  left: 12px;
   transform: translateY(-50%);
   z-index: 1;
 }
