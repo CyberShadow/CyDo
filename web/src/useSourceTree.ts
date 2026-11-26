@@ -8,6 +8,7 @@ import {
 import type { SourceNode } from "./lib/sourceTree";
 
 type SourceTreeState = {
+  language: EmbeddedLanguage;
   text: string | null;
   tree: SourceNode | null;
 };
@@ -26,18 +27,20 @@ export function useSourceTree(
   text: string | null,
 ): SourceNode | null {
   const [state, setState] = useState<SourceTreeState>(() => ({
+    language,
     text,
     tree: cachedSourceTree(language, text),
   }));
 
   useEffect(() => {
     if (text === null) {
-      setState({ text, tree: null });
+      setState({ language, text, tree: null });
       return;
     }
     const cached = getCachedEmbeddedAnalysis(language, text);
     if (cached !== undefined) {
       setState({
+        language,
         text,
         tree: cached === null ? null : buildFlowSourceTree(cached),
       });
@@ -49,13 +52,14 @@ export function useSourceTree(
       (flow) => {
         if (active) {
           setState({
+            language,
             text,
             tree: flow === null ? null : buildFlowSourceTree(flow),
           });
         }
       },
       () => {
-        if (active) setState({ text, tree: null });
+        if (active) setState({ language, text, tree: null });
       },
     );
     return () => {
@@ -63,6 +67,6 @@ export function useSourceTree(
     };
   }, [language, text]);
 
-  if (state.text === text) return state.tree;
+  if (state.language === language && state.text === text) return state.tree;
   return cachedSourceTree(language, text);
 }

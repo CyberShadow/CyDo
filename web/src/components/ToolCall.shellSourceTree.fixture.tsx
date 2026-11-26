@@ -35,7 +35,7 @@ export const processLike = (
   globalThis as typeof globalThis & { process: ProcessLike }
 ).process;
 
-function deferred<T>(signal: AbortSignal): {
+export function deferred<T>(signal: AbortSignal): {
   promise: Promise<T>;
   resolve(value: T): void;
   reject(reason: unknown): void;

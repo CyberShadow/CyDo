@@ -1,4 +1,7 @@
-import type { FlowDocument } from "./contentFlow";
+import { AsyncLruCache } from "./asyncLruCache";
+import { analyzeCodeModeCell } from "./codeModeFlow";
+import { resolveFlowLanguage, type FlowDocument } from "./contentFlow";
+import { withJavaScriptTree } from "./javascriptParser";
 import {
   getCachedParsedShellDocument,
   loadParsedShellDocument,
@@ -6,7 +9,7 @@ import {
 } from "./shellParser";
 import { shellFlowDocument } from "./shellSourceTree";
 
-export type EmbeddedLanguage = "bash";
+export type EmbeddedLanguage = "bash" | "codex-code-mode";
 
 type EmbeddedAnalyzer = {
   peek(text: string): FlowDocument | null | undefined;
@@ -19,6 +22,26 @@ function parsedShellFlow(parsed: ParseResult): FlowDocument | null {
   return "ok" in flow ? null : flow;
 }
 
+const codeModeCache = new AsyncLruCache<FlowDocument>(8);
+
+async function loadCodeModeCell(text: string): Promise<FlowDocument> {
+  const document = await withJavaScriptTree(text, (root) =>
+    analyzeCodeModeCell(root, text),
+  );
+  const sources = await Promise.all(
+    document.sources.map(async (source) => {
+      const { language } = resolveFlowLanguage(source.sinks);
+      if (!Object.hasOwn(registry, language)) return source;
+      const child = await analyzeEmbedded(
+        language as EmbeddedLanguage,
+        source.value.text,
+      );
+      return { ...source, child };
+    }),
+  );
+  return { ...document, sources };
+}
+
 const registry: Record<EmbeddedLanguage, EmbeddedAnalyzer> = {
   bash: {
     peek(text) {
@@ -27,6 +50,14 @@ const registry: Record<EmbeddedLanguage, EmbeddedAnalyzer> = {
     },
     load(text) {
       return loadParsedShellDocument(text).then(parsedShellFlow, () => null);
+    },
+  },
+  "codex-code-mode": {
+    peek(text) {
+      return codeModeCache.peek(text);
+    },
+    load(text) {
+      return codeModeCache.load(text, () => loadCodeModeCell(text));
     },
   },
 };

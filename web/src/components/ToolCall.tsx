@@ -704,13 +704,18 @@ function ApplyPatchInput({ input }: { input: Record<string, unknown> }) {
 
 function ExecInput({ input }: { input: Record<string, unknown> }) {
   const script = input.input as string;
-  const tokens = useHighlight(script, "typescript");
+  const tree = useSourceTree("codex-code-mode", script);
+  const tokens = useHighlight(tree === null ? script : null, "javascript");
   const { input: _consumed, ...remaining } = input;
   return formatGenericInput(
     remaining,
-    <CodePre class="write-content" copyText={script}>
-      {renderHighlightedSource(script, tokens)}
-    </CodePre>,
+    tree !== null ? (
+      renderSourceTreeCommand(tree)
+    ) : (
+      <CodePre class="write-content" copyText={script}>
+        {renderHighlightedSource(script, tokens)}
+      </CodePre>
+    ),
   );
 }
 
