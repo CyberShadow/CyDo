@@ -108,6 +108,7 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid,
 	string workspace, string title, const ref HistoryForkDestination destination,
 	string delegate(string line, string oldId, string newId) rewriteSessionIdFn,
 	bool delegate(string line, int lineNum, string forkId) matchFn,
+	bool[int] delegate(string content, scope bool delegate(int line) dropped) dependentFn,
 	string description = "", string taskType = "", string agentName = "claude")
 {
 	import std.file : exists, mkdirRecurse, readText, write;
@@ -121,29 +122,30 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid,
 
 	// An anchor can match several records. Fork keeps through the last match;
 	// undo truncation cuts before the first match.
-	string output;
-	size_t prefixLength;
-	bool found = false;
+	auto content = readText(source.path);
+	int lastMatch = 0;
 	int lineNum = 0;
-	foreach (line; readText(source.path).lineSplitter)
+	foreach (line; content.lineSplitter)
 	{
 		lineNum++;
-		if (line.length == 0)
-			continue;
-
-		auto rewritten = rewriteSessionIdFn(line, source.sessionId,
-			destination.sessionId);
-		output ~= rewritten ~ "\n";
-
-		if (matchFn(line, lineNum, afterForkId))
-		{
-			found = true;
-			prefixLength = output.length;
-		}
+		if (line.length > 0 && matchFn(line, lineNum, afterForkId))
+			lastMatch = lineNum;
 	}
 
-	if (!found)
+	if (lastMatch == 0)
 		return ForkResult.init;
+
+	auto dependent = dependentFn(content, line => line > lastMatch);
+	string output;
+	lineNum = 0;
+	foreach (line; content.lineSplitter)
+	{
+		lineNum++;
+		if (lineNum > lastMatch)
+			break;
+		if (line.length > 0 && lineNum !in dependent)
+			output ~= rewriteSessionIdFn(line, source.sessionId, destination.sessionId) ~ "\n";
+	}
 
 	// Ensure the destination directory exists (e.g. copilot creates per-session
 	// subdirectories: COPILOT_HOME/session-state/{newSessionId}/events.jsonl).
@@ -152,7 +154,7 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid,
 		if (destDir.length > 0)
 			mkdirRecurse(destDir);
 	}
-	write(destination.path, output[0 .. prefixLength]);
+	write(destination.path, output);
 
 	// Create DB entry with the new agent session ID
 	return ForkResult(createForkTask(persistence, sourceTid, destination.sessionId,
@@ -388,12 +390,12 @@ unittest
 	}
 
 	assert(forkTask(persistence, sourceTid, source, "missing", "/tmp/fork-project",
-		"", "parent", destination, &rewrite, &match).tid < 0);
+		"", "parent", destination, &rewrite, &match, &agent.historyLinesDependentOn).tid < 0);
 	assert(!exists(destination.path),
 		"a missing anchor must not create the explicit child destination");
 
 	auto result = forkTask(persistence, sourceTid, source, "first", "/tmp/fork-project",
-		"", "parent", destination, &rewrite, &match);
+		"", "parent", destination, &rewrite, &match, &agent.historyLinesDependentOn);
 	assert(result.tid > 0);
 	assert(result.agentSessionId == destination.sessionId);
 	assert(result.destinationPath == destination.path);
@@ -405,6 +407,7 @@ unittest
 /// Returns the number of lines removed, or -1 if fork ID not found.
 int truncateJsonl(string jsonlPath, string afterForkId,
 	bool delegate(string line, int lineNum, string forkId) matchFn,
+	bool[int] delegate(string content, scope bool delegate(int line) dropped) dependentFn,
 	bool excludeMatch = false)
 {
 	import std.file : exists, readText, write;
@@ -413,52 +416,37 @@ int truncateJsonl(string jsonlPath, string afterForkId,
 	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return -1;
 
-	string[] kept;
-	bool found = false;
-	int removedCount = 0;
-	bool pastTarget = false;
+	auto content = readText(jsonlPath);
+	int cut = 0;
 	int lineNum = 0;
-	foreach (line; readText(jsonlPath).lineSplitter)
+	foreach (line; content.lineSplitter)
+	{
+		lineNum++;
+		if (line.length > 0 && matchFn(line, lineNum, afterForkId))
+		{
+			cut = lineNum + (excludeMatch ? 0 : 1);
+			break;
+		}
+	}
+
+	if (cut == 0)
+		return -1;
+
+	auto dependent = dependentFn(content, line => line >= cut);
+	int removedCount = 0;
+	string output;
+	lineNum = 0;
+	foreach (line; content.lineSplitter)
 	{
 		lineNum++;
 		if (line.length == 0)
 			continue;
-
-		if (pastTarget)
-		{
+		if (lineNum >= cut || lineNum in dependent)
 			removedCount++;
-			continue;
-		}
-
-		if (matchFn(line, lineNum, afterForkId))
-		{
-			found = true;
-			pastTarget = true;
-			if (excludeMatch)
-			{
-				removedCount++;
-				// The queue-operation and snapshot lines immediately preceding
-				// the removed message are its run-up (enqueue/dequeue records);
-				// leaving them behind would resurrect the undone message as a
-				// still-queued one on the next history load.
-				while (kept.length > 0 && isNeutralOrQueueOp(kept[$ - 1]))
-				{
-					kept = kept[0 .. $ - 1];
-					removedCount++;
-				}
-				continue;
-			}
-		}
-
-		kept ~= line;
+		else
+			output ~= line ~ "\n";
 	}
 
-	if (!found)
-		return -1;
-
-	string output;
-	foreach (line; kept)
-		output ~= line ~ "\n";
 	write(jsonlPath, output);
 	return removedCount;
 }
@@ -478,7 +466,6 @@ int countLinesAfterForkId(string jsonlPath, string afterForkId,
 	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return -1;
 
-	string[] beforeLines;
 	bool pastTarget = false;
 	int count = 0;
 	int lineNum = 0;
@@ -494,20 +481,7 @@ int countLinesAfterForkId(string jsonlPath, string afterForkId,
 				count++;
 		}
 		else if (matchFn(line, lineNum, afterForkId))
-		{
 			pastTarget = true;
-			// Count trailing neutral/queue-op lines preceding the match;
-			// truncateJsonl will strip these too, so include them in the preview.
-			foreach_reverse (bl; beforeLines)
-			{
-				if (isNeutralOrQueueOp(bl))
-					count++;
-				else
-					break;
-			}
-		}
-		else
-			beforeLines ~= line;
 	}
 
 	return pastTarget ? count : -1;
@@ -636,22 +610,6 @@ unittest
 		"expected null-raw translated event to keep the no-source sentinel");
 }
 
-/// Returns true if this JSONL line is a queue-operation, file-history-snapshot,
-/// or progress event — lines that are "run-up" to a steered user message and
-/// should be stripped together with it on undo.
-private bool isNeutralOrQueueOp(string line)
-{
-	import ae.utils.json : JSONPartial, jsonParse;
-	@JSONPartial static struct TypeProbe { string type; }
-	try
-	{
-		auto type = jsonParse!TypeProbe(line).type;
-		import cydo.domain.tasks.model : isQueueOperationType;
-		return isQueueOperationType(type) || type == "file-history-snapshot" || type == "progress";
-	}
-	catch (Exception) return false;
-}
-
 /// Extract a string field value from a JSON line by prefix scanning.
 private string extractJsonField(string line, string prefix)
 {
@@ -711,11 +669,14 @@ unittest
 	auto source = HistoryAccess(agent, profile, "source", path);
 	auto dest = HistoryForkDestination("child", buildPath(root, "child.jsonl"));
 	auto result = forkTask(persistence, sourceTid, source, "shared", "/tmp/fork-project",
-		"", "parent", dest, &rewrite, &match);
+		"", "parent", dest, &rewrite, &match, &agent.historyLinesDependentOn);
 	assert(result.tid > 0);
 	assert(readText(dest.path) == "one\ntwo\nthree\nfour\n");
 	assert(countLinesAfterForkId(path, "shared", &match, &count, null) == 3);
-	assert(truncateJsonl(path, "shared", &match, true) == 4);
+	assert(truncateJsonl(path, "shared", &match, &agent.historyLinesDependentOn) == 3);
+	assert(readText(path) == "one\ntwo\n");
+	write(path, "one\ntwo\nthree\nfour\nfive\n");
+	assert(truncateJsonl(path, "shared", &match, &agent.historyLinesDependentOn, true) == 4);
 	assert(readText(path) == "one\n");
 }
 
@@ -745,11 +706,12 @@ unittest
 		write(path, rows.join("\n") ~ "\n");
 		auto dest = HistoryForkDestination(toolInputType, buildPath(root, toolInputType ~ ".jsonl"));
 		auto result = forkTask(persistence, sourceTid, source, "X", "/tmp/fork-project",
-			"", "parent", dest, &agent.rewriteSessionId, &agent.forkIdMatchesLine);
+			"", "parent", dest, &agent.rewriteSessionId, &agent.forkIdMatchesLine,
+			&agent.historyLinesDependentOn);
 		assert(result.tid > 0);
 		assert(readText(dest.path) == rows[0 .. 11].join("\n") ~ "\n");
 		assert(countLinesAfterForkId(path, "X", &agent.forkIdMatchesLine, &agent.isForkableLine, null) == 1);
-		assert(truncateJsonl(path, "X", &agent.forkIdMatchesLine, true) == rows.length - 3);
+		assert(truncateJsonl(path, "X", &agent.forkIdMatchesLine, &agent.historyLinesDependentOn, true) == rows.length - 3);
 		assert(readText(path) == rows[0 .. 3].join("\n") ~ "\n");
 
 		// The next prompt's run-up is trimmed, while the complete retained
@@ -759,8 +721,9 @@ unittest
 			auto kept = rows[0 .. end].join("\n") ~ "\n";
 			write(path, kept
 				~ `{"type":"queue-operation","operation":"enqueue","content":"next"}` ~ "\n"
+				~ `{"type":"queue-operation","operation":"dequeue"}` ~ "\n"
 				~ `{"type":"user","uuid":"next","message":{"content":"next"}}` ~ "\n");
-			assert(truncateJsonl(path, "next", &agent.forkIdMatchesLine, true) == 2);
+			assert(truncateJsonl(path, "next", &agent.forkIdMatchesLine, &agent.historyLinesDependentOn, true) == 3);
 			assert(readText(path) == kept);
 		}
 	}
@@ -819,6 +782,67 @@ unittest
 		~ claudeParentLinkedQueueFixture("queue/operation", "dequeue") ~ "\n"
 		~ `{"type":"user","uuid":"undo","message":{"role":"user","content":"queued"}}` ~ "\n");
 
-	assert(truncateJsonl(path, "undo", &agent.forkIdMatchesLine, true) == 3);
+	assert(truncateJsonl(path, "undo", &agent.forkIdMatchesLine, &agent.historyLinesDependentOn, true) == 3);
 	assert(readText(path) == kept);
+}
+
+@("Claude history cuts remove only queue records whose recorded outcome was cut")
+unittest
+{
+	import std.array : join;
+	import std.file : mkdirRecurse, readText, rmdirRecurse, tempDir, write;
+	import std.path : buildPath;
+	import std.uuid : randomUUID;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.agent.drivers.claude_branches : claudeQueueCutRows;
+	import cydo.agent.drivers.claude_queue : ClaudeQueueOutcomeKind, classifyClaudeQueueRecords;
+	import cydo.runtime.launch.types : NativeHistoryProfile;
+
+	auto root = buildPath(tempDir(), "cydo-queue-dependencies-" ~ randomUUID().toString());
+	mkdirRecurse(root);
+	scope(exit) rmdirRecurse(root);
+	auto persistence = Persistence(buildPath(root, "cydo.db"));
+	auto sourceTid = persistence.createTask("", root, "claude");
+	auto agent = new ClaudeCodeAgent();
+	auto profile = NativeHistoryProfile(agent.driver, root);
+	auto path = buildPath(root, "source.jsonl");
+	auto source = HistoryAccess(agent, profile, "source", path);
+	auto dest = HistoryForkDestination("child", buildPath(root, "child.jsonl"));
+
+	enum rows = claudeQueueCutRows;
+	auto history = rows.join("\n") ~ "\n";
+	auto retainedTurn = (rows[0 .. 3] ~ rows[4]).join("\n") ~ "\n";
+
+	write(path, history);
+	auto fork = forkTask(persistence, sourceTid, source, "P2", root,
+		"", "child", dest, &agent.rewriteSessionId, &agent.forkIdMatchesLine,
+		&agent.historyLinesDependentOn);
+	assert(fork.tid > 0);
+	assert(readText(dest.path) == retainedTurn);
+	assert(readText(path) == history);
+
+	assert(countLinesAfterForkId(path, "x", &agent.forkIdMatchesLine,
+		&agent.isForkableLine, null) == 1);
+	assert(truncateJsonl(path, "x", &agent.forkIdMatchesLine,
+		&agent.historyLinesDependentOn, true) == 5);
+	assert(readText(path) == retainedTurn);
+	assert(classifyClaudeQueueRecords(readText(path), null).length == 0);
+
+	enum priorEnqueue = `{"type":"queue-operation","operation":"enqueue","content":"prior"}` ~ "\n";
+	enum pending = `{"type":"queue-operation","operation":"enqueue","content":"Y"}` ~ "\n";
+	enum neutral = `{"type":"file-history-snapshot"}` ~ "\n" ~ `{"type":"progress"}` ~ "\n";
+	auto priorQueue = priorEnqueue ~ rows[5] ~ "\n";
+	write(path, priorQueue ~ rows[0 .. 5].join("\n") ~ "\n"
+		~ pending ~ rows[5] ~ "\n" ~ neutral ~ rows[6 .. $].join("\n") ~ "\n");
+
+	assert(countLinesAfterForkId(path, "x", &agent.forkIdMatchesLine,
+		&agent.isForkableLine, null) == 1);
+	assert(truncateJsonl(path, "x", &agent.forkIdMatchesLine,
+		&agent.historyLinesDependentOn, true) == 5);
+	auto kept = readText(path);
+	assert(kept == priorQueue ~ retainedTurn ~ pending ~ neutral);
+	auto outcomes = classifyClaudeQueueRecords(kept, null);
+	assert(outcomes.length == 2);
+	assert(outcomes[1].kind == ClaudeQueueOutcomeKind.turnStart);
+	assert(outcomes[7].kind == ClaudeQueueOutcomeKind.queued);
 }

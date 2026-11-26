@@ -915,6 +915,12 @@ class ClaudeCodeAgent : Agent
 		return repairInterruptedToolCallImpl(lines, toolName, resultText);
 	}
 
+	bool[int] historyLinesDependentOn(string content, scope bool delegate(int line) dropped)
+	{
+		import cydo.agent.drivers.claude_queue : claudeQueueRecordsDependentOn;
+		return claudeQueueRecordsDependentOn(content, dropped);
+	}
+
 	bool forkIdMatchesLine(string line, int lineNum, string forkId)
 	{
 		auto row = parseHistoryRow(line);

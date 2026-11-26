@@ -47,6 +47,8 @@ struct ClaudeQueueOutcome
 	ClaudeQueueOutcomeKind kind;
 	/// 1-based line at which the outcome is recorded; 0 for `queued`.
 	int line;
+	/// 1-based dequeue line for a turn opener; 0 for other outcomes.
+	int dequeueLine;
 }
 
 /// Classify every `enqueue` row of a Claude session file, keyed by its
@@ -64,9 +66,9 @@ ClaudeQueueOutcome[int] classifyClaudeQueueRecords(string content,
 	int[] withdrawals; // dequeue lines that opened no turn (≥2.1.250)
 	bool legacy = true;
 
-	void resolve(size_t queueIndex, ClaudeQueueOutcomeKind kind, int line)
+	void resolve(size_t queueIndex, ClaudeQueueOutcomeKind kind, int line, int dequeueLine = 0)
 	{
-		outcomes[queued[queueIndex].line] = ClaudeQueueOutcome(kind, line);
+		outcomes[queued[queueIndex].line] = ClaudeQueueOutcome(kind, line, dequeueLine);
 		queued = queued[0 .. queueIndex] ~ queued[queueIndex + 1 .. $];
 	}
 
@@ -98,7 +100,7 @@ ClaudeQueueOutcome[int] classifyClaudeQueueRecords(string content,
 				auto echo = findEcho(rows, i + 1);
 				if (echo >= 0)
 					resolve(byText(rows[echo].text), ClaudeQueueOutcomeKind.turnStart,
-						cast(int) echo + 1);
+						cast(int) echo + 1, lineNum);
 				else if (legacy)
 					resolve(0, ClaudeQueueOutcomeKind.steering, lineNum);
 				else
@@ -129,6 +131,23 @@ ClaudeQueueOutcome[int] classifyClaudeQueueRecords(string content,
 				break;
 			}
 	return outcomes;
+}
+
+/// Queue bookkeeping for messages whose recorded outcomes will be removed.
+/// Classify the raw file because queue operations record the process's
+/// in-memory queue in chronological order, independently of the tree.
+bool[int] claudeQueueRecordsDependentOn(string content, scope bool delegate(int line) dropped)
+{
+	bool[int] dependent;
+	foreach (enqueueLine, outcome; classifyClaudeQueueRecords(content, null))
+	{
+		if (outcome.kind == ClaudeQueueOutcomeKind.queued || !dropped(outcome.line))
+			continue;
+		dependent[enqueueLine] = true;
+		if (outcome.kind == ClaudeQueueOutcomeKind.turnStart)
+			dependent[outcome.dequeueLine] = true;
+	}
+	return dependent;
 }
 
 private:
@@ -304,13 +323,14 @@ unittest
 	auto outcomes = classifyClaudeQueueRecords(content, null);
 	with (ClaudeQueueOutcomeKind)
 	{
-		assert(outcomes[1] == ClaudeQueueOutcome(turnStart, 3));
+		assert(outcomes[1] == ClaudeQueueOutcome(turnStart, 3, 2));
 		assert(outcomes[5] == ClaudeQueueOutcome(steering, 9));
 		assert(outcomes[6] == ClaudeQueueOutcome(cancelled, 7));
-		assert(outcomes[11] == ClaudeQueueOutcome(turnStart, 14));
+		assert(outcomes[11] == ClaudeQueueOutcome(turnStart, 14, 12));
 		assert(outcomes[15] == ClaudeQueueOutcome(queued, 0));
 	}
 	assert(outcomes.length == 5);
+	assert(claudeQueueRecordsDependentOn(content, line => line == 9) == [5: true]);
 }
 
 // Editing a message rewrites its echo row but not its enqueue record.
@@ -325,7 +345,7 @@ unittest
 	].join("\n") ~ "\n";
 
 	auto outcomes = classifyClaudeQueueRecords(content, null);
-	assert(outcomes[1] == ClaudeQueueOutcome(ClaudeQueueOutcomeKind.turnStart, 3));
+	assert(outcomes[1] == ClaudeQueueOutcome(ClaudeQueueOutcomeKind.turnStart, 3, 2));
 }
 
 // A withdrawal is attributed only after consumed messages are matched, even
@@ -346,9 +366,10 @@ unittest
 	auto outcomes = classifyClaudeQueueRecords(content, null);
 	with (ClaudeQueueOutcomeKind)
 	{
-		assert(outcomes[2] == ClaudeQueueOutcome(turnStart, 6));
+		assert(outcomes[2] == ClaudeQueueOutcome(turnStart, 6, 5));
 		assert(outcomes[3] == ClaudeQueueOutcome(cancelled, 4));
 	}
+	assert(claudeQueueRecordsDependentOn(content, line => line == 4) == [3: true]);
 }
 
 // Pre-2.1.250 CLIs: a reason-less remove took the message off the queue
@@ -372,6 +393,7 @@ unittest
 		assert(outcomes[2] == ClaudeQueueOutcome(steering, 3));
 		assert(outcomes[5] == ClaudeQueueOutcome(removed, 6));
 	}
+	assert(claudeQueueRecordsDependentOn(content, line => line == 3) == [2: true]);
 }
 
 @("Claude parent-linked queue confirmation waits for the canonical root echo")
@@ -387,5 +409,26 @@ unittest
 		`{"type": "user", "message":{"content":"root"}}`,
 	].join("\n");
 	auto outcomes = classifyClaudeQueueRecords(content, null);
-	assert(outcomes[1] == ClaudeQueueOutcome(ClaudeQueueOutcomeKind.turnStart, 5));
+	assert(outcomes[1] == ClaudeQueueOutcome(ClaudeQueueOutcomeKind.turnStart, 5, 2));
+}
+
+@("Claude queue dependencies follow the recorded outcome")
+unittest
+{
+	import std.algorithm : sort;
+	import std.array : array, join;
+
+	enum enqueue = `{"type":"queue-operation","operation":"enqueue","content":"X"}`;
+	enum dequeue = `{"type":"queue-operation","operation":"dequeue"}`;
+	enum assistant = `{"type":"assistant","message":{"content":[]}}`;
+	enum echo = `{"type":"user","message":{"role":"user","content":"X"}}`;
+	enum pending = `{"type":"queue-operation","operation":"enqueue","content":"Y"}`;
+
+	auto content = [enqueue, assistant, dequeue, echo, pending].join("\n");
+	assert(claudeQueueRecordsDependentOn(content, line => line == 4).keys.sort.array == [1, 3]);
+	assert(claudeQueueRecordsDependentOn(content, line => line != 4).length == 0,
+		"kept outcomes and enqueues without an outcome have no dependencies on dropped lines");
+
+	content = [enqueue, enqueue, dequeue, echo, assistant, dequeue, echo].join("\n");
+	assert(claudeQueueRecordsDependentOn(content, line => line == 7) == [2: true, 6: true]);
 }

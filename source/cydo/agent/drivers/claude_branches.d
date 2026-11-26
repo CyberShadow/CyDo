@@ -194,3 +194,16 @@ unittest
 	assertThrown(claudeRewoundLines(
 		`{"type":"last-prompt","leafUuid":"missing","rewound":true}`));
 }
+
+// Keep only the first turn's tool exchange and final reply from the capture.
+version (unittest) enum claudeQueueCutRows = [
+	`{"type":"user","version":"2.1.330","uuid":"prior","message":{"role":"user","content":"prior"}}`,
+	`{"type":"assistant","uuid":"tool","parentUuid":"prior","message":{"id":"P","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"true"}}]}}`,
+	`{"type":"user","uuid":"result","parentUuid":"tool","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}`,
+	`{"type":"queue-operation","operation":"enqueue","content":"X"}`,
+	`{"type":"assistant","uuid":"A","parentUuid":"result","message":{"id":"P2","content":[{"type":"text","text":"prior reply"}]}}`,
+	`{"type":"queue-operation","operation":"dequeue"}`,
+	`{"type":"user","uuid":"x","parentUuid":"A","message":{"role":"user","content":"X"}}`,
+	`{"type":"assistant","uuid":"reply","parentUuid":"x","message":{"id":"reply","content":[{"type":"text","text":"X reply"}]}}`,
+	`{"type":"last-prompt","lastPrompt":"X"}`,
+];

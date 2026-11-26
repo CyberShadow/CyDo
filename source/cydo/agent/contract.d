@@ -205,6 +205,12 @@ interface Agent
 	/// Used by truncation/fork logic to find the cut point.
 	bool forkIdMatchesLine(string line, int lineNum, string forkId);
 
+	/// The 1-based lines of a whole history file that only record messages
+	/// whose outcome lies on `dropped` lines, wherever they sit. A cut or
+	/// rewind that drops those lines must drop these too, or the messages
+	/// resurface without their outcome.
+	bool[int] historyLinesDependentOn(string content, scope bool delegate(int line) dropped);
+
 	/// Whether the JSONL message editor can rewrite this driver's user records.
 	@property bool supportsJsonlMessageEditing() const;
 

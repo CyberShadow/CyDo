@@ -217,7 +217,7 @@ public:
 		auto destination = host_.prepareHistoryForkDestination(tid);
 		auto result = forkTask(*host_.persistence(), tid, source, boundary.anchor,
 			td.projectPath, td.workspace, td.title, destination,
-			&ta.rewriteSessionId, &ta.forkIdMatchesLine, td.description, td.taskType,
+			&ta.rewriteSessionId, &ta.forkIdMatchesLine, &ta.historyLinesDependentOn, td.description, td.taskType,
 			td.agentName);
 		if (result.tid < 0)
 		{
@@ -1416,7 +1416,8 @@ private:
 	/// Returns false when the anchor is not in the file.
 	bool truncateUndoneHistory(int tid, HistoryAccess access, string anchor)
 	{
-		if (truncateJsonl(access.path, anchor, &access.agent.forkIdMatchesLine, true) < 0)
+		if (truncateJsonl(access.path, anchor, &access.agent.forkIdMatchesLine,
+			&access.agent.historyLinesDependentOn, true) < 0)
 			return false;
 		trimPendingSteeringTexts(tid, access);
 		return true;
@@ -1452,7 +1453,7 @@ private:
 		auto destination = host_.prepareHistoryForkDestination(tid);
 		auto backup = forkTask(*host_.persistence(), tid, access,
 			lastForkId, td.projectPath, td.workspace, td.title, destination,
-			&ta.rewriteSessionId, &ta.forkIdMatchesLine,
+			&ta.rewriteSessionId, &ta.forkIdMatchesLine, &ta.historyLinesDependentOn,
 			td.description, td.taskType, td.agentName);
 		if (backup.tid >= 0)
 		{

@@ -801,6 +801,11 @@ class CopilotAgent : Agent
 		return null;
 	}
 
+	bool[int] historyLinesDependentOn(string content, scope bool delegate(int line) dropped)
+	{
+		return null; // Copilot keeps pending sends in process without persisting queue records.
+	}
+
 	bool forkIdMatchesLine(string line, int lineNum, string forkId)
 	{
 		return historyRecordIdMatchesLine(line, lineNum, forkId);

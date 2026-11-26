@@ -872,6 +872,11 @@ class CodexAgent : DriverServedHistoryAgent
 		int lineOffset = 0) { assert(false); }
 	InterruptedToolCallRepair repairInterruptedToolCall(string[] lines, string toolName,
 		string resultText) { assert(false); }
+	bool[int] historyLinesDependentOn(string content, scope bool delegate(int line) dropped)
+	{
+		assert(false);
+	}
+
 	bool forkIdMatchesLine(string line, int lineNum, string forkId) { assert(false); }
 	@property bool supportsJsonlMessageEditing() const { return false; }
 
