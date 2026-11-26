@@ -95,7 +95,7 @@ import cydo.agent.drivers.codex : CodexSession;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
 import cydo.domain.storage.persistence : LoadedHistory, Persistence, openDatabase;
 import cydo.server.config_resolution : loadRuntimeConfig;
-import cydo.runtime.config.yaml : ConfigFileException;
+import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
 import cydo.server.environment : consumeServerEnvironment;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir, sharedTmpBaseDir;
 import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule;
@@ -321,16 +321,16 @@ class App
 					listenAddrEnv);
 		}
 
+		config = loadRuntimeConfig();
+		claudeUsageService.configChanged(config);
 		{
 			import ae.utils.path : findProgramDirectory;
 			import std.path : buildPath;
 			auto baseDir = findProgramDirectory("defs/task-types.yaml");
 			if (baseDir is null)
-			{
-				warningf("Could not locate application directory (defs/task-types.yaml not found relative to binary)");
-				baseDir = "";
-			}
-			else if (baseDir != "")
+				throw new ConfigFileException(ConfigErrorKind.unreadable, "defs/task-types.yaml",
+					"could not locate application directory");
+			if (baseDir != "")
 				infof("Application base directory: %s", baseDir);
 			auto taskTypesDir = buildPath(baseDir, "defs");
 			auto taskTypesPath = buildPath(baseDir, "defs/task-types.yaml");
@@ -338,8 +338,7 @@ class App
 			taskTypeCatalog = new TaskTypeCatalog(taskTypesDir, taskTypesPath,
 				(string name) => isConfiguredAgentName(config, name));
 		}
-		config = loadRuntimeConfig();
-		claudeUsageService.configChanged(config);
+		taskTypeCatalog.reloadGlobal();
 		{
 			persistence = openDatabase();
 			taskLifecycle = TaskLifecycle(
@@ -364,7 +363,7 @@ class App
 			taskDirTemplate: () => taskDirTemplate,
 		));
 		foreach (name, ref ac; config.agents)
-			agentsByName[name] = createConfiguredAppAgent(name);
+			agentsByName[name] = createConfiguredAppAgent(config, name);
 		auto defaultName = defaultAgentName("");
 		agent = agentsByName[defaultName];
 		transport = new TransportAdapter(
@@ -921,13 +920,6 @@ class App
 			jsonlTracker.startJsonlWatch(tid);
 		};
 		jsonlTracker.onJsonlLine = &onTailedJsonlLine;
-		// Load task type definitions
-		auto types = taskTypeCatalog.getTaskTypes();
-		if (types.length == 0)
-			warningf("no task types loaded");
-		else
-			infof("Loaded %d task types", types.length);
-
 		// Discover projects in all workspaces
 		discoveryService.discoverAllWorkspaces(config);
 
@@ -3050,7 +3042,7 @@ class App
 		return a;
 	}
 
-	private Agent createConfiguredAppAgent(string agentName)
+	private Agent createConfiguredAppAgent(ref CydoConfig config, string agentName)
 	{
 		auto ac = agentName in config.agents;
 		assert(ac !is null);
@@ -3804,55 +3796,65 @@ class App
 		broadcastTaskUpdate(tid);
 	}
 
-	private void onConfigChanged()
+	private bool tryApplyRuntimeConfig()
 	{
-		infof("Config file changed, reloading...");
 		CydoConfig candidate;
+		Agent[string] planned;
+		string[] reused;
+		string newDefault;
 		try
+		{
 			candidate = loadRuntimeConfig();
+			taskTypeCatalog.checkAgents(name => isConfiguredAgentName(candidate, name));
+			foreach (name, ref ac; candidate.agents)
+			{
+				auto existing = name in agentsByName;
+				auto old = name in config.agents;
+				if (existing && old && old.driver.value == ac.driver.value
+					&& old.sandbox.env == ac.sandbox.env)
+				{
+					planned[name] = *existing;
+					reused ~= name;
+				}
+				else
+					planned[name] = createConfiguredAppAgent(candidate, name);
+			}
+			newDefault = effectiveDefaultAgentName(candidate);
+		}
 		catch (ConfigFileException e)
 		{
 			warningf("Config reload rejected; keeping the current config: %s", e.msg);
-			return;
+			return false;
 		}
-		auto oldAgents = config.agents;
-		auto oldTaskDirTemplate = taskDirTemplate;
+
 		config = candidate;
 		claudeUsageService.configChanged(config);
 		applyConfiguredLogLevel(config.log_level);
 		auto reloadedTaskDirTemplate = config.task_dir.length > 0
 			? config.task_dir : defaultTaskDirTemplate;
-		if (reloadedTaskDirTemplate != oldTaskDirTemplate)
+		if (reloadedTaskDirTemplate != taskDirTemplate)
 			warningf("Config task_dir changed; restart CyDo for the new task directory template to take effect");
 
-		// Diff old vs new: keep entries whose driver and sandbox.env match; recreate otherwise.
-		Agent[string] rebuilt;
-		foreach (name, ref ac; config.agents)
+		foreach (name; reused)
 		{
-			bool reuseExisting = false;
-			if (auto existing = name in agentsByName)
-			{
-				auto oldAcP = name in oldAgents;
-				if (oldAcP && oldAcP.driver.value == ac.driver.value
-					&& oldAcP.sandbox.env == ac.sandbox.env)
-					reuseExisting = true;
-				if (reuseExisting)
-				{
-					(*existing).setModelAliases(ac.model_aliases);
-					(*existing).setSystemKeyword(config.system_keyword);
-					rebuilt[name] = *existing;
-				}
-			}
-			if (!reuseExisting)
-				rebuilt[name] = createConfiguredAppAgent(name);
+			planned[name].setModelAliases(config.agents[name].model_aliases);
+			planned[name].setSystemKeyword(config.system_keyword);
 		}
-		agentsByName = rebuilt;
+		agentsByName = planned;
+		agent = planned[newDefault];
+		return true;
+	}
+
+	private void onConfigChanged()
+	{
+		infof("Config file changed, reloading...");
+		if (!tryApplyRuntimeConfig())
+			return;
+
 		foreach (tid, ref task; tasks)
 			scheduleHistoryOperations(tid);
-		auto defaultName = defaultAgentName("");
-		agent = agentsByName[defaultName];
 
-		taskTypeCatalog.invalidateAll();
+		taskTypeCatalog.reloadProjects();
 		taskSessionRunner.invalidateUsageProfiles();
 		discoveryService.beginScan();
 		discoveryService.discoverAllWorkspaces(config);
@@ -3872,7 +3874,7 @@ class App
 	private void onProjectConfigChanged(string projectPath)
 	{
 		infof("Project config changed for %s, reloading task types...", projectPath);
-		taskTypeCatalog.invalidateProject(projectPath);
+		taskTypeCatalog.reloadProject(projectPath);
 		taskSessionRunner.invalidateUsageProfiles();
 		clientHub.broadcast(buildTaskTypesListForProject(
 			projectPath,
@@ -3887,9 +3889,24 @@ class App
 	private void onUserTaskTypesChanged()
 	{
 		infof("User task types file changed, reloading task types...");
-		taskTypeCatalog.invalidateAll();
-		taskSessionRunner.invalidateUsageProfiles();
-		broadcastTaskTypeLists();
+		if (tryReloadGlobalTaskTypes())
+		{
+			taskTypeCatalog.reloadProjects();
+			taskSessionRunner.invalidateUsageProfiles();
+			broadcastTaskTypeLists();
+		}
+	}
+
+	private bool tryReloadGlobalTaskTypes()
+	{
+		try
+			taskTypeCatalog.reloadGlobal();
+		catch (ConfigFileException e)
+		{
+			warningf("Global task types rejected; keeping the previous version: %s", e.msg);
+			return false;
+		}
+		return true;
 	}
 
 	private void broadcastTaskTypeLists()
@@ -3912,7 +3929,8 @@ class App
 
 	private void handleRefreshWorkspacesMsg()
 	{
-		taskTypeCatalog.invalidateAll();
+		tryReloadGlobalTaskTypes();
+		taskTypeCatalog.reloadProjects();
 		taskSessionRunner.invalidateUsageProfiles();
 		discoveryService.discoverAllWorkspaces(config);
 		clientHub.broadcast(buildWorkspacesList(discoveryService.workspacesInfo));
@@ -4139,7 +4157,7 @@ class App
 			auto driver = ac.driver.value;  // SetInfo: post-overlay always set
 			auto a = agentsByName.get(name, null);
 			if (a is null)
-				a = createConfiguredAppAgent(name);
+				a = createConfiguredAppAgent(config, name);
 
 			auto execPath = resolveExecutablePath(a.executableName(env), env);
 			// Honor CYDO_<DRIVER>_BIN env-var fallback when the resolved path
@@ -4683,13 +4701,20 @@ unittest
 
 unittest
 {
+	auto defs = buildPath(tempDir(), "cydo-app-websocket-snapshot");
+	mkdirRecurse(buildPath(defs, "prompts"));
+	scope (exit) rmdirRecurse(defs);
+	auto definitions = buildPath(defs, "task-types.yaml");
+	write(definitions, "task_types: {}\n");
+	write(buildPath(defs, "prompts", "blank.md"), "Blank prompt\n");
+
 	auto app = new App;
 	AgentConfig agentConfig;
 	agentConfig.driver = typeof(agentConfig.driver)(AgentDriver.claude, true);
 	app.config.agents["claude"] = agentConfig;
 	app.config.default_agent = "claude";
 	app.agentsByName["claude"] = new TestClaudePromptAgent;
-	app.taskTypeCatalog = new TaskTypeCatalog("", "", (string) => true);
+	app.taskTypeCatalog = new TaskTypeCatalog(defs, definitions, (string) => true);
 	app.discoveryService = new DiscoveryService(DiscoveryServiceHost.init);
 	auto runner = new GatedSubmissionRunner(new GatedSubmissionSession);
 	app.taskSessionRunner = runner;
@@ -7185,6 +7210,81 @@ unittest
 	assertThrown!Exception(app.readPromptFile("gates/missing-required-disk.md", project, vars));
 }
 
+unittest // Config reload publishes agent changes only after validation.
+{
+	import std.array : replace;
+	import std.logger : sharedLog;
+	import cydo.runtime.config : configPath;
+
+	enum original = "workspaces: {}\ndefault_agent: work-claude\n"
+		~ "agents:\n  work-claude:\n    driver: claude\n"
+		~ "    model_aliases:\n      large: before-reload\n"
+		~ "  other:\n    driver: claude\n";
+
+	auto root = buildPath(tempDir(), "cydo-app-rejected-config-reload");
+	auto oldHome = environment.get("HOME", "");
+	bool hadHome = "HOME" in environment;
+	scope (exit)
+	{
+		if (hadHome)
+			environment["HOME"] = oldHome;
+		else
+			environment.remove("HOME");
+		rmdirRecurse(root);
+	}
+
+	auto home = buildPath(root, "home");
+	mkdirRecurse(buildPath(home, ".config", "cydo"));
+	environment["HOME"] = home;
+	auto configFile = configPath();
+	write(configFile, original);
+
+	mkdirRecurse(buildPath(root, "prompts"));
+	write(buildPath(root, "prompts", "blank.md"), "Blank prompt\n");
+	auto definitions = buildPath(root, "task-types.yaml");
+	write(definitions, "task_types:\n  worker:\n    agent: work-claude\n");
+	auto app = new App;
+	app.config = loadRuntimeConfig();
+	app.taskTypeCatalog = new TaskTypeCatalog(root, definitions,
+		name => isConfiguredAgentName(app.config, name));
+	app.taskTypeCatalog.reloadGlobal();
+	foreach (agentName; app.config.agents.keys)
+		app.agentsByName[agentName] = app.createConfiguredAppAgent(app.config, agentName);
+	app.agent = app.agentsByName[app.config.default_agent];
+
+	auto acceptedConfig = app.config;
+	auto acceptedAgents = app.agentsByName.dup;
+	auto acceptedDefault = app.agent;
+
+	foreach (candidate; [
+		original.replace("default_agent: work-claude", "default_agent: missing"),
+		"workspaces: {}\ndefault_agent: other\nagents:\n  other:\n    driver: claude\n",
+	])
+	{
+		write(configFile, candidate);
+		app.onConfigChanged();
+		assert(app.config == acceptedConfig, candidate);
+		assert(app.agentsByName.length == acceptedAgents.length, candidate);
+		foreach (name, originalAgent; acceptedAgents)
+			assert(app.agentsByName.get(name, null) is originalAgent, name);
+		assert(app.agent is acceptedDefault, candidate);
+	}
+
+	// Exercise the same config and agent publication as the watcher callback.
+	auto oldLogLevel = (cast()sharedLog).logLevel;
+	scope (exit) (cast()sharedLog).logLevel = oldLogLevel;
+	assert(acceptedDefault.resolveModelSpec("large").model == "before-reload");
+	write(configFile, original.replace("before-reload", "after-reload")
+		.replace("other:\n    driver: claude", "other:\n    driver: codex")
+		.replace("default_agent: work-claude", "default_agent: other"));
+	assert(app.tryApplyRuntimeConfig());
+	assert(app.agentsByName["work-claude"] is acceptedDefault);
+	assert(acceptedDefault.resolveModelSpec("large").model == "after-reload");
+	assert(app.agentsByName["other"] !is acceptedAgents["other"]);
+	assert(app.agentsByName["other"].driver == AgentDriver.codex);
+	assert(app.agent is app.agentsByName["other"]);
+}
+
 version (unittest) private final class FailingLaunchAgent : CodexAgent
 {
 	enum failure = "Injected session creation failure";
@@ -7634,7 +7734,8 @@ unittest
 	assert(expectedViolations.length > 0);
 
 	writeToolDescriptionLimitFixture(tmp, buildTaskTypesYaml(8));
-	catalog.invalidateProject(projectPath);
+	catalog.reloadGlobal();
+	catalog.reloadProject(projectPath);
 	typeDef = catalog.getTaskTypesForProject(projectPath).byName("parent");
 	runner.prepareTaskSessionLaunch(7, agent, typeDef);
 	assert(reportedViolations.length == 2);

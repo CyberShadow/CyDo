@@ -1,18 +1,18 @@
 module cydo.domain.task_types.catalog;
 
 import core.sys.posix.sys.stat : S_ISDIR;
-import std.algorithm : sort;
+import std.algorithm : map, reverse, sort;
 import std.array : join;
 import std.file : exists;
-import std.logger : infof, warningf;
+import std.logger : warningf;
 import std.path : buildPath;
 
 import cydo.foundation.platform.path : directoryEntryPaths, existingPathAttributes;
 
-import cydo.runtime.config.paths : configDir, userDefsDir, userTaskTypesPath;
+import cydo.runtime.config.paths : configDir, configPath, userDefsDir, userTaskTypesPath;
 import cydo.runtime.config.yaml : ConfigErrorKind, ConfigFileException;
 import cydo.domain.task_types.definition : TaskTypeDef, UserEntryPointDef, SingletonDef, byName, computeReachesWorktree,
-	computeTreeReadOnly, loadTaskTypeLayers, validateTaskTypes;
+	computeTreeReadOnly, composeTaskTypeLayers, readTaskTypeLayers, TaskTypeLayerSource, validateTaskTypes;
 
 private string[] orderedPackDirectories(string[] paths)
 {
@@ -45,34 +45,35 @@ struct TaskTypeLayers
 	string[] promptDirs;
 }
 
-TaskTypeLayers discoverTaskTypeLayers(string taskTypesDir, string taskTypesPath, string projectPath)
+private TaskTypeLayers discoverConfigLayers(string dir)
 {
 	TaskTypeLayers layers;
-	void addLayer(string yamlPath, string promptDir)
+	foreach (pack; taskTypePackDirectories(buildPath(dir, "packs")))
 	{
-		layers.yamlPaths ~= yamlPath;
-		layers.promptDirs ~= promptDir;
+		layers.yamlPaths ~= buildPath(pack, "task-types.yaml");
+		layers.promptDirs ~= pack;
 	}
-
-	void addConfigDirectory(string dir)
-	{
-		foreach (pack; taskTypePackDirectories(buildPath(dir, "packs")))
-			addLayer(buildPath(pack, "task-types.yaml"), pack);
-		addLayer(buildPath(dir, "task-types.yaml"), buildPath(dir, "defs"));
-	}
-
-	addLayer(taskTypesPath, taskTypesDir);
-	addConfigDirectory(configDir());
-	if (projectPath.length > 0)
-		addConfigDirectory(buildPath(projectPath, ".cydo"));
-
-	import std.algorithm : reverse;
+	layers.yamlPaths ~= buildPath(dir, "task-types.yaml");
+	layers.promptDirs ~= buildPath(dir, "defs");
 	reverse(layers.promptDirs);
 	return layers;
 }
-import cydo.runtime.config.yaml : yamlConfigDiagnostic;
 
-private struct ProjectTypeCache
+TaskTypeLayers discoverTaskTypeLayers(string taskTypesDir, string taskTypesPath, string projectPath)
+{
+	auto layers = discoverConfigLayers(configDir());
+	layers.yamlPaths = taskTypesPath ~ layers.yamlPaths;
+	layers.promptDirs ~= taskTypesDir;
+	if (projectPath.length > 0)
+	{
+		auto project = discoverConfigLayers(buildPath(projectPath, ".cydo"));
+		layers.yamlPaths ~= project.yamlPaths;
+		layers.promptDirs = project.promptDirs ~ layers.promptDirs;
+	}
+	return layers;
+}
+
+struct TaskTypeSnapshot
 {
 	TaskTypeDef[] types;
 	UserEntryPointDef[] entryPoints;
@@ -80,97 +81,170 @@ private struct ProjectTypeCache
 	bool[string] reachesWorktree;
 	bool[string] treeReadOnly;
 	string[] promptDirs;
-	bool stale;
+}
+
+private struct GlobalState
+{
+	TaskTypeLayerSource[] sources;
+	string[] promptDirs;
+	TaskTypeSnapshot snapshot;
+}
+
+private struct ProjectState
+{
+	TaskTypeSnapshot* snapshot;
+	string error;
 }
 
 class TaskTypeCatalog
 {
-	private ProjectTypeCache[string] taskTypesByProject;
+	private GlobalState global;
+	private ProjectState[string] projects;
 	private string taskTypesDir;
 	private string taskTypesPath;
 	private bool delegate(string) isConfiguredAgentName;
+	private void delegate(string, string, bool) onProjectLoad;
 
-	this(string taskTypesDir, string taskTypesPath, bool delegate(string) isConfiguredAgentName)
+	this(string taskTypesDir, string taskTypesPath, bool delegate(string) isConfiguredAgentName,
+		void delegate(string projectPath, string error, bool keptPrevious) onProjectLoad = null)
 	{
 		this.taskTypesDir = taskTypesDir;
 		this.taskTypesPath = taskTypesPath;
 		this.isConfiguredAgentName = isConfiguredAgentName;
+		this.onProjectLoad = onProjectLoad is null
+			? delegate void(string projectPath, string error, bool keptPrevious) {}
+			: onProjectLoad;
 	}
 
-	this(string taskTypesDir, string taskTypesPath, bool function(string) isConfiguredAgentName)
+	this(string taskTypesDir, string taskTypesPath, bool function(string) isConfiguredAgentName,
+		void delegate(string projectPath, string error, bool keptPrevious) onProjectLoad = null)
 	{
-		this(taskTypesDir, taskTypesPath,
-			(string name) => isConfiguredAgentName(name));
+		this(taskTypesDir, taskTypesPath, (string name) => isConfiguredAgentName(name), onProjectLoad);
+	}
+
+	private static TaskTypeSnapshot buildSnapshot(TaskTypeLayerSource[] sources, string[] promptDirs,
+		bool delegate(string) isConfiguredAgentName)
+	{
+		auto config = composeTaskTypeLayers(sources);
+		auto errors = validateTaskTypes(config.types, config.entryPoints, config.singletons,
+			isConfiguredAgentName, promptDirs);
+		if (errors.length > 0)
+			throw new ConfigFileException(ConfigErrorKind.invalid, sources.map!(source => source.path).join(", "),
+				errors.join("; "));
+		return TaskTypeSnapshot(config.types, config.entryPoints, config.singletons,
+			computeReachesWorktree(config.types), computeTreeReadOnly(config.types), promptDirs);
+	}
+
+	void reloadGlobal()
+	{
+		auto layers = discoverTaskTypeLayers(taskTypesDir, taskTypesPath, "");
+		auto sources = readTaskTypeLayers(layers.yamlPaths);
+		if (sources.length == 0)
+			throw new ConfigFileException(ConfigErrorKind.invalid, layers.yamlPaths.join(", "),
+				"no task type files found");
+		auto snapshot = buildSnapshot(sources, layers.promptDirs, isConfiguredAgentName);
+		global = GlobalState(sources, layers.promptDirs, snapshot);
+	}
+
+	private void ensureGlobal()
+	{
+		if (global.sources.length == 0)
+			reloadGlobal();
+	}
+
+	void reloadProject(string projectPath)
+	{
+		assert(projectPath.length > 0);
+		TaskTypeSnapshot* snapshot;
+		string error;
+		try
+		{
+			ensureGlobal();
+			auto layers = discoverConfigLayers(buildPath(projectPath, ".cydo"));
+			auto sources = global.sources ~ readTaskTypeLayers(layers.yamlPaths);
+			auto promptDirs = layers.promptDirs ~ global.promptDirs;
+			auto built = buildSnapshot(sources, promptDirs, isConfiguredAgentName);
+			snapshot = new TaskTypeSnapshot;
+			*snapshot = built;
+		}
+		catch (ConfigFileException e)
+			error = e.msg;
+
+		auto state = &projects.require(projectPath, ProjectState.init);
+		if (error is null)
+			state.snapshot = snapshot;
+		state.error = error;
+		auto keptPrevious = error !is null && state.snapshot !is null;
+		if (error !is null)
+			warningf("Project task types rejected for [%s]: %s", projectPath, error);
+		onProjectLoad(projectPath, error, keptPrevious);
+	}
+
+	void reloadProjects()
+	{
+		foreach (projectPath; projects.keys)
+			reloadProject(projectPath);
+	}
+
+	void checkAgents(bool delegate(string) candidate)
+	{
+		ensureGlobal();
+		auto snapshot = &global.snapshot;
+		auto errors = validateTaskTypes(snapshot.types, snapshot.entryPoints, snapshot.singletons,
+			candidate, snapshot.promptDirs);
+		if (errors.length > 0)
+			throw new ConfigFileException(ConfigErrorKind.invalid, configPath(), errors.join("; "));
+	}
+
+	private TaskTypeSnapshot* ensureProject(string projectPath)
+	{
+		if (projectPath.length == 0)
+		{
+			ensureGlobal();
+			return &global.snapshot;
+		}
+		if (projectPath !in projects)
+			reloadProject(projectPath);
+		return projects[projectPath].snapshot;
+	}
+
+	bool hasTaskTypes(string projectPath)
+	{
+		return ensureProject(projectPath) !is null;
+	}
+
+	string loadError(string projectPath)
+	{
+		ensureProject(projectPath);
+		return projectPath.length == 0 ? null : projects[projectPath].error;
 	}
 
 	string[] promptSearchPath(string projectPath)
 	{
-		if (projectPath in taskTypesByProject)
-		{
-			getTaskTypesForProject(projectPath);
-			return taskTypesByProject[projectPath].promptDirs;
-		}
+		if (projectPath.length == 0 && global.sources.length > 0)
+			return global.snapshot.promptDirs;
+		if (auto project = projectPath in projects)
+			if (project.snapshot !is null)
+				return project.snapshot.promptDirs;
 		return discoverTaskTypeLayers(taskTypesDir, taskTypesPath, projectPath).promptDirs;
 	}
 
 	TaskTypeDef[] getTaskTypesForProject(string projectPath)
 	{
-		if (auto cache = projectPath in taskTypesByProject)
-			if (!cache.stale)
-				return cache.types;
-
-		string[] paths;
-		try
-		{
-			auto layers = discoverTaskTypeLayers(taskTypesDir, taskTypesPath, projectPath);
-			paths = layers.yamlPaths;
-			auto promptDirs = layers.promptDirs;
-
-			string[] loadedPaths;
-			auto config = loadTaskTypeLayers(paths, loadedPaths);
-			auto errors = validateTaskTypes(config.types, config.entryPoints, config.singletons,
-				isConfiguredAgentName, promptDirs);
-			foreach (e; errors)
-				warningf("task type: %s", e);
-			taskTypesByProject[projectPath] = ProjectTypeCache(
-				config.types,
-				config.entryPoints,
-				config.singletons,
-				computeReachesWorktree(config.types),
-				computeTreeReadOnly(config.types),
-				promptDirs,
-			);
-			infof("Loaded task type YAML layers in order: %s", loadedPaths.join(", "));
-			infof("Task type prompt search path: %s", promptDirs.join(", "));
-			return config.types;
-		}
-		catch (Exception e)
-		{
-			warningf("Failed to load task types from [%s]: %s", paths.join(", "),
-				yamlConfigDiagnostic(e));
-			if (auto cache = projectPath in taskTypesByProject)
-			{
-				cache.stale = false;
-				return cache.types;
-			}
-			return null;
-		}
+		auto snapshot = ensureProject(projectPath);
+		return snapshot is null ? null : snapshot.types;
 	}
 
 	UserEntryPointDef[] getEntryPointsForProject(string projectPath)
 	{
-		getTaskTypesForProject(projectPath);
-		if (auto p = projectPath in taskTypesByProject)
-			return p.entryPoints;
-		return null;
+		auto snapshot = ensureProject(projectPath);
+		return snapshot is null ? null : snapshot.entryPoints;
 	}
 
 	SingletonDef[] singletonsForProject(string projectPath)
 	{
-		getTaskTypesForProject(projectPath);
-		if (auto p = projectPath in taskTypesByProject)
-			return p.singletons;
-		return null;
+		auto snapshot = ensureProject(projectPath);
+		return snapshot is null ? null : snapshot.singletons;
 	}
 
 	TaskTypeDef[] getTaskTypes()
@@ -185,38 +259,14 @@ class TaskTypeCatalog
 
 	bool[string] reachesWorktreeFor(string projectPath)
 	{
-		if (projectPath.length > 0)
-			if (auto p = projectPath in taskTypesByProject)
-				if (!p.stale)
-					return p.reachesWorktree;
-		if (auto p = "" in taskTypesByProject)
-			if (!p.stale)
-				return p.reachesWorktree;
-		return null;
+		auto snapshot = ensureProject(projectPath);
+		return snapshot is null ? null : snapshot.reachesWorktree;
 	}
 
 	bool[string] treeReadOnlyFor(string projectPath)
 	{
-		if (projectPath.length > 0)
-			if (auto p = projectPath in taskTypesByProject)
-				if (!p.stale)
-					return p.treeReadOnly;
-		if (auto p = "" in taskTypesByProject)
-			if (!p.stale)
-				return p.treeReadOnly;
-		return null;
-	}
-
-	void invalidateProject(string projectPath)
-	{
-		if (auto cache = projectPath in taskTypesByProject)
-			cache.stale = true;
-	}
-
-	void invalidateAll()
-	{
-		foreach (ref cache; taskTypesByProject)
-			cache.stale = true;
+		auto snapshot = ensureProject(projectPath);
+		return snapshot is null ? null : snapshot.treeReadOnly;
 	}
 }
 
@@ -315,7 +365,7 @@ unittest
 		defsDir,
 	]);
 
-	catalog.invalidateProject(projectPath);
+	catalog.reloadProject(projectPath);
 	alpha = catalog.getTaskTypesForProject("").byName("alpha");
 	assert(alpha !is null);
 	assert(alpha.model_class.source == "user");
@@ -421,7 +471,7 @@ unittest
 	assert(stillCached.byName("alpha") !is null);
 	assert(stillCached.byName("beta") is null);
 
-	catalog.invalidateProject("");
+	catalog.reloadGlobal();
 	auto reloaded = catalog.getTaskTypesForProject("");
 	assert(reloaded.byName("beta") !is null);
 	assert(reloaded.byName("alpha") is null);
@@ -483,7 +533,7 @@ unittest
 
 unittest
 {
-	auto tmp = makeTempRoot("cydo-test-task-type-catalog-invalidation");
+	auto tmp = makeTempRoot("cydo-test-task-type-catalog-rejected-graph");
 	scope (exit)
 	{
 		if (exists(tmp))
@@ -539,18 +589,18 @@ unittest
 	auto projectTreeReadOnly = catalog.treeReadOnlyFor(projectPath);
 	assert(("root" in projectTreeReadOnly) !is null && !projectTreeReadOnly["root"]);
 
-	catalog.invalidateProject(projectPath);
+	assert(!catalog.reachesWorktreeFor("")["root"]);
+	assert(catalog.treeReadOnlyFor("")["root"]);
 
-	auto fallbackReachesWorktree = catalog.reachesWorktreeFor(projectPath);
-	assert(("root" in fallbackReachesWorktree) !is null && !fallbackReachesWorktree["root"]);
-	auto fallbackTreeReadOnly = catalog.treeReadOnlyFor(projectPath);
-	assert(("root" in fallbackTreeReadOnly) !is null && fallbackTreeReadOnly["root"]);
+	writeProjectTaskTypes(projectPath, "task_types: [\n");
+	catalog.reloadProject(projectPath);
+	assert(catalog.loadError(projectPath) !is null);
+	assert(catalog.reachesWorktreeFor(projectPath) is projectReachesWorktree);
+	assert(catalog.treeReadOnlyFor(projectPath) is projectTreeReadOnly);
 
-	catalog.invalidateAll();
-	assert(catalog.reachesWorktreeFor(projectPath) is null);
-	assert(catalog.treeReadOnlyFor(projectPath) is null);
-	assert(catalog.reachesWorktreeFor("") is null);
-	assert(catalog.treeReadOnlyFor("") is null);
+	auto cold = new TaskTypeCatalog(defsDir, globalPath, &isKnownTestAgent);
+	assert(cold.reachesWorktreeFor(projectPath) is null);
+	assert(cold.treeReadOnlyFor(projectPath) is null);
 }
 
 version (unittest) private struct PackCatalogFixture
@@ -610,6 +660,7 @@ version (unittest) private struct PackCatalogFixture
 
 unittest
 {
+	import std.algorithm : startsWith;
 	import std.file : remove, rmdir, symlink;
 	import std.typecons : tuple;
 
@@ -646,7 +697,9 @@ unittest
 	{
 		assert(fixture.description() == layer[1], layer[1]);
 		remove(buildPath(layer[0], "task-types.yaml"));
-		fixture.catalog.invalidateProject(fixture.project);
+		if (layer[0].startsWith(fixture.userConfig))
+			fixture.catalog.reloadGlobal();
+		fixture.catalog.reloadProject(fixture.project);
 	}
 	assert(fixture.description() == "shipped");
 }
@@ -690,13 +743,13 @@ unittest
 	foreach (invalid; ["task_types: [\n", "- invalid overlay\n"])
 	{
 		write(buildPath(pack, "task-types.yaml"), invalid);
-		fixture.catalog.invalidateProject(fixture.project);
+		fixture.catalog.reloadProject(fixture.project);
 		assert(fixture.catalog.promptSearchPath(fixture.project) == lastGoodDirs);
 		assert(fixture.description() == "shipped");
 	}
 
 	fixture.writeLayer(pack, "recovered pack");
-	fixture.catalog.invalidateProject(fixture.project);
+	fixture.catalog.reloadProject(fixture.project);
 	assert(fixture.catalog.promptSearchPath(fixture.project).canFind(pack));
 	assert(fixture.description() == "recovered pack");
 }
@@ -751,12 +804,12 @@ unittest
 	auto error = collectException!ConfigFileException(
 		loadTaskTypes(buildPath(fixture.shipped, "task-types.yaml"), packYaml));
 	assert(error !is null && error.kind == ConfigErrorKind.unreadable && error.path == packYaml);
-	fixture.catalog.invalidateProject(fixture.project);
+	fixture.catalog.reloadProject(fixture.project);
 	assert(fixture.description() == "pack");
 
 	setAttributes(pack, octal!700);
 	fixture.writeLayer(pack, "updated pack");
-	fixture.catalog.invalidateProject(fixture.project);
+	fixture.catalog.reloadProject(fixture.project);
 	assert(fixture.description() == "updated pack");
 }
 
@@ -785,7 +838,7 @@ unittest
 	auto error = collectException!ConfigFileException(
 		discoverTaskTypeLayers(fixture.shipped, shippedYaml, fixture.project));
 	assert(error !is null && error.kind == ConfigErrorKind.unreadable && error.path == packs);
-	fixture.catalog.invalidateProject(fixture.project);
+	fixture.catalog.reloadProject(fixture.project);
 	assert(fixture.description() == "pack", "A looping pack entry must reject the reload");
 	assert(fixture.catalog.promptSearchPath(fixture.project) == lastGoodDirs);
 	remove(pack);
@@ -796,14 +849,14 @@ unittest
 	error = collectException!ConfigFileException(
 		discoverTaskTypeLayers(fixture.shipped, shippedYaml, fixture.project));
 	assert(error !is null && error.kind == ConfigErrorKind.unreadable && error.path == packs);
-	fixture.catalog.invalidateProject(fixture.project);
+	fixture.catalog.reloadProject(fixture.project);
 	assert(fixture.description() == "pack", "A looping packs container must reject the reload");
 	assert(fixture.catalog.promptSearchPath(fixture.project) == lastGoodDirs);
 
 	remove(packs);
 	rename(movedPacks, packs);
 	fixture.writeLayer(target, "restored pack");
-	fixture.catalog.invalidateProject(fixture.project);
+	fixture.catalog.reloadProject(fixture.project);
 	assert(fixture.description() == "restored pack");
 }
 
@@ -843,10 +896,207 @@ unittest
 	scope (exit) stdThreadLocalLog = previous;
 	auto logger = new WarningLogger;
 	stdThreadLocalLog = logger;
-	fixture.catalog.invalidateProject(fixture.project);
+	fixture.catalog.reloadProject(fixture.project);
 	assert(fixture.description() == "second pack");
 	assert(logger.warnings.length == 1, logger.warnings.join("\n"));
 	auto warning = logger.warnings[0];
 	auto diagnostic = warning[warning.indexOf("]: ") + 3 .. $];
 	assert(diagnostic.canFind(secondYaml) && diagnostic.canFind("unknown_field"), warning);
+}
+
+unittest // An invalid project override preserves only a previously accepted snapshot.
+{
+	import std.file : remove;
+	import std.typecons : Tuple, tuple;
+
+	PackCatalogFixture fixture;
+	fixture.setup("cydo-test-task-type-invalid-project-override");
+	scope (exit) fixture.cleanup();
+	auto overridePath = buildPath(fixture.projectConfig, "task-types.yaml");
+	auto shippedPath = buildPath(fixture.shipped, "task-types.yaml");
+
+	foreach (testCase; [
+		tuple("syntax error", "", "task_types: [\n"),
+		tuple("invalid", "read_only", PackCatalogFixture.yaml("invalid") ~ "    read_only: [true]\n"),
+		tuple("invalid", "unknown_field", PackCatalogFixture.yaml("invalid") ~ "    unknown_field: true\n"),
+		tuple("invalid", "references unknown type 'missing'", PackCatalogFixture.yaml("invalid")
+			~ "    creatable_tasks:\n      delegate:\n        task_type: missing\n"),
+	])
+	{
+		alias Observation = Tuple!(string, string, bool);
+		Observation[] warmLoads, coldLoads;
+		fixture.writeLayer(fixture.projectConfig, "last good");
+		auto warm = new TaskTypeCatalog(fixture.shipped, shippedPath, &isKnownTestAgent,
+			(path, error, kept) { warmLoads ~= tuple(path, error, kept); });
+		auto lastGood = warm.getTaskTypesForProject(fixture.project);
+		assert(lastGood.byName("sample").agent_description == "last good");
+		assert(warmLoads == [tuple(fixture.project, cast(string) null, false)]);
+
+		write(overridePath, testCase[2]);
+		auto cold = new TaskTypeCatalog(fixture.shipped, shippedPath, &isKnownTestAgent,
+			(path, error, kept) { coldLoads ~= tuple(path, error, kept); });
+		assert(cold.getTaskTypesForProject(fixture.project) is null, testCase[2]);
+		assert(!cold.hasTaskTypes(fixture.project), testCase[2]);
+		auto error = cold.loadError(fixture.project);
+		assert(error.canFind(overridePath) && error.canFind(": " ~ testCase[0] ~ ": "), error);
+		assert(testCase[1].length == 0 || error.canFind(testCase[1]), error);
+		assert(coldLoads == [tuple(fixture.project, error, false)]);
+
+		warm.reloadProject(fixture.project);
+		assert(warm.getTaskTypesForProject(fixture.project) is lastGood, testCase[2]);
+		assert(warm.hasTaskTypes(fixture.project));
+		assert(warm.loadError(fixture.project) == error);
+		assert(warmLoads.length == 2 && warmLoads[1] == tuple(fixture.project, error, true));
+
+		remove(overridePath);
+		warm.reloadProject(fixture.project);
+		assert(warm.getTaskTypesForProject(fixture.project).byName("sample").agent_description == "shipped");
+		assert(warm.loadError(fixture.project) is null);
+		assert(warmLoads.length == 3
+			&& warmLoads[2] == tuple(fixture.project, cast(string) null, false));
+	}
+}
+
+unittest // Rejected global edits leave the accepted layers available even to cold projects.
+{
+	import std.exception : collectException;
+
+	PackCatalogFixture fixture;
+	fixture.setup("cydo-test-task-type-rejected-global");
+	scope (exit) fixture.cleanup();
+	fixture.writeLayer(fixture.userConfig, "accepted user");
+	auto acceptedGlobal = fixture.catalog.getTaskTypes();
+	assert(fixture.description() == "accepted user");
+	auto acceptedProject = fixture.catalog.getTaskTypesForProject(fixture.project);
+
+	auto userYaml = buildPath(fixture.userConfig, "task-types.yaml");
+	write(userYaml, "task_types: [\n");
+	auto cold = new TaskTypeCatalog(fixture.shipped, buildPath(fixture.shipped, "task-types.yaml"),
+		&isKnownTestAgent);
+	foreach (catalog; [cold, fixture.catalog])
+	{
+		auto error = collectException!ConfigFileException(catalog.reloadGlobal());
+		assert(error !is null && error.kind == ConfigErrorKind.syntax && error.path == userYaml);
+	}
+	auto error = collectException!ConfigFileException(cold.getTaskTypes());
+	assert(error !is null && error.kind == ConfigErrorKind.syntax && error.path == userYaml);
+	assert(fixture.catalog.getTaskTypes() is acceptedGlobal);
+	assert(fixture.catalog.getTaskTypesForProject(fixture.project) is acceptedProject);
+
+	auto newProject = buildPath(fixture.root, "new-project");
+	auto sample = fixture.catalog.getTaskTypesForProject(newProject).byName("sample");
+	assert(sample !is null && sample.agent_description == "accepted user");
+}
+
+unittest // Global snapshots reject unknown task type references.
+{
+	import std.exception : collectException;
+
+	PackCatalogFixture fixture;
+	fixture.setup("cydo-test-task-type-global-unknown-reference");
+	scope (exit) fixture.cleanup();
+	auto userYaml = buildPath(fixture.userConfig, "task-types.yaml");
+	write(userYaml, PackCatalogFixture.yaml("invalid")
+		~ "    creatable_tasks:\n      delegate:\n        task_type: missing\n");
+
+	auto error = collectException!ConfigFileException(fixture.catalog.reloadGlobal());
+	assert(error !is null && error.kind == ConfigErrorKind.invalid);
+	assert(error.msg.canFind(userYaml) && error.msg.canFind("references unknown type 'missing'"), error.msg);
+}
+
+unittest // A candidate agent set must satisfy pins in the accepted global catalog.
+{
+	import std.exception : collectException;
+
+	PackCatalogFixture fixture;
+	fixture.setup("cydo-test-task-type-global-agent-pin");
+	scope (exit) fixture.cleanup();
+	write(userTaskTypesPath(), PackCatalogFixture.yaml("pinned") ~ "    agent: work-claude\n");
+	bool acceptsPinnedAgent(string name)
+	{
+		return name == "work-claude" || isKnownTestAgent(name);
+	}
+	auto catalog = new TaskTypeCatalog(fixture.shipped, buildPath(fixture.shipped, "task-types.yaml"),
+		&acceptsPinnedAgent);
+	catalog.reloadGlobal();
+
+	auto error = collectException!ConfigFileException(catalog.checkAgents(name => isKnownTestAgent(name)));
+	assert(error !is null && error.kind == ConfigErrorKind.invalid && error.path == configPath());
+	assert(error.msg.canFind("agent 'work-claude' is not a configured agent"), error.msg);
+	catalog.checkAgents(&acceptsPinnedAgent);
+}
+
+unittest // Invalid prompt sources reject catalog reloads through the typed boundary.
+{
+	import std.exception : collectException;
+	import std.typecons : Tuple, tuple;
+
+	PackCatalogFixture fixture;
+	fixture.setup("cydo-test-task-type-invalid-prompt");
+	scope (exit) fixture.cleanup();
+
+	enum promptName = "prompts/verifier.md";
+	enum entryPoint = "user_entry_points:\n  blank:\n    description: Verifier\n"
+		~ "    task_type: blank\n    prompt_template: " ~ promptName ~ "\n";
+	auto prompt = buildPath(userDefsDir(), promptName);
+	mkdirRecurse(buildPath(userDefsDir(), "prompts"));
+	auto invalidUtf = buildPath(userDefsDir(), "prompts", "invalid-utf.md");
+	write(invalidUtf, "\xff");
+	auto directoryPrompt = buildPath(userDefsDir(), "prompts", "directory.md");
+	mkdirRecurse(directoryPrompt);
+
+	alias Observation = Tuple!(string, string, bool);
+	Observation[] loads;
+	auto catalog = new TaskTypeCatalog(fixture.shipped, buildPath(fixture.shipped, "task-types.yaml"),
+		&isKnownTestAgent, (path, error, kept) { loads ~= tuple(path, error, kept); });
+
+	write(prompt, "Valid prompt\n");
+	write(userTaskTypesPath(), entryPoint);
+	auto acceptedGlobal = catalog.getTaskTypes();
+	auto acceptedProject = catalog.getTaskTypesForProject(fixture.project);
+	assert(acceptedProject !is null);
+	assert(loads == [tuple(fixture.project, cast(string) null, false)]);
+
+	write(prompt, "{{ default }}\n");
+	auto agentCheck = collectException!ConfigFileException(catalog.checkAgents(_ => true));
+	assert(agentCheck !is null && agentCheck.kind == ConfigErrorKind.invalid && agentCheck.path == configPath());
+	assert(agentCheck.msg.canFind(prompt) && agentCheck.msg.canFind("extends {{ default }}"));
+
+	auto coldProject = buildPath(fixture.root, "cold-project");
+	foreach (candidate; [
+		tuple(promptName, prompt),
+		tuple("prompts/directory.md", directoryPrompt),
+		tuple("prompts/invalid-utf.md", invalidUtf),
+	])
+	{
+		import std.array : replace;
+
+		auto overlay = entryPoint.replace(promptName, candidate[0]);
+		write(userTaskTypesPath(), overlay);
+		auto error = collectException!ConfigFileException(catalog.reloadGlobal());
+		assert(error !is null && error.kind == ConfigErrorKind.invalid);
+		assert(error.msg.canFind(userTaskTypesPath()) && error.msg.canFind(candidate[1]), error.msg);
+		assert(catalog.getTaskTypes() is acceptedGlobal);
+		assert(catalog.getTaskTypesForProject(fixture.project) is acceptedProject);
+
+		// Restore the prompt used by the accepted global layer when testing the
+		// two other project overrides.
+		if (candidate[0] != promptName)
+			write(prompt, "Valid prompt\n");
+		writeProjectTaskTypes(fixture.project, overlay);
+		writeProjectTaskTypes(coldProject, overlay);
+		catalog.reloadProject(fixture.project);
+		assert(catalog.getTaskTypesForProject(fixture.project) is acceptedProject);
+		auto warmError = catalog.loadError(fixture.project);
+		assert(warmError.canFind(candidate[1]), warmError);
+		assert(loads[$ - 1] == tuple(fixture.project, warmError, true));
+
+		// Reuse the cold project state after its first failed attempt.
+		catalog.reloadProject(coldProject);
+		assert(!catalog.hasTaskTypes(coldProject));
+		assert(catalog.getTaskTypesForProject(coldProject) is null);
+		auto coldError = catalog.loadError(coldProject);
+		assert(coldError.canFind(candidate[1]), coldError);
+		assert(loads[$ - 1] == tuple(coldProject, coldError, false));
+	}
 }

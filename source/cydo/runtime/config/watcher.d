@@ -588,11 +588,14 @@ unittest
 		assert(sort(notifiedScopes.keys).release == sort(step.expected.dup).release,
 			step.name ~ ": unexpected notification scopes");
 		if ("user" in notifiedScopes)
-			catalog.invalidateAll();
+		{
+			catalog.reloadGlobal();
+			catalog.reloadProjects();
+		}
 		else
 			foreach (path; notifiedScopes.keys)
 				if (path != "config")
-					catalog.invalidateProject(path);
+					catalog.reloadProject(path);
 
 		auto other = catalog.getTaskTypesForProject(otherProject);
 		if (step.expected == [project])
@@ -1070,7 +1073,7 @@ version (unittest) private void testWatchAttribution(bool structural)
 			(path) {
 				assert(path == project || path == other);
 				if (catalog !is null)
-					catalog.invalidateProject(path);
+					catalog.reloadProject(path);
 				record(path == project ? P : P2);
 			},
 			{ record(U); },

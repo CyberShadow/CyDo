@@ -1170,8 +1170,6 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 	SingletonDef[] singletons, bool delegate(string) isConfiguredAgentName,
 	string[] typesDirs = null)
 {
-	import std.file : exists, readText;
-	import std.path : buildPath;
 	import cydo.foundation.system.framing : validateTemplateSource;
 
 	string[] errors;
@@ -1185,7 +1183,14 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 	{
 		if (tmpl.length == 0 || typesDirs.length == 0)
 			return;
-		auto templateText = promptTemplateSource(typesDirs, tmpl);
+		string templateText;
+		try
+			templateText = promptTemplateSource(typesDirs, tmpl);
+		catch (ConfigFileException e)
+		{
+			errors ~= format("%s: prompt_template '%s': %s", context, tmpl, e.msg);
+			return;
+		}
 		if (templateText is null)
 			errors ~= format("%s: prompt_template '%s' not found", context, tmpl);
 		else if (auto err = validateTemplateSource(templateText))
@@ -1754,23 +1759,32 @@ private string detectCycle(TaskTypeDef[] types, string current, string[] visited
 /// that an override can extend what it overrides instead of replacing it.
 string promptTemplateSource(const(string)[] dirs, string name)
 {
-	import std.file : exists, readText;
 	import std.path : buildPath;
 	import std.regex : ctRegex, matchFirst, replaceAll;
+	import std.utf : UTFException, validate;
 
+	if (name.canFind('\0'))
+		throw new ConfigFileException(ConfigErrorKind.invalid, name, "prompt path contains a NUL byte");
 	foreach (i, dir; dirs)
 	{
 		auto path = buildPath(dir, name);
-		if (!exists(path))
+		string source;
+		if (!readConfigText(path, source))
 			continue;
-		auto source = readText(path);
+		if (source.length == 0)
+			return "";
+		try
+			validate(source);
+		catch (UTFException e)
+			throw new ConfigFileException(ConfigErrorKind.invalid, path, e.msg);
+
 		static immutable defaultPlaceholder = ctRegex!`\{\{\s*default\s*\}\}`;
 		if (source.matchFirst(defaultPlaceholder).empty)
 			return source;
 		auto overridden = promptTemplateSource(dirs[i + 1 .. $], name);
-		enforce(overridden !is null, format(
-			"%s extends {{ default }}, but nothing further down the prompt search path has '%s'",
-			path, name));
+		if (overridden is null)
+			throw new ConfigFileException(ConfigErrorKind.invalid, path, format(
+				"extends {{ default }}, but nothing further down the prompt search path has '%s'", name));
 		return source.replaceAll!(m => overridden)(defaultPlaceholder);
 	}
 	return null;
