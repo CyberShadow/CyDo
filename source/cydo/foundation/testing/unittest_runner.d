@@ -55,17 +55,36 @@ private UnitTestResult runUnitTests()
 				_d_print_throwable(throwable);
 		}
 
-		if (mainTimer.hasNonDaemonTasks())
-		{
-			auto name = moduleInfo.name;
-			fprintf(stderr, "%.*s: [unittest] a test left a non-daemon ae timer pending, "
-				~ "which would stall the next socketManager.loop()\n",
-				cast(int) name.length, name.ptr);
-			// The pending timer would contaminate the remaining modules.
+		if (!checkNoLeakedLoopWork(moduleInfo.name))
 			break;
-		}
 		if (passed)
 			++result.passed;
 	}
 	return result;
+}
+
+private bool checkNoLeakedLoopWork(string where)
+{
+	import core.sys.posix.signal : SIGCHLD, SIG_DFL, sigaction, sigaction_t;
+	import std.exception : errnoEnforce;
+
+	// ae installs the SIGCHLD handler exactly while asyncWait registrations exist.
+	// CyDo installs no SIGCHLD handler in this process.
+	sigaction_t action;
+	errnoEnforce(sigaction(SIGCHLD, null, &action) == 0, "query SIGCHLD");
+	if (action.sa_handler != SIG_DFL)
+	{
+		fprintf(stderr, "%.*s: [unittest] a test left a child process unawaited (ae asyncWait "
+			~ "outstanding), which would stall the next socketManager.loop() and can crash "
+			~ "runtime shutdown\n", cast(int) where.length, where.ptr);
+		return false;
+	}
+	if (mainTimer.hasNonDaemonTasks())
+	{
+		fprintf(stderr, "%.*s: [unittest] a test left a non-daemon ae timer pending, "
+			~ "which would stall the next socketManager.loop()\n",
+			cast(int) where.length, where.ptr);
+		return false;
+	}
+	return true;
 }
