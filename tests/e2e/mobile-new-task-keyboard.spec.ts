@@ -3,6 +3,7 @@ import { assistantText, enterSession, expect, responseTimeout, sendMessage, test
 
 const phone = { width: 390, height: 844 };
 const keyboardTop = 400;
+const composerHeight = 36; // One-line composer height (--composer-btn-h).
 
 test.use({ viewport: phone, isMobile: true, hasTouch: true });
 
@@ -34,20 +35,20 @@ test("mobile new-task description can scroll into view after layout resize", asy
 async function expectResponsiveDraftHeight(page: Page, field: Locator) {
   await expect(field).toHaveValue("");
   const height = () => field.evaluate((textarea) => textarea.getBoundingClientRect().height);
-  const emptyHeight = await height();
+  await expect.poll(height).toBe(composerHeight);
   await field.fill("A short draft");
-  expect(await height()).toBe(emptyHeight);
+  await expect.poll(height).toBe(composerHeight);
 
   const draft = Array.from({ length: 30 }, (_, index) => `Draft line ${index + 1}`).join("\n");
   await field.fill(draft);
   const overflow = () => field.evaluate((textarea) => textarea.scrollHeight - textarea.clientHeight);
-  expect(await height()).toBe(200);
-  expect(await overflow()).toBeGreaterThan(0);
+  await expect.poll(height).toBe(200);
+  await expect.poll(overflow).toBeGreaterThan(0);
 
   await page.setViewportSize({ width: phone.width, height: 500 });
   await expect(field).toHaveValue(draft);
-  expect(Math.abs((await height()) - 125)).toBeLessThanOrEqual(2);
-  expect(await overflow()).toBeGreaterThan(0);
+  await expect.poll(async () => Math.abs((await height()) - 125)).toBeLessThanOrEqual(2);
+  await expect.poll(overflow).toBeGreaterThan(0);
 }
 
 test("mobile new-task draft height follows the viewport", async ({ page }) => {
@@ -61,5 +62,9 @@ test("mobile session draft height follows the viewport", async ({ page, agentTyp
   await expect(assistantText(page, "draft-height-session")).toBeVisible({
     timeout: responseTimeout(agentType),
   });
-  await expectResponsiveDraftHeight(page, page.locator(".input-textarea:visible"));
+  const field = page.locator(".input-textarea:visible");
+  await expect(field).toHaveAttribute("placeholder", "Type a message...", {
+    timeout: responseTimeout(agentType),
+  });
+  await expectResponsiveDraftHeight(page, field);
 });
