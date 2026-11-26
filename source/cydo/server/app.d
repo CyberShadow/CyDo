@@ -5091,6 +5091,7 @@ unittest
 	import cydo.foundation.testing : drainNextTicksAndDueTimers;
 
 	auto fixture = new GatedSubmissionFixture(":memory:");
+	scope (exit) fixture.socket.disconnect("test complete", DisconnectType.requested);
 	void delegate(int) replyThenExit;
 	auto session = makeCodexSubmissionSessionForTest(fixture.tid, replyThenExit);
 	fixture.app.taskSessionRunner = new GatedSubmissionRunner(session);
