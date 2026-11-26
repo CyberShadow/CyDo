@@ -78,24 +78,14 @@ struct Mailbox
 
 unittest
 {
-	import ae.net.asockets : socketManager;
-	void drain()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0) return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers) handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 	Mailbox mailbox;
 	MailboxEvent.Kind[] kinds;
 	mailbox.push(MailboxEvent(MailboxEvent.Kind.question));
 	mailbox.push(MailboxEvent(MailboxEvent.Kind.batch));
 	mailbox.take().then((MailboxEvent e) { kinds ~= e.kind; }).ignoreResult();
 	mailbox.take().then((MailboxEvent e) { kinds ~= e.kind; }).ignoreResult();
-	drain();
+	drainNextTicks();
 	assert(kinds == [MailboxEvent.Kind.question, MailboxEvent.Kind.batch]);
 	assert(mailbox.empty);
 	auto first = mailbox.take();
@@ -104,12 +94,12 @@ unittest
 	second.then((MailboxEvent e) { kinds ~= e.kind; }).ignoreResult();
 	mailbox.push(MailboxEvent(MailboxEvent.Kind.answer));
 	mailbox.push(MailboxEvent(MailboxEvent.Kind.failed));
-	drain();
+	drainNextTicks();
 	assert(kinds[$ - 2 .. $] == [MailboxEvent.Kind.answer, MailboxEvent.Kind.failed]);
 	bool rejectedFirst, rejectedSecond;
 	mailbox.take().except((Exception e) { rejectedFirst = e.msg == "ended"; }).ignoreResult();
 	mailbox.take().except((Exception e) { rejectedSecond = e.msg == "ended"; }).ignoreResult();
 	mailbox.release(new Exception("ended"));
-	drain();
+	drainNextTicks();
 	assert(rejectedFirst && rejectedSecond && !mailbox.hasWaiter);
 }

@@ -1969,20 +1969,7 @@ unittest
 	WsMessage undo(string anchor, bool dryRun = false) => WsMessage(type: "undo_task",
 		tid: tid, anchor: anchor, dry_run: dryRun, revert_conversation: true,
 		correlation_id: dryRun ? "preview-codex" : null);
-	void drain()
-	{
-		import ae.net.asockets : socketManager;
-
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 
 	// A forged anchor, an anchor Codex does not undo at, and a legacy thread
 	// are refused before anything happens.
@@ -2077,7 +2064,7 @@ unittest
 		else if (busy)
 		{
 			service.stopAndRevertBusyCodexThread(transaction, access, "t2");
-			drain();
+			drainNextTicks();
 			assert(task.undoStopInProgress && effects == ["unsubscribe", "stop"]);
 			if (outcome == Outcome.stopFailure)
 				stopped.reject(new Exception("busy stop failed"));
@@ -2094,7 +2081,7 @@ unittest
 		else
 			service.revertStoppedCodexThread(transaction, access, "t2");
 
-		drain();
+		drainNextTicks();
 		if (!live && outcome != Outcome.openFailure && outcome != Outcome.stopFailure)
 		{
 			if (outcome == Outcome.routeFailure)
@@ -2104,7 +2091,7 @@ unittest
 				__traits(getMember, privateSession, "threadId") = access.sessionId;
 				__traits(getMember, privateSession, "routeReadyHandler_")();
 			}
-			drain();
+			drainNextTicks();
 		}
 
 		auto reverted = live ? session : privateSession;
@@ -2116,7 +2103,7 @@ unittest
 			else
 				response.reject(new Exception(outcome == Outcome.rejected && busy
 					? "Codex app-server exited during a thread request" : "revert rejected"));
-			drain();
+			drainNextTicks();
 		}
 
 		string[] expected;

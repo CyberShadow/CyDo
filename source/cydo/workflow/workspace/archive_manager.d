@@ -474,20 +474,7 @@ version(unittest)
 		return repoDir;
 	}
 
-	void drainPromiseNextTicks()
-	{
-		import ae.net.asockets : socketManager;
-
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 }
 
 unittest
@@ -542,7 +529,7 @@ unittest
 
 	tasks[1] = ArchiveTaskSnapshot(1, 0, false, false, false, "ws", "/repo");
 	manager.handleSetArchived(null, 1, true);
-	drainPromiseNextTicks();
+	drainNextTicks();
 
 	assert(runnerCalled);
 	assert(tasks[1].archived == false);
@@ -691,7 +678,7 @@ unittest
 	tasks[1] = ArchiveTaskSnapshot(1, 0, false, false, false, "ws", repoDir);
 
 	manager.handleSetArchived(null, 1, true);
-	drainPromiseNextTicks();
+	drainNextTicks();
 
 	assert(tasks[1].archived == false);
 	assert(tasks[1].archiving == false);
@@ -766,7 +753,7 @@ unittest
 
 	manager.makeQueueStateFunc(1)(ArchiveState.Archived)
 		.then((ArchiveState _) {}, (Exception e) { assert(false, e.msg); });
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(!exists(worktreePath));
 	assert(hasArchiveRef(repoDir, 1));
 }

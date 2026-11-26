@@ -2080,20 +2080,7 @@ version (unittest) private final class DriverHistoryPipelineFixture
 	}
 }
 
-version (unittest) private void drainHistoryNextTicks()
-{
-	// These fixtures create no sockets or timers. Dispatch the ae promise
-	// callbacks without running other unit tests' scheduled I/O.
-	for (;;)
-	{
-		auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-		if (handlers.length == 0)
-			return;
-		mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-		foreach (handler; handlers)
-			handler();
-	}
-}
+version (unittest) private import cydo.foundation.testing : drainNextTicks;
 
 unittest
 {
@@ -2112,7 +2099,7 @@ unittest
 	fixture.reads[0].fulfill(DriverHistory(
 		[TranslatedEvent(`{"type":"turn/stop"}`, "driver raw")], 2));
 	assert(called.length == 0, "driver callbacks run on the next event-loop tick");
-	drainHistoryNextTicks();
+	drainNextTicks();
 	assert(called == [1, 2]);
 	assert(fixture.reads.length == 1 && fixture.reports.length == 0);
 
@@ -2139,7 +2126,7 @@ unittest
 	fixture.pipeline.whenHistoryLoaded(fixture.tid, () => observeFailure(2));
 	assert(called.length == 0 && fixture.reports.length == 0 && fixture.reads.length == 1);
 	fixture.reads[0].reject(new Exception(detail));
-	drainHistoryNextTicks();
+	drainNextTicks();
 	assert(called == [1, 2]);
 	assert(fixture.reports.length == 1);
 }
@@ -2155,12 +2142,12 @@ unittest
 
 	fixture.reads[0].fulfill(DriverHistory(
 		[TranslatedEvent(`{"type":"turn/stop"}`, "stale")], 1));
-	drainHistoryNextTicks();
+	drainNextTicks();
 	assert(fixture.reads.length == 2 && called.length == 0);
 	assert(!fixture.task.history.isLoaded);
 	fixture.reads[1].fulfill(DriverHistory(
 		[TranslatedEvent(`{"type":"turn/stop"}`, "fresh")], 2));
-	drainHistoryNextTicks();
+	drainNextTicks();
 	// The first continuation joined the second read when the stale one settled.
 	assert(called == [2, 1]);
 	assert(fixture.task.history.length == 1);
@@ -2185,11 +2172,11 @@ unittest
 	});
 	fixture.reads[0].fulfill(DriverHistory(
 		[TranslatedEvent(`{"type":"turn/stop"}`, "first")], 1));
-	drainHistoryNextTicks();
+	drainNextTicks();
 	assert(called == [1] && fixture.reads.length == 2);
 	fixture.reads[1].fulfill(DriverHistory(
 		[TranslatedEvent(`{"type":"turn/stop"}`, "fresh")], 1));
-	drainHistoryNextTicks();
+	drainNextTicks();
 	assert(called == [1, 2] && fixture.reads.length == 2);
 }
 
@@ -2214,7 +2201,7 @@ unittest
 
 	fixture.reads[0].fulfill(DriverHistory(
 		[TranslatedEvent(`{"type":"turn/stop"}`, "stale")], 1));
-	drainHistoryNextTicks();
+	drainNextTicks();
 	assert(called == [2, 1]);
 	assert(fixture.reads.length == 1 && fixture.task.history.length == 0);
 }
@@ -2232,7 +2219,7 @@ unittest
 	});
 	fixture.pipeline.whenHistoryLoaded(fixture.tid, () { called ~= 2; });
 	fixture.reads[0].fulfill(DriverHistory.init);
-	assert(collectExceptionMsg(drainHistoryNextTicks()) == "consumer error");
+	assert(collectExceptionMsg(drainNextTicks()) == "consumer error");
 	assert(called == [2]);
 }
 
@@ -2248,7 +2235,7 @@ unittest
 	fixture.task.history.appendLive(Data("later agent event".representation), "agent raw");
 	fixture.reads[0].fulfill(DriverHistory(
 		[TranslatedEvent(`{"type":"turn/stop"}`, "driver raw")], 1));
-	drainHistoryNextTicks();
+	drainNextTicks();
 	assert(fixture.task.history.length == 3);
 	assert(fixture.task.history.rawAt(0) == "driver raw");
 	assert((cast(string) fixture.task.history[1].toGC()).canFind("provisional"));
@@ -2259,10 +2246,10 @@ unittest
 		[ContentBlock("text", "provisional")], null, null, "nonce");
 	fixture.task.history.reset(Watermark.driverServed());
 	fixture.reads[0].fulfill(DriverHistory.init);
-	drainHistoryNextTicks();
+	drainNextTicks();
 	assert(fixture.reads.length == 2);
 	fixture.reads[1].fulfill(DriverHistory.init);
-	drainHistoryNextTicks();
+	drainNextTicks();
 	assert(fixture.task.history.length == 0 && fixture.sent.length == 0);
 }
 
@@ -2341,7 +2328,7 @@ version (unittest)
 		foreach (event; events)
 			nativeEvents ~= TranslatedEvent(event, null);
 		f.reads[$ - 1].fulfill(DriverHistory(nativeEvents, 1));
-		drainHistoryNextTicks();
+		drainNextTicks();
 		assert(f.task.history.isLoaded);
 	}
 }

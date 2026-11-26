@@ -3494,20 +3494,8 @@ unittest
 // (the echo itself is not forwarded), or withdrawn when the CLI cancels.
 unittest
 {
-	import ae.net.asockets : socketManager;
 
-	void drainNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 
 	auto session = new ClaudeCodeSession("true");
 	scope(exit) stopAndAwaitExit(session);
@@ -3626,20 +3614,8 @@ unittest
 // answers the probe (with a refusal), an older one rejects the subtype.
 unittest
 {
-	import ae.net.asockets : socketManager;
 
-	void drainNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 	string answerProbe(ClaudeCodeSession session, string body)
 	{
 		assert(session.pendingControlRequests_.length == 1);
@@ -4385,21 +4361,8 @@ unittest
 
 unittest
 {
-	import ae.net.asockets : socketManager;
 
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager,
-				"nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 
 	void assertRejected(Promise!AgentSubmissionReceipt submission,
 		string expectedMessage)
@@ -4411,7 +4374,7 @@ unittest
 		}, (Exception error) {
 			rejectionMessage = error.msg;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!fulfilled && rejectionMessage == expectedMessage);
 	}
 
@@ -4427,7 +4390,7 @@ unittest
 			assert(receipt == AgentSubmissionReceipt.localEnqueued);
 			fulfilled = true;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(fulfilled);
 	}
 

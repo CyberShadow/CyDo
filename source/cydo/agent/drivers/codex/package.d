@@ -1497,21 +1497,9 @@ unittest
 {
 	import std.json : parseJSON;
 	import std.conv : to;
-	import ae.net.asockets : socketManager;
 	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
 
-	void drainNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 
 	JsonRpcResponse threadResponse(string threadId)
 	{
@@ -3489,21 +3477,9 @@ unittest
 
 unittest
 {
-	import ae.net.asockets : socketManager;
 	import cydo.protocol : ItemStartedEvent;
 
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 
 	@JSONPartial struct StartedNotification { ItemStartedParams params; }
 	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init, "SYSTEM");
@@ -3523,12 +3499,12 @@ unittest
 	auto bootstrap = jsonParse!StartedNotification(
 		`{"params":{"turnId":"turn-1","item":{"id":"bootstrap","type":"userMessage","content":[{"type":"text","text":"ignored"}]}}}`);
 	session.handleItemStarted(bootstrap.params, "bootstrap");
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(emitted.length == 1 && emitted[0].isContextBootstrap);
 	auto ordinary = jsonParse!StartedNotification(
 		`{"params":{"turnId":"turn-1","item":{"id":"ordinary","type":"userMessage","content":[{"type":"text","text":"ordinary"}]}}}`);
 	session.handleItemStarted(ordinary.params, "ordinary");
-	drainPromiseNextTicks();
+	drainNextTicks();
 	auto ordinaryEvent = jsonParse!ItemStartedEvent(emitted[1].translated);
 	assert(emitted.length == 2 && !emitted[1].isContextBootstrap
 		&& ordinaryEvent.correlation_id == "ordinary-nonce"
@@ -3548,7 +3524,7 @@ unittest
 		session.handleItemStarted(jsonParse!StartedNotification(`{"params":{"turnId":"`
 			~ turnId ~ `","item":{"id":` ~ toJson(text) ~ `,"type":"userMessage","content":`
 			~ `[{"type":"text","text":` ~ toJson(text) ~ `}]}}}`).params, text);
-		drainPromiseNextTicks();
+		drainNextTicks();
 	}
 	echo("turn-1", "steer");
 	assert(jsonParse!ItemStartedEvent(emitted[2].translated).history_boundary
@@ -4124,7 +4100,6 @@ unittest
 
 unittest
 {
-	import ae.net.asockets : socketManager;
 	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
 	import std.algorithm.searching : canFind;
 	import cydo.agent.drivers.codex.process : makeTestAppServerProcess;
@@ -4136,18 +4111,7 @@ unittest
 		ItemStartedParams params;
 	}
 
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 
 	JsonRpcResponse turnStartResponse(string turnId)
 	{
@@ -4235,7 +4199,7 @@ unittest
 		response.error = JsonRpcError.fromCode(JsonRpcErrorCode.internalError,
 			timeoutMessage);
 		connection.respond(setupRequest, response);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assertRejectedOnce(first);
 		assertRejectedOnce(second);
 		assert(first.rejectionMessage == timeoutMessage
@@ -4245,7 +4209,7 @@ unittest
 			&& session.inFlightMessages_.length == 0);
 
 		session.onThreadStartFailed(new Exception("duplicate setup failure"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assertRejectedOnce(first);
 		assertRejectedOnce(second);
 		assert(startupFailures == [timeoutMessage]);
@@ -4298,7 +4262,7 @@ unittest
 		auto firstParams = jsonParse!TurnStartParams(toJson(firstRequest.params));
 		assert(firstParams.threadId == "thread");
 		connection.respond(firstRequest, turnStartResponse("turn-first"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assertAcceptedOnce(first);
 		assert(session.turnInProgress && !session.startInFlight_
 			&& session.activeTurnId_ == "turn-first");
@@ -4324,7 +4288,7 @@ unittest
 
 		connection.respond(rejectedSteerRequest,
 			rejectedResponse("stale expected turn"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assertRejectedOnce(steerRejected);
 		assert(steerRejected.rejectionMessage == "stale expected turn");
 		assert(steerAccepted.acceptedCount == 0
@@ -4334,7 +4298,7 @@ unittest
 		assert(session.expectedEchoMessages_.length == 2);
 
 		connection.respond(acceptedSteerRequest, acceptedResponse());
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assertAcceptedOnce(steerAccepted);
 		assert(session.turnInProgress
 			&& session.activeTurnId_ == "turn-first");
@@ -4345,7 +4309,7 @@ unittest
 		enum firstEcho = `{"params":{"threadId":"thread","turnId":"turn-first","item":{"id":"user-first","type":"userMessage","content":[{"type":"text","text":"first"}]}}}`;
 		auto notification = jsonParse!StartedNotification(firstEcho);
 		session.handleItemStarted(notification.params, firstEcho);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		auto emittedUser = jsonParse!ItemStartedEvent(emitted[0].translated);
 		assert(emittedUser.correlation_id == "first-nonce"
 			&& emitted[0].isContextBootstrap);
@@ -4353,7 +4317,7 @@ unittest
 		enum steerEcho = `{"params":{"threadId":"thread","turnId":"turn-first","item":{"id":"user-steer","type":"userMessage","content":[{"type":"text","text":"accepted steer"}]}}}`;
 		notification = jsonParse!StartedNotification(steerEcho);
 		session.handleItemStarted(notification.params, steerEcho);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		emittedUser = jsonParse!ItemStartedEvent(emitted[1].translated);
 		assert(emittedUser.correlation_id == "steer-nonce"
 			&& !emitted[1].isContextBootstrap);
@@ -4397,7 +4361,7 @@ unittest
 		auto notification = jsonParse!StartedNotification(firstEcho);
 		session.handleItemStarted(notification.params, firstEcho);
 		assert(!firstAccepted && correlations.length == 0);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(firstAccepted && correlations == ["first-nonce"]);
 
 		session.handleTurnCompleted(TurnCompletedParams("echo-order"),
@@ -4414,7 +4378,7 @@ unittest
 		notification = jsonParse!StartedNotification(secondEcho);
 		session.handleItemStarted(notification.params, secondEcho);
 		assert(!secondAccepted && correlations == ["first-nonce"]);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(secondAccepted && correlations == ["first-nonce", "second-nonce"]);
 	}
 
@@ -4430,7 +4394,7 @@ unittest
 			"turn/start", "rejected start");
 		connection.respond(rejectedRequest,
 			rejectedResponse("no successor failure"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assertRejectedOnce(rejected);
 		assert(rejected.rejectionMessage == "no successor failure");
 		assert(!session.turnInProgress && !session.startInFlight_
@@ -4444,7 +4408,7 @@ unittest
 			"turn/start", "later valid start");
 		assert(rejectedRequest.id.toJson() != laterRequest.id.toJson());
 		connection.respond(laterRequest, turnStartResponse("turn-later"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assertAcceptedOnce(later);
 		assert(session.turnInProgress && !session.startInFlight_
 			&& session.activeTurnId_ == "turn-later");
@@ -4467,7 +4431,7 @@ unittest
 
 		connection.respond(firstRequest,
 			rejectedResponse("queued successor failure"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assertRejectedOnce(first);
 		assert(first.rejectionMessage == "queued successor failure");
 		assert(second.acceptedCount == 0 && second.rejectedCount == 0);
@@ -4478,7 +4442,7 @@ unittest
 		assert(firstRequest.id.toJson() != secondRequest.id.toJson());
 
 		connection.respond(secondRequest, turnStartResponse("turn-successor"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assertAcceptedOnce(second);
 		assert(session.turnInProgress && !session.startInFlight_
 			&& session.activeTurnId_ == "turn-successor"
@@ -4506,7 +4470,7 @@ unittest
 
 		loseLifecycle(session);
 		loseLifecycle(session);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assertRejectedOnce(inFlight);
 		assertRejectedOnce(queued);
 		assert(session.alive_ == remainsAlive);
@@ -4515,7 +4479,7 @@ unittest
 			&& session.pendingMessages_.length == 0);
 
 		connection.respond(captured, turnStartResponse("late-" ~ label));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assertRejectedOnce(inFlight);
 		assertRejectedOnce(queued);
 		assert(session.activeTurnId_.length == 0);
@@ -4721,18 +4685,7 @@ unittest
 		nineTurnLiveNotifications, nineTurnTurnsPage;
 	import cydo.protocol : ItemStartedEvent;
 
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 
 	// What the two sides legitimately do not share is taken out of both:
 	// - session/init: a session reports its own when it starts the thread;
@@ -4824,7 +4777,7 @@ unittest
 						context.settled = true;
 						session.expectedEchoMessages_ ~= context;
 						session.handleItemStarted(bootstrapStarted, toJson(bootstrapStarted));
-						drainPromiseNextTicks();
+						drainNextTicks();
 						auto bootstrapEvent = jsonParse!ItemStartedEvent(live[$ - 1].translated);
 						assert(!bootstrapEvent.is_meta
 							&& bootstrapEvent.history_boundary == HistoryBoundary.init);
@@ -4837,7 +4790,7 @@ unittest
 					session.expectedEchoMessages_ ~= submission;
 				}
 				session.handleItemStarted(started, line);
-				drainPromiseNextTicks();
+				drainNextTicks();
 				break;
 			case "item/agentMessage/delta":
 				session.handleDelta(jsonParse!DeltaParams(params), "text_delta", line);

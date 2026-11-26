@@ -173,18 +173,7 @@ unittest
 	import std.conv : to;
 	import std.path : buildPath;
 
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 
 	TaskTypeDef parentType;
 	parentType.name = "parent";
@@ -282,7 +271,7 @@ unittest
 	bool resolved;
 	McpResult result;
 	async({ return tools.createTasks([TaskSpec("child startup", "child", "trigger child startup failure")]); }).then((McpResult r) { resolved = true; result = r; });
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(resolved);
 	assert(result.isError);
 	auto batch = jsonParse!BatchResultEnvelope(result.text);
@@ -2507,18 +2496,7 @@ unittest
 	import std.process : execute;
 	import std.string : strip;
 
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 
 	TaskTypeDef parentType;
 	parentType.name = "parent";
@@ -2703,7 +2681,7 @@ unittest
 		result = r;
 	});
 
-	drainPromiseNextTicks();
+	drainNextTicks();
 
 	assert(resolved,
 		"Task MCP call stayed pending after child session startup failure");
@@ -2730,7 +2708,7 @@ unittest
 		resolved = true;
 		result = r;
 	});
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(resolved);
 	assert(launchCalls == 1);
 	assert(tasks[3].taskStartHead.length == 0);
@@ -2748,7 +2726,7 @@ unittest
 		resolved = true;
 		result = r;
 	});
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(resolved);
 	assert(tasks[4].taskStartHead == expectedTaskStartHead);
 }
@@ -2797,19 +2775,7 @@ version (unittest)
 	import cydo.domain.storage.persistence : Persistence;
 	import std.algorithm.searching : canFind;
 
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager,
-				"nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 
 	final class RecordingEnricher : ToolCallEnricher
 	{
@@ -3079,7 +3045,7 @@ version (unittest) private McpResult awaitCreateTaskResult(Promise!McpResult pen
 {
 	McpResult[] results;
 	pending.then((McpResult result) { results ~= result; }).ignoreResult();
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(results.length == 1);
 	return results[0];
 }
@@ -3213,7 +3179,7 @@ unittest
 		auto pending = f.makeBackend().handleCreateUserTask("1", prompt, "", "review", "", true);
 		McpResult[] results;
 		pending.then((McpResult result) { results ~= result; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(results.length == 0);
 		assert(f.createdUserTasks == [UserTaskSpec("local", f.tasks[1].projectPath,
 			"review", "", "", 1)]);
@@ -3224,7 +3190,7 @@ unittest
 			f.userTaskStartGate.reject(new Exception("boom"));
 		else
 			f.userTaskStartGate.fulfill();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(results.length == 1);
 		if (fail)
 			assert(results[0].isError && results[0].text
@@ -3269,18 +3235,18 @@ unittest
 		};
 
 		b.spawnContinuation(1);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.wakeCalls == 1 && corrections.length == 0 && prompts.length == 0);
 
 		f.wakeGate.fulfill();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(corrections == ["accepted mode switch correction"]);
 		assert(prompts.length == 0);
 
 		if (rejectCorrection)
 		{
 			correctionGate.reject(new Exception("history correction rejected"));
-			drainPromiseNextTicks();
+			drainNextTicks();
 			assert(f.tasks[1].status == TaskStatus.failed);
 			assert(f.diagnosticSubjects == ["Continuation failed"]);
 			assert(f.diagnosticBodies == ["history correction rejected"]);
@@ -3289,7 +3255,7 @@ unittest
 		else
 		{
 			correctionGate.fulfill();
-			drainPromiseNextTicks();
+			drainNextTicks();
 			assert(f.tasks[1].status == TaskStatus.active);
 			assert(prompts.length == 1 && prompts[0].canFind("Continue from where you left off."));
 		}
@@ -3324,7 +3290,7 @@ unittest
 			},
 		));
 		runner.resumeInFlightTasks();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		foreach (tid; taskIds)
 			assert(f.tasks[tid].processQueue.goalState == ProcessState.Alive);
 		assert(nudged == expectedNudges);
@@ -3410,7 +3376,7 @@ unittest
 			f.tasks[3].resultText = "successor result";
 			assert(b.recordChildTerminal(3));
 		}
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		assert(f.sentTids == [1]);
 		assert(f.sentBodies[0].canFind(outcome == HandoffOutcome.started
@@ -3442,7 +3408,7 @@ unittest
 		b.rebuildWaits();
 		McpResult result;
 		b.awaitEvent(1).then((McpResult r) { result = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(result.isError);
 		auto slot = result.text.jsonParse!BatchResultEnvelope.tasks[0].json.jsonParse!TaskResult;
 		assert(slot.tid == 2 && slot.error == "unresolvable launch path");
@@ -3472,7 +3438,7 @@ unittest
 		auto b = f.makeBackend();
 		b.rebuildWaits();
 		b.pumpRestoredMailboxes();
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		assert(f.sentTids == [1]);
 		string[] messages = ["first incoming question", "second incoming question",
@@ -3507,14 +3473,14 @@ unittest
 		};
 		b.rebuildWaits();
 		b.pumpRestoredMailboxes();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.wakeCalls == 1 && f.sentTids == [1]);
 		assert(f.sentBodies[0].canFind("successor result"));
 		assert(f.persistence.loadTaskDeps() == [PersistedBatch(1, 2, [3])]);
 
 		f.tasks[1].status = TaskStatus.failed;
 		f.preparedSendGate.reject(new Exception("restored batch submission rejected"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.tasks[1].status == TaskStatus.failed
 			&& f.tasks[1].resultText == "existing failed result");
 		assert(f.tasks[2].status == TaskStatus.completed);
@@ -3537,7 +3503,7 @@ unittest
 		auto b = f.makeBackend();
 		b.rebuildWaits();
 		b.pumpRestoredMailboxes();
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		auto state = answered ? "answered" : "unanswered";
 		assert(f.wakeCalls == 0, state ~ " question woke a task");
@@ -3557,7 +3523,7 @@ unittest
 		auto b = f.makeBackend();
 		b.rebuildWaits();
 		b.pumpRestoredMailboxes();
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		assert(f.wakeCalls == 1 && f.sentTids == [2]);
 		assert(f.sentBodies[0].canFind("question for terminal answerer"));
@@ -3575,7 +3541,7 @@ unittest
 		auto b = f.makeBackend();
 		b.rebuildWaits();
 		b.pumpRestoredMailboxes();
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		assert(f.wakeCalls == 1 && f.sentTids == [1]);
 		assert(f.sentBodies[0].canFind("late batch result"));
@@ -3595,7 +3561,7 @@ unittest
 		b.handleAnswer("2", new RecordingEnricher, qid, "late answer").then((McpResult r) {
 			result = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(result.isError && result.text.canFind("was cancelled"));
 	}
 
@@ -3614,7 +3580,7 @@ unittest
 		b.handleAnswer("2", new RecordingEnricher, qid, "late answer").then((McpResult r) {
 			result = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(result.isError && result.text.canFind("Unknown question ID"));
 	}
 
@@ -3630,16 +3596,16 @@ unittest
 		b.handleAnswer("2", new RecordingEnricher, qid, "early answer").then((McpResult r) {
 			early = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(early.isError && early.text.canFind("Unknown question ID"));
 
 		b.pumpRestoredMailboxes();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.sentTids == [2] && f.sentBodies[0].canFind("unanswered before restart"));
 		b.handleAnswer("2", new RecordingEnricher, qid, "answer after restart").then((McpResult r) {
 			accepted = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!accepted.isError && accepted.text.jsonParse!AnswerResult.status == "delivered");
 		assert(f.sentTids == [2, 1] && f.sentBodies[1].canFind("answer after restart"));
 	}
@@ -3699,7 +3665,7 @@ unittest
 			},
 		));
 		runner.resumeInFlightTasks();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		foreach (tid; waitingTasks)
 			assert(f.tasks[tid].processQueue.goalState == ProcessState.Alive);
 		assert(nudged == [lostNoticeAsker, cancelledAsker], format!"Unexpected restart nudges: %s"(nudged));
@@ -3714,7 +3680,7 @@ unittest
 		b.handleAsk("2", call, "question", -1).then((McpResult r) {
 			returned = true;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		assert(!returned);
 		assert(call.events == [CydoItemEnrichedEvent(target_tid: 1)]);
@@ -3729,7 +3695,7 @@ unittest
 		b.handleAsk("1", call, "question", -1).then((McpResult r) {
 			result = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		assert(result.isError && result.text.canFind("No parent task"));
 		assert(call.events.length == 0);
@@ -3744,7 +3710,7 @@ unittest
 		b.handleAnswer("1", call, 999, "reply").then((McpResult r) {
 			result = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		assert(result.isError && result.text.canFind("Unknown question ID: 999"));
 		assert(call.events.length == 0);
@@ -3764,12 +3730,12 @@ unittest
 		b.handleRequest("1", requestCall, "integrator", "land this", new ToolCallCancellation).then((McpResult r) {
 			requested = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.singletonForTaskCalls == 1);
 		assert(requestCall.events == [CydoItemEnrichedEvent(target_tid: 2)]);
 		assert(f.tasks[1].status == TaskStatus.waiting && requested.text.length == 0);
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		auto question = presented.text.jsonParse!QuestionResult;
 		assert(question.message == "land this");
 		assert(f.persistence.loadQuestions() == [b.questions_[question.qid]]);
@@ -3778,7 +3744,7 @@ unittest
 		b.handleAnswer("2", answerCall, question.qid, "landed").then((McpResult r) {
 			delivered = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		assert(!requested.isError && requested.text.jsonParse!AnswerResult.message == "landed");
 		assert(!delivered.isError && delivered.text.jsonParse!AnswerResult.status == "delivered");
@@ -3807,7 +3773,7 @@ unittest
 		b.handleRequest("1", call, target, "review this", new ToolCallCancellation).then((McpResult r) {
 			result = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		assert(result.isError);
 		assert(result.text == "Singleton '" ~ target
@@ -3826,10 +3792,10 @@ unittest
 		b.host_.singletonForTask = (int tid, string name) => singleton;
 		auto call = new RecordingEnricher;
 		b.handleRequest("1", call, "integrator", "land this", new ToolCallCancellation).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(call.events.length == 0);
 		singleton.fulfill(2);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(call.events == [CydoItemEnrichedEvent(target_tid: 2)]);
 	}
 
@@ -3855,7 +3821,7 @@ unittest
 		auto cancellation = new ToolCallCancellation;
 		auto call = calls.register(1, "r", cancellation);
 		b.handleRequest("1", call, "integrator", "land this", cancellation).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!cancellation.cancelled);
 		assert(f.persistence.loadQuestions().length == 0);
 		assert(f.tasks[1].status == TaskStatus.active);
@@ -3866,10 +3832,10 @@ unittest
 		calls.toolStarted(1, "r", 1);
 		string deliveredQuestion;
 		b.awaitEvent(2).then((McpResult r) { deliveredQuestion = r.text; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(deliveredQuestion.length == 0);
 		singleton.fulfill(2);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		const persisted = f.persistence.loadQuestions().length;
 		const callerStatus = f.tasks[1].status;
 		assert(persisted == 0 && deliveredQuestion.length == 0 && callerStatus == TaskStatus.active,
@@ -3923,7 +3889,7 @@ unittest
 			};
 		b.rebuildWaits();
 		assert(b.pump(1), caseName);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(offeredTids == [1], caseName);
 		assert(offeredBody.canFind(firstResult) && offeredBody.canFind(secondResult), caseName);
 		assert(f.persistence.loadTaskDeps() == deps, caseName);
@@ -3937,7 +3903,7 @@ unittest
 		if (outcome == RecoveredSubmission.accepted)
 		{
 			gate.fulfill();
-			drainPromiseNextTicks();
+			drainNextTicks();
 			assert(f.tasks[1].status == TaskStatus.active && f.tasks[1].isProcessing, caseName);
 			assert(activations == 1 && offeredTids == [1], caseName);
 			assert(f.persistence.loadTaskDeps().length == 0, caseName);
@@ -3953,7 +3919,7 @@ unittest
 		if (outcome != RecoveredSubmission.synchronousRejection)
 		{
 			gate.reject(new Exception(failureReason));
-			drainPromiseNextTicks();
+			drainNextTicks();
 		}
 		assert(!f.tasks[1].isProcessing && activations == 0 && offeredTids == [1], caseName);
 		assert(f.persistence.loadTaskDeps() == deps, caseName);
@@ -3974,7 +3940,7 @@ unittest
 		assert(f.recoveryDiagnosticBodies == [failureReason], caseName);
 		b.host_.sendPreparedKnownSystemMessage = send;
 		assert(b.pump(1), caseName);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.acceptedPreparedTids == [1] && f.sentBodies == [offeredBody], caseName);
 		assert(f.persistence.loadTaskDeps().length == 0, caseName);
 		assert(b.mailbox(1).empty && !b.pump(1), caseName);
@@ -4002,13 +3968,13 @@ unittest
 		assert(b.pump(1));
 		assert(f.wakeCalls == 1);
 		f.shuttingDown = true;
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!f.tasks[1].isProcessing && f.sendCalls == 0);
 		assert(b.mailbox(1).events.length == 1 && b.batchRegistry_.exists(handle));
 
 		f.shuttingDown = false;
 		assert(b.pump(1));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.wakeCalls == 2 && f.sendCalls == 1);
 		assert(f.sentBodies[0].canFind("completed before shutdown"));
 		assert(b.mailbox(1).empty && !b.batchRegistry_.exists(handle));
@@ -4040,14 +4006,14 @@ unittest
 		assert(b.pump(1));
 		assert(f.wakeCalls == 1);
 		f.shuttingDown = true;
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!f.tasks[1].isProcessing && f.sendCalls == 0);
 		assert(b.mailbox(1).events.length == 1 && b.batchRegistry_.exists(handle));
 		assert(f.persistence.loadTaskDeps() == deps);
 
 		f.shuttingDown = false;
 		assert(b.pump(1));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.wakeCalls == 2 && f.sendCalls == 1);
 		assert(f.sentBodies[0].canFind("completed before shutdown"));
 		assert(f.sentBodies[0].canFind("failed before shutdown"));
@@ -4082,12 +4048,12 @@ unittest
 		assert(held.length == 3);
 		f.tasks[2].isProcessing = false;
 		assert(b.pump(2));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(b.mailbox(2).empty && f.sentTids == [2]);
 
 		f.shuttingDown = true;
 		f.preparedSendGate.reject(new Exception("shutdown during submission"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.acceptedPreparedTids.length == 0);
 		assert(!f.tasks[2].isProcessing && f.tasks[2].status == TaskStatus.completed);
 		assert(!firstResolved && !secondResolved);
@@ -4097,7 +4063,7 @@ unittest
 		f.shuttingDown = false;
 		f.preparedSendGate = null;
 		assert(b.pump(2));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.acceptedPreparedTids == [2] && f.sentBodies.length == 6);
 		assert(f.sentBodies[3 .. $] == f.sentBodies[0 .. 3]);
 		assert(f.sentBodies[3].canFind("first held question"));
@@ -4121,16 +4087,16 @@ unittest
 			outcome = r;
 		}).ignoreResult();
 		assert(b.finalizeCompletedSubTask(2));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.focusHints.length == 0 && outcome.settleDelivery is null);
 		f.tasks[3].status = TaskStatus.failed;
 		assert(b.recordChildTerminal(3));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(outcome.isError && f.focusHints.length == 0);
 		b.onMcpDeliveryFailed("1", outcome);
 		assert(f.focusHints.length == 0);
 		b.awaitEvent(1).then((McpResult r) { retry = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(outcome.text == retry.text);
 		b.onToolCallDelivered("1", retry);
 		assert(f.focusHints == [[2, 1], [3, 1]]);
@@ -4146,10 +4112,10 @@ unittest
 		b.handleAsk("1", new RecordingEnricher, "question", 2).then((McpResult r) {
 			outcome = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		f.tasks[2].status = TaskStatus.failed;
 		b.onTaskTerminal(2);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(outcome.isError && outcome.settleDelivery !is null);
 		f.tasks[1].status = TaskStatus.completed;
 		b.onTaskTerminal(1);
@@ -4176,7 +4142,7 @@ unittest
 		else
 			assert(b.finalizeCompletedSubTask(2));
 		assert(b.recordChildTerminal(2));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.focusHints.length == 0 && outcome.isError == failed);
 		b.onToolCallDelivered("1", outcome);
 		assert(f.focusHints == [[2, 1]]);
@@ -4199,7 +4165,7 @@ unittest
 			batchResult = r;
 		}).ignoreResult();
 		assert(b.finalizeCompletedSubTask(2));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!batchResult.isError
 			&& batchResult.text.jsonParse!BatchResultEnvelope.tasks.length == 1);
 		b.onToolCallDelivered("1", batchResult);
@@ -4210,7 +4176,7 @@ unittest
 			askResult = r;
 			askOutcomes++;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		auto qid = b.presentedQuestionFor(2);
 		assert(qid > 0);
 		assert(f.sentBodies.length == 1 && f.sentBodies[0].canFind(followUpFromParentSubject(qid)));
@@ -4221,7 +4187,7 @@ unittest
 			b.handleAnswer("2", new RecordingEnricher, qid, "follow-up answer").then((McpResult r) {
 				answerResult = r;
 			}).ignoreResult();
-			drainPromiseNextTicks();
+			drainNextTicks();
 			assert(!askResult.isError && askResult.text.jsonParse!AnswerResult.message == "follow-up answer");
 			assert(!answerResult.isError && answerResult.text.jsonParse!AnswerResult.status == "delivered");
 			assert(f.focusHints[firstFollowUpHint .. $].filter!(hint => hint == [2, 1]).array == [[2, 1]]);
@@ -4247,7 +4213,7 @@ unittest
 				b.onTaskTerminal(tid);
 			},
 		));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		if (!answer)
 			b.onToolCallDelivered("1", askResult);
 		assert(f.focusHints[firstFollowUpHint .. $].filter!(hint => hint == [2, 1]).array == [[2, 1]]);
@@ -4267,10 +4233,10 @@ unittest
 		auto b = f.makeBackend();
 		b.rebuildWaits();
 		b.pumpRestoredMailboxes();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.sentTids == [1] && f.focusHints.length == 0);
 		f.preparedSendGate.fulfill();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.focusHints == [[2, 1]]);
 		assert(!b.hasBatchChild(2));
 	}
@@ -4294,7 +4260,7 @@ unittest
 		b.handleAsk("3", call, "skip-level question", 1).then((McpResult r) {
 			askDone = true; askResult = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(grandparentDone && !parentDone && !askDone);
 		assert(call.events.length == 0);
 		auto q = grandparentResult.text.jsonParse!QuestionResult;
@@ -4303,19 +4269,19 @@ unittest
 		b.handleAnswer("1", answerCall, q.qid, "reply").then((McpResult r) {
 			answerDone = true; answerResult = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(askDone && !answerDone);
 		assert(answerCall.events == [CydoItemEnrichedEvent(target_tid: 3)]);
 		assert(askResult.text.jsonParse!AnswerResult.qid == q.qid);
 		f.tasks[3].resultText = "grandchild done";
 		assert(b.finalizeCompletedSubTask(3));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(parentDone && !answerDone);
 		assert(parentResult.text.jsonParse!BatchResultEnvelope.tasks[0]
 			.json.jsonParse!TaskResult.tid == 3);
 		f.tasks[2].resultText = "child done";
 		assert(b.finalizeCompletedSubTask(2));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(answerDone);
 		assert(answerResult.text.jsonParse!BatchResultEnvelope.tasks[0]
 			.json.jsonParse!TaskResult.tid == 2);
@@ -4330,14 +4296,14 @@ unittest
 		b.handleAsk("1", new RecordingEnricher, "question", 2).then((McpResult r) {
 			askResult = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(presented.text.length > 0);
 		b.onTaskTerminal(1);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(askResult.isError);
 		b.handleAnswer("2", new RecordingEnricher, presented.text.jsonParse!QuestionResult.qid,
 			"late").then((McpResult r) { late = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(late.isError && late.text.canFind("cancelled"));
 	}
 
@@ -4357,7 +4323,7 @@ unittest
 		McpResult first, second;
 		b.awaitEvent(1).then((McpResult r) { first = r; }).ignoreResult();
 		b.awaitEvent(1).then((McpResult r) { second = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(first.text.jsonParse!QuestionResult.status == "question");
 		assert(second.text.jsonParse!BatchResultEnvelope.tasks.length == 1);
 	}
@@ -4372,12 +4338,12 @@ unittest
 		b.handleAsk("1", new RecordingEnricher, "direct", 2).ignoreResult();
 		McpResult presented, delivered;
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		auto qid = presented.text.jsonParse!QuestionResult.qid;
 		b.handleAnswer("2", new RecordingEnricher, qid, "reply").then((McpResult r) {
 			delivered = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(delivered.text.jsonParse!AnswerResult.status == "delivered");
 		assert(delivered.text.jsonParse!AnswerResult.qid == qid);
 	}
@@ -4395,16 +4361,16 @@ unittest
 		McpResult presented, answerResult;
 		bool answerDone;
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		b.handleAnswer("2", new RecordingEnricher, presented.text.jsonParse!QuestionResult.qid,
 			"reply").then((McpResult r) {
 			answerDone = true; answerResult = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!answerDone);
 		f.tasks[3].resultText = "done";
 		assert(b.finalizeCompletedSubTask(3));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(answerDone && answerResult.text.jsonParse!BatchResultEnvelope.tasks.length == 1);
 	}
 
@@ -4422,23 +4388,23 @@ unittest
 		b.handleAnswer("2", new RecordingEnricher, qid, "early").then((McpResult r) {
 			earlyAnswer = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(earlyAnswer.isError && earlyAnswer.text.canFind("Unknown question ID"));
 		assert(askResult.text.length == 0 && f.sendCalls == 0);
 
 		f.tasks[2].isProcessing = false;
 		assert(b.pump(2));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		f.tasks[2].isProcessing = false;
 		assert(!b.pump(2));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.sentTids == [2] && f.sentBodies.length == 1);
 		assert(f.sentBodies[0].canFind("held question"));
 
 		b.handleAnswer("2", new RecordingEnricher, qid, "reply").then((McpResult r) {
 			answerResult = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!answerResult.isError);
 		assert(answerResult.text.jsonParse!AnswerResult.status == "delivered");
 		assert(askResult.text.jsonParse!AnswerResult.qid == qid);
@@ -4463,7 +4429,7 @@ unittest
 		assert(!b.pump(1));
 		f.tasks[1].hasPendingQuestion = false;
 		assert(b.pump(1));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.sendCalls == 1 && f.sentBodies.length == 2);
 		assert(f.sentBodies[0].canFind("held question"));
 		assert(f.sentBodies[1].canFind("held result"));
@@ -4480,11 +4446,11 @@ unittest
 		McpResult presented;
 		b.handleAsk("1", new RecordingEnricher, "parent asks child", 2).ignoreResult();
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(presented.text.jsonParse!QuestionResult.status == "question");
 		assert(b.hasPendingChildQuestion(2));
 		b.handleAsk("3", new RecordingEnricher, "held question", 2).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(b.hasPendingChildQuestion(2));
 		b.onTaskTerminal(1);
 		assert(!b.hasPendingChildQuestion(2));
@@ -4499,7 +4465,7 @@ unittest
 		McpResult presented;
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
 		b.handleAsk("1", new RecordingEnricher, "question", 2).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		auto qid = presented.text.jsonParse!QuestionResult.qid;
 		f.tasks[1].status = TaskStatus.failed;
 		b.onTaskTerminal(1);
@@ -4509,7 +4475,7 @@ unittest
 		auto sendCalls = f.sendCalls;
 		f.tasks[2].status = TaskStatus.failed;
 		b.onTaskTerminal(2);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert((qid in b.questions_) is null);
 		assert(f.persistence.loadQuestions().length == 0);
 		assert(b.mailbox(1).empty && !b.mailbox(1).hasWaiter);
@@ -4536,7 +4502,7 @@ unittest
 			f.wakeGate.reject(new Exception("wake failed"));
 		else
 			f.wakeGate.fulfill();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!f.tasks[2].isProcessing);
 		assert(f.sendCalls == 0 && b.mailbox(1).empty);
 	}
@@ -4551,13 +4517,13 @@ unittest
 		auto b = f.makeBackend();
 		b.handleAsk("1", new RecordingEnricher, "question during send", 2).ignoreResult();
 		f.wakeGate.fulfill();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.sendCalls == 1 && b.mailbox(2).empty);
 		f.tasks[1].status = TaskStatus.failed;
 		b.onTaskTerminal(1);
 		assert(b.questions_[1].state == QuestionState.cancelled);
 		f.preparedSendGate.reject(new Exception("send failed"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(b.questions_.length == 0);
 		assert(b.mailbox(1).empty && !b.mailbox(1).hasWaiter);
 		assert(f.sentTids == [2]);
@@ -4575,13 +4541,13 @@ unittest
 		b.handleAsk("2", new RecordingEnricher, "question awaiting an answer", 1).then((McpResult r) {
 			failure = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!presented.isError && presented.text.jsonParse!QuestionResult.qid > 0);
 		assert(b.hasPendingChildQuestion(1));
 		assert(f.focusHints == [[2, 1]]);
 		f.sendFailure = "injected answer-reminder rejection";
 		b.sendPendingChildAnswerReminder(1);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(failure.isError && failure.text.canFind("injected answer-reminder rejection"));
 		assert(!b.hasPendingChildQuestion(1));
 		b.onToolCallDelivered("2", failure);
@@ -4600,7 +4566,7 @@ unittest
 			failed = r;
 		}).ignoreResult();
 		f.wakeGate.reject(new Exception("wake failed"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(failed.isError && failed.text.canFind("wake failed"));
 		b.onToolCallDelivered("1", failed);
 		assert(b.questions_.length == 0 && b.mailbox(1).empty);
@@ -4628,13 +4594,13 @@ unittest
 		b.handleAsk("1", new RecordingEnricher, "question during startup", 2).then((McpResult r) {
 			first ~= r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.tasks[2].isProcessing && f.sendCalls == 0);
 
 		f.tasks[2].status = terminalStatus;
 		b.onTaskTerminal(2);
 		f.wakeGate.reject(new Exception("startup failed"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(first.length == 1 && first[0].isError
 			&& first[0].text.canFind("Session ended"));
 		assert(!f.tasks[2].isProcessing, "Failed wake left the answerer processing");
@@ -4647,7 +4613,7 @@ unittest
 		b.handleAsk("3", new RecordingEnricher, "question after startup failure", 2).then((McpResult r) {
 			second ~= r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(second.length == 1 && second[0].isError
 			&& second[0].text.canFind("wake failed"));
 		assert(f.sendCalls == 0);
@@ -4689,7 +4655,7 @@ unittest
 		}).ignoreResult();
 		f.tasks[2].status = TaskStatus.active;
 		f.wakeGate.fulfill();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.sentTids == [2] && f.sentBodies.length == 3);
 		assert(b.mailbox(2).empty);
 		assert(first.length == 0 && second.length == 0);
@@ -4697,7 +4663,7 @@ unittest
 		f.tasks[2].status = TaskStatus.failed;
 		b.onTaskTerminal(2);
 		f.preparedSendGate.reject(new Exception("send failed"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(first.length == 1 && first[0].isError
 			&& first[0].text.canFind("Session ended"));
 		assert(second.length == 1 && second[0].isError
@@ -4727,10 +4693,10 @@ unittest
 		b.handleAsk("3", new RecordingEnricher, "first", 2).then((McpResult r) { first = r; }).ignoreResult();
 		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
 		b.handleAsk("4", new RecordingEnricher, "second", 2).then((McpResult r) { second = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(presented.text.jsonParse!QuestionResult.message == "first");
 		b.onTaskTerminal(2);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(first.isError && second.isError);
 		assert(first.text.canFind("Question 1") && second.text.canFind("Question 2"));
 		b.onToolCallDelivered("3", first);
@@ -4753,7 +4719,7 @@ unittest
 		auto older = b.mailbox(1).events[0];
 		McpResult first;
 		b.awaitEvent(1).then((McpResult r) { first = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(first.text.canFind("older batch") && b.mailbox(1).empty);
 		b.handleAsk("3", new RecordingEnricher, "newer question", 1).ignoreResult();
 		auto newer = b.mailbox(1).events[0];
@@ -4776,13 +4742,13 @@ unittest
 		McpResult result;
 		auto first = b.mailbox(2).events[0];
 		b.awaitEvent(2).then((McpResult r) { result = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		b.onToolCallDelivered("2", result);
 		assert(b.presentedQuestionFor(2) == first.qid);
 		b.handleAsk("3", new RecordingEnricher, "current carrier", 2).ignoreResult();
 		auto second = b.mailbox(2).events[0];
 		b.awaitEvent(2).then((McpResult r) { result = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		f.shuttingDown = true;
 		b.onMcpDeliveryFailed("2", result);
 		assert(b.mailbox(2).events == [second],
@@ -4796,7 +4762,7 @@ unittest
 		f.tasks[3].status = TaskStatus.active;
 		auto b = f.makeBackend();
 		b.handleAsk("1", new RecordingEnricher, "accepted question", 2).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.acceptedPreparedTids == [2] && b.mailbox(2).empty);
 		auto acceptedQid = b.presentedQuestionFor(2);
 		assert(acceptedQid > 0);
@@ -4805,11 +4771,11 @@ unittest
 		b.handleAsk("3", new RecordingEnricher, "rejected question", 2).ignoreResult();
 		auto expected = b.mailbox(2).events.dup;
 		assert(expected.length == 1 && expected[0].qid != acceptedQid);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(b.mailbox(2).empty && f.sentTids == [2, 2]);
 		f.shuttingDown = true;
 		f.preparedSendGate.reject(new Exception("shutdown during submission"));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(b.mailbox(2).events == expected,
 			format!"Prepared rejection replayed a confirmed question: %s"(b.mailbox(2).events));
 	}
@@ -4826,13 +4792,13 @@ unittest
 		assert(b.finalizeCompletedSubTask(2));
 		McpResult first, second;
 		b.awaitEvent(1).then((McpResult r) { first = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		f.shuttingDown = true;
 		b.onMcpDeliveryFailed("1", first);
 		assert(b.mailbox(1).events.length == 1 && f.wakeCalls == 0);
 		f.shuttingDown = false;
 		b.awaitEvent(1).then((McpResult r) { second = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(first.text == second.text && b.mailbox(1).empty);
 		b.onToolCallDelivered("1", second);
 		assert(!b.batchRegistry_.hasBatches(1));
@@ -4857,7 +4823,7 @@ unittest
 		McpResult first, second, retry;
 		b.awaitEvent(1).then((McpResult r) { first = r; }).ignoreResult();
 		b.awaitEvent(1).then((McpResult r) { second = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(first.text.canFind("first batch result"));
 		assert(second.text.canFind("second batch result"));
 		assert(b.mailbox(1).empty);
@@ -4869,7 +4835,7 @@ unittest
 		b.onMcpDeliveryFailed("1", second);
 		f.shuttingDown = false;
 		b.awaitEvent(1).then((McpResult r) { retry = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(retry.text == second.text);
 		b.onToolCallDelivered("1", retry);
 		assert(b.mailbox(1).empty && !b.batchRegistry_.exists(secondBatch));
@@ -4884,17 +4850,17 @@ unittest
 		b.handleAsk("1", new RecordingEnricher, "question", 2).then((McpResult r) {
 			first = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		f.tasks[2].status = TaskStatus.failed;
 		b.onTaskTerminal(2);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(first.isError && first.text.canFind("Session ended"));
 
 		f.shuttingDown = true;
 		b.onMcpDeliveryFailed("1", first);
 		f.shuttingDown = false;
 		b.awaitEvent(1).then((McpResult r) { retry = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(retry.isError && retry.text == first.text);
 		b.onToolCallDelivered("1", retry);
 		assert(b.mailbox(1).empty);
@@ -4908,7 +4874,7 @@ unittest
 		b.handleAsk("1", new RecordingEnricher, "question", 2).ignoreResult();
 		McpResult question;
 		b.awaitEvent(2).then((McpResult r) { question = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(question.text.jsonParse!QuestionResult.message == "question");
 		assert(b.mailbox(2).empty);
 
@@ -4928,7 +4894,7 @@ unittest
 		b.mailbox(1).push(MailboxEvent(MailboxEvent.Kind.answer, 0, 1));
 		McpResult result;
 		b.awaitEvent(1).then((McpResult r) { result = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(result.text.canFind("answered") && b.mailbox(1).empty);
 		f.shuttingDown = true;
 		f.tasks[1].status = TaskStatus.failed;
@@ -4949,10 +4915,10 @@ unittest
 		auto back = MailboxEvent(MailboxEvent.Kind.failed, 0, 2, "newer");
 		McpResult result;
 		b.awaitEvent(1).then((McpResult r) { result = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(b.mailbox(1).hasWaiter);
 		b.deliveryAttempt(1, [front, back])(false);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(result.text == "older", "Put-back did not wake an existing carrier");
 		assert(!b.mailbox(1).hasWaiter && b.mailbox(1).events == [back]);
 		b.onToolCallDelivered("1", result);
@@ -4966,7 +4932,7 @@ unittest
 		b.handleAsk("1", new RecordingEnricher, "question", 2).ignoreResult();
 		McpResult question;
 		b.awaitEvent(2).then((McpResult r) { question = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(question.text.jsonParse!QuestionResult.message == "question");
 		b.onToolCallDelivered("2", question);
 		f.shuttingDown = true;
@@ -4986,7 +4952,7 @@ unittest
 		assert(b.finalizeCompletedSubTask(2));
 		McpResult result;
 		b.awaitEvent(1).then((McpResult r) { result = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		b.host_.persistRemoveTaskBatch = (ulong) {
 			throw new Exception("dependency removal failed");
 		};
@@ -5017,7 +4983,7 @@ unittest
 		assert(b.finalizeCompletedSubTask(2));
 		f.tasks[1].isProcessing = false;
 		assert(b.pump(1));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(askResult.isError && askResult.text.canFind("wake failed"));
 		b.onToolCallDelivered("3", askResult);
 		assert(b.questions_.length == 0);
@@ -5037,7 +5003,7 @@ unittest
 		import std.conv : to;
 		McpResult result;
 		b.awaitEvent(tid).then((McpResult r) { result = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!result.isError && result.text.length, "Expected a presented question");
 		b.onToolCallDelivered(tid.to!string, result);
 		return result;
@@ -5047,7 +5013,7 @@ unittest
 	{
 		McpResult result;
 		b.handleAnswer("3", new RecordingEnricher, qid, "x").then((McpResult r) { result = r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!result.isError && result.text.length, "Answer remained blocked or returned an error");
 		assert(result.text.jsonParse!AnswerResult.status == "delivered");
 		assert(!b.mailbox(3).hasWaiter);
@@ -5085,7 +5051,7 @@ unittest
 		auto b = f.makeBackend();
 		b.rebuildWaits();
 		b.pumpRestoredMailboxes();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.acceptedPreparedTids == [3]);
 		// The fixture's wake callback leaves terminal status unchanged.
 		f.tasks[3].status = TaskStatus.active;
@@ -5101,7 +5067,7 @@ unittest
 		b.handleAsk("1", new RecordingEnricher, "question", 2).then((McpResult r) { failure = r; }).ignoreResult();
 		f.tasks[2].status = TaskStatus.failed;
 		b.onTaskTerminal(2);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(failure.isError && failure.text.canFind("Session ended"));
 		f.tasks[1].status = TaskStatus.failed;
 		b.onTaskTerminal(1);
@@ -5112,7 +5078,7 @@ unittest
 		}
 		b.onMcpDeliveryFailed("1", failure);
 		assert(b.mailbox(1).empty, "Rejected carrier restored the retired failure");
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(f.wakeCalls == 0 && f.sentTids.length == 0);
 		assert(b.questions_.length == 0);
 	}
@@ -5129,7 +5095,7 @@ unittest
 		McpResult batch;
 		b.handleAsk("1", new RecordingEnricher, "question", 3).then((McpResult r) { batch = r; }).ignoreResult();
 		assert(b.finalizeCompletedSubTask(2));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(batch.structuredContent && !batch.isError);
 		b.onToolCallDelivered("1", batch);
 		f.tasks[3].status = TaskStatus.failed;
@@ -5139,7 +5105,7 @@ unittest
 		f.tasks[1].status = TaskStatus.failed;
 		f.tasks[1].isProcessing = false;
 		b.onTaskTerminal(1);
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(b.mailbox(1).empty);
 		assert(f.wakeCalls == 0 && f.sentTids.length == 0, "Failure woke the terminal asker");
 		assert(b.questions_.length == 0);
@@ -5165,7 +5131,7 @@ unittest
 			f.tasks[2].isProcessing = false;
 			b.onTaskTerminal(2);
 		}
-		drainPromiseNextTicks();
+		drainNextTicks();
 		if (answered)
 		{
 			assert(!response.isError && response.text.length);
@@ -5179,7 +5145,7 @@ unittest
 			assert(f.wakeCalls == 0, "Reminder failure woke the terminal asker");
 			McpResult late;
 			b.handleAnswer("1", new RecordingEnricher, question.qid, "late").then((McpResult r) { late = r; }).ignoreResult();
-			drainPromiseNextTicks();
+			drainNextTicks();
 			assert(late.isError && late.text.canFind("was cancelled"));
 		}
 	}
@@ -5196,7 +5162,7 @@ unittest
 			throw new Exception("dependency removal failed");
 		};
 		assert(b.finalizeCompletedSubTask(2));
-		auto thrown = collectException!Exception(drainPromiseNextTicks());
+		auto thrown = collectException!Exception(drainNextTicks());
 		assert(thrown !is null && thrown.msg == "dependency removal failed");
 		assert(f.acceptedPreparedTids == [1]);
 		assert(f.recoveryDiagnosticBodies.length == 0 && b.mailbox(1).empty);
@@ -5448,14 +5414,14 @@ unittest
 		return tools.createTasks([TaskSpec("one", "child", "first"),
 			TaskSpec("two", "child", "second")]);
 	}).then((McpResult result) { results ~= result; }).ignoreResult();
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(f.tasks[3].worktreeTid == 3 && f.tasks[3].status == TaskStatus.active);
 	assert(f.tasks[4].worktreeTid == 0 && f.tasks[4].status == TaskStatus.failed);
 	assert(sent == [3]);
 	assert(f.persistence.loadTaskDeps() == [PersistedBatch(1, 3, [3, 4])]);
 	f.tasks[3].resultText = "first agent returned";
 	assert(b.finalizeCompletedSubTask(3));
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(results.length == 1 && results[0].isError);
 	auto batch = results[0].text.jsonParse!BatchResultEnvelope;
 	auto first = batch.tasks[0].json.jsonParse!TaskResult;
@@ -5535,11 +5501,11 @@ unittest
 		if (failure == Failure.commit)
 		{
 			import std.exception : collectException;
-			assert(collectException(drainPromiseNextTicks()) is commitFailure);
+			assert(collectException(drainNextTicks()) is commitFailure);
 			assert(f.tasks[4].status == TaskStatus.active);
 			continue;
 		}
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(results.length == 0, results.length ? results[0].text : null);
 		assert(f.tasks[1].status == TaskStatus.waiting);
 		assert(f.persistence.loadTaskDeps() == [PersistedBatch(1, 3, [3, 4])]);
@@ -5551,7 +5517,7 @@ unittest
 		}
 		f.tasks[3].resultText = "first child result";
 		assert(b.finalizeCompletedSubTask(3));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(results.length == 1 && results[0].isError == (failure != Failure.none));
 		auto batch = results[0].text.jsonParse!BatchResultEnvelope;
 		assert(batch.tasks.length == 2);
@@ -5586,7 +5552,7 @@ unittest
 		b.registerBatchAndAwait("1", [first, first]).then((McpResult r) {
 			result = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(result.isError && result.text.canFind("duplicate child"));
 		assert(f.tasks[1].status == TaskStatus.active);
 		assert(f.persistence.loadTaskDeps().length == 0);
@@ -5625,7 +5591,7 @@ unittest
 	auto b = f.makeBackend();
 	McpResult[] carrier, asker;
 	b.awaitEvent(2).then((McpResult r) { carrier ~= r; }).ignoreResult();
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(b.mailbox(2).hasWaiter);
 
 	b.handleAsk("1", new RecordingEnricher, "handed-off question", 2)
@@ -5636,7 +5602,7 @@ unittest
 	f.shuttingDown = true;
 	f.tasks[2].status = TaskStatus.failed;
 	b.onTaskTerminal(2);
-	drainPromiseNextTicks();
+	drainNextTicks();
 
 	assert(carrier.length == 1 && carrier[0].isError
 		&& carrier[0].text == "Session ended while waiting for Ask response");
@@ -5658,7 +5624,7 @@ unittest
 	b.handleAsk("1", new RecordingEnricher, "question to answer", 2)
 		.then((McpResult r) { carrier ~= r; }).ignoreResult();
 	b.awaitEvent(2).then((McpResult r) { question = r; }).ignoreResult();
-	drainPromiseNextTicks();
+	drainNextTicks();
 	auto qid = question.text.jsonParse!QuestionResult.qid;
 	b.onToolCallDelivered("2", question);
 	assert(b.mailbox(1).hasWaiter);
@@ -5670,7 +5636,7 @@ unittest
 	f.shuttingDown = true;
 	f.tasks[1].status = TaskStatus.failed;
 	b.onTaskTerminal(1);
-	drainPromiseNextTicks();
+	drainNextTicks();
 
 	assert(carrier.length == 1 && carrier[0].isError
 		&& carrier[0].text == "Session ended while waiting for Ask response");
@@ -5688,7 +5654,7 @@ unittest
 	assert(b.batchRegistry_.create(1, [2], handle, error), error);
 	McpResult[] carrier, nextCarrier;
 	b.awaitEvent(1).then((McpResult r) { carrier ~= r; }).ignoreResult();
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(b.mailbox(1).hasWaiter);
 
 	f.tasks[2].resultText = "handed-off batch result";
@@ -5699,7 +5665,7 @@ unittest
 	f.shuttingDown = true;
 	f.tasks[1].status = TaskStatus.failed;
 	b.onTaskTerminal(1);
-	drainPromiseNextTicks();
+	drainNextTicks();
 
 	assert(carrier.length == 1 && carrier[0].isError
 		&& carrier[0].text == "Session ended while waiting for Ask response");
@@ -5708,7 +5674,7 @@ unittest
 	f.shuttingDown = false;
 	f.tasks[1].status = TaskStatus.active;
 	b.awaitEvent(1).then((McpResult r) { nextCarrier ~= r; }).ignoreResult();
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(nextCarrier.length == 1 && !nextCarrier[0].isError
 		&& nextCarrier[0].text.canFind("handed-off batch result"));
 	b.onToolCallDelivered("1", nextCarrier[0]);
@@ -5726,7 +5692,7 @@ unittest
 	auto b = f.makeBackend();
 	McpResult[] results;
 	b.awaitEvent(2).then((McpResult r) { results ~= r; }).ignoreResult();
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(b.mailbox(2).hasWaiter);
 	b.handleAsk("1", new RecordingEnricher, "cancel this handoff", 2).ignoreResult();
 	assert(!b.mailbox(2).hasWaiter && b.mailbox(2).empty);
@@ -5734,7 +5700,7 @@ unittest
 	b.onTaskTerminal(1);
 	assert(f.tasks[2].status == TaskStatus.active);
 	b.handleAsk("3", new RecordingEnricher, "deliver this live question", 2).ignoreResult();
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(results.length == 1 && !results[0].isError
 		&& results[0].text.canFind("deliver this live question"),
 		"live carrier must skip cancelled question and take the next event");
@@ -5803,7 +5769,7 @@ unittest
 		{
 			errors = null;
 			manager.handleSetArchived(null, requestedTid, true);
-			drainPromiseNextTicks();
+			drainNextTicks();
 
 			assert(errors.length == 1);
 			assert(errors[0] == "Task 2 cannot be archived yet: its parent task 1 has not received its result."
@@ -5817,7 +5783,7 @@ unittest
 
 		McpResult[] carriers;
 		b.awaitEvent(1).then((McpResult r) { carriers ~= r; }).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		f.tasks[2].resultText = "first child result";
 		assert(b.finalizeCompletedSubTask(2));
@@ -5826,14 +5792,14 @@ unittest
 
 		f.tasks[3].resultText = "second child result";
 		assert(b.finalizeCompletedSubTask(3));
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(carriers.length == 1 && !carriers[0].isError && carriers[0].structuredContent);
 		assertArchiveRefused();
 
 		b.onToolCallDelivered("1", carriers[0]);
 		errors = null;
 		manager.handleSetArchived(null, requestedTid, true);
-		drainPromiseNextTicks();
+		drainNextTicks();
 
 		assert(errors.length == 0);
 		assert(tasks[requestedTid].archived);
@@ -5858,7 +5824,7 @@ unittest
 				presented ~= r.text.jsonParse!QuestionResult;
 				b.onToolCallDelivered("2", r);
 			}).ignoreResult();
-			drainPromiseNextTicks();
+			drainNextTicks();
 		}
 		assert(presented.length == 2);
 		assert(presented[0].message == "first question");
@@ -5886,7 +5852,7 @@ unittest
 				presented ~= r.text.jsonParse!QuestionResult;
 				b.onToolCallDelivered("1", r);
 			}).ignoreResult();
-			drainPromiseNextTicks();
+			drainNextTicks();
 		}
 		assert(presented.length == 2 && presented[1].tid == 2);
 		auto qid = presented[1].qid;
@@ -5894,12 +5860,12 @@ unittest
 		b.handleAsk("1", new RecordingEnricher, "parent follow-up", 2).then((McpResult r) {
 			refused = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(refused.isError && refused.text.canFind(format!"qid=%d"(qid)));
 		b.handleAnswer("1", new RecordingEnricher, qid, "parent answer").then((McpResult r) {
 			answered = r;
 		}).ignoreResult();
-		drainPromiseNextTicks();
+		drainNextTicks();
 		assert(!answered.isError && answered.text.jsonParse!AnswerResult.status == "delivered");
 		assert(!childAnswer.isError && childAnswer.text.jsonParse!AnswerResult.message == "parent answer");
 	}

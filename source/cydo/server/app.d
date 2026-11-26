@@ -4617,24 +4617,13 @@ unittest
 	// which the callers' `.except` handlers surface as a task diagnostic.
 	// Reaching the agent at all would trip the "session must exist" assert
 	// below it, so a silently-fulfilled refusal cannot pass this test either.
-	void drainPromiseNextTicks()
-	{
-		for (;;)
-		{
-			auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-			if (handlers.length == 0)
-				return;
-			mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-			foreach (handler; handlers)
-				handler();
-		}
-	}
+	import cydo.foundation.testing : drainNextTicks;
 
 	string[] funnelRefusals;
 	foreach (text; ["internal", "queued before undo"])
 		app.sendPreparedTaskMessage(tid, [ContentBlock("text", text)])
 			.except((Exception e) { funnelRefusals ~= e.msg; }).ignoreResult();
-	drainPromiseNextTicks();
+	drainNextTicks();
 	assert(funnelRefusals.length == 2 && funnelRefusals[0].canFind("not sent")
 		&& funnelRefusals[1].canFind("not sent"),
 		"Refused funnel delivery must reject the submission promise");
@@ -5309,7 +5298,7 @@ unittest
 	assert(app.persistence.loadTasks()[0].lastActive == previousActivity);
 
 	fixture.session.accept(0, AgentSubmissionReceipt.localEnqueued);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(committed);
 	assert(app.tasks[tid].lastActive > previousActivity);
 	assert(app.persistence.loadTasks()[0].lastActive == app.tasks[tid].lastActive);
@@ -5331,18 +5320,7 @@ version (unittest) private string testUserCorrelation(TranslatedEvent event)
 	return jsonParse!ItemStartedEvent(event.translated).correlation_id;
 }
 
-version (unittest) private void drainSubmissionNextTicks()
-{
-	for (;;)
-	{
-		auto handlers = __traits(getMember, socketManager, "nextTickHandlers");
-		if (handlers.length == 0)
-			return;
-		mixin(`__traits(getMember, socketManager, "nextTickHandlers") = null;`);
-		foreach (handler; handlers)
-			handler();
-	}
-}
+version (unittest) private import cydo.foundation.testing : drainNextTicks;
 
 version (unittest) private WsMessage testBrowserHeicSubmission(int tid, string text, string nonce)
 {
@@ -5381,18 +5359,18 @@ unittest
 	task.agentName = "test";
 	auto message = testBrowserHeicSubmission(fixture.tid, "photo", "duplicate-photo");
 	fixture.app.handleUserMessage(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(message.correlation_id in task.inFlightUiNonceGeneration);
 	fixture.app.handleUserMessage(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.converter.gates.length == 1 && fixture.session.sendCalls == 0
 		&& fixture.socket.sent.length == 0);
 
 	fixture.converter.gates[0].fulfill(testJpegBytes);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 1);
 	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 1 && message.correlation_id in task.recentNonces);
 }
 
@@ -5404,14 +5382,14 @@ unittest
 	fixture.session.acceptsImages = true;
 	auto message = testBrowserHeicSubmission(fixture.tid, "photo", "normalized-photo");
 	fixture.app.handleUserMessage(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	fixture.converter.gates[0].fulfill(testJpegBytes);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	auto expected = [ContentBlock("text", "photo"), testNormalizedJpeg()];
 	assert(fixture.session.sendCalls == 1 && fixture.session.contents[0] == expected);
 	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.submissionMessages.length == 1);
 	auto envelope = jsonParse!UnconfirmedUserEventEnvelope(fixture.submissionMessages[0]);
 	auto event = jsonParse!ItemStartedEvent(envelope.unconfirmedUserEvent.json);
@@ -5427,14 +5405,14 @@ unittest
 		testBrowserHeicSubmission(fixture.tid, "first", "first-photo"));
 	fixture.app.handleUserMessage(fixture.socket,
 		testBrowserSubmission(fixture.tid, "second", "second-text"));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.converter.gates.length == 1 && fixture.session.sendCalls == 0);
 	fixture.converter.gates[0].fulfill(testJpegBytes);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.correlations == ["first-photo", "second-text"]);
 	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
 	fixture.session.accept(1, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 }
 
 unittest
@@ -5459,17 +5437,17 @@ unittest
 		testBrowserHeicSubmission(fixture.tid, submittedDraft, "photo-with-draft"));
 	fixture.app.handleUserMessage(fixture.socket,
 		testBrowserSubmission(fixture.tid, submittedDraft, "queued-text-with-draft"));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.converter.gates.length == 1 && fixture.session.sendCalls == 0);
 
 	saveDraft(newerDraft);
 	fixture.converter.gates[0].fulfill(testJpegBytes);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.correlations == ["photo-with-draft", "queued-text-with-draft"]);
 	foreach (i, nonce; fixture.session.correlations)
 	{
 		fixture.session.accept(i, AgentSubmissionReceipt.appServerAccepted);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(nonce in task.recentNonces);
 		assert(task.draft == newerDraft, "Accepting " ~ nonce ~ " erased the newer in-memory draft");
 		assert(fixture.app.persistence.loadTasks()[0].draft == newerDraft,
@@ -5494,7 +5472,7 @@ unittest
 		assertBrowserRejection(fixture.socket, message.correlation_id, fixture.tid, undo
 			? BrowserSubmissionRejectionKind.native_undo_refused
 			: BrowserSubmissionRejectionKind.task_archiving);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(fixture.converter.inputs.length == 0 && fixture.session.sendCalls == 0);
 	}
 }
@@ -5508,7 +5486,7 @@ unittest
 	fixture.app.submissionIntake = new SubmissionIntake(fixture.app.heicConverter);
 	auto message = testBrowserHeicSubmission(fixture.tid, "photo", "unavailable-photo");
 	fixture.app.handleUserMessage(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	auto rejection = assertBrowserRejection(fixture.socket, message.correlation_id, fixture.tid,
 		BrowserSubmissionRejectionKind.attachment_rejected);
 	assert(rejection["attachment"].integer == 0 && rejection["reason"].str.canFind("no bwrap"));
@@ -5528,7 +5506,7 @@ version (linux) unittest
 
 	auto message = testBrowserHeicSubmission(fixture.tid, "photo", "checking-photo");
 	fixture.app.handleUserMessage(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	auto rejection = assertBrowserRejection(fixture.socket, message.correlation_id, fixture.tid,
 		BrowserSubmissionRejectionKind.attachment_rejected);
 	assert(rejection["attachment"].integer == 0);
@@ -5536,7 +5514,7 @@ version (linux) unittest
 		"HEIC conversion is unavailable on this server: checking the HEIC converter");
 	assert(fixture.session.sendCalls == 0);
 	gate.fulfill(testJpegBytes);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 }
 
 version (linux) unittest
@@ -5554,7 +5532,7 @@ version (linux) unittest
 	app.heicConverter = makeGatedStartupConverter(gate, &app.broadcastServerStatus);
 	assert(first.sent.length == 0 && second.sent.length == 0);
 	gate.fulfill(testJpegBytes);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	foreach (client; [first, second])
 	{
@@ -5589,7 +5567,7 @@ unittest
 	McpResult[] results;
 	app.workflowTools.handleAsk(asker.to!string, null, "question for pending task", target)
 		.then((McpResult result) { results ~= result; }).ignoreResult();
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	auto questions = app.persistence.loadQuestions();
 	assert(questions.length == 1);
 	assert(questions[0].askerTid == asker && questions[0].answererTid == target);
@@ -5600,7 +5578,7 @@ unittest
 	deletion.type = "delete_task";
 	deletion.tid = target;
 	app.handleDeleteTaskMsg(deletion);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	assert(target !in app.tasks);
 	auto remaining = app.persistence.loadTasks();
@@ -5670,7 +5648,7 @@ version (unittest) private final class PendingBatchDeletionFixture
 	{
 		app.handleDeleteTaskMsg(WsMessage(type: "delete_task", tid: deleted));
 		assert(deleted !in app.tasks);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 	}
 
 	void completeSibling()
@@ -5678,7 +5656,7 @@ version (unittest) private final class PendingBatchDeletionFixture
 		app.tasks[survivor].status = TaskStatus.completed;
 		app.tasks[survivor].resultText = "survivor-result";
 		assert(app.workflowTools.recordChildTerminal(survivor));
-		drainSubmissionNextTicks();
+		drainNextTicks();
 	}
 
 	void assertBatchCleared()
@@ -5755,7 +5733,7 @@ unittest
 		.ignoreResult();
 	assert(fixture.session.gates.length == 1);
 	fixture.session.accept(0, AgentSubmissionReceipt.localEnqueued);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(task.nativeSubmissionCount == 1);
 }
 
@@ -5838,7 +5816,7 @@ unittest
 	assert(userEventBroadcasts == 0);
 
 	session.acceptAndEmitUserEcho(0, "gated submission");
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	assert(fulfilled);
 	assert(app.tasks[tid].isProcessing);
@@ -5857,7 +5835,7 @@ unittest
 	assert(session.sendCalls == 2);
 	assert(!secondFulfilled);
 	session.acceptAndEmitUserEcho(1, "following submission");
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	assert(secondFulfilled);
 	assert(app.tasks[tid].history.length == 2);
@@ -5884,14 +5862,14 @@ unittest
 
 	assert(("browser-nonce" in fixture.app.tasks[fixture.tid]
 		.inFlightUiNonceGeneration) !is null);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 1 && fixture.session.gates.length == 1);
 	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 1
 		&& !fixture.app.tasks[fixture.tid].nativeSubmission(
 			fixture.session.nativeSubmissionUuids[0]).stdoutSeen);
 
 	fixture.session.reject(0, "submission rejected");
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(("browser-nonce" in fixture.app.tasks[fixture.tid]
 		.inFlightUiNonceGeneration) is null);
 	assert(("browser-nonce" in fixture.app.tasks[fixture.tid].recentNonces)
@@ -5899,7 +5877,7 @@ unittest
 	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 0);
 
 	fixture.app.handleUserMessage(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 2 && fixture.session.gates.length == 2);
 	assert(("browser-nonce" in fixture.app.tasks[fixture.tid]
 		.inFlightUiNonceGeneration) !is null);
@@ -5959,7 +5937,7 @@ unittest
 	auto message = testBrowserSubmission(fixture.tid, "first browser message",
 		"first-browser-nonce");
 	fixture.app.handleUserMessage(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	assert(fixture.session.sendCalls == 1);
 	assert(td.status == TaskStatus.waiting);
@@ -5980,7 +5958,7 @@ unittest
 	fixture.submissionTids = null;
 	fixture.socket.sent = null;
 	fixture.session.reject(0, "first submission rejected");
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(td.status == TaskStatus.waiting);
 	assert(td.description.length == 0 && td.title.length == 0
 		&& td.draft == "saved retry draft");
@@ -6017,7 +5995,7 @@ unittest
 	fixture.submissionTids = null;
 	fixture.socket.sent = null;
 	fixture.app.handleUserMessage(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 2);
 	assert(toJson(fixture.session.contents[0]) == toJson(fixture.session.contents[1]));
 	assert(td.status == TaskStatus.waiting && td.description.length == 0
@@ -6031,7 +6009,7 @@ unittest
 	td.archiving = false;
 
 	fixture.session.accept(1, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(td.status == TaskStatus.waiting && readPersistedTask().status == TaskStatus.waiting);
 	assert(td.description == "first browser message");
 	assert(td.title == truncateTitle("first browser message", 80));
@@ -6060,13 +6038,13 @@ unittest
 
 	fixture.socket.sent = null;
 	fixture.app.handleUserMessage(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 2 && fixture.socket.sent.length == 0,
 		"An accepted nonce is a duplicate, not a submission rejection");
 
 	td.archiving = true;
 	fixture.app.handleUserMessage(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 2 && fixture.socket.sent.length == 0,
 		"Archiving must not turn an accepted duplicate into a rejection");
 
@@ -6076,10 +6054,10 @@ unittest
 	td.isProcessing = false;
 	fixture.app.handleUserMessage(fixture.socket,
 		testBrowserSubmission(fixture.tid, "new turn", "new-turn-nonce"));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 3 && td.status == TaskStatus.alive);
 	fixture.session.accept(2, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(td.status == TaskStatus.active && readPersistedTask().status == TaskStatus.active);
 }
 
@@ -6106,7 +6084,7 @@ unittest
 	auto message = testBrowserSubmission(fixture.tid, "disconnecting message",
 		"disconnecting-nonce");
 	fixture.app.handleUserMessage(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 1);
 
 	// Wire disconnection the way transport.d wires every real socket, so
@@ -6118,7 +6096,7 @@ unittest
 	fixture.socket.disconnect();
 	fixture.socket.sent = null;
 	fixture.session.reject(0, "submission rejected after disconnect");
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	assert(fixture.socket.sent.length == 0,
 		"A disconnected client must not receive a submission rejection");
@@ -6145,7 +6123,7 @@ unittest
 		"history-cancelled-nonce");
 	fixture.app.handleUserMessage(fixture.socket, message);
 	fixture.app.resetHistoryWatermarkOnly(fixture.tid);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	assert(fixture.session.sendCalls == 0);
 	assert(submissionRejectionCount(fixture.socket.sent) == 1);
@@ -6179,13 +6157,13 @@ unittest
 		enum nonce = "undo-invalidated-send";
 		fixture.app.handleWsMessage(fixture.socket,
 			toJson(testBrowserSubmission(fixture.tid, "queued before undo", nonce)));
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(submissionRejectionCount(fixture.socket.sent) == 0);
 		assert(nonce in fixture.app.tasks[fixture.tid].inFlightUiNonceGeneration);
 
 		session.invalidatePendingSubmittedMessages();
 		fixture.app.resetHistoryWatermarkOnly(fixture.tid);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 
 		assert(submissionRejectionCount(fixture.socket.sent) == 1);
 		auto receipt = parseJSON(fixture.socket.sent[$ - 1]);
@@ -6210,7 +6188,7 @@ unittest
 	fixture.app.handleUserMessage(fixture.socket,
 		testBrowserSubmission(fixture.tid, "queued before undo", nonce));
 	fixture.app.tasks[fixture.tid].beginConfirmedNativeUndo();
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	assert(fixture.session.sendCalls == 0);
 	assert(nonce !in fixture.app.tasks[fixture.tid].inFlightUiNonceGeneration);
@@ -6556,7 +6534,7 @@ unittest
 		&& fixture.converter.inputs.length == 0, "Text-only creation is synchronous");
 	auto cancelledTid = latestTid();
 	auto cancelled = &fixture.app.tasks[cancelledTid];
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 1);
 	// Master has no generation guard in this dispatch continuation: a reset
 	// landing before dispatch just proceeds under the new generation. This
@@ -6564,7 +6542,7 @@ unittest
 	// own post-acceptance lineage check once the agent accepts.
 	fixture.app.resetHistoryWatermarkOnly(cancelledTid);
 	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(submissionRejectionCount(fixture.socket.sent) == 1);
 	assert(cancelled.status == TaskStatus.failed && cancelled.history.length == 1
 		&& fixture.socket.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
@@ -6596,7 +6574,7 @@ unittest
 	fixture.submissionMessages = null;
 	fixture.submissionTids = null;
 	fixture.socket.sent = null;
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(launchSawAssignedWorktree && fixture.session.sendCalls == 2);
 	assert(rejected.status == TaskStatus.active && rejected.history.length == 0
 		&& rejected.nativeSubmissionCount == 1
@@ -6608,7 +6586,7 @@ unittest
 	// An agent can reject its outstanding delivery before exit resets history.
 	fixture.session.reject(1, "initial direct submission rejected");
 	fixture.app.resetHistoryWatermarkOnly(rejectedTid);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	auto afterRejectedReceipt = rowFor(rejectedTid);
 	assert(rejected.status == TaskStatus.failed && rejected.history.length == 1
 		&& rejected.nativeSubmissionCount == 0
@@ -6638,10 +6616,10 @@ unittest
 	fixture.socket.sent = null;
 	fixture.app.handleUserMessage(fixture.socket, testBrowserSubmission(rejectedTid,
 		"rejected direct first message", "retry-rejected-create-nonce"));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 3 && rejected.status == TaskStatus.failed);
 	fixture.session.accept(2, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(rejected.status == TaskStatus.active
 		&& rejected.description == "rejected direct first message"
 		&& rejected.title == truncateTitle("rejected direct first message", 80)
@@ -6675,7 +6653,7 @@ unittest
 	fixture.submissionMessages = null;
 	fixture.submissionTids = null;
 	fixture.socket.sent = null;
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 4 && accepted.status == TaskStatus.active);
 	assert(accepted.history.length == 0 && accepted.nativeSubmissionCount == 1
 		&& accepted.recentNonces.length == 0
@@ -6684,7 +6662,7 @@ unittest
 		&& fixture.socket.sent.length == 0 && fixture.submissionMessages.length == 0
 		&& fixture.publicationOrder.length == 0);
 	fixture.session.accept(3, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	auto afterAcceptedReceipt = rowFor(acceptedTid);
 	assert(accepted.description == "accepted direct first message"
 		&& accepted.title == truncateTitle("accepted direct first message", 80)
@@ -6710,13 +6688,13 @@ unittest
 	auto orderedTid = latestTid();
 	fixture.app.handleUserMessage(fixture.socket,
 		testBrowserSubmission(orderedTid, "ordered normal second", "ordered-normal-nonce"));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == orderedStart + 2);
 	assert(extractContentText(fixture.session.contents[orderedStart]).canFind("ordered atomic first"));
 	assert(extractContentText(fixture.session.contents[orderedStart + 1]).canFind("ordered normal second"));
 	fixture.session.accept(orderedStart, AgentSubmissionReceipt.appServerAccepted);
 	fixture.session.accept(orderedStart + 1, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.app.tasks[orderedTid].description == "ordered atomic first");
 	assert(submissionRejectionCount(fixture.socket.sent) == 0);
 
@@ -6729,7 +6707,7 @@ unittest
 	auto browserMessage = testBrowserSubmission(browserTid,
 		"browser worktree retry message", "browser-worktree-nonce");
 	fixture.app.handleUserMessage(fixture.socket, browserMessage);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	auto browser = &fixture.app.tasks[browserTid];
 	auto browserWorktreePath = fixture.app.taskPathResolver.worktreePath(browser);
 	auto beforeBrowserReceipt = rowFor(browserTid);
@@ -6743,7 +6721,7 @@ unittest
 		&& beforeBrowserReceipt.draft == "browser worktree retry draft");
 
 	fixture.session.reject(6, "browser worktree submission rejected");
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	auto afterBrowserRejection = rowFor(browserTid);
 	assert(browser.status == TaskStatus.active && browser.worktreeTid == browserTid
 		&& fixture.app.taskPathResolver.worktreePath(browser) == browserWorktreePath
@@ -6762,7 +6740,7 @@ unittest
 		&& fixture.socket.sent[$ - 1].canFind(`"kind":"delivery_failed"`));
 
 	fixture.app.handleUserMessage(fixture.socket, browserMessage);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 8
 		&& fixture.session.correlations[6] == fixture.session.correlations[7]
 		&& toJson(fixture.session.contents[6]) == toJson(fixture.session.contents[7])
@@ -6784,12 +6762,12 @@ unittest
 		createMessage("disconnected direct first message", "create-disconnect-nonce"));
 	auto disconnectingTid = latestTid();
 	auto disconnecting = &fixture.app.tasks[disconnectingTid];
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 9);
 	disconnectingSocket.disconnect();
 	disconnectingSocket.sent = null;
 	fixture.session.reject(8, "disconnected direct first message rejected");
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(disconnectingSocket.sent.length == 0,
 		"A disconnected client must not receive a submission rejection");
 	assert(disconnecting.status == TaskStatus.failed && disconnecting.history.length == 1);
@@ -6830,7 +6808,7 @@ unittest
 	auto sendsBeforeLaunchFailures = fixture.session.sendCalls;
 	void assertLaunchRejected(int tid, string correlationId)
 	{
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		auto task = &fixture.app.tasks[tid];
 		assert(task.status == TaskStatus.failed && rowFor(tid).resultText == launchFailure);
 		assert(task.history.length == 1
@@ -6876,7 +6854,7 @@ unittest
 		assert(workspaceAgent != fixture.app.tasks[spec.creatorTid].agentName);
 		assert(workspaceAgent != fixture.app.defaultAgentName(""));
 		auto tid = fixture.app.createUserTask(spec);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 
 		auto task = &fixture.app.tasks[tid];
 		assert(task.status == TaskStatus.pending && task.entryPoint == spec.entryPoint);
@@ -6912,7 +6890,7 @@ unittest
 		auto sendIndex = fixture.session.sendCalls;
 		bool finished;
 		fixture.app.startUserTask(tid, prompt).then(() { finished = true; }).ignoreResult();
-		drainSubmissionNextTicks();
+		drainNextTicks();
 
 		assert(fixture.session.sendCalls == sendIndex + 1 && !finished);
 		auto blocks = fixture.session.contents[sendIndex];
@@ -6924,7 +6902,7 @@ unittest
 		assert(fixture.session.sources[sendIndex] == MessageSource.harness);
 
 		fixture.session.accept(sendIndex, AgentSubmissionReceipt.appServerAccepted);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(finished && fixture.session.sendCalls == sendIndex + 1);
 		auto expectedTitle = title.length ? title : truncateTitle(prompt, 80);
 		assert(fixture.app.tasks[tid].title == expectedTitle && rowFor(tid).title == expectedTitle);
@@ -6943,13 +6921,13 @@ unittest
 	auto photoSendIndex = fixture.session.sendCalls;
 	fixture.socket.sent = null;
 	fixture.app.handleCreateTaskMsg(fixture.socket, photoCreate);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.converter.gates.length == 1 && fixture.socket.sent.length == 0
 		&& latestTid() == beforePhotoTid && fixture.app.tasks.length == beforePhotoTaskCount
 		&& fixture.session.sendCalls == photoSendIndex);
 
 	fixture.converter.gates[0].fulfill(testJpegBytes);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	auto photoTid = latestTid();
 	assert(photoTid > beforePhotoTid && fixture.app.tasks.length == beforePhotoTaskCount + 1);
 	auto createdPhotoTask = parseJSON(fixture.socket.sent[0]);
@@ -6960,16 +6938,16 @@ unittest
 	auto photoContent = fixture.session.contents[photoSendIndex];
 	assert(photoContent.length == 2 && photoContent[1] == testNormalizedJpeg());
 	fixture.session.accept(photoSendIndex, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	import cydo.runtime.image.bounded_filter : FilterFailure, FilterFailureKind;
 	photoCreate.correlation_id = "create-photo-refused";
 	fixture.socket.sent = null;
 	fixture.app.handleCreateTaskMsg(fixture.socket, photoCreate);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.converter.gates.length == 2 && fixture.socket.sent.length == 0);
 	fixture.converter.gates[1].reject(new FilterFailure(FilterFailureKind.failed));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	auto photoRejection = assertBrowserRejection(fixture.socket, photoCreate.correlation_id, -1,
 		BrowserSubmissionRejectionKind.attachment_rejected);
 	assert(photoRejection["attachment"].integer == 0 && photoRejection["reason"].str == "conversion failed");
@@ -6994,7 +6972,7 @@ unittest
 		assert(task.processQueue.goalState == ProcessState.Dead && !fixture.app.taskAlive(tid));
 
 		fixture.app.handleUserMessage(fixture.socket, message);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(fixture.converter.gates.length == gateIndex + 1);
 		assert(message.correlation_id in task.inFlightUiNonceGeneration);
 		assert(taskDirReads == reads && launchCount == launches);
@@ -7002,14 +6980,14 @@ unittest
 		{
 			task.history.reset(Watermark.none());
 			fixture.converter.gates[gateIndex].fulfill(testJpegBytes);
-			drainSubmissionNextTicks();
+			drainNextTicks();
 			assertBrowserRejection(fixture.socket, message.correlation_id, tid,
 				BrowserSubmissionRejectionKind.history_cancelled);
 		}
 		else
 		{
 			fixture.converter.gates[gateIndex].reject(new FilterFailure(FilterFailureKind.failed));
-			drainSubmissionNextTicks();
+			drainNextTicks();
 			auto refusal = assertBrowserRejection(fixture.socket, message.correlation_id, tid,
 				BrowserSubmissionRejectionKind.attachment_rejected);
 			assert(refusal["attachment"].integer == 0 && refusal["reason"].str == "conversion failed");
@@ -7025,15 +7003,15 @@ unittest
 		assert(fixture.session.sendCalls == sends && fixture.socket.sent.length == 1);
 
 		fixture.app.handleUserMessage(fixture.socket, message);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(fixture.converter.gates.length == gateIndex + 2);
 		fixture.converter.gates[gateIndex + 1].fulfill(testJpegBytes);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(taskDirReads > reads && launchCount == launches + 1);
 		assert(task.worktreeTid == tid && rowFor(tid).worktreeTid == tid && exists(path));
 		assert(fixture.session.sendCalls == sends + 1);
 		fixture.session.accept(sends, AgentSubmissionReceipt.appServerAccepted);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(message.correlation_id in task.recentNonces && task.description == "pending photo");
 		assert(submissionRejectionCount(fixture.socket.sent) == 1);
 	}
@@ -7061,12 +7039,12 @@ unittest
 		auto gateIndex = fixture.converter.gates.length;
 		photoCreate.correlation_id = "insert-photo-failure";
 		fixture.app.handleCreateTaskMsg(fixture.socket, photoCreate);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(fixture.converter.gates.length == gateIndex + 1 && fixture.socket.sent.length == 0);
 		fixture.converter.gates[gateIndex].fulfill(testJpegBytes);
-		auto deferred = collectException(drainSubmissionNextTicks());
+		auto deferred = collectException(drainNextTicks());
 		assert(deferred !is null && deferred.msg == synchronous.msg);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(fixture.socket.sent.length == 0 && latestTid() == previousTid
 			&& fixture.app.tasks.length == taskCount && fixture.session.sendCalls == sends);
 	}
@@ -7099,19 +7077,19 @@ unittest
 		auto queued = testBrowserSubmission(tid, "text to unborn repo", "unborn-queued-text");
 		fixture.app.handleUserMessage(fixture.socket, photo);
 		fixture.app.handleUserMessage(fixture.socket, queued);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(fixture.converter.gates.length == gateIndex + 1 && fixture.socket.sent.length == 0);
 		assert(photo.correlation_id in task.inFlightUiNonceGeneration
 			&& queued.correlation_id in task.inFlightUiNonceGeneration);
 
 		fixture.converter.gates[gateIndex].fulfill(testJpegBytes);
-		auto deferred = collectException(drainSubmissionNextTicks());
+		auto deferred = collectException(drainNextTicks());
 		assert(deferred !is null && deferred.msg == synchronous.msg);
 		assert(photo.correlation_id !in task.inFlightUiNonceGeneration
 			&& queued.correlation_id in task.inFlightUiNonceGeneration);
-		auto afterPhoto = collectException(drainSubmissionNextTicks());
+		auto afterPhoto = collectException(drainNextTicks());
 		assert(afterPhoto !is null && afterPhoto.msg == synchronous.msg);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 		assert(fixture.socket.sent.length == 0 && task.history.length == 0);
 		assert(photo.correlation_id !in task.inFlightUiNonceGeneration
 			&& queued.correlation_id !in task.inFlightUiNonceGeneration);
@@ -7138,7 +7116,7 @@ unittest
 		JSONFragment(`{"prompt":"Review the project","entry_point":"isolated","start":true}`),
 		new ToolCallCancellation)
 		.then((McpResult result) { toolResults ~= result; }).ignoreResult();
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	auto failedTid = latestTid();
 	assert(failedTid > previousTid);
 	auto failedRow = rowFor(failedTid);
@@ -7304,7 +7282,7 @@ unittest
 	message.content = JSONFragment(toJson(
 		[ContentBlock("text", "first Codex message")]));
 	fixture.app.handleCreateTaskMsg(fixture.socket, message);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	int createdTid;
 	foreach (row; fixture.app.persistence.loadTasks())
@@ -7317,7 +7295,7 @@ unittest
 	// A turn/start error rejects the submission without ending CodexSession.
 	// Let the application's initial-submission callback commit active -> failed.
 	agent.session.reject(0, "Codex turn/start rejected initial submission");
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(agent.session.alive && task.status == TaskStatus.failed);
 
 	// If the app-server subsequently exits, the production runner callback must
@@ -7349,7 +7327,7 @@ unittest
 			[ContentBlock("text", "accepted queue message " ~ nonce)], null, null,
 			nonce).ignoreResult();
 		fixture.session.accept(index, AgentSubmissionReceipt.localEnqueued);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 	}
 	assert(td.nativeSubmissionCount == 3 && td.pendingSteeringTexts == [
 		"accepted queue message queue-one-nonce",
@@ -7368,13 +7346,13 @@ unittest
 		"rejected newer message", "rejected-newer-nonce"));
 	fixture.app.handleUserMessage(fixture.socket, testBrowserSubmission(fixture.tid,
 		"unrelated pending message", "unrelated-nonce"));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 5);
 	assert(("rejected-newer-nonce" in td.inFlightUiNonceGeneration) !is null
 		&& ("unrelated-nonce" in td.inFlightUiNonceGeneration) !is null);
 
 	fixture.session.reject(3, "newer submission rejected");
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(td.pendingSteeringTexts == pendingSteeringTexts);
 	assert(td.nativeSubmissionCount == nativeSubmissionCount + 1);
 	assert(td.history.generation == historyGeneration
@@ -7389,7 +7367,7 @@ unittest
 
 	fixture.app.handleUserMessage(fixture.socket, testBrowserSubmission(fixture.tid,
 		"rejected newer message", "rejected-newer-nonce"));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 6 && fixture.session.gates.length == 6);
 	assert(("rejected-newer-nonce" in td.inFlightUiNonceGeneration) !is null);
 }
@@ -7417,7 +7395,7 @@ unittest
 	foreach (index; 0 .. fixture.session.gates.length)
 	{
 		fixture.session.accept(index, AgentSubmissionReceipt.localEnqueued);
-		drainSubmissionNextTicks();
+		drainNextTicks();
 	}
 	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 3);
 	assert(fixture.session.nativeSubmissionUuids.length == 3);
@@ -7457,13 +7435,13 @@ unittest
 	fixture.app.sendTaskMessage(fixture.tid,
 		[ContentBlock("text", "second app-server prompt")], null, null,
 		"second-app-server-nonce").ignoreResult();
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 2);
 
 	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	fixture.session.accept(1, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 0);
 	assertThrown!AssertError(fixture.app.planHistoryBroadcast(fixture.tid,
 		fixture.session.nativeUserEcho("unknown app-server prompt", "unknown-nonce")));
@@ -7496,9 +7474,9 @@ unittest
 	fixture.app.sendTaskMessage(fixture.tid,
 		[ContentBlock("text", "receipt prompt")], null, null,
 		"replay-receipt-nonce").ignoreResult();
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 
 	ItemStartedEvent replay;
 	replay.item_id = "replay-user";
@@ -7675,7 +7653,7 @@ unittest
 		[ContentBlock("text", "old echoed prompt")], null, null,
 		"old-echo-nonce").ignoreResult();
 	fixture.session.accept(0, AgentSubmissionReceipt.localEnqueued);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.app.tasks[fixture.tid].history.length == 1);
 	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 1);
 
@@ -7689,7 +7667,7 @@ unittest
 	}).ignoreResult();
 	fixture.app.handleUserMessage(fixture.socket, testBrowserSubmission(fixture.tid,
 		"old rejected prompt", "old-rejection-nonce"));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.gates.length == 3);
 	assert(("old-rejection-nonce" in fixture.app.tasks[fixture.tid]
 		.inFlightUiNonceGeneration) !is null);
@@ -7705,14 +7683,14 @@ unittest
 
 	fixture.app.handleUserMessage(fixture.socket, testBrowserSubmission(fixture.tid,
 		"new generation prompt", "old-rejection-nonce"));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.gates.length == 4);
 	assert(("old-rejection-nonce" in fixture.app.tasks[fixture.tid]
 		.inFlightUiNonceGeneration) !is null);
 
 	fixture.session.accept(1, AgentSubmissionReceipt.appServerAccepted);
 	fixture.session.reject(2, "old submission rejected");
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(submissionRejectionCount(fixture.socket.sent) == 1);
 	assert(fixture.socket.sent[$ - 1].canFind(`"type":"cydo/submission_rejected"`)
 		&& fixture.socket.sent[$ - 1].canFind(`"correlation_id":"old-rejection-nonce"`)
@@ -7729,7 +7707,7 @@ unittest
 		.inFlightUiNonceGeneration) !is null);
 
 	fixture.session.accept(3, AgentSubmissionReceipt.localEnqueued);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.app.tasks[fixture.tid].history.length == 1);
 	assert(("old-rejection-nonce" in fixture.app.tasks[fixture.tid].recentNonces)
 		!is null);
@@ -9237,7 +9215,7 @@ unittest
 	auto updates = fixture.base.publicationOrder.length;
 	fixture.reads[0].fulfill(DriverHistory([TranslatedEvent(
 		`{"type":"item/started","item_id":"a","item_type":"text","text":"last words"}`, null)], 0));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(td.notificationBody == "last words");
 	assert(fixture.base.publicationOrder[updates .. $] == ["task_update"]);
 }
@@ -9300,11 +9278,11 @@ unittest
 	td.status = TaskStatus.failed;
 	auto updates = fixture.base.publicationOrder.length;
 	fixture.reads[0].fulfill(DriverHistory.init);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.reads.length == 2);
 	fixture.reads[1].fulfill(DriverHistory([TranslatedEvent(
 		`{"type":"item/started","item_id":"a","item_type":"text","text":"last words"}`, null)], 0));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(td.status == TaskStatus.failed && td.notificationBody.length == 0);
 	assert(fixture.base.publicationOrder.length == updates);
 }
@@ -9335,7 +9313,7 @@ unittest
 
 	task.beginConfirmedNativeUndo();
 	app.scheduleHistoryOperations(tid);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(ws.sent.length == 1);
 	auto busy = jsonParse!HistoryOperationsMessage(ws.sent[0]);
 	assert(busy.history_operations.fork.agent_turn == HistoryOperationMechanism.none);
@@ -9345,12 +9323,12 @@ unittest
 	task.beginConfirmedNativeUndo();
 	app.scheduleHistoryOperations(tid);
 	assert(ws.sent.length == 1, "A compound transition cannot publish synchronously");
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(ws.sent.length == 1, "A release and reacquisition must not advertise Fork");
 
 	task.completeVerifiedNativeUndoCleanup();
 	app.scheduleHistoryOperations(tid);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(ws.sent.length == 2);
 	auto ready = jsonParse!HistoryOperationsMessage(ws.sent[1]);
 	assert(ready.history_operations.fork.agent_turn == HistoryOperationMechanism.codex_native);
@@ -9563,7 +9541,7 @@ unittest
 
 	app.handleWsMessage(socket, `{"type":"request_history","tid":`
 		~ to!string(fixture.tid) ~ `,"workspace":"local"}`);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.driverReads == 1 && task.history.isLoaded);
 	assert(socket.sent[$ - 1].canFind(`"type":"task_history_end"`));
 	bool readRaw;
@@ -9662,7 +9640,7 @@ unittest
 
 	bool loaded;
 	app.historyPipeline.whenHistoryLoaded(fixture.tid, () { loaded = true; });
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(loaded && fixture.driverReads == 1 && td.history.length == 1
 		&& (cast(string) td.history[0].unsafeContents).canFind("retained turn"),
 		"The first load after promotion must deliver the driver transcript");
@@ -9824,13 +9802,13 @@ unittest // A draft title cleared during submission falls back to automatic gene
 		tid: fixture.tid, title: "Preset title")));
 	app.handleUserMessage(socket,
 		testBrowserSubmission(fixture.tid, "First prompt", "title-clear-race"));
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(fixture.session.sendCalls == 1 && task.description == "");
 	app.handleWsMessage(socket, toJson(WsMessage(type: "set_task_title",
 		tid: fixture.tid, title: "")));
 	assert(task.title == "" && !task.titleGenDone);
 	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
-	drainSubmissionNextTicks();
+	drainNextTicks();
 	assert(task.description == "First prompt");
 	assert(task.title == "First prompt");
 	assert(app.persistence.loadTasks()[0].title == task.title);
