@@ -3717,7 +3717,8 @@ function assertParsedHeredocInvocation(
     if (word.value === "-") {
       if (expectedStdin !== null || index !== command.arguments.length - 1)
         parsedShellDocumentInvariant("heredoc stdin index");
-      assertParsedSyntheticStdinArgument(document.source, argument);
+      if (argument.synthetic)
+        assertParsedSyntheticStdinArgument(document.source, argument);
       expectedStdin = index;
       continue;
     }
